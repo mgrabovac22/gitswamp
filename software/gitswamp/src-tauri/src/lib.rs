@@ -7,7 +7,7 @@ use commands::clone_init::{clone_repo, init_repo, search_commits};
 use commands::commit_files::get_commit_files;
 use commands::commits::get_commits;
 use commands::credentials::{delete_token, load_token, save_token};
-use commands::operations::{fetch_all, get_git_path, pull, push, run_git_command};
+use commands::operations::{cherry_pick, checkout_commit, create_tag_at, fetch_all, get_git_path, pull, push, reset_to_commit, revert_commit, run_git_command, search_github_repos};
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_list, stash_pop, stash_push};
 use commands::status::{create_commit, discard_file, get_status, stage_file, unstage_file};
@@ -44,6 +44,12 @@ pub fn run() {
             get_tags,
             run_git_command,
             discard_file,
+            cherry_pick,
+            revert_commit,
+            reset_to_commit,
+            checkout_commit,
+            create_tag_at,
+            search_github_repos,
             save_token,
             load_token,
             delete_token,

@@ -202,9 +202,7 @@ function handleCreateBranch() {
 }
 
 function submitCreateBranch(name: string) {
-  git.createBranch(name);
-  showBranchDialog.value = false;
-  newBranchName.value = "";
+  submitCreateBranchFromDialog(name);
 }
 
 function handleStash() {
@@ -215,6 +213,42 @@ function submitStash() {
   git.stashPush(stashMessage.value || undefined);
   showStashDialog.value = false;
   stashMessage.value = "";
+}
+
+const branchAtSha = ref("");
+const tagAtSha = ref("");
+const showTagDialog = ref(false);
+const tagName = ref("");
+
+function handleCreateBranchAtCommit(sha: string) {
+  branchAtSha.value = sha;
+  showBranchDialog.value = true;
+}
+
+function submitCreateBranchFromDialog(name: string) {
+  if (branchAtSha.value) {
+    git.createBranch(name, branchAtSha.value);
+    branchAtSha.value = "";
+  } else {
+    git.createBranch(name);
+  }
+  showBranchDialog.value = false;
+  newBranchName.value = "";
+}
+
+function handleCreateTagAtCommit(sha: string) {
+  tagAtSha.value = sha;
+  tagName.value = "";
+  showTagDialog.value = true;
+}
+
+function submitCreateTag() {
+  if (tagName.value.trim() && tagAtSha.value) {
+    git.createTagAt(tagName.value.trim(), tagAtSha.value);
+  }
+  showTagDialog.value = false;
+  tagName.value = "";
+  tagAtSha.value = "";
 }
 
 const openReposList = computed(() =>
@@ -293,6 +327,15 @@ const openReposList = computed(() =>
               @clear-search="git.clearSearch()"
               @select-working-changes="onSelectWorkingChanges"
               @load-more="git.loadMoreCommits()"
+              @checkout="git.checkoutCommit($event)"
+              @create-branch-at="handleCreateBranchAtCommit($event)"
+              @cherry-pick="git.cherryPick($event)"
+              @revert="git.revertCommit($event)"
+              @reset-soft="git.resetToCommit($event, 'soft')"
+              @reset-mixed="git.resetToCommit($event, 'mixed')"
+              @reset-hard="git.resetToCommit($event, 'hard')"
+              @copy-sha="() => {}"
+              @create-tag-at="handleCreateTagAtCommit($event)"
             />
             <CommitDetails
               :commit="git.selectedCommit.value"
@@ -358,9 +401,28 @@ const openReposList = computed(() =>
       </div>
     </div>
 
+    <!-- Tag creation dialog -->
+    <div v-if="showTagDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showTagDialog = false">
+      <div class="bg-[#0f1620] border border-[#8b5cf6]/20 rounded-lg p-6 w-96 shadow-2xl">
+        <h3 class="text-sm font-medium text-[#e2e8f0] mb-4">Create Tag</h3>
+        <input
+          v-model="tagName"
+          placeholder="Tag name..."
+          class="w-full px-3 py-2 bg-[#151d28] border border-[#8b5cf6]/15 rounded text-xs text-[#e2e8f0] placeholder:text-[#334155] focus:outline-none focus:ring-1 focus:ring-[#8b5cf6]/40 mb-4"
+          @keyup.enter="submitCreateTag"
+          autofocus
+        />
+        <div class="flex justify-end gap-2">
+          <button @click="showTagDialog = false" class="px-3 py-1.5 text-xs text-[#64748b] hover:text-[#e2e8f0] rounded hover:bg-[#1e293b] transition-colors">Cancel</button>
+          <button @click="submitCreateTag" :disabled="!tagName.trim()" class="px-3 py-1.5 text-xs text-white bg-[#8b5cf6] hover:bg-[#7c3aed] rounded disabled:opacity-50 transition-colors">Create</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Dialogs -->
     <CloneDialog
       :visible="showCloneDialog"
+      :token="git.githubToken.value"
       @close="showCloneDialog = false"
       @clone="handleClone"
     />

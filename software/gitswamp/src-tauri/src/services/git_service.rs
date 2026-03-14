@@ -8,7 +8,7 @@ use std::os::windows::process::CommandExt;
 
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
-use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, RepoInfo, StashInfo, TagInfo};
+use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, GithubRepo, RepoInfo, StashInfo, TagInfo};
 
 static GIT_PATH: OnceLock<String> = OnceLock::new();
 
@@ -536,21 +536,47 @@ impl GitService {
                     }
                     let str_refs: Vec<&str> = new_args.iter().map(|s| s.as_str()).collect();
 
-                    let mut cmd = std::process::Command::new(git_executable());
+                    let exe = git_executable();
+                    let mut cmd = std::process::Command::new(exe);
                     cmd.args(&str_refs)
                         .current_dir(path)
                         .env("GIT_TERMINAL_PROMPT", "0");
                     #[cfg(windows)]
                     cmd.creation_flags(0x08000000);
-                    let output = cmd.output()
-                        .map_err(|e| format!("Failed to run git: {}", e))?;
-
-                    if output.status.success() {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Ok(format!("{}{}", stdout, stderr).trim().to_string());
-                    } else {
-                        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                    match cmd.output() {
+                        Ok(output) => {
+                            if output.status.success() {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                return Ok(format!("{}{}", stdout, stderr).trim().to_string());
+                            } else {
+                                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                            }
+                        }
+                        Err(_e) => {
+                            // Fallback: run through cmd.exe which has its own PATH resolution
+                            #[cfg(windows)]
+                            {
+                                let mut all_args: Vec<&str> = vec!["/c", exe];
+                                all_args.extend_from_slice(&str_refs);
+                                let mut cmd2 = std::process::Command::new("cmd.exe");
+                                cmd2.args(&all_args)
+                                    .current_dir(path)
+                                    .env("GIT_TERMINAL_PROMPT", "0");
+                                cmd2.creation_flags(0x08000000);
+                                let output = cmd2.output()
+                                    .map_err(|e2| format!("Failed to run git (cmd fallback): {}", e2))?;
+                                if output.status.success() {
+                                    let stdout = String::from_utf8_lossy(&output.stdout);
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Ok(format!("{}{}", stdout, stderr).trim().to_string());
+                                } else {
+                                    return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                                }
+                            }
+                            #[cfg(not(windows))]
+                            return Err(format!("Failed to run git: {}", _e));
+                        }
                     }
                 }
             }
@@ -560,19 +586,43 @@ impl GitService {
     }
 
     fn git_cli(path: &str, args: &[&str]) -> Result<String, String> {
-        let mut cmd = std::process::Command::new(git_executable());
+        let exe = git_executable();
+        let mut cmd = std::process::Command::new(exe);
         cmd.args(args).current_dir(path);
         #[cfg(windows)]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        let output = cmd.output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Ok(format!("{}{}", stdout, stderr).trim().to_string())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        cmd.creation_flags(0x08000000);
+        match cmd.output() {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    Ok(format!("{}{}", stdout, stderr).trim().to_string())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+                }
+            }
+            Err(_e) => {
+                // Fallback: run through cmd.exe which has its own PATH resolution
+                #[cfg(windows)]
+                {
+                    let mut all_args: Vec<&str> = vec!["/c", exe];
+                    all_args.extend_from_slice(args);
+                    let mut cmd2 = std::process::Command::new("cmd.exe");
+                    cmd2.args(&all_args).current_dir(path);
+                    cmd2.creation_flags(0x08000000);
+                    let output = cmd2.output()
+                        .map_err(|e2| format!("Failed to run git (cmd fallback): {}", e2))?;
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        Ok(format!("{}{}", stdout, stderr).trim().to_string())
+                    } else {
+                        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+                    }
+                }
+                #[cfg(not(windows))]
+                Err(format!("Failed to run git: {}", _e))
+            }
         }
     }
 
@@ -644,6 +694,31 @@ impl GitService {
         .to_string()
     }
 
+    pub fn cherry_pick(path: &str, sha: &str) -> Result<String, String> {
+        Self::git_cli(path, &["cherry-pick", sha])
+    }
+
+    pub fn revert_commit(path: &str, sha: &str) -> Result<String, String> {
+        Self::git_cli(path, &["revert", "--no-edit", sha])
+    }
+
+    pub fn reset_to_commit(path: &str, sha: &str, mode: &str) -> Result<String, String> {
+        let flag = match mode {
+            "soft" => "--soft",
+            "hard" => "--hard",
+            _ => "--mixed",
+        };
+        Self::git_cli(path, &["reset", flag, sha])
+    }
+
+    pub fn checkout_commit(path: &str, sha: &str) -> Result<String, String> {
+        Self::git_cli(path, &["checkout", sha])
+    }
+
+    pub fn create_tag_at(path: &str, name: &str, sha: &str) -> Result<String, String> {
+        Self::git_cli(path, &["tag", name, sha])
+    }
+
     pub fn clone_repo(url: &str, path: &str, shallow: bool) -> Result<String, String> {
         if shallow {
             Self::git_cli_global(&["clone", "--depth", "1", url, path])
@@ -679,19 +754,43 @@ impl GitService {
     }
 
     fn git_cli_global(args: &[&str]) -> Result<String, String> {
-        let mut cmd = std::process::Command::new(git_executable());
+        let exe = git_executable();
+        let mut cmd = std::process::Command::new(exe);
         cmd.args(args);
         #[cfg(windows)]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        let output = cmd.output()
-            .map_err(|e| format!("Failed to run git: {}", e))?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Ok(format!("{}{}", stdout, stderr).trim().to_string())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        cmd.creation_flags(0x08000000);
+        match cmd.output() {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    Ok(format!("{}{}", stdout, stderr).trim().to_string())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+                }
+            }
+            Err(_e) => {
+                // Fallback: run through cmd.exe which has its own PATH resolution
+                #[cfg(windows)]
+                {
+                    let mut all_args: Vec<&str> = vec!["/c", exe];
+                    all_args.extend_from_slice(args);
+                    let mut cmd2 = std::process::Command::new("cmd.exe");
+                    cmd2.args(&all_args);
+                    cmd2.creation_flags(0x08000000);
+                    let output = cmd2.output()
+                        .map_err(|e2| format!("Failed to run git (cmd fallback): {}", e2))?;
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        Ok(format!("{}{}", stdout, stderr).trim().to_string())
+                    } else {
+                        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+                    }
+                }
+                #[cfg(not(windows))]
+                Err(format!("Failed to run git: {}", _e))
+            }
         }
     }
 
@@ -887,4 +986,52 @@ impl GitService {
         Self::git_cli(path, &["clean", "-f", "--", file_path])?;
         Ok(())
     }
+
+    pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
+        let url = if query.is_empty() {
+            "https://api.github.com/user/repos?per_page=50&sort=updated&affiliation=owner,collaborator,organization_member".to_string()
+        } else {
+            format!("https://api.github.com/search/repositories?q={}&per_page=30", urlencoded(query))
+        };
+        let resp = ureq::get(&url)
+            .set("Authorization", &format!("Bearer {}", token))
+            .set("Accept", "application/vnd.github.v3+json")
+            .set("User-Agent", "GitSwamp")
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+        let body: serde_json::Value = resp.into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        let items = if query.is_empty() {
+            body.as_array().cloned().unwrap_or_default()
+        } else {
+            body["items"].as_array().cloned().unwrap_or_default()
+        };
+        let repos = items.iter().filter_map(|item| {
+            Some(GithubRepo {
+                full_name: item["full_name"].as_str()?.to_string(),
+                clone_url: item["clone_url"].as_str()?.to_string(),
+                description: item["description"].as_str().unwrap_or("").to_string(),
+                is_private: item["private"].as_bool().unwrap_or(false),
+                stars: item["stargazers_count"].as_u64().unwrap_or(0) as u32,
+            })
+        }).collect();
+        Ok(repos)
+    }
+}
+
+fn urlencoded(s: &str) -> String {
+    let mut result = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(b as char);
+            }
+            b' ' => result.push('+'),
+            _ => {
+                result.push('%');
+                result.push_str(&format!("{:02X}", b));
+            }
+        }
+    }
+    result
 }

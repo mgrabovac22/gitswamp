@@ -25,3 +25,33 @@ pub fn run_git_command(path: String, args: Vec<String>) -> Result<String, String
 pub fn get_git_path() -> String {
     GitService::get_git_path()
 }
+
+#[tauri::command]
+pub fn cherry_pick(path: String, sha: String) -> Result<String, String> {
+    GitService::cherry_pick(&path, &sha)
+}
+
+#[tauri::command]
+pub fn revert_commit(path: String, sha: String) -> Result<String, String> {
+    GitService::revert_commit(&path, &sha)
+}
+
+#[tauri::command]
+pub fn reset_to_commit(path: String, sha: String, mode: String) -> Result<String, String> {
+    GitService::reset_to_commit(&path, &sha, &mode)
+}
+
+#[tauri::command]
+pub fn checkout_commit(path: String, sha: String) -> Result<String, String> {
+    GitService::checkout_commit(&path, &sha)
+}
+
+#[tauri::command]
+pub fn create_tag_at(path: String, name: String, sha: String) -> Result<String, String> {
+    GitService::create_tag_at(&path, &name, &sha)
+}
+
+#[tauri::command]
+pub fn search_github_repos(token: String, query: String) -> Result<Vec<crate::models::GithubRepo>, String> {
+    crate::services::git_service::GitService::search_github_repos(&token, &query)
+}

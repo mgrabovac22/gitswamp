@@ -159,6 +159,7 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
         <button
           v-for="branch in filteredBranches(remoteBranches)"
           :key="branch.name"
+          @click="emit('checkout', branch.name)"
           class="w-full flex items-center gap-2 px-4 py-1 pl-10 text-[11px] text-[#64748b] hover:text-[#e2e8f0] hover:bg-[#151921] transition-all"
         >
           <span class="truncate">{{ branch.name }}</span>

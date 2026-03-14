@@ -8,6 +8,7 @@ import type {
   CommitFileInfo,
   StashInfo,
   TagInfo,
+  GithubRepo,
 } from "@/types";
 
 const repoPath = ref("");
@@ -557,6 +558,96 @@ async function discardAll() {
   }
 }
 
+async function cherryPick(sha: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("cherry_pick", { path: repoPath.value, sha });
+    terminalOutput.value.push("$ git cherry-pick " + sha.substring(0, 7) + "\n" + (result || "(done)"));
+    await Promise.all([refreshCommits(), refreshStatus()]);
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git cherry-pick\nError: " + e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function revertCommit(sha: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("revert_commit", { path: repoPath.value, sha });
+    terminalOutput.value.push("$ git revert " + sha.substring(0, 7) + "\n" + (result || "(done)"));
+    await Promise.all([refreshCommits(), refreshStatus()]);
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git revert\nError: " + e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function resetToCommit(sha: string, mode: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("reset_to_commit", { path: repoPath.value, sha, mode });
+    terminalOutput.value.push("$ git reset --" + mode + " " + sha.substring(0, 7) + "\n" + (result || "(done)"));
+    await Promise.all([refreshCommits(), refreshStatus()]);
+    repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git reset\nError: " + e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function checkoutCommit(sha: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("checkout_commit", { path: repoPath.value, sha });
+    terminalOutput.value.push("$ git checkout " + sha.substring(0, 7) + "\n" + (result || "(done)"));
+    repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+    await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git checkout\nError: " + e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function createTagAt(name: string, sha: string) {
+  if (!repoPath.value) return;
+  try {
+    await invoke<string>("create_tag_at", { path: repoPath.value, name, sha });
+    terminalOutput.value.push("$ git tag " + name + " " + sha.substring(0, 7) + "\n(done)");
+    await refreshTags();
+    await refreshCommits();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function searchGithubRepos(query: string): Promise<GithubRepo[]> {
+  if (!githubToken.value) {
+    error.value = "No GitHub token configured. Go to Settings to add one.";
+    return [];
+  }
+  try {
+    return await invoke<GithubRepo[]>("search_github_repos", {
+      token: githubToken.value,
+      query,
+    });
+  } catch (e) {
+    error.value = String(e);
+    return [];
+  }
+}
+
 export function useGit() {
   return {
     repoPath,
@@ -617,5 +708,11 @@ export function useGit() {
     deleteToken,
     startFileWatcher,
     stopFileWatcher,
+    cherryPick,
+    revertCommit,
+    resetToCommit,
+    checkoutCommit,
+    createTagAt,
+    searchGithubRepos,
   };
 }
