@@ -1,10 +1,61 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
 use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, RepoInfo, StashInfo, TagInfo};
+
+static GIT_PATH: OnceLock<String> = OnceLock::new();
+
+fn find_git() -> String {
+    // Try "git" directly first (works if PATH is correct)
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+    {
+        if output.status.success() {
+            return "git".to_string();
+        }
+    }
+
+    // Common Windows git locations
+    let candidates = [
+        r"C:\Program Files\Git\cmd\git.exe",
+        r"C:\Program Files\Git\bin\git.exe",
+        r"C:\Program Files (x86)\Git\cmd\git.exe",
+        r"C:\Program Files (x86)\Git\bin\git.exe",
+    ];
+    for p in &candidates {
+        if Path::new(p).exists() {
+            return p.to_string();
+        }
+    }
+
+    // Try where.exe to find git
+    if let Ok(output) = std::process::Command::new("where.exe")
+        .arg("git")
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(first_line) = stdout.lines().next() {
+                let path = first_line.trim();
+                if !path.is_empty() && Path::new(path).exists() {
+                    return path.to_string();
+                }
+            }
+        }
+    }
+
+    // Last resort
+    "git".to_string()
+}
+
+fn git_executable() -> &'static str {
+    GIT_PATH.get_or_init(find_git)
+}
 
 pub struct GitService;
 
@@ -252,31 +303,99 @@ impl GitService {
         Ok(())
     }
 
-    pub fn pull(path: &str) -> Result<String, String> {
-        Self::git_cli(path, &["pull"])
+    pub fn pull(path: &str, token: Option<&str>) -> Result<String, String> {
+        if let Some(t) = token {
+            Self::git_cli_with_token(path, &["pull"], t)
+        } else {
+            Self::git_cli(path, &["pull"])
+        }
     }
 
-    pub fn push(path: &str) -> Result<String, String> {
-        let result = Self::git_cli(path, &["push"]);
+    pub fn push(path: &str, token: Option<&str>) -> Result<String, String> {
+        let result = if let Some(t) = token {
+            Self::git_cli_with_token(path, &["push"], t)
+        } else {
+            Self::git_cli(path, &["push"])
+        };
         if result.is_ok() {
             return result;
         }
         // Fallback: set upstream if not configured
         let branch = Self::git_cli(path, &["rev-parse", "--abbrev-ref", "HEAD"])
             .unwrap_or_else(|_| "main".to_string());
-        Self::git_cli(path, &["push", "-u", "origin", branch.trim()])
+        let branch = branch.trim();
+        // First try without token to set upstream
+        let _ = Self::git_cli(path, &["push", "--set-upstream", "origin", branch]);
+        // Then push with token if available
+        if let Some(t) = token {
+            Self::git_cli_with_token(path, &["push"], t)
+        } else {
+            Self::git_cli(path, &["push", "-u", "origin", branch])
+        }
     }
 
-    pub fn fetch_all(path: &str) -> Result<String, String> {
-        Self::git_cli(path, &["fetch", "--all"])
+    pub fn fetch_all(path: &str, token: Option<&str>) -> Result<String, String> {
+        if let Some(t) = token {
+            // With token, fetch from origin only (can't use --all with URL)
+            Self::git_cli_with_token(path, &["fetch"], t)
+        } else {
+            Self::git_cli(path, &["fetch", "--all"])
+        }
+    }
+
+    fn git_cli_with_token(path: &str, args: &[&str], token: &str) -> Result<String, String> {
+        // Get remote URL and inject token for HTTPS authentication
+        let remote_url = Self::git_cli(path, &["remote", "get-url", "origin"]).ok();
+        if let Some(ref raw_url) = remote_url {
+            let url = raw_url.trim();
+            if url.starts_with("https://") {
+                let host_and_path = if url.contains('@') {
+                    let after_proto = &url[8..];
+                    if let Some(at_pos) = after_proto.find('@') {
+                        &after_proto[at_pos + 1..]
+                    } else {
+                        after_proto
+                    }
+                } else {
+                    &url[8..]
+                };
+                let authed_url = format!("https://x-access-token:{}@{}", token, host_and_path);
+
+                // Build args: subcommand <url> [rest]
+                if !args.is_empty() {
+                    let mut new_args: Vec<String> = vec![args[0].to_string(), authed_url];
+                    for a in &args[1..] {
+                        new_args.push(a.to_string());
+                    }
+                    let str_refs: Vec<&str> = new_args.iter().map(|s| s.as_str()).collect();
+
+                    let output = std::process::Command::new(git_executable())
+                        .args(&str_refs)
+                        .current_dir(path)
+                        .env("GIT_TERMINAL_PROMPT", "0")
+                        .output()
+                        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Ok(format!("{}{}", stdout, stderr).trim().to_string());
+                    } else {
+                        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                    }
+                }
+            }
+        }
+        // Fallback to normal CLI if no remote URL or SSH
+        Self::git_cli(path, args)
     }
 
     fn git_cli(path: &str, args: &[&str]) -> Result<String, String> {
-        let output = std::process::Command::new("git")
+        let output = std::process::Command::new(git_executable())
             .args(args)
             .current_dir(path)
             .output()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Failed to run git: {}", e))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -390,10 +509,10 @@ impl GitService {
     }
 
     fn git_cli_global(args: &[&str]) -> Result<String, String> {
-        let output = std::process::Command::new("git")
+        let output = std::process::Command::new(git_executable())
             .args(args)
             .output()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Failed to run git: {}", e))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);

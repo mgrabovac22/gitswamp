@@ -24,6 +24,10 @@ const error = ref<string | null>(null);
 const searchQuery = ref("");
 const searchResults = shallowRef<CommitInfo[] | null>(null);
 const terminalOutput = ref<string[]>([]);
+const githubToken = ref<string | null>(null);
+const hasMoreCommits = ref(true);
+
+const PAGE_SIZE = 200;
 
 let watchInterval: ReturnType<typeof setInterval> | null = null;
 let lastStatusHash = "";
@@ -49,7 +53,7 @@ const displayedCommits = computed(() =>
 );
 
 function statusHash(files: FileStatusInfo[]): string {
-  return files.map((f) => `${f.path}:${f.status}:${f.staged}`).join("|");
+  return files.map((f) => f.path + ":" + f.status + ":" + f.staged).join("|");
 }
 
 function startFileWatcher() {
@@ -64,14 +68,13 @@ function startFileWatcher() {
       if (newHash !== lastStatusHash) {
         lastStatusHash = newHash;
         fileStatuses.value = newStatuses;
-        // Also refresh commits in case new commits appeared (e.g., from another tool)
-        const newCommits = await invoke<CommitInfo[]>("get_commits", {
+        // Check if top commit changed (new commits from external tools)
+        const topCheck = await invoke<CommitInfo[]>("get_commits", {
           path: repoPath.value,
-          maxCount: 2000,
+          maxCount: 1,
         });
-        if (newCommits.length !== commits.value.length ||
-          (newCommits[0]?.sha !== commits.value[0]?.sha)) {
-          commits.value = newCommits;
+        if (topCheck.length > 0 && topCheck[0].sha !== commits.value[0]?.sha) {
+          await refreshCommits();
         }
       }
     } catch {}
@@ -85,12 +88,46 @@ function stopFileWatcher() {
   }
 }
 
+// Load saved token on init
+async function loadSavedToken() {
+  try {
+    const token = await invoke<string | null>("load_token");
+    githubToken.value = token || null;
+  } catch {
+    githubToken.value = null;
+  }
+}
+loadSavedToken();
+
+async function saveToken(token: string) {
+  try {
+    await invoke("save_token", { token });
+    githubToken.value = token;
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function deleteToken() {
+  try {
+    await invoke("delete_token");
+    githubToken.value = null;
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+function getTokenParam(): string | null {
+  return githubToken.value || null;
+}
+
 async function openRepository(path: string) {
   try {
     loading.value = true;
     error.value = null;
     repoPath.value = path;
     repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path });
+    hasMoreCommits.value = true;
     await Promise.all([refreshCommits(), refreshBranches(), refreshStatus(), refreshStashes(), refreshTags()]);
     startFileWatcher();
   } catch (e) {
@@ -103,10 +140,32 @@ async function openRepository(path: string) {
 async function refreshCommits() {
   if (!repoPath.value) return;
   try {
-    commits.value = await invoke<CommitInfo[]>("get_commits", {
+    const result = await invoke<CommitInfo[]>("get_commits", {
       path: repoPath.value,
-      maxCount: 2000,
+      maxCount: PAGE_SIZE,
     });
+    commits.value = result;
+    hasMoreCommits.value = result.length >= PAGE_SIZE;
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function loadMoreCommits() {
+  if (!repoPath.value || !hasMoreCommits.value || loading.value) return;
+  try {
+    const currentCount = commits.value.length;
+    const nextCount = currentCount + PAGE_SIZE;
+    const result = await invoke<CommitInfo[]>("get_commits", {
+      path: repoPath.value,
+      maxCount: nextCount,
+    });
+    if (result.length <= currentCount) {
+      hasMoreCommits.value = false;
+    } else {
+      commits.value = result;
+      hasMoreCommits.value = result.length >= nextCount;
+    }
   } catch (e) {
     error.value = String(e);
   }
@@ -274,13 +333,16 @@ async function pull() {
   if (!repoPath.value) return;
   try {
     loading.value = true;
-    const result = await invoke<string>("pull", { path: repoPath.value });
-    terminalOutput.value.push(`$ git pull\n${result}`);
+    const result = await invoke<string>("pull", {
+      path: repoPath.value,
+      token: getTokenParam(),
+    });
+    terminalOutput.value.push("$ git pull\n" + result);
     await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
     repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
   } catch (e) {
     error.value = String(e);
-    terminalOutput.value.push(`$ git pull\nError: ${e}`);
+    terminalOutput.value.push("$ git pull\nError: " + e);
   } finally {
     loading.value = false;
   }
@@ -290,12 +352,15 @@ async function push() {
   if (!repoPath.value) return;
   try {
     loading.value = true;
-    const result = await invoke<string>("push", { path: repoPath.value });
-    terminalOutput.value.push(`$ git push\n${result}`);
+    const result = await invoke<string>("push", {
+      path: repoPath.value,
+      token: getTokenParam(),
+    });
+    terminalOutput.value.push("$ git push\n" + result);
     await Promise.all([refreshCommits(), refreshBranches()]);
   } catch (e) {
     error.value = String(e);
-    terminalOutput.value.push(`$ git push\nError: ${e}`);
+    terminalOutput.value.push("$ git push\nError: " + e);
   } finally {
     loading.value = false;
   }
@@ -305,12 +370,15 @@ async function fetchAll() {
   if (!repoPath.value) return;
   try {
     loading.value = true;
-    const result = await invoke<string>("fetch_all", { path: repoPath.value });
-    terminalOutput.value.push(`$ git fetch --all\n${result}`);
+    const result = await invoke<string>("fetch_all", {
+      path: repoPath.value,
+      token: getTokenParam(),
+    });
+    terminalOutput.value.push("$ git fetch --all\n" + result);
     await Promise.all([refreshBranches(), refreshCommits()]);
   } catch (e) {
     error.value = String(e);
-    terminalOutput.value.push(`$ git fetch --all\nError: ${e}`);
+    terminalOutput.value.push("$ git fetch --all\nError: " + e);
   } finally {
     loading.value = false;
   }
@@ -338,11 +406,11 @@ async function stashPush(message?: string) {
       path: repoPath.value,
       message: message || null,
     });
-    terminalOutput.value.push(`$ git stash push${message ? ` -m "${message}"` : ""}\n${result}`);
+    terminalOutput.value.push("$ git stash push" + (message ? ' -m "' + message + '"' : "") + "\n" + result);
     await Promise.all([refreshStatus(), refreshStashes()]);
   } catch (e) {
     error.value = String(e);
-    terminalOutput.value.push(`$ git stash push\nError: ${e}`);
+    terminalOutput.value.push("$ git stash push\nError: " + e);
   }
 }
 
@@ -353,11 +421,11 @@ async function stashPop(index: number = 0) {
       path: repoPath.value,
       index,
     });
-    terminalOutput.value.push(`$ git stash pop stash@{${index}}\n${result}`);
+    terminalOutput.value.push("$ git stash pop stash@{" + index + "}\n" + result);
     await Promise.all([refreshStatus(), refreshStashes(), refreshCommits()]);
   } catch (e) {
     error.value = String(e);
-    terminalOutput.value.push(`$ git stash pop\nError: ${e}`);
+    terminalOutput.value.push("$ git stash pop\nError: " + e);
   }
 }
 
@@ -368,7 +436,7 @@ async function stashApply(index: number = 0) {
       path: repoPath.value,
       index,
     });
-    terminalOutput.value.push(`$ git stash apply stash@{${index}}\n${result}`);
+    terminalOutput.value.push("$ git stash apply stash@{" + index + "}\n" + result);
     await Promise.all([refreshStatus(), refreshStashes()]);
   } catch (e) {
     error.value = String(e);
@@ -382,7 +450,7 @@ async function stashDrop(index: number = 0) {
       path: repoPath.value,
       index,
     });
-    terminalOutput.value.push(`$ git stash drop stash@{${index}}\n${result}`);
+    terminalOutput.value.push("$ git stash drop stash@{" + index + "}\n" + result);
     await refreshStashes();
   } catch (e) {
     error.value = String(e);
@@ -450,9 +518,9 @@ async function runTerminalCommand(command: string) {
       path: repoPath.value,
       args,
     });
-    terminalOutput.value.push(`$ git ${args.join(" ")}\n${result || "(done)"}`);
+    terminalOutput.value.push("$ git " + args.join(" ") + "\n" + (result || "(done)"));
   } catch (e) {
-    terminalOutput.value.push(`$ git ${args.join(" ")}\nError: ${e}`);
+    terminalOutput.value.push("$ git " + args.join(" ") + "\nError: " + e);
   }
 }
 
@@ -500,6 +568,8 @@ export function useGit() {
     searchResults,
     displayedCommits,
     terminalOutput,
+    githubToken,
+    hasMoreCommits,
     openRepository,
     refreshCommits,
     refreshBranches,
@@ -507,6 +577,7 @@ export function useGit() {
     refreshStashes,
     refreshTags,
     refreshAll,
+    loadMoreCommits,
     getCommitFiles,
     stageFile,
     unstageFile,
@@ -530,6 +601,8 @@ export function useGit() {
     runTerminalCommand,
     discardFile,
     discardAll,
+    saveToken,
+    deleteToken,
     startFileWatcher,
     stopFileWatcher,
   };

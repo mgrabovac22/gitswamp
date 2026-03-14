@@ -9,6 +9,7 @@ import LandingPage from "@/components/repository/LandingPage.vue";
 import CloneDialog from "@/components/repository/CloneDialog.vue";
 import InitDialog from "@/components/repository/InitDialog.vue";
 import TerminalPanel from "@/components/layout/TerminalPanel.vue";
+import SettingsDialog from "@/components/layout/SettingsDialog.vue";
 import { useGit } from "@/composables/useGit";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ref, watch, onMounted, computed } from "vue";
@@ -32,6 +33,7 @@ const showInitDialog = ref(false);
 const showTerminal = ref(false);
 const showBranchDialog = ref(false);
 const showStashDialog = ref(false);
+const showSettings = ref(false);
 const newBranchName = ref("");
 const stashMessage = ref("");
 
@@ -261,6 +263,7 @@ const openReposList = computed(() =>
         @branch="handleCreateBranch"
         @stash="handleStash"
         @terminal="showTerminal = !showTerminal"
+        @settings="showSettings = true"
       />
       <div class="flex-1 flex overflow-hidden">
         <Sidebar
@@ -284,10 +287,12 @@ const openReposList = computed(() =>
               :search-query="git.searchQuery.value"
               :has-working-changes="hasWorkingChanges"
               :current-branch="git.currentBranch.value"
+              :has-more="git.hasMoreCommits.value"
               @select="onSelectCommit"
               @search="git.searchCommits($event)"
               @clear-search="git.clearSearch()"
               @select-working-changes="onSelectWorkingChanges"
+              @load-more="git.loadMoreCommits()"
             />
             <CommitDetails
               :commit="git.selectedCommit.value"
@@ -363,6 +368,13 @@ const openReposList = computed(() =>
       :visible="showInitDialog"
       @close="showInitDialog = false"
       @init="handleInit"
+    />
+    <SettingsDialog
+      v-if="showSettings"
+      :token="git.githubToken.value"
+      @save="git.saveToken($event); showSettings = false"
+      @delete="git.deleteToken()"
+      @close="showSettings = false"
     />
   </div>
 </template>

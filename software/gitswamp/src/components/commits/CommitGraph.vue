@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, onMounted } from "vue";
 import type { CommitInfo, GraphNode, GraphEdge } from "@/types";
 
 const LANE_WIDTH = 16;
@@ -8,6 +8,7 @@ const NODE_RADIUS = 4;
 const BRANCH_COL = 130;
 const AUTHOR_COL = 140;
 const SHA_COL = 75;
+const OVERSCAN = 10;
 const COLORS = [
   "#8b5cf6", "#06b6d4", "#f59e0b", "#ef4444", "#10b981",
   "#ec4899", "#f97316", "#14b8a6", "#a855f7", "#22d3ee",
@@ -20,6 +21,7 @@ const props = defineProps<{
   searchQuery?: string;
   hasWorkingChanges: boolean;
   currentBranch: string;
+  hasMore?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -27,9 +29,13 @@ const emit = defineEmits<{
   search: [query: string];
   clearSearch: [];
   selectWorkingChanges: [];
+  loadMore: [];
 }>();
 
 const searchInput = ref("");
+const scrollContainer = ref<HTMLElement | null>(null);
+const scrollTop = ref(0);
+const viewportHeight = ref(600);
 
 function avatarColor(name: string): string {
   let h = 0;
@@ -119,6 +125,37 @@ const graphWidth = computed(() => Math.max((graph.value.laneCount + 1) * LANE_WI
 const wcOffset = computed(() => props.hasWorkingChanges ? ROW_HEIGHT : 0);
 const totalH = computed(() => props.commits.length * ROW_HEIGHT + wcOffset.value);
 
+// Virtual scrolling: only render visible rows + overscan
+const visibleRange = computed(() => {
+  const startY = scrollTop.value - wcOffset.value;
+  const first = Math.max(0, Math.floor(startY / ROW_HEIGHT) - OVERSCAN);
+  const last = Math.min(
+    props.commits.length - 1,
+    Math.ceil((startY + viewportHeight.value) / ROW_HEIGHT) + OVERSCAN
+  );
+  return { first, last };
+});
+
+const visibleNodes = computed(() => {
+  const { first, last } = visibleRange.value;
+  const nodes = graph.value.nodes;
+  const result: { node: GraphNode; idx: number }[] = [];
+  for (let i = first; i <= last && i < nodes.length; i++) {
+    result.push({ node: nodes[i], idx: i });
+  }
+  return result;
+});
+
+// Only render edges that touch visible area
+const visibleEdges = computed(() => {
+  const { first, last } = visibleRange.value;
+  return graph.value.edges.filter(e => {
+    const minIdx = Math.min(e.fromIndex, e.toIndex);
+    const maxIdx = Math.max(e.fromIndex, e.toIndex);
+    return maxIdx >= first - 2 && minIdx <= last + 2;
+  });
+});
+
 function lx(lane: number) { return lane * LANE_WIDTH + LANE_WIDTH / 2 + 4; }
 function ry(index: number) { return index * ROW_HEIGHT + ROW_HEIGHT / 2 + wcOffset.value; }
 
@@ -161,6 +198,22 @@ function onSearch() {
   }, 300);
 }
 function clearSearch() { searchInput.value = ""; emit("clearSearch"); }
+
+function onScroll(e: Event) {
+  const el = e.target as HTMLElement;
+  scrollTop.value = el.scrollTop;
+  viewportHeight.value = el.clientHeight;
+  // Load more when near bottom
+  if (props.hasMore && el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+    emit("loadMore");
+  }
+}
+
+onMounted(() => {
+  if (scrollContainer.value) {
+    viewportHeight.value = scrollContainer.value.clientHeight;
+  }
+});
 </script>
 
 <template>
@@ -191,10 +244,10 @@ function clearSearch() { searchInput.value = ""; emit("clearSearch"); }
       No commits to display
     </div>
 
-    <!-- Scrollable content -->
-    <div v-else class="flex-1 overflow-y-auto min-h-0">
+    <!-- Scrollable content with virtual scrolling -->
+    <div v-else ref="scrollContainer" class="flex-1 overflow-y-auto min-h-0" @scroll="onScroll">
       <div class="relative" :style="{ height: totalH + 'px' }">
-        <!-- SVG graph layer - positioned over graph column -->
+        <!-- SVG graph layer - only render visible edges + nodes -->
         <svg
           class="absolute top-0 pointer-events-none"
           :style="{ left: BRANCH_COL + 'px', width: graphWidth + 'px', height: totalH + 'px' }"
@@ -207,10 +260,10 @@ function clearSearch() { searchInput.value = ""; emit("clearSearch"); }
             stroke-dasharray="4 3" stroke-linecap="round"
           />
 
-          <!-- Edge lines -->
+          <!-- Visible edge lines only -->
           <path
-            v-for="(edge, i) in graph.edges"
-            :key="'e' + i"
+            v-for="(edge, i) in visibleEdges"
+            :key="'e' + edge.fromIndex + '-' + edge.toIndex + '-' + i"
             :d="ep(edge)"
             :stroke="edge.color"
             stroke-width="2" fill="none" opacity="0.6"
@@ -225,19 +278,19 @@ function clearSearch() { searchInput.value = ""; emit("clearSearch"); }
             fill="#8b5cf6" opacity="0.9" class="animate-pulse"
           />
 
-          <!-- Commit nodes -->
-          <template v-for="(node, idx) in graph.nodes" :key="'n' + node.commit.sha">
+          <!-- Visible commit nodes only -->
+          <template v-for="item in visibleNodes" :key="'n' + item.node.commit.sha">
             <circle
-              :cx="lx(node.lane)" :cy="ry(idx)"
-              :r="NODE_RADIUS" :fill="node.color"
-              :stroke="selected?.sha === node.commit.sha ? '#fff' : node.color"
-              :stroke-width="selected?.sha === node.commit.sha ? 2 : 1"
+              :cx="lx(item.node.lane)" :cy="ry(item.idx)"
+              :r="NODE_RADIUS" :fill="item.node.color"
+              :stroke="selected?.sha === item.node.commit.sha ? '#fff' : item.node.color"
+              :stroke-width="selected?.sha === item.node.commit.sha ? 2 : 1"
             />
             <circle
-              v-if="node.commit.refs.length > 0"
-              :cx="lx(node.lane)" :cy="ry(idx)"
+              v-if="item.node.commit.refs.length > 0"
+              :cx="lx(item.node.lane)" :cy="ry(item.idx)"
               :r="NODE_RADIUS + 3" fill="none"
-              :stroke="node.color" stroke-width="1.5" opacity="0.3"
+              :stroke="item.node.color" stroke-width="1.5" opacity="0.3"
             />
           </template>
         </svg>
@@ -261,22 +314,22 @@ function clearSearch() { searchInput.value = ""; emit("clearSearch"); }
           <div class="flex-shrink-0 text-[10px] font-mono text-[#64748b] px-1" :style="{ width: SHA_COL + 'px' }">—</div>
         </div>
 
-        <!-- Commit rows -->
+        <!-- Visible commit rows only -->
         <div
-          v-for="(node, idx) in graph.nodes"
-          :key="node.commit.sha"
+          v-for="item in visibleNodes"
+          :key="item.node.commit.sha"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors"
-          :class="selected?.sha === node.commit.sha ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#1a2030]'"
-          :style="{ top: (idx * ROW_HEIGHT + wcOffset) + 'px', height: ROW_HEIGHT + 'px' }"
-          @click="emit('select', node.commit)"
+          :class="selected?.sha === item.node.commit.sha ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#1a2030]'"
+          :style="{ top: (item.idx * ROW_HEIGHT + wcOffset) + 'px', height: ROW_HEIGHT + 'px' }"
+          @click="emit('select', item.node.commit)"
         >
-          <!-- Branch / Tag labels (right-aligned, close to graph) -->
+          <!-- Branch / Tag labels -->
           <div class="flex-shrink-0 flex items-center justify-end gap-0.5 overflow-hidden px-1" :style="{ width: BRANCH_COL + 'px' }">
             <span
-              v-for="label in brefs(node.commit)"
+              v-for="label in brefs(item.node.commit)"
               :key="label"
               class="flex-shrink-0 px-1.5 py-0.5 rounded text-[9px] font-medium truncate max-w-[120px]"
-              :style="{ backgroundColor: node.color + '20', color: node.color, border: '1px solid ' + node.color + '30' }"
+              :style="{ backgroundColor: item.node.color + '20', color: item.node.color, border: '1px solid ' + item.node.color + '30' }"
               :title="label"
             >{{ label }}</span>
           </div>
@@ -285,28 +338,37 @@ function clearSearch() { searchInput.value = ""; emit("clearSearch"); }
           <div class="flex-shrink-0 relative h-full" :style="{ width: graphWidth + 'px' }">
             <div
               class="absolute right-[-10px] top-0 bottom-0 w-5 pointer-events-none"
-              :style="{ background: 'linear-gradient(to right, ' + node.color + '12, transparent)', clipPath: 'polygon(0 25%, 100% 0%, 100% 100%, 0 75%)' }"
+              :style="{ background: 'linear-gradient(to right, ' + item.node.color + '12, transparent)', clipPath: 'polygon(0 25%, 100% 0%, 100% 100%, 0 75%)' }"
             />
           </div>
 
           <!-- Commit message -->
           <div class="flex-1 flex items-center px-3 min-w-0">
-            <span class="text-[12px] text-[#cbd5e1] truncate">{{ node.commit.message.split('\n')[0] }}</span>
+            <span class="text-[12px] text-[#cbd5e1] truncate">{{ item.node.commit.message.split('\n')[0] }}</span>
           </div>
 
           <!-- Author with avatar -->
           <div class="flex-shrink-0 flex items-center gap-1.5 px-1" :style="{ width: AUTHOR_COL + 'px' }">
             <div
               class="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 text-[7px] font-bold text-white"
-              :style="{ backgroundColor: avatarColor(node.commit.author_name) }"
-            >{{ avatarInitials(node.commit.author_name) }}</div>
-            <span class="text-[11px] text-[#64748b] truncate">{{ node.commit.author_name }}</span>
+              :style="{ backgroundColor: avatarColor(item.node.commit.author_name) }"
+            >{{ avatarInitials(item.node.commit.author_name) }}</div>
+            <span class="text-[11px] text-[#64748b] truncate">{{ item.node.commit.author_name }}</span>
           </div>
 
           <!-- SHA -->
           <div class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">
-            <span class="text-[10px] font-mono" :style="{ color: node.color + 'cc' }">{{ node.commit.short_sha }}</span>
+            <span class="text-[10px] font-mono" :style="{ color: item.node.color + 'cc' }">{{ item.node.commit.short_sha }}</span>
           </div>
+        </div>
+
+        <!-- Load more indicator -->
+        <div
+          v-if="hasMore"
+          class="absolute left-0 right-0 flex items-center justify-center text-[10px] text-[#64748b]"
+          :style="{ top: totalH + 'px', height: ROW_HEIGHT + 'px' }"
+        >
+          Loading more commits...
         </div>
       </div>
     </div>

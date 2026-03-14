@@ -6,6 +6,7 @@ use commands::branches::{checkout_branch, create_branch, delete_branch, get_bran
 use commands::clone_init::{clone_repo, init_repo, search_commits};
 use commands::commit_files::get_commit_files;
 use commands::commits::get_commits;
+use commands::credentials::{delete_token, load_token, save_token};
 use commands::operations::{fetch_all, pull, push, run_git_command};
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_list, stash_pop, stash_push};
@@ -43,6 +44,9 @@ pub fn run() {
             get_tags,
             run_git_command,
             discard_file,
+            save_token,
+            load_token,
+            delete_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

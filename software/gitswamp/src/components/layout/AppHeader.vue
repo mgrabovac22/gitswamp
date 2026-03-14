@@ -26,6 +26,7 @@ const emit = defineEmits<{
   branch: [];
   stash: [];
   terminal: [];
+  settings: [];
 }>();
 </script>
 
@@ -103,6 +104,14 @@ const emit = defineEmits<{
       >
         <Terminal class="w-3.5 h-3.5" />
         Terminal
+      </AppButton>
+      <AppButton
+        variant="ghost"
+        size="sm"
+        class="h-8 text-[#e2e8f0] hover:bg-[#252b3d] hover:text-[#a78bfa] gap-1.5 transition-all text-xs"
+        @click="emit('settings')"
+      >
+        <Settings class="w-3.5 h-3.5" />
       </AppButton>
     </div>
   </div>

@@ -7,3 +7,4 @@ pub mod status;
 pub mod clone_init;
 pub mod stash;
 pub mod tags;
+pub mod credentials;

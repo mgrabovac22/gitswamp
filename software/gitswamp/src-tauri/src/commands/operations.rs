@@ -1,18 +1,18 @@
 use crate::services::git_service::GitService;
 
 #[tauri::command]
-pub fn pull(path: String) -> Result<String, String> {
-    GitService::pull(&path)
+pub fn pull(path: String, token: Option<String>) -> Result<String, String> {
+    GitService::pull(&path, token.as_deref())
 }
 
 #[tauri::command]
-pub fn push(path: String) -> Result<String, String> {
-    GitService::push(&path)
+pub fn push(path: String, token: Option<String>) -> Result<String, String> {
+    GitService::push(&path, token.as_deref())
 }
 
 #[tauri::command]
-pub fn fetch_all(path: String) -> Result<String, String> {
-    GitService::fetch_all(&path)
+pub fn fetch_all(path: String, token: Option<String>) -> Result<String, String> {
+    GitService::fetch_all(&path, token.as_deref())
 }
 
 #[tauri::command]
