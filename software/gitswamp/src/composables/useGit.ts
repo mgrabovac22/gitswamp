@@ -67,7 +67,7 @@ function startFileWatcher() {
         // Also refresh commits in case new commits appeared (e.g., from another tool)
         const newCommits = await invoke<CommitInfo[]>("get_commits", {
           path: repoPath.value,
-          maxCount: 500,
+          maxCount: 2000,
         });
         if (newCommits.length !== commits.value.length ||
           (newCommits[0]?.sha !== commits.value[0]?.sha)) {
@@ -105,7 +105,7 @@ async function refreshCommits() {
   try {
     commits.value = await invoke<CommitInfo[]>("get_commits", {
       path: repoPath.value,
-      maxCount: 500,
+      maxCount: 2000,
     });
   } catch (e) {
     error.value = String(e);
@@ -429,7 +429,7 @@ async function searchCommits(query: string) {
     searchResults.value = await invoke<CommitInfo[]>("search_commits", {
       path: repoPath.value,
       query,
-      maxCount: 500,
+      maxCount: 2000,
     });
   } catch (e) {
     error.value = String(e);
@@ -453,6 +453,28 @@ async function runTerminalCommand(command: string) {
     terminalOutput.value.push(`$ git ${args.join(" ")}\n${result || "(done)"}`);
   } catch (e) {
     terminalOutput.value.push(`$ git ${args.join(" ")}\nError: ${e}`);
+  }
+}
+
+async function discardFile(filePath: string) {
+  if (!repoPath.value) return;
+  try {
+    await invoke("discard_file", { path: repoPath.value, filePath });
+    await refreshStatus();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function discardAll() {
+  if (!repoPath.value) return;
+  try {
+    for (const f of unstagedFiles.value) {
+      await invoke("discard_file", { path: repoPath.value, filePath: f.path });
+    }
+    await refreshStatus();
+  } catch (e) {
+    error.value = String(e);
   }
 }
 
@@ -506,6 +528,8 @@ export function useGit() {
     searchCommits,
     clearSearch,
     runTerminalCommand,
+    discardFile,
+    discardAll,
     startFileWatcher,
     stopFileWatcher,
   };

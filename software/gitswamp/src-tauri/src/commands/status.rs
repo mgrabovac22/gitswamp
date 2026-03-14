@@ -20,3 +20,8 @@ pub fn unstage_file(path: String, file_path: String) -> Result<(), String> {
 pub fn create_commit(path: String, message: String) -> Result<String, String> {
     GitService::create_commit(&path, &message)
 }
+
+#[tauri::command]
+pub fn discard_file(path: String, file_path: String) -> Result<(), String> {
+    GitService::discard_file(&path, &file_path)
+}

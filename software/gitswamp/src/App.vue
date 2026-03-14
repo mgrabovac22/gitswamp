@@ -300,6 +300,8 @@ const openReposList = computed(() =>
               @stage-all="git.stageAll()"
               @unstage-all="git.unstageAll()"
               @commit="git.commitChanges($event)"
+              @discard="git.discardFile($event)"
+              @discard-all="git.discardAll()"
             />
           </div>
           <!-- Terminal panel (25% height) -->

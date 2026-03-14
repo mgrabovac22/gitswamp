@@ -9,7 +9,7 @@ use commands::commits::get_commits;
 use commands::operations::{fetch_all, pull, push, run_git_command};
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_list, stash_pop, stash_push};
-use commands::status::{create_commit, get_status, stage_file, unstage_file};
+use commands::status::{create_commit, discard_file, get_status, stage_file, unstage_file};
 use commands::tags::get_tags;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,6 +42,7 @@ pub fn run() {
             stash_drop,
             get_tags,
             run_git_command,
+            discard_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -257,7 +257,14 @@ impl GitService {
     }
 
     pub fn push(path: &str) -> Result<String, String> {
-        Self::git_cli(path, &["push"])
+        let result = Self::git_cli(path, &["push"]);
+        if result.is_ok() {
+            return result;
+        }
+        // Fallback: set upstream if not configured
+        let branch = Self::git_cli(path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .unwrap_or_else(|_| "main".to_string());
+        Self::git_cli(path, &["push", "-u", "origin", branch.trim()])
     }
 
     pub fn fetch_all(path: &str) -> Result<String, String> {
@@ -485,26 +492,42 @@ impl GitService {
     }
 
     pub fn stash_list(path: &str) -> Result<Vec<StashInfo>, String> {
-        let output = Self::git_cli(path, &["stash", "list", "--format=%gd|%s|%gs"])?;
+        let output = Self::git_cli(path, &["stash", "list"])?;
         if output.is_empty() {
             return Ok(Vec::new());
         }
         let mut stashes = Vec::new();
-        for (i, line) in output.lines().enumerate() {
-            let parts: Vec<&str> = line.splitn(3, '|').collect();
-            let message = parts.get(2).unwrap_or(&"").to_string();
-            let branch = parts
-                .get(1)
-                .unwrap_or(&"")
-                .trim()
-                .trim_start_matches("WIP on ")
-                .trim_start_matches("On ")
-                .split(':')
-                .next()
-                .unwrap_or("")
-                .to_string();
+        for line in output.lines() {
+            // Format: stash@{N}: WIP on branch: sha message
+            // or: stash@{N}: On branch: message
+            let idx_end = match line.find("}: ") {
+                Some(pos) => pos,
+                None => continue,
+            };
+            let index = line
+                .get(7..idx_end)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(stashes.len());
+
+            let rest = line.get(idx_end + 3..).unwrap_or("");
+            let (branch, message) = if let Some(after) = rest
+                .strip_prefix("WIP on ")
+                .or_else(|| rest.strip_prefix("On "))
+            {
+                if let Some(colon_pos) = after.find(": ") {
+                    (
+                        after[..colon_pos].to_string(),
+                        after[colon_pos + 2..].to_string(),
+                    )
+                } else {
+                    (String::new(), rest.to_string())
+                }
+            } else {
+                (String::new(), rest.to_string())
+            };
+
             stashes.push(StashInfo {
-                index: i,
+                index,
                 message,
                 branch,
                 timestamp: String::new(),
@@ -561,5 +584,16 @@ impl GitService {
 
     pub fn run_git_command(path: &str, args: &[&str]) -> Result<String, String> {
         Self::git_cli(path, args)
+    }
+
+    pub fn discard_file(path: &str, file_path: &str) -> Result<(), String> {
+        // Try checkout for tracked modified files
+        let result = Self::git_cli(path, &["checkout", "--", file_path]);
+        if result.is_ok() {
+            return Ok(());
+        }
+        // For untracked files, remove them
+        Self::git_cli(path, &["clean", "-f", "--", file_path])?;
+        Ok(())
     }
 }

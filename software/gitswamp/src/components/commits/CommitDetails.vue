@@ -11,9 +11,9 @@ import {
   Copy,
   Plus,
   Minus,
+  Trash2,
 } from "lucide-vue-next";
 import AppButton from "@/components/ui/AppButton.vue";
-import FileItem from "./FileItem.vue";
 import GitCommitIcon from "@/components/ui/GitCommitIcon.vue";
 import type { CommitInfo, FileStatusInfo, CommitFileInfo } from "@/types";
 
@@ -31,6 +31,8 @@ const emit = defineEmits<{
   stageAll: [];
   unstageAll: [];
   commit: [message: string];
+  discard: [path: string];
+  discardAll: [];
 }>();
 
 const commitSummary = ref("");
@@ -156,6 +158,55 @@ function copyToClipboard(text: string) {
     <!-- Changes tab for working directory (uncommitted) -->
     <div v-show="activeTab === 'changes' && isWorkingChanges" class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto">
+        <!-- Unstaged (shown first) -->
+        <div v-if="unstagedFiles.length > 0" class="border-b border-[#8b5cf6]/10">
+          <div class="flex items-center justify-between px-3 py-2 bg-[#151d28]">
+            <button
+              @click="expandedUnstaged = !expandedUnstaged"
+              class="flex items-center gap-2 text-xs text-[#e2e8f0] hover:text-[#a78bfa] transition-all flex-1"
+            >
+              <ChevronDown
+                :class="['w-3.5 h-3.5 transition-transform', !expandedUnstaged ? '-rotate-90' : '']"
+              />
+              <span class="font-medium">Unstaged</span>
+              <span class="text-[10px] bg-[#1e293b] text-[#64748b] px-1.5 py-0.5 rounded-full">{{ unstagedFiles.length }}</span>
+            </button>
+            <div class="flex items-center gap-1">
+              <button
+                @click="emit('discardAll')"
+                class="text-[10px] text-[#ef4444]/70 hover:text-[#ef4444] transition-colors px-1.5 py-0.5 rounded hover:bg-[#ef4444]/10"
+                title="Discard all changes"
+              >
+                Discard All
+              </button>
+              <button
+                @click="emit('stageAll')"
+                class="text-[10px] text-[#64748b] hover:text-[#e2e8f0] transition-colors px-1.5 py-0.5 rounded hover:bg-[#1e293b]"
+              >
+                Stage All
+              </button>
+            </div>
+          </div>
+          <div v-if="expandedUnstaged">
+            <div
+              v-for="f in unstagedFiles"
+              :key="'u-' + f.path"
+              class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#182028] transition-all group cursor-pointer"
+            >
+              <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
+              <span class="text-xs text-[#e0eaf2] truncate flex-1" @click="emit('stage', f.path)">{{ f.path }}</span>
+              <button
+                @click.stop="emit('discard', f.path)"
+                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all"
+                title="Discard changes"
+              >
+                <Trash2 class="w-3 h-3 text-[#64748b] hover:text-[#ef4444]" />
+              </button>
+              <Plus class="w-3 h-3 text-[#64748b] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" @click="emit('stage', f.path)" />
+            </div>
+          </div>
+        </div>
+
         <!-- Staged -->
         <div v-if="stagedFiles.length > 0" class="border-b border-[#8b5cf6]/10">
           <div class="flex items-center justify-between px-3 py-2 bg-[#151d28]">
@@ -186,40 +237,6 @@ function copyToClipboard(text: string) {
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
               <span class="text-xs text-[#e0eaf2] truncate flex-1">{{ f.path }}</span>
               <Minus class="w-3 h-3 text-[#64748b] opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
-          </div>
-        </div>
-
-        <!-- Unstaged -->
-        <div v-if="unstagedFiles.length > 0">
-          <div class="flex items-center justify-between px-3 py-2 bg-[#151d28]">
-            <button
-              @click="expandedUnstaged = !expandedUnstaged"
-              class="flex items-center gap-2 text-xs text-[#e2e8f0] hover:text-[#a78bfa] transition-all flex-1"
-            >
-              <ChevronDown
-                :class="['w-3.5 h-3.5 transition-transform', !expandedUnstaged ? '-rotate-90' : '']"
-              />
-              <span class="font-medium">Unstaged</span>
-              <span class="text-[10px] bg-[#1e293b] text-[#64748b] px-1.5 py-0.5 rounded-full">{{ unstagedFiles.length }}</span>
-            </button>
-            <button
-              @click="emit('stageAll')"
-              class="text-[10px] text-[#64748b] hover:text-[#e2e8f0] transition-colors px-1.5 py-0.5 rounded hover:bg-[#1e293b]"
-            >
-              Stage All
-            </button>
-          </div>
-          <div v-if="expandedUnstaged">
-            <div
-              v-for="f in unstagedFiles"
-              :key="'u-' + f.path"
-              class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#182028] transition-all group cursor-pointer"
-              @click="emit('stage', f.path)"
-            >
-              <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <span class="text-xs text-[#e0eaf2] truncate flex-1">{{ f.path }}</span>
-              <Plus class="w-3 h-3 text-[#64748b] opacity-0 group-hover:opacity-100 transition-opacity" />
             </div>
           </div>
         </div>
