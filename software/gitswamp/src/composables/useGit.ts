@@ -473,7 +473,8 @@ async function cloneRepo(url: string, path: string, shallow: boolean = false) {
   try {
     loading.value = true;
     error.value = null;
-    await invoke<string>("clone_repo", { url, path, shallow });
+    const t = getTokenParam();
+    await invoke<string>("clone_repo", { url, path, shallow, token: t });
     return true;
   } catch (e) {
     error.value = String(e);

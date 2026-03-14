@@ -1,8 +1,8 @@
 use crate::services::git_service::GitService;
 
 #[tauri::command]
-pub fn clone_repo(url: String, path: String, shallow: bool) -> Result<String, String> {
-    GitService::clone_repo(&url, &path, shallow)
+pub fn clone_repo(url: String, path: String, shallow: bool, token: Option<String>) -> Result<String, String> {
+    GitService::clone_repo(&url, &path, shallow, token.as_deref())
 }
 
 #[tauri::command]

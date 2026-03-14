@@ -9,11 +9,10 @@ const BRANCH_COL = 140;
 const AUTHOR_COL = 140;
 const SHA_COL = 75;
 const OVERSCAN = 15;
-const CORNER_R = 6;
 const COLORS = [
-  "#8b5cf6", "#06b6d4", "#f59e0b", "#ef4444", "#10b981",
-  "#ec4899", "#f97316", "#14b8a6", "#a855f7", "#22d3ee",
-  "#84cc16", "#e879f9", "#fb923c", "#2dd4bf",
+  "#7c6fc4", "#4da8b8", "#c49340", "#c46060", "#5aab8a",
+  "#b86e9a", "#c48050", "#4da89a", "#9070c4", "#50b0c0",
+  "#7aaa50", "#b870c4", "#c48a60", "#50a8a0",
 ];
 
 const props = defineProps<{
@@ -66,43 +65,70 @@ function avatarColor(name: string): string {
   return COLORS[nameHash(name) % COLORS.length];
 }
 
-// SVG avatar: solid filled with a drawn face
-function avatarSvg(name: string, cx: number, cy: number, r: number): string {
+// SVG avatar: solid filled node with drawn face, border matches branch color
+function avatarSvg(name: string, cx: number, cy: number, r: number, branchColor?: string): string {
   const h = nameHash(name);
-  const c = avatarColor(name);
-  const eyeY = cy - r * 0.12;
-  const eyeSpread = r * 0.3;
-  const mouthY = cy + r * 0.32;
-  const eyeR = r * 0.1 + (h % 3) * 0.03;
+  const ac = avatarColor(name);
+  const bc = branchColor || ac;
+  const eyeY = cy - r * 0.1;
+  const eyeSpread = r * 0.28;
+  const mouthY = cy + r * 0.3;
+  const eyeR = r * 0.09 + (h % 3) * 0.025;
+  const pupilR = eyeR * 0.55;
+  // Nose
+  const nose = '<line x1="' + cx + '" y1="' + (cy + r * 0.02) + '" x2="' + cx + '" y2="' + (cy + r * 0.16) + '" stroke="#fff" stroke-width="0.6" opacity="0.35" stroke-linecap="round"/>';
   // hair variations
-  const hairType = h % 5;
+  const hairType = h % 6;
   let hair = "";
   if (hairType === 0) {
-    hair = '<path d="M ' + (cx - r * 0.5) + ' ' + (cy - r * 0.65) + ' Q ' + cx + ' ' + (cy - r * 1.3) + ' ' + (cx + r * 0.5) + ' ' + (cy - r * 0.65) + '" stroke="#e2e8f0" stroke-width="1.2" fill="none" opacity="0.5"/>';
+    // Spiky top hair
+    hair = '<path d="M ' + (cx - r * 0.45) + ' ' + (cy - r * 0.6) + ' Q ' + (cx - r * 0.15) + ' ' + (cy - r * 1.2) + ' ' + cx + ' ' + (cy - r * 0.7) + ' Q ' + (cx + r * 0.15) + ' ' + (cy - r * 1.2) + ' ' + (cx + r * 0.45) + ' ' + (cy - r * 0.6) + '" stroke="#e2e8f0" stroke-width="1" fill="none" opacity="0.45"/>';
   } else if (hairType === 1) {
-    hair = '<line x1="' + (cx - r * 0.6) + '" y1="' + (cy - r * 0.35) + '" x2="' + (cx - r * 0.9) + '" y2="' + (cy - r * 0.65) + '" stroke="#e2e8f0" stroke-width="1" opacity="0.4"/>'
-         + '<line x1="' + (cx + r * 0.6) + '" y1="' + (cy - r * 0.35) + '" x2="' + (cx + r * 0.9) + '" y2="' + (cy - r * 0.65) + '" stroke="#e2e8f0" stroke-width="1" opacity="0.4"/>';
+    // Side tufts
+    hair = '<line x1="' + (cx - r * 0.55) + '" y1="' + (cy - r * 0.3) + '" x2="' + (cx - r * 0.85) + '" y2="' + (cy - r * 0.6) + '" stroke="#e2e8f0" stroke-width="1" opacity="0.35"/>'
+         + '<line x1="' + (cx + r * 0.55) + '" y1="' + (cy - r * 0.3) + '" x2="' + (cx + r * 0.85) + '" y2="' + (cy - r * 0.6) + '" stroke="#e2e8f0" stroke-width="1" opacity="0.35"/>';
   } else if (hairType === 2) {
-    hair = '<rect x="' + (cx - r * 0.55) + '" y="' + (cy - r * 0.9) + '" width="' + (r * 1.1) + '" height="' + (r * 0.28) + '" rx="1.5" fill="#e2e8f0" opacity="0.3"/>';
+    // Flat top / hat
+    hair = '<rect x="' + (cx - r * 0.5) + '" y="' + (cy - r * 0.85) + '" width="' + (r * 1.0) + '" height="' + (r * 0.22) + '" rx="1.5" fill="#e2e8f0" opacity="0.25"/>';
   } else if (hairType === 3) {
-    hair = '<line x1="' + cx + '" y1="' + (cy - r * 0.75) + '" x2="' + cx + '" y2="' + (cy - r * 1.15) + '" stroke="#e2e8f0" stroke-width="1.8" stroke-linecap="round" opacity="0.4"/>';
+    // Mohawk
+    hair = '<line x1="' + cx + '" y1="' + (cy - r * 0.7) + '" x2="' + cx + '" y2="' + (cy - r * 1.1) + '" stroke="#e2e8f0" stroke-width="1.5" stroke-linecap="round" opacity="0.35"/>';
+  } else if (hairType === 4) {
+    // Curly top
+    hair = '<circle cx="' + (cx - r * 0.2) + '" cy="' + (cy - r * 0.75) + '" r="' + (r * 0.15) + '" fill="none" stroke="#e2e8f0" stroke-width="0.8" opacity="0.3"/>'
+         + '<circle cx="' + (cx + r * 0.2) + '" cy="' + (cy - r * 0.8) + '" r="' + (r * 0.13) + '" fill="none" stroke="#e2e8f0" stroke-width="0.8" opacity="0.3"/>';
+  }
+  // Eyebrow variations
+  const browType = (h >> 2) % 3;
+  let brows = "";
+  if (browType === 0) {
+    brows = '<line x1="' + (cx - eyeSpread - eyeR) + '" y1="' + (eyeY - r * 0.14) + '" x2="' + (cx - eyeSpread + eyeR) + '" y2="' + (eyeY - r * 0.16) + '" stroke="#fff" stroke-width="0.6" opacity="0.3"/>'
+          + '<line x1="' + (cx + eyeSpread - eyeR) + '" y1="' + (eyeY - r * 0.16) + '" x2="' + (cx + eyeSpread + eyeR) + '" y2="' + (eyeY - r * 0.14) + '" stroke="#fff" stroke-width="0.6" opacity="0.3"/>';
+  } else if (browType === 1) {
+    brows = '<line x1="' + (cx - eyeSpread - eyeR) + '" y1="' + (eyeY - r * 0.16) + '" x2="' + (cx - eyeSpread + eyeR) + '" y2="' + (eyeY - r * 0.13) + '" stroke="#fff" stroke-width="0.6" opacity="0.3"/>'
+          + '<line x1="' + (cx + eyeSpread - eyeR) + '" y1="' + (eyeY - r * 0.13) + '" x2="' + (cx + eyeSpread + eyeR) + '" y2="' + (eyeY - r * 0.16) + '" stroke="#fff" stroke-width="0.6" opacity="0.3"/>';
   }
   // mouth variations
-  const mouthType = (h >> 4) % 3;
+  const mouthType = (h >> 4) % 4;
   let mouth = "";
   if (mouthType === 0) {
-    mouth = '<line x1="' + (cx - r * 0.18) + '" y1="' + mouthY + '" x2="' + (cx + r * 0.18) + '" y2="' + mouthY + '" stroke="#fff" stroke-width="0.7" stroke-linecap="round" opacity="0.7"/>';
+    mouth = '<line x1="' + (cx - r * 0.16) + '" y1="' + mouthY + '" x2="' + (cx + r * 0.16) + '" y2="' + mouthY + '" stroke="#fff" stroke-width="0.6" stroke-linecap="round" opacity="0.6"/>';
   } else if (mouthType === 1) {
-    mouth = '<path d="M ' + (cx - r * 0.18) + ' ' + mouthY + ' Q ' + cx + ' ' + (mouthY + r * 0.18) + ' ' + (cx + r * 0.18) + ' ' + mouthY + '" stroke="#fff" stroke-width="0.7" fill="none" opacity="0.7"/>';
+    mouth = '<path d="M ' + (cx - r * 0.16) + ' ' + mouthY + ' Q ' + cx + ' ' + (mouthY + r * 0.15) + ' ' + (cx + r * 0.16) + ' ' + mouthY + '" stroke="#fff" stroke-width="0.6" fill="none" opacity="0.6"/>';
+  } else if (mouthType === 2) {
+    mouth = '<path d="M ' + (cx - r * 0.16) + ' ' + (mouthY + r * 0.06) + ' Q ' + cx + ' ' + (mouthY - r * 0.08) + ' ' + (cx + r * 0.16) + ' ' + (mouthY + r * 0.06) + '" stroke="#fff" stroke-width="0.6" fill="none" opacity="0.5"/>';
   } else {
-    mouth = '<circle cx="' + cx + '" cy="' + (mouthY + r * 0.04) + '" r="' + (r * 0.09) + '" fill="#fff" opacity="0.5"/>';
+    mouth = '<circle cx="' + cx + '" cy="' + (mouthY + r * 0.03) + '" r="' + (r * 0.08) + '" fill="#fff" opacity="0.4"/>';
   }
-  // Solid dark background to cover graph lines, then filled colored circle
-  return '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 1) + '" fill="#111520"/>'
-    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + c + '"/>'
-    + '<circle cx="' + (cx - eyeSpread) + '" cy="' + eyeY + '" r="' + eyeR + '" fill="#fff" opacity="0.9"/>'
-    + '<circle cx="' + (cx + eyeSpread) + '" cy="' + eyeY + '" r="' + eyeR + '" fill="#fff" opacity="0.9"/>'
-    + mouth + hair;
+  // Solid dark background covers graph lines; softer fill; branch-colored border
+  return '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 2) + '" fill="#111520"/>'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + ac + '" opacity="0.6"/>'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + bc + '" stroke-width="1.8" opacity="0.85"/>'
+    + '<circle cx="' + (cx - eyeSpread) + '" cy="' + eyeY + '" r="' + eyeR + '" fill="#e8ecf0" opacity="0.85"/>'
+    + '<circle cx="' + (cx + eyeSpread) + '" cy="' + eyeY + '" r="' + eyeR + '" fill="#e8ecf0" opacity="0.85"/>'
+    + '<circle cx="' + (cx - eyeSpread + pupilR * 0.3) + '" cy="' + (eyeY + pupilR * 0.2) + '" r="' + pupilR + '" fill="#334155" opacity="0.8"/>'
+    + '<circle cx="' + (cx + eyeSpread + pupilR * 0.3) + '" cy="' + (eyeY + pupilR * 0.2) + '" r="' + pupilR + '" fill="#334155" opacity="0.8"/>'
+    + brows + nose + mouth + hair;
 }
 
 // Lane compaction: reuse lanes for non-overlapping branches
@@ -259,9 +285,18 @@ function ep(e: GraphEdge): string {
   const x1 = lx(e.fromLane), y1 = ry(e.fromIndex);
   const x2 = lx(e.toLane), y2 = ry(e.toIndex);
   if (e.fromLane === e.toLane) return 'M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2;
-  const r = Math.min(CORNER_R, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 4);
+  const dx = Math.abs(x2 - x1);
+  const dy = y2 - y1;
   const d = x2 > x1 ? 1 : -1;
-  const turnY = y1 + ROW_HEIGHT * 0.5;
+  // For short distances (1-2 rows), use a smooth cubic bezier
+  if (dy <= ROW_HEIGHT * 2.5) {
+    const cp1y = y1 + dy * 0.4;
+    const cp2y = y1 + dy * 0.6;
+    return 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + cp1y + ' ' + x2 + ' ' + cp2y + ' ' + x2 + ' ' + y2;
+  }
+  // For longer distances: vertical → small corner → horizontal → small corner → vertical
+  const r = Math.min(4, dx / 2, ROW_HEIGHT / 3);
+  const turnY = y1 + ROW_HEIGHT * 0.7;
   return 'M ' + x1 + ' ' + y1
     + ' L ' + x1 + ' ' + (turnY - r)
     + ' Q ' + x1 + ' ' + turnY + ' ' + (x1 + d * r) + ' ' + turnY
@@ -440,7 +475,7 @@ onUnmounted(() => {
           <g
             v-for="item in visibleNodes"
             :key="'n' + item.node.commit.sha"
-            v-html="avatarSvg(item.node.commit.author_name, lx(item.node.lane), ry(item.idx), NODE_RADIUS)"
+            v-html="avatarSvg(item.node.commit.author_name, lx(item.node.lane), ry(item.idx), NODE_RADIUS, item.node.color)"
             class="node-pop"
           />
         </svg>
@@ -514,16 +549,17 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- Graph column + gradient glow extending to message area -->
-          <div class="flex-shrink-0 relative h-full overflow-visible" :style="{ width: graphWidth + 'px' }">
-            <!-- Gradient: subtle left of node, intense right of node, semi-circle end -->
+          <!-- Graph column with gradient glow (contained within) -->
+          <div class="flex-shrink-0 relative h-full overflow-hidden" :style="{ width: graphWidth + 'px' }">
+            <!-- Gradient: from node position rightward, ends at graph column edge -->
             <div
               class="absolute top-0 bottom-0 pointer-events-none"
               :style="{
-                left: '0px',
-                right: '-100%',
-                background: 'linear-gradient(to right, transparent 0%, ' + item.node.color + '06 ' + (lx(item.node.lane) - 8) + 'px, ' + item.node.color + '15 ' + lx(item.node.lane) + 'px, ' + item.node.color + '30 100%)',
-                clipPath: 'ellipse(100% 42% at 100% 50%)'
+                left: Math.max(0, lx(item.node.lane) - 4) + 'px',
+                right: '0px',
+                background: 'linear-gradient(to right, ' + item.node.color + '06 0%, ' + item.node.color + '15 40%, ' + item.node.color + '30 85%, ' + item.node.color + '50 100%)',
+                clipPath: 'ellipse(110% 45% at 100% 50%)',
+                borderRight: '2px solid ' + item.node.color + '25'
               }"
             />
           </div>
@@ -535,7 +571,7 @@ onUnmounted(() => {
 
           <!-- Author -->
           <div class="flex-shrink-0 flex items-center gap-1 px-1" :style="{ width: AUTHOR_COL + 'px' }">
-            <svg class="flex-shrink-0" :width="14" :height="14" viewBox="0 0 14 14" v-html="avatarSvg(item.node.commit.author_name, 7, 7, 6)" />
+            <svg class="flex-shrink-0" :width="14" :height="14" viewBox="0 0 14 14" v-html="avatarSvg(item.node.commit.author_name, 7, 7, 6, item.node.color)" />
             <span class="text-[10px] text-[#64748b] truncate">{{ item.node.commit.author_name }}</span>
           </div>
 
@@ -610,29 +646,27 @@ onUnmounted(() => {
 }
 /* Edge draw animation */
 .edge-draw {
-  stroke-dasharray: 500;
-  stroke-dashoffset: 500;
-  animation: drawEdge 0.6s ease-out forwards;
+  stroke-dasharray: 800;
+  stroke-dashoffset: 800;
+  animation: drawEdge 0.35s ease-out forwards;
 }
 @keyframes drawEdge {
   to { stroke-dashoffset: 0; }
 }
 /* Node pop-in animation */
 .node-pop {
-  transform-origin: center;
-  animation: popIn 0.3s ease-out forwards;
+  animation: popIn 0.2s ease-out forwards;
 }
 @keyframes popIn {
-  0% { opacity: 0; transform: scale(0.3); }
-  70% { transform: scale(1.08); }
-  100% { opacity: 1; transform: scale(1); }
+  0% { opacity: 0; }
+  100% { opacity: 1; }
 }
 /* Row fade-in */
 .graph-row {
-  animation: rowFade 0.25s ease-out;
+  animation: rowFade 0.15s ease-out;
 }
 @keyframes rowFade {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 </style>

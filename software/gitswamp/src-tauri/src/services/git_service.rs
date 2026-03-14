@@ -14,6 +14,7 @@ static GIT_PATH: OnceLock<String> = OnceLock::new();
 static FULL_PATH: OnceLock<String> = OnceLock::new();
 
 /// Expand all %VAR% references in a string using environment variables
+#[allow(dead_code)]
 fn expand_env_vars(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let chars: Vec<char> = input.chars().collect();
@@ -39,6 +40,7 @@ fn expand_env_vars(input: &str) -> String {
 }
 
 /// Extract PATH dirs from a registry query line
+#[allow(dead_code)]
 fn extract_reg_paths(text: &str, paths: &mut Vec<String>) {
     for line in text.lines() {
         let val = line.split("REG_EXPAND_SZ").nth(1)
@@ -308,29 +310,10 @@ fn git_executable() -> &'static str {
     GIT_PATH.get_or_init(find_git)
 }
 
-/// Central function to run git commands. Sets the full system PATH so git can be found.
-fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
-    let exe = git_executable();
-    let full_path = get_full_path();
-
-    // If exe is just "git" (fallback), try to find it in the full PATH
-    let resolved_exe = if exe == "git" || exe == "git.exe" {
-        let mut found = exe.to_string();
-        for dir in full_path.split(';') {
-            let dir = dir.trim();
-            if dir.is_empty() { continue; }
-            let candidate = Path::new(dir).join("git.exe");
-            if candidate.exists() {
-                found = candidate.to_string_lossy().to_string();
-                break;
-            }
-        }
-        found
-    } else {
-        exe.to_string()
-    };
-
-    let mut cmd = std::process::Command::new(&resolved_exe);
+/// Try executing git with given executable path, returning output or error
+#[allow(unused_variables)]
+fn try_git_exec(exe: &str, cwd: Option<&str>, args: &[&str], path_env: &str) -> Result<std::process::Output, std::io::Error> {
+    let mut cmd = std::process::Command::new(exe);
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
@@ -339,17 +322,104 @@ fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
     #[cfg(windows)]
     {
         cmd.creation_flags(0x08000000);
+        cmd.env("PATH", path_env);
+    }
+    cmd.output()
+}
+
+/// Hardcoded common git locations as last resort
+const COMMON_GIT_PATHS: &[&str] = &[
+    r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files\Git\bin\git.exe",
+    r"C:\Program Files\Git\mingw64\bin\git.exe",
+    r"C:\Program Files (x86)\Git\cmd\git.exe",
+    r"C:\Program Files (x86)\Git\bin\git.exe",
+];
+
+/// Central function to run git commands with multiple fallback strategies.
+fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
+    let primary = git_executable();
+    let full_path = get_full_path();
+
+    // Strategy 1: Use the detected git executable
+    if let Ok(output) = try_git_exec(primary, cwd, args, full_path) {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Ok(format!("{}{}", stdout, stderr).trim().to_string());
+        } else {
+            // Git ran but returned an error — that's a real git error, return it
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let msg = if !stderr.is_empty() { stderr } else { stdout };
+            if !msg.is_empty() {
+                return Err(msg);
+            }
+        }
+    }
+
+    // Strategy 2: Search full PATH for git.exe directly
+    for dir in full_path.split(';') {
+        let dir = dir.trim();
+        if dir.is_empty() { continue; }
+        let candidate = Path::new(dir).join("git.exe");
+        if candidate.exists() {
+            let exe_str = candidate.to_string_lossy().to_string();
+            if exe_str != primary {
+                if let Ok(output) = try_git_exec(&exe_str, cwd, args, full_path) {
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Ok(format!("{}{}", stdout, stderr).trim().to_string());
+                    } else {
+                        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 3: Hardcoded common git locations
+    for fallback in COMMON_GIT_PATHS {
+        if Path::new(fallback).exists() {
+            if let Ok(output) = try_git_exec(fallback, cwd, args, full_path) {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Ok(format!("{}{}", stdout, stderr).trim().to_string());
+                } else {
+                    return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                }
+            }
+        }
+    }
+
+    // Strategy 4: Use cmd.exe /c git (cmd.exe has its own PATH resolution)
+    #[cfg(windows)]
+    {
+        let mut cmd_args = vec!["/c", "git"];
+        cmd_args.extend_from_slice(args);
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.args(&cmd_args);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd.env("PATH", full_path);
+        cmd.creation_flags(0x08000000);
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Ok(format!("{}{}", stdout, stderr).trim().to_string());
+            } else {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            }
+        }
     }
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to run git: {}", e))?;
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(format!("{}{}", stdout, stderr).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+
+    Err(format!("Git not found. Detected path: '{}'. Searched {} PATH dirs and {} common locations.",
+        primary, full_path.split(';').count(), COMMON_GIT_PATHS.len()))
 }
 
 pub struct GitService;
@@ -360,7 +430,10 @@ impl GitService {
     }
 
     pub fn get_git_path() -> String {
-        git_executable().to_string()
+        let exe = git_executable();
+        let full = get_full_path();
+        let path_count = full.split(';').filter(|s| !s.trim().is_empty()).count();
+        format!("{} (PATH has {} dirs)", exe, path_count)
     }
 
     pub fn repo_info(path: &str) -> Result<RepoInfo, String> {
@@ -634,11 +707,27 @@ impl GitService {
         let branch = Self::git_cli(path, &["rev-parse", "--abbrev-ref", "HEAD"])
             .unwrap_or_else(|_| "main".to_string());
         let branch = branch.trim();
-        // First try without token to set upstream
-        let _ = Self::git_cli(path, &["push", "--set-upstream", "origin", branch]);
-        // Then push with token if available
         if let Some(t) = token {
-            Self::git_cli_with_token(path, &["push"], t)
+            // Manually construct URL push with -u flag
+            let remote_url = Self::git_cli(path, &["remote", "get-url", "origin"]).ok();
+            if let Some(ref raw_url) = remote_url {
+                let url = raw_url.trim();
+                if url.starts_with("https://") {
+                    let host_and_path = if url.contains('@') {
+                        let after_proto = &url[8..];
+                        if let Some(at_pos) = after_proto.find('@') {
+                            &after_proto[at_pos + 1..]
+                        } else {
+                            after_proto
+                        }
+                    } else {
+                        &url[8..]
+                    };
+                    let authed_url = format!("https://x-access-token:{}@{}", t, host_and_path);
+                    return run_git_cmd(Some(path), &["push", "-u", &authed_url, branch]);
+                }
+            }
+            Self::git_cli(path, &["push", "-u", "origin", branch])
         } else {
             Self::git_cli(path, &["push", "-u", "origin", branch])
         }
@@ -780,11 +869,31 @@ impl GitService {
         Self::git_cli(path, &["tag", name, sha])
     }
 
-    pub fn clone_repo(url: &str, path: &str, shallow: bool) -> Result<String, String> {
-        if shallow {
-            Self::git_cli_global(&["clone", "--depth", "1", url, path])
+    pub fn clone_repo(url: &str, path: &str, shallow: bool, token: Option<&str>) -> Result<String, String> {
+        // Inject token into HTTPS URL if provided
+        let clone_url = if let Some(t) = token {
+            if url.starts_with("https://") {
+                let host_part = if url.contains('@') {
+                    let after_proto = &url[8..];
+                    if let Some(at_pos) = after_proto.find('@') {
+                        &after_proto[at_pos + 1..]
+                    } else {
+                        after_proto
+                    }
+                } else {
+                    &url[8..]
+                };
+                format!("https://x-access-token:{}@{}", t, host_part)
+            } else {
+                url.to_string()
+            }
         } else {
-            Self::git_cli_global(&["clone", url, path])
+            url.to_string()
+        };
+        if shallow {
+            Self::git_cli_global(&["clone", "--depth", "1", &clone_url, path])
+        } else {
+            Self::git_cli_global(&["clone", &clone_url, path])
         }
     }
 
