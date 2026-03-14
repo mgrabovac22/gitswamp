@@ -11,9 +11,95 @@ use git2::{BranchType, Repository, Sort, StatusOptions};
 use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, GithubRepo, RepoInfo, StashInfo, TagInfo};
 
 static GIT_PATH: OnceLock<String> = OnceLock::new();
+static FULL_PATH: OnceLock<String> = OnceLock::new();
+
+/// Expand all %VAR% references in a string using environment variables
+fn expand_env_vars(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        if chars[i] == '%' && i + 1 < len {
+            if let Some(end_offset) = chars[i + 1..].iter().position(|&c| c == '%') {
+                let var_name: String = chars[i + 1..i + 1 + end_offset].iter().collect();
+                if !var_name.is_empty() {
+                    if let Ok(val) = std::env::var(&var_name) {
+                        result.push_str(&val);
+                    }
+                    i = i + 1 + end_offset + 1;
+                    continue;
+                }
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+/// Extract PATH dirs from a registry query line
+fn extract_reg_paths(text: &str, paths: &mut Vec<String>) {
+    for line in text.lines() {
+        let val = line.split("REG_EXPAND_SZ").nth(1)
+            .or_else(|| line.split("REG_SZ").nth(1));
+        if let Some(path_str) = val {
+            for dir in path_str.trim().split(';') {
+                let expanded = expand_env_vars(dir.trim());
+                if !expanded.is_empty() && !paths.iter().any(|p| p.eq_ignore_ascii_case(&expanded)) {
+                    paths.push(expanded);
+                }
+            }
+        }
+    }
+}
+
+/// Build the full system + user PATH by reading from the Windows registry.
+fn get_full_path() -> &'static str {
+    FULL_PATH.get_or_init(|| {
+        let mut paths: Vec<String> = Vec::new();
+
+        // Start with current process PATH
+        if let Ok(current) = std::env::var("PATH") {
+            for dir in current.split(';') {
+                let d = dir.trim().to_string();
+                if !d.is_empty() {
+                    paths.push(d);
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            // System PATH from registry
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(&["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "/v", "Path"])
+                .creation_flags(0x08000000)
+                .output()
+            {
+                if output.status.success() {
+                    extract_reg_paths(&String::from_utf8_lossy(&output.stdout), &mut paths);
+                }
+            }
+
+            // User PATH from registry
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(&["query", r"HKCU\Environment", "/v", "Path"])
+                .creation_flags(0x08000000)
+                .output()
+            {
+                if output.status.success() {
+                    extract_reg_paths(&String::from_utf8_lossy(&output.stdout), &mut paths);
+                }
+            }
+        }
+
+        paths.join(";")
+    })
+}
 
 fn find_git() -> String {
-    // 1. Search PATH environment variable manually
+    // 1. Search current PATH environment variable
     if let Ok(path_var) = std::env::var("PATH") {
         let separator = if cfg!(windows) { ';' } else { ':' };
         for dir in path_var.split(separator) {
@@ -23,6 +109,17 @@ fn find_git() -> String {
             if git_path.exists() {
                 return git_path.to_string_lossy().to_string();
             }
+        }
+    }
+
+    // 1b. Search the full system+user PATH (from registry, may have more entries)
+    let full = get_full_path();
+    for dir in full.split(';') {
+        let dir = dir.trim();
+        if dir.is_empty() { continue; }
+        let git_path = Path::new(dir).join(if cfg!(windows) { "git.exe" } else { "git" });
+        if git_path.exists() {
+            return git_path.to_string_lossy().to_string();
         }
     }
 
@@ -104,7 +201,7 @@ fn find_git() -> String {
             }
         }
 
-        // 6. Read system PATH from registry (Tauri GUI apps may not inherit full PATH)
+        // 6. Read system PATH from registry with full env var expansion
         if let Ok(output) = std::process::Command::new("reg")
             .args(&["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "/v", "Path"])
             .creation_flags(0x08000000)
@@ -113,21 +210,15 @@ fn find_git() -> String {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
                 for line in text.lines() {
-                    if line.contains("REG_SZ") || line.contains("REG_EXPAND_SZ") {
-                        let val = line.split("REG_SZ").nth(1)
-                            .or_else(|| line.split("REG_EXPAND_SZ").nth(1));
-                        if let Some(path_str) = val {
-                            for dir in path_str.trim().split(';') {
-                                let dir = dir.trim();
-                                if dir.is_empty() { continue; }
-                                // Expand %SystemRoot% etc
-                                let expanded = dir
-                                    .replace("%SystemRoot%", &std::env::var("SystemRoot").unwrap_or_default())
-                                    .replace("%SYSTEMROOT%", &std::env::var("SystemRoot").unwrap_or_default());
-                                let p = Path::new(&expanded).join("git.exe");
-                                if p.exists() {
-                                    return p.to_string_lossy().to_string();
-                                }
+                    let val = line.split("REG_EXPAND_SZ").nth(1)
+                        .or_else(|| line.split("REG_SZ").nth(1));
+                    if let Some(path_str) = val {
+                        for dir in path_str.trim().split(';') {
+                            let expanded = expand_env_vars(dir.trim());
+                            if expanded.is_empty() { continue; }
+                            let p = Path::new(&expanded).join("git.exe");
+                            if p.exists() {
+                                return p.to_string_lossy().to_string();
                             }
                         }
                     }
@@ -135,7 +226,7 @@ fn find_git() -> String {
             }
         }
 
-        // 7. Read user PATH from registry
+        // 7. Read user PATH from registry with full env var expansion
         if let Ok(output) = std::process::Command::new("reg")
             .args(&["query", r"HKCU\Environment", "/v", "Path"])
             .creation_flags(0x08000000)
@@ -144,20 +235,15 @@ fn find_git() -> String {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
                 for line in text.lines() {
-                    if line.contains("REG_SZ") || line.contains("REG_EXPAND_SZ") {
-                        let val = line.split("REG_SZ").nth(1)
-                            .or_else(|| line.split("REG_EXPAND_SZ").nth(1));
-                        if let Some(path_str) = val {
-                            for dir in path_str.trim().split(';') {
-                                let dir = dir.trim();
-                                if dir.is_empty() { continue; }
-                                let expanded = dir
-                                    .replace("%USERPROFILE%", &std::env::var("USERPROFILE").unwrap_or_default())
-                                    .replace("%LOCALAPPDATA%", &std::env::var("LOCALAPPDATA").unwrap_or_default());
-                                let p = Path::new(&expanded).join("git.exe");
-                                if p.exists() {
-                                    return p.to_string_lossy().to_string();
-                                }
+                    let val = line.split("REG_EXPAND_SZ").nth(1)
+                        .or_else(|| line.split("REG_SZ").nth(1));
+                    if let Some(path_str) = val {
+                        for dir in path_str.trim().split(';') {
+                            let expanded = expand_env_vars(dir.trim());
+                            if expanded.is_empty() { continue; }
+                            let p = Path::new(&expanded).join("git.exe");
+                            if p.exists() {
+                                return p.to_string_lossy().to_string();
                             }
                         }
                     }
@@ -176,12 +262,13 @@ fn find_git() -> String {
         }
     }
 
-    // 9. Try where.exe directly
+    // 9. Try where.exe with full PATH
     #[cfg(windows)]
     {
         if let Ok(output) = std::process::Command::new("where.exe")
             .arg("git")
             .creation_flags(0x08000000)
+            .env("PATH", get_full_path())
             .output()
         {
             if output.status.success() {
@@ -195,10 +282,11 @@ fn find_git() -> String {
             }
         }
 
-        // 10. Try cmd /c where git
+        // 10. Try cmd /c where git with full PATH
         if let Ok(output) = std::process::Command::new("cmd")
             .args(&["/c", "where", "git"])
             .creation_flags(0x08000000)
+            .env("PATH", get_full_path())
             .output()
         {
             if output.status.success() {
@@ -218,6 +306,50 @@ fn find_git() -> String {
 
 fn git_executable() -> &'static str {
     GIT_PATH.get_or_init(find_git)
+}
+
+/// Central function to run git commands. Sets the full system PATH so git can be found.
+fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
+    let exe = git_executable();
+    let full_path = get_full_path();
+
+    // If exe is just "git" (fallback), try to find it in the full PATH
+    let resolved_exe = if exe == "git" || exe == "git.exe" {
+        let mut found = exe.to_string();
+        for dir in full_path.split(';') {
+            let dir = dir.trim();
+            if dir.is_empty() { continue; }
+            let candidate = Path::new(dir).join("git.exe");
+            if candidate.exists() {
+                found = candidate.to_string_lossy().to_string();
+                break;
+            }
+        }
+        found
+    } else {
+        exe.to_string()
+    };
+
+    let mut cmd = std::process::Command::new(&resolved_exe);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+        cmd.env("PATH", full_path);
+    }
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Ok(format!("{}{}", stdout, stderr).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 pub struct GitService;
@@ -421,14 +553,25 @@ impl GitService {
 
     pub fn unstage_file(path: &str, file_path: &str) -> Result<(), String> {
         let repo = Self::open(path)?;
-        let head = repo.head().map_err(|e| e.message().to_string())?;
-        let obj = head
-            .peel_to_commit()
-            .map_err(|e| e.message().to_string())?
-            .tree()
-            .map_err(|e| e.message().to_string())?;
-        repo.reset_default(Some(obj.as_object()), &[file_path])
-            .map_err(|e| e.message().to_string())?;
+        // Try to get HEAD tree; if no commits yet, use git rm --cached
+        match repo.head() {
+            Ok(head) => {
+                let obj = head
+                    .peel_to_commit()
+                    .map_err(|e| e.message().to_string())?
+                    .tree()
+                    .map_err(|e| e.message().to_string())?;
+                repo.reset_default(Some(obj.as_object()), &[file_path])
+                    .map_err(|e| e.message().to_string())?;
+            }
+            Err(_) => {
+                // No HEAD yet (initial commit) - remove from index
+                let mut index = repo.index().map_err(|e| e.message().to_string())?;
+                index.remove_path(Path::new(file_path))
+                    .map_err(|e| e.message().to_string())?;
+                index.write().map_err(|e| e.message().to_string())?;
+            }
+        }
         Ok(())
     }
 
@@ -511,7 +654,6 @@ impl GitService {
     }
 
     fn git_cli_with_token(path: &str, args: &[&str], token: &str) -> Result<String, String> {
-        // Get remote URL and inject token for HTTPS authentication
         let remote_url = Self::git_cli(path, &["remote", "get-url", "origin"]).ok();
         if let Some(ref raw_url) = remote_url {
             let url = raw_url.trim();
@@ -528,102 +670,21 @@ impl GitService {
                 };
                 let authed_url = format!("https://x-access-token:{}@{}", token, host_and_path);
 
-                // Build args: subcommand <url> [rest]
                 if !args.is_empty() {
                     let mut new_args: Vec<String> = vec![args[0].to_string(), authed_url];
                     for a in &args[1..] {
                         new_args.push(a.to_string());
                     }
                     let str_refs: Vec<&str> = new_args.iter().map(|s| s.as_str()).collect();
-
-                    let exe = git_executable();
-                    let mut cmd = std::process::Command::new(exe);
-                    cmd.args(&str_refs)
-                        .current_dir(path)
-                        .env("GIT_TERMINAL_PROMPT", "0");
-                    #[cfg(windows)]
-                    cmd.creation_flags(0x08000000);
-                    match cmd.output() {
-                        Ok(output) => {
-                            if output.status.success() {
-                                let stdout = String::from_utf8_lossy(&output.stdout);
-                                let stderr = String::from_utf8_lossy(&output.stderr);
-                                return Ok(format!("{}{}", stdout, stderr).trim().to_string());
-                            } else {
-                                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-                            }
-                        }
-                        Err(_e) => {
-                            // Fallback: run through cmd.exe which has its own PATH resolution
-                            #[cfg(windows)]
-                            {
-                                let mut all_args: Vec<&str> = vec!["/c", exe];
-                                all_args.extend_from_slice(&str_refs);
-                                let mut cmd2 = std::process::Command::new("cmd.exe");
-                                cmd2.args(&all_args)
-                                    .current_dir(path)
-                                    .env("GIT_TERMINAL_PROMPT", "0");
-                                cmd2.creation_flags(0x08000000);
-                                let output = cmd2.output()
-                                    .map_err(|e2| format!("Failed to run git (cmd fallback): {}", e2))?;
-                                if output.status.success() {
-                                    let stdout = String::from_utf8_lossy(&output.stdout);
-                                    let stderr = String::from_utf8_lossy(&output.stderr);
-                                    return Ok(format!("{}{}", stdout, stderr).trim().to_string());
-                                } else {
-                                    return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-                                }
-                            }
-                            #[cfg(not(windows))]
-                            return Err(format!("Failed to run git: {}", _e));
-                        }
-                    }
+                    return run_git_cmd(Some(path), &str_refs);
                 }
             }
         }
-        // Fallback to normal CLI if no remote URL or SSH
         Self::git_cli(path, args)
     }
 
     fn git_cli(path: &str, args: &[&str]) -> Result<String, String> {
-        let exe = git_executable();
-        let mut cmd = std::process::Command::new(exe);
-        cmd.args(args).current_dir(path);
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-        match cmd.output() {
-            Ok(output) => {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Ok(format!("{}{}", stdout, stderr).trim().to_string())
-                } else {
-                    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-                }
-            }
-            Err(_e) => {
-                // Fallback: run through cmd.exe which has its own PATH resolution
-                #[cfg(windows)]
-                {
-                    let mut all_args: Vec<&str> = vec!["/c", exe];
-                    all_args.extend_from_slice(args);
-                    let mut cmd2 = std::process::Command::new("cmd.exe");
-                    cmd2.args(&all_args).current_dir(path);
-                    cmd2.creation_flags(0x08000000);
-                    let output = cmd2.output()
-                        .map_err(|e2| format!("Failed to run git (cmd fallback): {}", e2))?;
-                    if output.status.success() {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        Ok(format!("{}{}", stdout, stderr).trim().to_string())
-                    } else {
-                        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-                    }
-                }
-                #[cfg(not(windows))]
-                Err(format!("Failed to run git: {}", _e))
-            }
-        }
+        run_git_cmd(Some(path), args)
     }
 
     fn ahead_behind(
@@ -754,44 +815,7 @@ impl GitService {
     }
 
     fn git_cli_global(args: &[&str]) -> Result<String, String> {
-        let exe = git_executable();
-        let mut cmd = std::process::Command::new(exe);
-        cmd.args(args);
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-        match cmd.output() {
-            Ok(output) => {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Ok(format!("{}{}", stdout, stderr).trim().to_string())
-                } else {
-                    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-                }
-            }
-            Err(_e) => {
-                // Fallback: run through cmd.exe which has its own PATH resolution
-                #[cfg(windows)]
-                {
-                    let mut all_args: Vec<&str> = vec!["/c", exe];
-                    all_args.extend_from_slice(args);
-                    let mut cmd2 = std::process::Command::new("cmd.exe");
-                    cmd2.args(&all_args);
-                    cmd2.creation_flags(0x08000000);
-                    let output = cmd2.output()
-                        .map_err(|e2| format!("Failed to run git (cmd fallback): {}", e2))?;
-                    if output.status.success() {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        Ok(format!("{}{}", stdout, stderr).trim().to_string())
-                    } else {
-                        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-                    }
-                }
-                #[cfg(not(windows))]
-                Err(format!("Failed to run git: {}", _e))
-            }
-        }
+        run_git_cmd(None, args)
     }
 
     pub fn commit_files(path: &str, sha: &str) -> Result<Vec<CommitFileInfo>, String> {

@@ -336,6 +336,7 @@ const openReposList = computed(() =>
               @reset-hard="git.resetToCommit($event, 'hard')"
               @copy-sha="() => {}"
               @create-tag-at="handleCreateTagAtCommit($event)"
+              @checkout-branch="git.checkoutBranch($event)"
             />
             <CommitDetails
               :commit="git.selectedCommit.value"

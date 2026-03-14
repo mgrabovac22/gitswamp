@@ -2,14 +2,14 @@
 import { computed, ref, onMounted, onUnmounted } from "vue";
 import type { CommitInfo, GraphNode, GraphEdge } from "@/types";
 
-const LANE_WIDTH = 14;
-const ROW_HEIGHT = 24;
-const NODE_RADIUS = 5;
-const BRANCH_COL = 130;
+const LANE_WIDTH = 20;
+const ROW_HEIGHT = 28;
+const NODE_RADIUS = 10;
+const BRANCH_COL = 140;
 const AUTHOR_COL = 140;
 const SHA_COL = 75;
 const OVERSCAN = 15;
-const CORNER_R = 5;
+const CORNER_R = 6;
 const COLORS = [
   "#8b5cf6", "#06b6d4", "#f59e0b", "#ef4444", "#10b981",
   "#ec4899", "#f97316", "#14b8a6", "#a855f7", "#22d3ee",
@@ -40,12 +40,14 @@ const emit = defineEmits<{
   resetHard: [sha: string];
   copySha: [sha: string];
   createTagAt: [sha: string];
+  checkoutBranch: [name: string];
 }>();
 
 const searchInput = ref("");
 const scrollContainer = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
 const viewportHeight = ref(600);
+const hoveredRefRow = ref<number | null>(null);
 
 // Context menu state
 const ctxVisible = ref(false);
@@ -54,17 +56,56 @@ const ctxY = ref(0);
 const ctxCommit = ref<CommitInfo | null>(null);
 const ctxResetSub = ref(false);
 
-function avatarColor(name: string): string {
+function nameHash(name: string): number {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
-  return COLORS[Math.abs(h) % COLORS.length];
+  return Math.abs(h);
 }
 
-function avatarInitials(name: string): string {
-  const p = name.trim().split(/\s+/);
-  return p.length >= 2 ? (p[0][0] + p[p.length - 1][0]).toUpperCase() : name.substring(0, 2).toUpperCase();
+function avatarColor(name: string): string {
+  return COLORS[nameHash(name) % COLORS.length];
 }
 
+// SVG avatar: solid filled with a drawn face
+function avatarSvg(name: string, cx: number, cy: number, r: number): string {
+  const h = nameHash(name);
+  const c = avatarColor(name);
+  const eyeY = cy - r * 0.12;
+  const eyeSpread = r * 0.3;
+  const mouthY = cy + r * 0.32;
+  const eyeR = r * 0.1 + (h % 3) * 0.03;
+  // hair variations
+  const hairType = h % 5;
+  let hair = "";
+  if (hairType === 0) {
+    hair = '<path d="M ' + (cx - r * 0.5) + ' ' + (cy - r * 0.65) + ' Q ' + cx + ' ' + (cy - r * 1.3) + ' ' + (cx + r * 0.5) + ' ' + (cy - r * 0.65) + '" stroke="#e2e8f0" stroke-width="1.2" fill="none" opacity="0.5"/>';
+  } else if (hairType === 1) {
+    hair = '<line x1="' + (cx - r * 0.6) + '" y1="' + (cy - r * 0.35) + '" x2="' + (cx - r * 0.9) + '" y2="' + (cy - r * 0.65) + '" stroke="#e2e8f0" stroke-width="1" opacity="0.4"/>'
+         + '<line x1="' + (cx + r * 0.6) + '" y1="' + (cy - r * 0.35) + '" x2="' + (cx + r * 0.9) + '" y2="' + (cy - r * 0.65) + '" stroke="#e2e8f0" stroke-width="1" opacity="0.4"/>';
+  } else if (hairType === 2) {
+    hair = '<rect x="' + (cx - r * 0.55) + '" y="' + (cy - r * 0.9) + '" width="' + (r * 1.1) + '" height="' + (r * 0.28) + '" rx="1.5" fill="#e2e8f0" opacity="0.3"/>';
+  } else if (hairType === 3) {
+    hair = '<line x1="' + cx + '" y1="' + (cy - r * 0.75) + '" x2="' + cx + '" y2="' + (cy - r * 1.15) + '" stroke="#e2e8f0" stroke-width="1.8" stroke-linecap="round" opacity="0.4"/>';
+  }
+  // mouth variations
+  const mouthType = (h >> 4) % 3;
+  let mouth = "";
+  if (mouthType === 0) {
+    mouth = '<line x1="' + (cx - r * 0.18) + '" y1="' + mouthY + '" x2="' + (cx + r * 0.18) + '" y2="' + mouthY + '" stroke="#fff" stroke-width="0.7" stroke-linecap="round" opacity="0.7"/>';
+  } else if (mouthType === 1) {
+    mouth = '<path d="M ' + (cx - r * 0.18) + ' ' + mouthY + ' Q ' + cx + ' ' + (mouthY + r * 0.18) + ' ' + (cx + r * 0.18) + ' ' + mouthY + '" stroke="#fff" stroke-width="0.7" fill="none" opacity="0.7"/>';
+  } else {
+    mouth = '<circle cx="' + cx + '" cy="' + (mouthY + r * 0.04) + '" r="' + (r * 0.09) + '" fill="#fff" opacity="0.5"/>';
+  }
+  // Solid dark background to cover graph lines, then filled colored circle
+  return '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 1) + '" fill="#111520"/>'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + c + '"/>'
+    + '<circle cx="' + (cx - eyeSpread) + '" cy="' + eyeY + '" r="' + eyeR + '" fill="#fff" opacity="0.9"/>'
+    + '<circle cx="' + (cx + eyeSpread) + '" cy="' + eyeY + '" r="' + eyeR + '" fill="#fff" opacity="0.9"/>'
+    + mouth + hair;
+}
+
+// Lane compaction: reuse lanes for non-overlapping branches
 const graph = computed(() => {
   const all = props.commits;
   if (!all.length) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[], laneCount: 0, branchLanes: new Map<string, number>() };
@@ -72,6 +113,7 @@ const graph = computed(() => {
   const shaIdx = new Map<string, number>();
   all.forEach((c, i) => shaIdx.set(c.sha, i));
 
+  // Step 1: assign each commit to a branch via first-parent tracing
   const branchHeads = new Map<string, number>();
   const commitBranch = new Map<number, string>();
 
@@ -106,19 +148,57 @@ const graph = computed(() => {
     if (!commitBranch.has(idx)) commitBranch.set(idx, "__default");
   });
 
-  // Order: current branch lane 0 (leftmost), then main/master, then others by first appearance
-  const branchOrder: string[] = [];
-  const add = (n: string) => { if (!branchOrder.includes(n)) branchOrder.push(n); };
-  if (props.currentBranch && [...commitBranch.values()].includes(props.currentBranch)) add(props.currentBranch);
-  for (const n of ["main", "master"]) { if ([...commitBranch.values()].includes(n)) add(n); }
-  all.forEach((_, idx) => { const b = commitBranch.get(idx); if (b) add(b); });
+  // Step 2: compute row range [min, max] for each branch
+  const branchRange = new Map<string, { min: number; max: number }>();
+  all.forEach((_, idx) => {
+    const b = commitBranch.get(idx)!;
+    const cur = branchRange.get(b);
+    if (!cur) {
+      branchRange.set(b, { min: idx, max: idx });
+    } else {
+      cur.min = Math.min(cur.min, idx);
+      cur.max = Math.max(cur.max, idx);
+    }
+  });
 
+  // Step 3: order branches by priority
+  const branchOrder: string[] = [];
+  const addBr = (n: string) => { if (!branchOrder.includes(n) && branchRange.has(n)) branchOrder.push(n); };
+  if (props.currentBranch) addBr(props.currentBranch);
+  for (const n of ["main", "master"]) addBr(n);
+  all.forEach((_, idx) => { const b = commitBranch.get(idx); if (b) addBr(b); });
+
+  // Step 4: greedy lane assignment with compaction
+  const laneOccupied: Array<Array<{ min: number; max: number }>> = [];
   const laneMap = new Map<string, number>();
-  branchOrder.forEach((name, i) => laneMap.set(name, i));
+
+  function rangesOverlap(a: { min: number; max: number }, b: { min: number; max: number }): boolean {
+    return a.min <= b.max && b.min <= a.max;
+  }
+
+  for (const branch of branchOrder) {
+    const range = branchRange.get(branch)!;
+    let assigned = -1;
+    for (let lane = 0; lane < laneOccupied.length; lane++) {
+      const conflicts = laneOccupied[lane].some(r => rangesOverlap(r, range));
+      if (!conflicts) {
+        assigned = lane;
+        break;
+      }
+    }
+    if (assigned === -1) {
+      assigned = laneOccupied.length;
+      laneOccupied.push([]);
+    }
+    laneOccupied[assigned].push(range);
+    laneMap.set(branch, assigned);
+  }
+
+  const laneCount = laneOccupied.length;
 
   const nodes: GraphNode[] = all.map((commit, idx) => {
     const branch = commitBranch.get(idx) || "__default";
-    const lane = laneMap.get(branch) || 0;
+    const lane = laneMap.get(branch) ?? 0;
     return { commit, lane, color: COLORS[lane % COLORS.length] };
   });
 
@@ -136,7 +216,7 @@ const graph = computed(() => {
     }
   });
 
-  return { nodes, edges, laneCount: branchOrder.length, branchLanes: laneMap };
+  return { nodes, edges, laneCount, branchLanes: laneMap };
 });
 
 const graphWidth = computed(() => Math.max((graph.value.laneCount + 1) * LANE_WIDTH + 8, 40));
@@ -175,14 +255,12 @@ const visibleEdges = computed(() => {
 function lx(lane: number) { return lane * LANE_WIDTH + LANE_WIDTH / 2 + 4; }
 function ry(index: number) { return index * ROW_HEIGHT + ROW_HEIGHT / 2 + wcOffset.value; }
 
-// GitKraken-style edge: straight vertical lines with small radius corners at transitions
 function ep(e: GraphEdge): string {
   const x1 = lx(e.fromLane), y1 = ry(e.fromIndex);
   const x2 = lx(e.toLane), y2 = ry(e.toIndex);
   if (e.fromLane === e.toLane) return 'M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2;
   const r = Math.min(CORNER_R, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 4);
   const d = x2 > x1 ? 1 : -1;
-  // Horizontal transition near the child (fromIndex, top), then vertical to parent
   const turnY = y1 + ROW_HEIGHT * 0.5;
   return 'M ' + x1 + ' ' + y1
     + ' L ' + x1 + ' ' + (turnY - r)
@@ -204,6 +282,35 @@ function brefs(commit: CommitInfo): string[] {
   return commit.refs.filter(r => !r.includes("HEAD") && !r.includes("->"));
 }
 
+// Merge local + origin refs: e.g. "main" and "origin/main" → { name: "main", local: true, remote: true }
+interface MergedRef { name: string; local: boolean; remote: boolean; }
+function mergedRefs(commit: CommitInfo): MergedRef[] {
+  const raw = brefs(commit);
+  const map = new Map<string, MergedRef>();
+  for (const r of raw) {
+    if (r.startsWith("origin/")) {
+      const name = r.substring(7);
+      const existing = map.get(name);
+      if (existing) { existing.remote = true; }
+      else { map.set(name, { name, local: false, remote: true }); }
+    } else {
+      const existing = map.get(r);
+      if (existing) { existing.local = true; }
+      else { map.set(r, { name: r, local: true, remote: false }); }
+    }
+  }
+  return Array.from(map.values());
+}
+
+function topMergedRef(commit: CommitInfo): MergedRef | null {
+  const refs = mergedRefs(commit);
+  return refs.length > 0 ? refs[0] : null;
+}
+
+function extraMergedRefCount(commit: CommitInfo): number {
+  return Math.max(0, mergedRefs(commit).length - 1);
+}
+
 let st: ReturnType<typeof setTimeout> | null = null;
 function onSearch() {
   if (st) clearTimeout(st);
@@ -221,6 +328,10 @@ function onScroll(e: Event) {
   if (props.hasMore && el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
     emit("loadMore");
   }
+}
+
+function onRefDblClick(refName: string) {
+  emit("checkoutBranch", refName);
 }
 
 // Context menu
@@ -297,7 +408,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Scrollable content -->
-    <div v-else ref="scrollContainer" class="flex-1 overflow-y-auto min-h-0" @scroll="onScroll">
+    <div v-else ref="scrollContainer" class="commit-scroll flex-1 overflow-y-auto min-h-0" @scroll="onScroll">
       <div class="relative" :style="{ height: totalH + 'px' }">
         <!-- SVG graph layer -->
         <svg
@@ -317,36 +428,21 @@ onUnmounted(() => {
             :stroke="edge.color"
             stroke-width="2" fill="none" opacity="0.7"
             stroke-linecap="round" stroke-linejoin="round"
+            class="edge-draw"
           />
           <rect
             v-if="hasWorkingChanges"
-            :x="wcLaneX() - 4" :y="ROW_HEIGHT / 2 - 4"
-            width="8" height="8" rx="2"
+            :x="wcLaneX() - 5" :y="ROW_HEIGHT / 2 - 5"
+            width="10" height="10" rx="2"
             fill="#8b5cf6" opacity="0.9" class="animate-pulse"
           />
-          <template v-for="item in visibleNodes" :key="'n' + item.node.commit.sha">
-            <circle
-              :cx="lx(item.node.lane)" :cy="ry(item.idx)"
-              :r="NODE_RADIUS"
-              :fill="avatarColor(item.node.commit.author_name)"
-              :stroke="selected?.sha === item.node.commit.sha ? '#fff' : avatarColor(item.node.commit.author_name)"
-              :stroke-width="selected?.sha === item.node.commit.sha ? 2 : 0.5"
-              :opacity="selected?.sha === item.node.commit.sha ? 1 : 0.9"
-            />
-            <text
-              :x="lx(item.node.lane)" :y="ry(item.idx) + 0.5"
-              text-anchor="middle" dominant-baseline="middle"
-              fill="#fff" font-size="5.5" font-weight="700"
-              font-family="system-ui, -apple-system, sans-serif"
-              style="pointer-events: none; user-select: none;"
-            >{{ avatarInitials(item.node.commit.author_name) }}</text>
-            <circle
-              v-if="item.node.commit.refs.length > 0"
-              :cx="lx(item.node.lane)" :cy="ry(item.idx)"
-              :r="NODE_RADIUS + 3" fill="none"
-              :stroke="item.node.color" stroke-width="1" opacity="0.3"
-            />
-          </template>
+          <!-- eslint-disable-next-line vue/no-v-html -->
+          <g
+            v-for="item in visibleNodes"
+            :key="'n' + item.node.commit.sha"
+            v-html="avatarSvg(item.node.commit.author_name, lx(item.node.lane), ry(item.idx), NODE_RADIUS)"
+            class="node-pop"
+          />
         </svg>
 
         <!-- Working changes row -->
@@ -372,37 +468,78 @@ onUnmounted(() => {
         <div
           v-for="item in visibleNodes"
           :key="item.node.commit.sha"
-          class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors"
+          class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
           :class="selected?.sha === item.node.commit.sha ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#1a2030]'"
           :style="{ top: (item.idx * ROW_HEIGHT + wcOffset) + 'px', height: ROW_HEIGHT + 'px' }"
           @click="emit('select', item.node.commit)"
           @contextmenu="onCtx($event, item.node.commit)"
         >
-          <div class="flex-shrink-0 flex items-center justify-end gap-0.5 overflow-hidden px-1" :style="{ width: BRANCH_COL + 'px' }">
-            <span
-              v-for="label in brefs(item.node.commit)"
-              :key="label"
-              class="flex-shrink-0 px-1.5 py-0.5 rounded text-[8px] font-medium truncate max-w-[120px]"
-              :style="{ backgroundColor: item.node.color + '20', color: item.node.color, border: '1px solid ' + item.node.color + '30' }"
-              :title="label"
-            >{{ label }}</span>
+          <!-- Branch / ref labels with local/remote icons -->
+          <div class="flex-shrink-0 flex items-center justify-end gap-0.5 overflow-hidden px-1 relative" :style="{ width: BRANCH_COL + 'px' }"
+            @mouseenter="hoveredRefRow = item.idx" @mouseleave="hoveredRefRow = null"
+          >
+            <template v-if="topMergedRef(item.node.commit)">
+              <span
+                class="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-medium truncate max-w-[110px] cursor-pointer"
+                :style="{ backgroundColor: item.node.color + '20', color: item.node.color, border: '1px solid ' + item.node.color + '30' }"
+                :title="topMergedRef(item.node.commit)?.name || ''"
+                @dblclick.stop="onRefDblClick(topMergedRef(item.node.commit)!.name)"
+              >
+                <svg v-if="topMergedRef(item.node.commit)?.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5" /><rect x="4" y="12" width="8" height="1.5" rx="0.5" opacity="0.6"/><rect x="6" y="13.5" width="4" height="1" rx="0.5" opacity="0.4"/></svg>
+                <svg v-if="topMergedRef(item.node.commit)?.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
+                <span class="truncate">{{ topMergedRef(item.node.commit)?.name }}</span>
+              </span>
+              <span
+                v-if="extraMergedRefCount(item.node.commit) > 0"
+                class="flex-shrink-0 px-1 py-0.5 rounded-full text-[7px] font-bold"
+                :style="{ backgroundColor: '#f59e0b30', color: '#f59e0b' }"
+              >+{{ extraMergedRefCount(item.node.commit) }}</span>
+            </template>
+            <!-- Hover dropdown with all merged refs -->
+            <div
+              v-if="hoveredRefRow === item.idx && mergedRefs(item.node.commit).length > 1"
+              class="absolute right-0 top-full z-50 min-w-[140px] bg-[#1c2130] border border-[#8b5cf6]/20 rounded-lg shadow-2xl py-1"
+            >
+              <button
+                v-for="mr in mergedRefs(item.node.commit)"
+                :key="mr.name"
+                class="w-full text-left px-2 py-1 text-[9px] hover:bg-[#8b5cf6]/15 transition-colors truncate flex items-center gap-1"
+                :style="{ color: item.node.color }"
+                @dblclick.stop="onRefDblClick(mr.name)"
+              >
+                <svg v-if="mr.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5"/></svg>
+                <svg v-if="mr.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
+                {{ mr.name }}
+              </button>
+            </div>
           </div>
-          <div class="flex-shrink-0 relative h-full" :style="{ width: graphWidth + 'px' }">
+
+          <!-- Graph column + gradient glow extending to message area -->
+          <div class="flex-shrink-0 relative h-full overflow-visible" :style="{ width: graphWidth + 'px' }">
+            <!-- Gradient: subtle left of node, intense right of node, semi-circle end -->
             <div
               class="absolute top-0 bottom-0 pointer-events-none"
-              :style="{ left: lx(item.node.lane) + 'px', right: '-8px', background: 'linear-gradient(to right, ' + item.node.color + '10, transparent)', clipPath: 'polygon(0 20%, 100% 0%, 100% 100%, 0 80%)' }"
+              :style="{
+                left: '0px',
+                right: '-100%',
+                background: 'linear-gradient(to right, transparent 0%, ' + item.node.color + '06 ' + (lx(item.node.lane) - 8) + 'px, ' + item.node.color + '15 ' + lx(item.node.lane) + 'px, ' + item.node.color + '30 100%)',
+                clipPath: 'ellipse(100% 42% at 100% 50%)'
+              }"
             />
           </div>
+
+          <!-- Commit message -->
           <div class="flex-1 flex items-center px-3 min-w-0">
             <span class="text-[11px] text-[#cbd5e1] truncate">{{ item.node.commit.message.split('\n')[0] }}</span>
           </div>
+
+          <!-- Author -->
           <div class="flex-shrink-0 flex items-center gap-1 px-1" :style="{ width: AUTHOR_COL + 'px' }">
-            <div
-              class="w-3.5 h-3.5 rounded-full flex items-center justify-center flex-shrink-0 text-[6px] font-bold text-white"
-              :style="{ backgroundColor: avatarColor(item.node.commit.author_name) }"
-            >{{ avatarInitials(item.node.commit.author_name) }}</div>
+            <svg class="flex-shrink-0" :width="14" :height="14" viewBox="0 0 14 14" v-html="avatarSvg(item.node.commit.author_name, 7, 7, 6)" />
             <span class="text-[10px] text-[#64748b] truncate">{{ item.node.commit.author_name }}</span>
           </div>
+
+          <!-- SHA -->
           <div class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">
             <span class="text-[9px] font-mono" :style="{ color: item.node.color + 'cc' }">{{ item.node.commit.short_sha }}</span>
           </div>
@@ -458,17 +595,44 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.overflow-y-auto::-webkit-scrollbar {
-  width: 5px;
+.commit-scroll::-webkit-scrollbar {
+  width: 4px;
 }
-.overflow-y-auto::-webkit-scrollbar-track {
+.commit-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-.overflow-y-auto::-webkit-scrollbar-thumb {
-  background: rgba(139, 92, 246, 0.2);
+.commit-scroll::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.15);
   border-radius: 10px;
 }
-.overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 92, 246, 0.4);
+.commit-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.35);
+}
+/* Edge draw animation */
+.edge-draw {
+  stroke-dasharray: 500;
+  stroke-dashoffset: 500;
+  animation: drawEdge 0.6s ease-out forwards;
+}
+@keyframes drawEdge {
+  to { stroke-dashoffset: 0; }
+}
+/* Node pop-in animation */
+.node-pop {
+  transform-origin: center;
+  animation: popIn 0.3s ease-out forwards;
+}
+@keyframes popIn {
+  0% { opacity: 0; transform: scale(0.3); }
+  70% { transform: scale(1.08); }
+  100% { opacity: 1; transform: scale(1); }
+}
+/* Row fade-in */
+.graph-row {
+  animation: rowFade 0.25s ease-out;
+}
+@keyframes rowFade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 </style>
