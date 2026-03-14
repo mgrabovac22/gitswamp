@@ -1,23 +1,69 @@
-export interface Repository {
-  id: string
-  name: string
-  path: string
+export interface CommitInfo {
+  sha: string
+  short_sha: string
+  message: string
+  author_name: string
+  author_email: string
+  timestamp: number
+  time_ago: string
+  parent_shas: string[]
+  refs: string[]
 }
 
-export interface Commit {
-  id: string
-  branch: string
-  time: string
-  number: string
+export interface BranchInfo {
+  name: string
+  is_head: boolean
+  is_remote: boolean
+  upstream: string | null
+  ahead: number
+  behind: number
+}
+
+export interface FileStatusInfo {
+  path: string
+  status: string
+  staged: boolean
+}
+
+export interface RepoInfo {
+  path: string
+  name: string
+  current_branch: string
+  is_clean: boolean
+  head_sha: string | null
+}
+
+export interface CommitFileInfo {
+  path: string
+  status: string
+  additions: number
+  deletions: number
+}
+
+export interface StashInfo {
+  index: number
   message: string
-  author: string
+  branch: string
+  timestamp: string
+}
+
+export interface TagInfo {
+  name: string
   sha: string
-  avatar: string
+  message: string | null
+  is_annotated: boolean
+}
+
+export interface GraphNode {
+  commit: CommitInfo
+  lane: number
   color: string
 }
 
-export interface SidebarSectionItem {
-  label: string
-  items?: string[]
-  count: number | string
+export interface GraphEdge {
+  fromIndex: number
+  toIndex: number
+  fromLane: number
+  toLane: number
+  color: string
 }

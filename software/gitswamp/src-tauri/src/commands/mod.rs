@@ -1,0 +1,9 @@
+pub mod repository;
+pub mod commits;
+pub mod commit_files;
+pub mod branches;
+pub mod operations;
+pub mod status;
+pub mod clone_init;
+pub mod stash;
+pub mod tags;

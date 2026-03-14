@@ -15,16 +15,16 @@ defineEmits<{
 </script>
 
 <template>
-  <div class="border-b border-[#4ecdc4]/20">
+  <div class="border-b border-[#8b5cf6]/10">
     <button
       @click="$emit('toggle')"
-      class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-[#e0eaf2] hover:bg-[#182028] transition-all"
+      class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-[#e2e8f0] hover:bg-[#151921] transition-all"
     >
       <ChevronDown v-if="expanded" class="w-4 h-4" />
       <ChevronRight v-else class="w-4 h-4" />
-      <component :is="icon" class="w-4 h-4 text-[#4ecdc4]" />
+      <component :is="icon" class="w-4 h-4 text-[#a78bfa]" />
       <span>{{ label }}</span>
-      <span class="ml-auto text-xs bg-[#1e2c38] px-2 py-0.5 rounded-full">{{ count }}</span>
+      <span class="ml-auto text-xs bg-[#1c2130] px-2 py-0.5 rounded-full text-[#64748b]">{{ count }}</span>
     </button>
     <div v-if="expanded" class="pb-2">
       <slot />
