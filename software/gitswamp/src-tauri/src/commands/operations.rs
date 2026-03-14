@@ -20,3 +20,8 @@ pub fn run_git_command(path: String, args: Vec<String>) -> Result<String, String
     let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     GitService::run_git_command(&path, &str_args)
 }
+
+#[tauri::command]
+pub fn get_git_path() -> String {
+    GitService::get_git_path()
+}

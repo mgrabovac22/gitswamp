@@ -372,6 +372,7 @@ const openReposList = computed(() =>
     <SettingsDialog
       v-if="showSettings"
       :token="git.githubToken.value"
+      :git-path="git.gitPath.value"
       @save="git.saveToken($event); showSettings = false"
       @delete="git.deleteToken()"
       @close="showSettings = false"

@@ -7,7 +7,7 @@ use commands::clone_init::{clone_repo, init_repo, search_commits};
 use commands::commit_files::get_commit_files;
 use commands::commits::get_commits;
 use commands::credentials::{delete_token, load_token, save_token};
-use commands::operations::{fetch_all, pull, push, run_git_command};
+use commands::operations::{fetch_all, get_git_path, pull, push, run_git_command};
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_list, stash_pop, stash_push};
 use commands::status::{create_commit, discard_file, get_status, stage_file, unstage_file};
@@ -47,6 +47,7 @@ pub fn run() {
             save_token,
             load_token,
             delete_token,
+            get_git_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

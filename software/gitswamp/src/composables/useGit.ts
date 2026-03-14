@@ -26,6 +26,7 @@ const searchResults = shallowRef<CommitInfo[] | null>(null);
 const terminalOutput = ref<string[]>([]);
 const githubToken = ref<string | null>(null);
 const hasMoreCommits = ref(true);
+const gitPath = ref("");
 
 const PAGE_SIZE = 200;
 
@@ -98,6 +99,16 @@ async function loadSavedToken() {
   }
 }
 loadSavedToken();
+
+// Load git path on init
+async function loadGitPath() {
+  try {
+    gitPath.value = await invoke<string>("get_git_path");
+  } catch {
+    gitPath.value = "not found";
+  }
+}
+loadGitPath();
 
 async function saveToken(token: string) {
   try {
@@ -570,6 +581,7 @@ export function useGit() {
     terminalOutput,
     githubToken,
     hasMoreCommits,
+    gitPath,
     openRepository,
     refreshCommits,
     refreshBranches,

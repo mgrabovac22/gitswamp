@@ -3,6 +3,9 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
 use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, RepoInfo, StashInfo, TagInfo};
@@ -10,20 +13,24 @@ use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, Repo
 static GIT_PATH: OnceLock<String> = OnceLock::new();
 
 fn find_git() -> String {
-    // Try "git" directly first (works if PATH is correct)
-    if let Ok(output) = std::process::Command::new("git")
-        .arg("--version")
-        .output()
-    {
-        if output.status.success() {
-            return "git".to_string();
+    // 1. Search PATH environment variable manually
+    if let Ok(path_var) = std::env::var("PATH") {
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        for dir in path_var.split(separator) {
+            let dir = dir.trim();
+            if dir.is_empty() { continue; }
+            let git_path = Path::new(dir).join(if cfg!(windows) { "git.exe" } else { "git" });
+            if git_path.exists() {
+                return git_path.to_string_lossy().to_string();
+            }
         }
     }
 
-    // Common Windows git locations
+    // 2. Common Windows install locations
     let candidates = [
         r"C:\Program Files\Git\cmd\git.exe",
         r"C:\Program Files\Git\bin\git.exe",
+        r"C:\Program Files\Git\mingw64\bin\git.exe",
         r"C:\Program Files (x86)\Git\cmd\git.exe",
         r"C:\Program Files (x86)\Git\bin\git.exe",
     ];
@@ -33,23 +40,179 @@ fn find_git() -> String {
         }
     }
 
-    // Try where.exe to find git
-    if let Ok(output) = std::process::Command::new("where.exe")
-        .arg("git")
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(first_line) = stdout.lines().next() {
-                let path = first_line.trim();
-                if !path.is_empty() && Path::new(path).exists() {
-                    return path.to_string();
+    // 3. Check user-specific locations via env vars
+    for env_key in &["LOCALAPPDATA", "APPDATA", "USERPROFILE"] {
+        if let Ok(base) = std::env::var(env_key) {
+            let paths = [
+                format!(r"{}\Programs\Git\cmd\git.exe", base),
+                format!(r"{}\Programs\Git\bin\git.exe", base),
+                format!(r"{}\Git\cmd\git.exe", base),
+                format!(r"{}\scoop\shims\git.exe", base),
+                format!(r"{}\scoop\apps\git\current\cmd\git.exe", base),
+            ];
+            for p in &paths {
+                if Path::new(p).exists() {
+                    return p.to_string();
                 }
             }
         }
     }
 
-    // Last resort
+    // 4. Check PROGRAMFILES variants from env
+    for env_key in &["PROGRAMFILES", "ProgramFiles(x86)", "ProgramW6432"] {
+        if let Ok(pf) = std::env::var(env_key) {
+            let p = format!(r"{}\Git\cmd\git.exe", pf);
+            if Path::new(&p).exists() {
+                return p;
+            }
+            let p = format!(r"{}\Git\bin\git.exe", pf);
+            if Path::new(&p).exists() {
+                return p;
+            }
+        }
+    }
+
+    // 5. Try Windows registry for Git install path (HKLM)
+    #[cfg(windows)]
+    {
+        for reg_path in &[
+            r"HKLM\SOFTWARE\GitForWindows",
+            r"HKCU\SOFTWARE\GitForWindows",
+            r"HKLM\SOFTWARE\Wow6432Node\GitForWindows",
+        ] {
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(&["query", reg_path, "/v", "InstallPath"])
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .output()
+            {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    for line in text.lines() {
+                        if line.contains("InstallPath") {
+                            if let Some(val) = line.split("REG_SZ").nth(1) {
+                                let install = val.trim();
+                                for sub in &["cmd", "bin", "mingw64\\bin"] {
+                                    let p = format!(r"{}\{}\git.exe", install, sub);
+                                    if Path::new(&p).exists() {
+                                        return p;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Read system PATH from registry (Tauri GUI apps may not inherit full PATH)
+        if let Ok(output) = std::process::Command::new("reg")
+            .args(&["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "/v", "Path"])
+            .creation_flags(0x08000000)
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    if line.contains("REG_SZ") || line.contains("REG_EXPAND_SZ") {
+                        let val = line.split("REG_SZ").nth(1)
+                            .or_else(|| line.split("REG_EXPAND_SZ").nth(1));
+                        if let Some(path_str) = val {
+                            for dir in path_str.trim().split(';') {
+                                let dir = dir.trim();
+                                if dir.is_empty() { continue; }
+                                // Expand %SystemRoot% etc
+                                let expanded = dir
+                                    .replace("%SystemRoot%", &std::env::var("SystemRoot").unwrap_or_default())
+                                    .replace("%SYSTEMROOT%", &std::env::var("SystemRoot").unwrap_or_default());
+                                let p = Path::new(&expanded).join("git.exe");
+                                if p.exists() {
+                                    return p.to_string_lossy().to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 7. Read user PATH from registry
+        if let Ok(output) = std::process::Command::new("reg")
+            .args(&["query", r"HKCU\Environment", "/v", "Path"])
+            .creation_flags(0x08000000)
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    if line.contains("REG_SZ") || line.contains("REG_EXPAND_SZ") {
+                        let val = line.split("REG_SZ").nth(1)
+                            .or_else(|| line.split("REG_EXPAND_SZ").nth(1));
+                        if let Some(path_str) = val {
+                            for dir in path_str.trim().split(';') {
+                                let dir = dir.trim();
+                                if dir.is_empty() { continue; }
+                                let expanded = dir
+                                    .replace("%USERPROFILE%", &std::env::var("USERPROFILE").unwrap_or_default())
+                                    .replace("%LOCALAPPDATA%", &std::env::var("LOCALAPPDATA").unwrap_or_default());
+                                let p = Path::new(&expanded).join("git.exe");
+                                if p.exists() {
+                                    return p.to_string_lossy().to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 8. Try running "git" directly as last resort
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+    {
+        if output.status.success() {
+            return "git".to_string();
+        }
+    }
+
+    // 9. Try where.exe directly
+    #[cfg(windows)]
+    {
+        if let Ok(output) = std::process::Command::new("where.exe")
+            .arg("git")
+            .creation_flags(0x08000000)
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let path = first_line.trim();
+                    if !path.is_empty() && Path::new(path).exists() {
+                        return path.to_string();
+                    }
+                }
+            }
+        }
+
+        // 10. Try cmd /c where git
+        if let Ok(output) = std::process::Command::new("cmd")
+            .args(&["/c", "where", "git"])
+            .creation_flags(0x08000000)
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let path = first_line.trim();
+                    if !path.is_empty() && Path::new(path).exists() {
+                        return path.to_string();
+                    }
+                }
+            }
+        }
+    }
+
     "git".to_string()
 }
 
@@ -62,6 +225,10 @@ pub struct GitService;
 impl GitService {
     fn open(path: &str) -> Result<Repository, String> {
         Repository::open(path).map_err(|e| e.message().to_string())
+    }
+
+    pub fn get_git_path() -> String {
+        git_executable().to_string()
     }
 
     pub fn repo_info(path: &str) -> Result<RepoInfo, String> {
@@ -369,11 +536,13 @@ impl GitService {
                     }
                     let str_refs: Vec<&str> = new_args.iter().map(|s| s.as_str()).collect();
 
-                    let output = std::process::Command::new(git_executable())
-                        .args(&str_refs)
+                    let mut cmd = std::process::Command::new(git_executable());
+                    cmd.args(&str_refs)
                         .current_dir(path)
-                        .env("GIT_TERMINAL_PROMPT", "0")
-                        .output()
+                        .env("GIT_TERMINAL_PROMPT", "0");
+                    #[cfg(windows)]
+                    cmd.creation_flags(0x08000000);
+                    let output = cmd.output()
                         .map_err(|e| format!("Failed to run git: {}", e))?;
 
                     if output.status.success() {
@@ -391,10 +560,11 @@ impl GitService {
     }
 
     fn git_cli(path: &str, args: &[&str]) -> Result<String, String> {
-        let output = std::process::Command::new(git_executable())
-            .args(args)
-            .current_dir(path)
-            .output()
+        let mut cmd = std::process::Command::new(git_executable());
+        cmd.args(args).current_dir(path);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let output = cmd.output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
         if output.status.success() {
@@ -509,9 +679,11 @@ impl GitService {
     }
 
     fn git_cli_global(args: &[&str]) -> Result<String, String> {
-        let output = std::process::Command::new(git_executable())
-            .args(args)
-            .output()
+        let mut cmd = std::process::Command::new(git_executable());
+        cmd.args(args);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let output = cmd.output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
         if output.status.success() {

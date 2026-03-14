@@ -2,9 +2,9 @@
 import { computed, ref, onMounted } from "vue";
 import type { CommitInfo, GraphNode, GraphEdge } from "@/types";
 
-const LANE_WIDTH = 16;
+const LANE_WIDTH = 20;
 const ROW_HEIGHT = 32;
-const NODE_RADIUS = 4;
+const NODE_RADIUS = 7;
 const BRANCH_COL = 130;
 const AUTHOR_COL = 140;
 const SHA_COL = 75;
@@ -121,7 +121,7 @@ const graph = computed(() => {
   return { nodes, edges, laneCount: branchOrder.length, branchLanes: laneMap };
 });
 
-const graphWidth = computed(() => Math.max((graph.value.laneCount + 1) * LANE_WIDTH + 8, 48));
+const graphWidth = computed(() => Math.max((graph.value.laneCount + 1) * LANE_WIDTH + 12, 56));
 const wcOffset = computed(() => props.hasWorkingChanges ? ROW_HEIGHT : 0);
 const totalH = computed(() => props.commits.length * ROW_HEIGHT + wcOffset.value);
 
@@ -163,12 +163,15 @@ function ep(e: GraphEdge): string {
   const x1 = lx(e.fromLane), y1 = ry(e.fromIndex);
   const x2 = lx(e.toLane), y2 = ry(e.toIndex);
   if (e.fromLane === e.toLane) return 'M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2;
-  if (Math.abs(y2 - y1) <= ROW_HEIGHT * 2) {
+  // Smooth bezier for branch transitions
+  const dy = y2 - y1;
+  if (Math.abs(dy) <= ROW_HEIGHT * 2) {
     const cy = (y1 + y2) / 2;
     return 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + cy + ', ' + x2 + ' ' + cy + ', ' + x2 + ' ' + y2;
   }
-  const my = y1 + ROW_HEIGHT * 0.7;
-  const r = Math.min(8, Math.abs(x2 - x1) / 2);
+  // Long distance: go vertical then curve over
+  const my = y1 + ROW_HEIGHT;
+  const r = Math.min(10, Math.abs(x2 - x1) / 2);
   const d = x2 > x1 ? 1 : -1;
   return 'M ' + x1 + ' ' + y1 + ' L ' + x1 + ' ' + (my - r)
     + ' Q ' + x1 + ' ' + my + ', ' + (x1 + d * r) + ' ' + my
@@ -278,19 +281,28 @@ onMounted(() => {
             fill="#8b5cf6" opacity="0.9" class="animate-pulse"
           />
 
-          <!-- Visible commit nodes only -->
+          <!-- Visible commit nodes - avatar circles with initials -->
           <template v-for="item in visibleNodes" :key="'n' + item.node.commit.sha">
             <circle
               :cx="lx(item.node.lane)" :cy="ry(item.idx)"
-              :r="NODE_RADIUS" :fill="item.node.color"
-              :stroke="selected?.sha === item.node.commit.sha ? '#fff' : item.node.color"
-              :stroke-width="selected?.sha === item.node.commit.sha ? 2 : 1"
+              :r="NODE_RADIUS"
+              :fill="avatarColor(item.node.commit.author_name)"
+              :stroke="selected?.sha === item.node.commit.sha ? '#fff' : avatarColor(item.node.commit.author_name)"
+              :stroke-width="selected?.sha === item.node.commit.sha ? 2 : 0.5"
+              :opacity="selected?.sha === item.node.commit.sha ? 1 : 0.9"
             />
+            <text
+              :x="lx(item.node.lane)" :y="ry(item.idx) + 1"
+              text-anchor="middle" dominant-baseline="middle"
+              fill="#fff" font-size="6" font-weight="700"
+              font-family="system-ui, -apple-system, sans-serif"
+              style="pointer-events: none; user-select: none;"
+            >{{ avatarInitials(item.node.commit.author_name) }}</text>
             <circle
               v-if="item.node.commit.refs.length > 0"
               :cx="lx(item.node.lane)" :cy="ry(item.idx)"
               :r="NODE_RADIUS + 3" fill="none"
-              :stroke="item.node.color" stroke-width="1.5" opacity="0.3"
+              :stroke="item.node.color" stroke-width="1.5" opacity="0.35"
             />
           </template>
         </svg>
@@ -374,3 +386,38 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Custom thin scrollbar that matches the dark theme */
+.overflow-y-auto::-webkit-scrollbar {
+  width: 5px;
+}
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.2);
+  border-radius: 10px;
+}
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.4);
+}
+
+/* Edge draw animation */
+svg path {
+  animation: draw-edge 0.4s ease-out both;
+}
+@keyframes draw-edge {
+  from { stroke-dasharray: 800; stroke-dashoffset: 800; }
+  to { stroke-dasharray: 800; stroke-dashoffset: 0; }
+}
+
+/* Node fade in */
+svg circle, svg text {
+  animation: node-in 0.3s ease-out both;
+}
+@keyframes node-in {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+</style>

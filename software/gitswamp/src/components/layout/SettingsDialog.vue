@@ -5,6 +5,7 @@ import AppButton from "@/components/ui/AppButton.vue";
 
 const props = defineProps<{
   token: string | null;
+  gitPath?: string;
 }>();
 
 const emit = defineEmits<{
@@ -102,6 +103,17 @@ function handleDelete() {
         <div v-else class="flex items-center gap-2 text-[10px] text-[#f59e0b]">
           <div class="w-1.5 h-1.5 rounded-full bg-[#f59e0b]" />
           No token configured — push/pull may fail for private repos
+        </div>
+
+        <!-- Git Path -->
+        <div class="border-t border-[#8b5cf6]/10 pt-4 mt-4">
+          <label class="text-xs font-medium text-[#e2e8f0] mb-1.5 block">Git Executable</label>
+          <div class="flex items-center gap-2 px-3 py-2 bg-[#151d28] border border-[#8b5cf6]/15 rounded text-xs font-mono text-[#a78bfa]">
+            {{ gitPath || 'Detecting...' }}
+          </div>
+          <p class="text-[10px] text-[#64748b] mt-1.5">
+            Auto-detected git path. If push/pull fails with "program not found", ensure git is installed and in your PATH.
+          </p>
         </div>
       </div>
     </div>
