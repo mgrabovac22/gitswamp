@@ -151,12 +151,10 @@ async function browseAndOpen() {
 }
 
 async function handleClone(url: string, path: string, shallow: boolean) {
-  const ok = await git.cloneRepo(url, path, shallow);
-  if (ok) {
+  const clonedPath = await git.cloneRepo(url, path, shallow);
+  if (clonedPath) {
     showCloneDialog.value = false;
-    const repoName = url.split("/").pop()?.replace(/\.git$/, "") || "repo";
-    const fullPath = path.replace(/[/\\]$/, "") + "\\" + repoName;
-    await openRepo(fullPath);
+    await openRepo(clonedPath);
   }
 }
 

@@ -687,61 +687,107 @@ impl GitService {
     }
 
     pub fn pull(path: &str, token: Option<&str>) -> Result<String, String> {
-        if let Some(t) = token {
-            Self::git_cli_with_token(path, &["pull"], t)
-        } else {
-            Self::git_cli(path, &["pull"])
+        Self::fetch_all(path, token)?;
+        let repo = Self::open(path)?;
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let branch_name = head.shorthand().unwrap_or("main").to_string();
+        let remote_ref = format!("refs/remotes/origin/{}", branch_name);
+        let remote_oid = repo.refname_to_id(&remote_ref)
+            .map_err(|_| format!("No remote tracking branch for '{}'", branch_name))?;
+        let remote_commit = repo.find_annotated_commit(remote_oid)
+            .map_err(|e| e.message().to_string())?;
+        let (analysis, _) = repo.merge_analysis(&[&remote_commit])
+            .map_err(|e| e.message().to_string())?;
+        if analysis.is_up_to_date() {
+            return Ok("Already up to date.".to_string());
         }
+        if analysis.is_fast_forward() {
+            let mut reference = repo.find_reference(&format!("refs/heads/{}", branch_name))
+                .map_err(|e| e.message().to_string())?;
+            reference.set_target(remote_oid, "pull: fast-forward")
+                .map_err(|e| e.message().to_string())?;
+            repo.set_head(&format!("refs/heads/{}", branch_name))
+                .map_err(|e| e.message().to_string())?;
+            repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+                .map_err(|e| e.message().to_string())?;
+            return Ok("Fast-forward merge complete.".to_string());
+        }
+        if analysis.is_normal() {
+            repo.merge(&[&remote_commit], None, None)
+                .map_err(|e| e.message().to_string())?;
+            let index = repo.index().map_err(|e| e.message().to_string())?;
+            if index.has_conflicts() {
+                return Err("Merge conflicts detected. Resolve them manually.".to_string());
+            }
+            let mut index = repo.index().map_err(|e| e.message().to_string())?;
+            let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
+            let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+            let head_commit = repo.head().map_err(|e| e.message().to_string())?
+                .peel_to_commit().map_err(|e| e.message().to_string())?;
+            let remote_commit_obj = repo.find_commit(remote_oid)
+                .map_err(|e| e.message().to_string())?;
+            let sig = repo.signature().map_err(|e| e.message().to_string())?;
+            let msg = format!("Merge branch '{}' of origin into {}", branch_name, branch_name);
+            repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&head_commit, &remote_commit_obj])
+                .map_err(|e| e.message().to_string())?;
+            repo.cleanup_state().map_err(|e| e.message().to_string())?;
+            return Ok("Merge complete.".to_string());
+        }
+        Err("Pull failed: unexpected merge state.".to_string())
     }
 
     pub fn push(path: &str, token: Option<&str>) -> Result<String, String> {
-        let result = if let Some(t) = token {
-            Self::git_cli_with_token(path, &["push"], t)
-        } else {
-            Self::git_cli(path, &["push"])
-        };
-        if result.is_ok() {
-            return result;
-        }
-        // Fallback: set upstream if not configured
-        let branch = Self::git_cli(path, &["rev-parse", "--abbrev-ref", "HEAD"])
-            .unwrap_or_else(|_| "main".to_string());
-        let branch = branch.trim();
+        let repo = Self::open(path)?;
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let branch_name = head.shorthand().unwrap_or("main").to_string();
+        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+
+        let mut remote = repo.find_remote("origin")
+            .map_err(|e| format!("No remote 'origin': {}", e.message()))?;
+
+        let mut callbacks = git2::RemoteCallbacks::new();
         if let Some(t) = token {
-            // Manually construct URL push with -u flag
-            let remote_url = Self::git_cli(path, &["remote", "get-url", "origin"]).ok();
-            if let Some(ref raw_url) = remote_url {
-                let url = raw_url.trim();
-                if url.starts_with("https://") {
-                    let host_and_path = if url.contains('@') {
-                        let after_proto = &url[8..];
-                        if let Some(at_pos) = after_proto.find('@') {
-                            &after_proto[at_pos + 1..]
-                        } else {
-                            after_proto
-                        }
-                    } else {
-                        &url[8..]
-                    };
-                    let authed_url = format!("https://x-access-token:{}@{}", t, host_and_path);
-                    return run_git_cmd(Some(path), &["push", "-u", &authed_url, branch]);
-                }
-            }
-            Self::git_cli(path, &["push", "-u", "origin", branch])
-        } else {
-            Self::git_cli(path, &["push", "-u", "origin", branch])
+            let tok = t.to_string();
+            callbacks.credentials(move |_url, _username, _allowed| {
+                git2::Cred::userpass_plaintext("x-access-token", &tok)
+            });
         }
+        let mut push_opts = git2::PushOptions::new();
+        push_opts.remote_callbacks(callbacks);
+
+        remote.push(&[&refspec], Some(&mut push_opts))
+            .map_err(|e| e.message().to_string())?;
+        Ok("Push complete.".to_string())
     }
 
     pub fn fetch_all(path: &str, token: Option<&str>) -> Result<String, String> {
-        if let Some(t) = token {
-            // With token, fetch from origin only (can't use --all with URL)
-            Self::git_cli_with_token(path, &["fetch"], t)
-        } else {
-            Self::git_cli(path, &["fetch", "--all"])
+        let repo = Self::open(path)?;
+        let remotes = repo.remotes().map_err(|e| e.message().to_string())?;
+        let remote_names: Vec<String> = remotes.iter()
+            .filter_map(|n| n.map(|s| s.to_string()))
+            .collect();
+
+        for remote_name in &remote_names {
+            let mut remote = repo.find_remote(remote_name)
+                .map_err(|e| e.message().to_string())?;
+
+            let mut callbacks = git2::RemoteCallbacks::new();
+            if let Some(t) = token {
+                let tok = t.to_string();
+                callbacks.credentials(move |_url, _username, _allowed| {
+                    git2::Cred::userpass_plaintext("x-access-token", &tok)
+                });
+            }
+            let mut fetch_opts = git2::FetchOptions::new();
+            fetch_opts.remote_callbacks(callbacks);
+
+            remote.fetch::<&str>(&[], Some(&mut fetch_opts), None)
+                .map_err(|e| format!("Fetch '{}' failed: {}", remote_name, e.message()))?;
         }
+        Ok(format!("Fetched {} remote(s).", remote_names.len()))
     }
 
+    #[allow(dead_code)]
     fn git_cli_with_token(path: &str, args: &[&str], token: &str) -> Result<String, String> {
         let remote_url = Self::git_cli(path, &["remote", "get-url", "origin"]).ok();
         if let Some(ref raw_url) = remote_url {
@@ -845,32 +891,87 @@ impl GitService {
     }
 
     pub fn cherry_pick(path: &str, sha: &str) -> Result<String, String> {
-        Self::git_cli(path, &["cherry-pick", sha])
+        let repo = Self::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+        repo.cherrypick(&commit, None).map_err(|e| e.message().to_string())?;
+        // Auto-commit the cherry-pick
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Err("Cherry-pick has conflicts. Resolve them manually.".to_string());
+        }
+        let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
+        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let sig = repo.signature().map_err(|e| e.message().to_string())?;
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let msg = commit.message().unwrap_or("cherry-pick");
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[&parent])
+            .map_err(|e| e.message().to_string())?;
+        repo.cleanup_state().map_err(|e| e.message().to_string())?;
+        Ok("Cherry-pick complete.".to_string())
     }
 
     pub fn revert_commit(path: &str, sha: &str) -> Result<String, String> {
-        Self::git_cli(path, &["revert", "--no-edit", sha])
+        let repo = Self::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+        repo.revert(&commit, None).map_err(|e| e.message().to_string())?;
+        // Auto-commit the revert
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Err("Revert has conflicts. Resolve them manually.".to_string());
+        }
+        let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
+        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let sig = repo.signature().map_err(|e| e.message().to_string())?;
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let msg = format!("Revert \"{}\"", commit.message().unwrap_or("").lines().next().unwrap_or(""));
+        repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&parent])
+            .map_err(|e| e.message().to_string())?;
+        repo.cleanup_state().map_err(|e| e.message().to_string())?;
+        Ok("Revert complete.".to_string())
     }
 
     pub fn reset_to_commit(path: &str, sha: &str, mode: &str) -> Result<String, String> {
-        let flag = match mode {
-            "soft" => "--soft",
-            "hard" => "--hard",
-            _ => "--mixed",
+        let repo = Self::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?.into_object();
+        let reset_type = match mode {
+            "soft" => git2::ResetType::Soft,
+            "hard" => git2::ResetType::Hard,
+            _ => git2::ResetType::Mixed,
         };
-        Self::git_cli(path, &["reset", flag, sha])
+        repo.reset(&commit, reset_type, None).map_err(|e| e.message().to_string())?;
+        Ok(format!("Reset ({}) to {}.", mode, &sha[..7.min(sha.len())]))
     }
 
     pub fn checkout_commit(path: &str, sha: &str) -> Result<String, String> {
-        Self::git_cli(path, &["checkout", sha])
+        let repo = Self::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+        let obj = commit.as_object();
+        repo.checkout_tree(obj, Some(git2::build::CheckoutBuilder::default().safe()))
+            .map_err(|e| e.message().to_string())?;
+        repo.set_head_detached(oid).map_err(|e| e.message().to_string())?;
+        Ok(format!("Checked out {}.", &sha[..7.min(sha.len())]))
     }
 
     pub fn create_tag_at(path: &str, name: &str, sha: &str) -> Result<String, String> {
-        Self::git_cli(path, &["tag", name, sha])
+        let repo = Self::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let obj = repo.find_object(oid, None).map_err(|e| e.message().to_string())?;
+        repo.tag_lightweight(name, &obj, false).map_err(|e| e.message().to_string())?;
+        Ok(format!("Tag '{}' created.", name))
     }
 
     pub fn clone_repo(url: &str, path: &str, shallow: bool, token: Option<&str>) -> Result<String, String> {
-        // Inject token into HTTPS URL if provided
+        // Determine final clone directory: path/repoName (matching git clone behavior)
+        let repo_name = url.split('/').last().unwrap_or("repo")
+            .trim_end_matches(".git");
+        let dest = Path::new(path).join(repo_name);
+
         let clone_url = if let Some(t) = token {
             if url.starts_with("https://") {
                 let host_part = if url.contains('@') {
@@ -890,17 +991,36 @@ impl GitService {
         } else {
             url.to_string()
         };
-        if shallow {
-            Self::git_cli_global(&["clone", "--depth", "1", &clone_url, path])
-        } else {
-            Self::git_cli_global(&["clone", &clone_url, path])
+
+        let mut callbacks = git2::RemoteCallbacks::new();
+        if let Some(t) = token {
+            let tok = t.to_string();
+            callbacks.credentials(move |_url, _username, _allowed| {
+                git2::Cred::userpass_plaintext("x-access-token", &tok)
+            });
         }
+        let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.remote_callbacks(callbacks);
+        if shallow {
+            fetch_opts.depth(1);
+        }
+
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(fetch_opts);
+
+        builder.clone(&clone_url, &dest)
+            .map_err(|e| e.message().to_string())?;
+        Ok(dest.to_string_lossy().to_string())
     }
 
     pub fn init_repo(path: &str, branch_name: Option<&str>) -> Result<String, String> {
         std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+        let repo = Repository::init(path).map_err(|e| e.message().to_string())?;
         let branch = branch_name.unwrap_or("main");
-        Self::git_cli(path, &["init", "-b", branch])
+        // Set initial branch name via HEAD reference
+        repo.set_head(&format!("refs/heads/{}", branch))
+            .map_err(|e| e.message().to_string())?;
+        Ok(format!("Initialized repository with branch '{}'.", branch))
     }
 
     pub fn search_commits(
@@ -923,68 +1043,54 @@ impl GitService {
         Ok(filtered)
     }
 
+    #[allow(dead_code)]
     fn git_cli_global(args: &[&str]) -> Result<String, String> {
         run_git_cmd(None, args)
     }
 
     pub fn commit_files(path: &str, sha: &str) -> Result<Vec<CommitFileInfo>, String> {
-        // Use git CLI for reliable per-file stats
-        let output = Self::git_cli(
-            path,
-            &["diff-tree", "--no-commit-id", "--numstat", "-r", sha],
-        )?;
+        let repo = Self::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+        let tree = commit.tree().map_err(|e| e.message().to_string())?;
 
-        let mut files = Vec::new();
-        for line in output.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
-                let additions = parts[0].parse::<usize>().unwrap_or(0);
-                let deletions = parts[1].parse::<usize>().unwrap_or(0);
-                let file_path = parts[2].to_string();
-                files.push(CommitFileInfo {
-                    path: file_path,
-                    status: if additions > 0 && deletions > 0 {
-                        "modified".to_string()
-                    } else if additions > 0 {
-                        "added".to_string()
-                    } else if deletions > 0 {
-                        "deleted".to_string()
-                    } else {
-                        "changed".to_string()
-                    },
-                    additions,
-                    deletions,
-                });
-            }
+        let parent_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0).map_err(|e| e.message().to_string())?
+                .tree().map_err(|e| e.message().to_string())?)
+        } else {
+            None
+        };
+
+        let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+            .map_err(|e| e.message().to_string())?;
+
+        let n = diff.deltas().len();
+        let mut files = Vec::with_capacity(n);
+        for idx in 0..n {
+            let delta = diff.get_delta(idx).unwrap();
+            let file_path = delta.new_file().path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let status = match delta.status() {
+                git2::Delta::Added => "added",
+                git2::Delta::Deleted => "deleted",
+                git2::Delta::Modified => "modified",
+                git2::Delta::Renamed => "renamed",
+                git2::Delta::Copied => "copied",
+                _ => "changed",
+            };
+            let (additions, deletions) = match git2::Patch::from_diff(&diff, idx) {
+                Ok(Some(patch)) => patch.line_stats().map(|(_, a, d)| (a, d)).unwrap_or((0, 0)),
+                _ => (0, 0),
+            };
+            files.push(CommitFileInfo {
+                path: file_path,
+                status: status.to_string(),
+                additions,
+                deletions,
+            });
         }
-
-        // If numstat gave no results, try name-status for at least file list
-        if files.is_empty() {
-            let output2 = Self::git_cli(
-                path,
-                &["diff-tree", "--no-commit-id", "--name-status", "-r", sha],
-            )?;
-            for line in output2.lines() {
-                let parts: Vec<&str> = line.splitn(2, '\t').collect();
-                if parts.len() >= 2 {
-                    let status = match parts[0] {
-                        "A" => "added",
-                        "D" => "deleted",
-                        "M" => "modified",
-                        "R" | "R100" => "renamed",
-                        "C" => "copied",
-                        _ => "changed",
-                    };
-                    files.push(CommitFileInfo {
-                        path: parts[1].to_string(),
-                        status: status.to_string(),
-                        additions: 0,
-                        deletions: 0,
-                    });
-                }
-            }
-        }
-
         Ok(files)
     }
 
@@ -1015,68 +1121,61 @@ impl GitService {
     }
 
     pub fn stash_list(path: &str) -> Result<Vec<StashInfo>, String> {
-        let output = Self::git_cli(path, &["stash", "list"])?;
-        if output.is_empty() {
-            return Ok(Vec::new());
-        }
+        let mut repo = Repository::open(path).map_err(|e| e.message().to_string())?;
         let mut stashes = Vec::new();
-        for line in output.lines() {
-            // Format: stash@{N}: WIP on branch: sha message
-            // or: stash@{N}: On branch: message
-            let idx_end = match line.find("}: ") {
-                Some(pos) => pos,
-                None => continue,
-            };
-            let index = line
-                .get(7..idx_end)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(stashes.len());
-
-            let rest = line.get(idx_end + 3..).unwrap_or("");
-            let (branch, message) = if let Some(after) = rest
+        repo.stash_foreach(|index, message, _oid| {
+            let msg = message.to_string();
+            let (branch, stash_msg) = if let Some(after) = msg
                 .strip_prefix("WIP on ")
-                .or_else(|| rest.strip_prefix("On "))
+                .or_else(|| msg.strip_prefix("On "))
             {
                 if let Some(colon_pos) = after.find(": ") {
-                    (
-                        after[..colon_pos].to_string(),
-                        after[colon_pos + 2..].to_string(),
-                    )
+                    (after[..colon_pos].to_string(), after[colon_pos + 2..].to_string())
                 } else {
-                    (String::new(), rest.to_string())
+                    (String::new(), msg.clone())
                 }
             } else {
-                (String::new(), rest.to_string())
+                (String::new(), msg.clone())
             };
-
             stashes.push(StashInfo {
                 index,
-                message,
+                message: stash_msg,
                 branch,
                 timestamp: String::new(),
             });
-        }
+            true
+        }).map_err(|e| e.message().to_string())?;
         Ok(stashes)
     }
 
     pub fn stash_push(path: &str, message: Option<&str>) -> Result<String, String> {
-        if let Some(msg) = message {
-            Self::git_cli(path, &["stash", "push", "-m", msg])
-        } else {
-            Self::git_cli(path, &["stash", "push"])
-        }
+        let mut repo = Repository::open(path).map_err(|e| e.message().to_string())?;
+        let sig = repo.signature().map_err(|e| e.message().to_string())?;
+        let msg = message.unwrap_or("WIP");
+        repo.stash_save(&sig, msg, Some(git2::StashFlags::DEFAULT))
+            .map_err(|e| e.message().to_string())?;
+        Ok("Stash saved.".to_string())
     }
 
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {
-        Self::git_cli(path, &["stash", "pop", &format!("stash@{{{}}}", index)])
+        let mut repo = Repository::open(path).map_err(|e| e.message().to_string())?;
+        repo.stash_pop(index, None)
+            .map_err(|e| e.message().to_string())?;
+        Ok("Stash popped.".to_string())
     }
 
     pub fn stash_apply(path: &str, index: usize) -> Result<String, String> {
-        Self::git_cli(path, &["stash", "apply", &format!("stash@{{{}}}", index)])
+        let mut repo = Repository::open(path).map_err(|e| e.message().to_string())?;
+        repo.stash_apply(index, None)
+            .map_err(|e| e.message().to_string())?;
+        Ok("Stash applied.".to_string())
     }
 
     pub fn stash_drop(path: &str, index: usize) -> Result<String, String> {
-        Self::git_cli(path, &["stash", "drop", &format!("stash@{{{}}}", index)])
+        let mut repo = Repository::open(path).map_err(|e| e.message().to_string())?;
+        repo.stash_drop(index)
+            .map_err(|e| e.message().to_string())?;
+        Ok("Stash dropped.".to_string())
     }
 
     pub fn tags(path: &str) -> Result<Vec<TagInfo>, String> {
@@ -1110,13 +1209,24 @@ impl GitService {
     }
 
     pub fn discard_file(path: &str, file_path: &str) -> Result<(), String> {
-        // Try checkout for tracked modified files
-        let result = Self::git_cli(path, &["checkout", "--", file_path]);
-        if result.is_ok() {
-            return Ok(());
+        let repo = Self::open(path)?;
+        // Check if the file is tracked
+        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+        let is_untracked = statuses.iter().any(|s| {
+            s.path() == Some(file_path) && s.status().contains(git2::Status::WT_NEW)
+        });
+        if is_untracked {
+            // Untracked file: just delete it
+            let full = Path::new(path).join(file_path);
+            std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+        } else {
+            // Tracked file: checkout from HEAD
+            repo.checkout_head(Some(
+                git2::build::CheckoutBuilder::default()
+                    .path(file_path)
+                    .force()
+            )).map_err(|e| e.message().to_string())?;
         }
-        // For untracked files, remove them
-        Self::git_cli(path, &["clean", "-f", "--", file_path])?;
         Ok(())
     }
 

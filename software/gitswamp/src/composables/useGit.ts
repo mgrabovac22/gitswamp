@@ -469,16 +469,16 @@ async function stashDrop(index: number = 0) {
   }
 }
 
-async function cloneRepo(url: string, path: string, shallow: boolean = false) {
+async function cloneRepo(url: string, path: string, shallow: boolean = false): Promise<string | null> {
   try {
     loading.value = true;
     error.value = null;
     const t = getTokenParam();
-    await invoke<string>("clone_repo", { url, path, shallow, token: t });
-    return true;
+    const clonedPath = await invoke<string>("clone_repo", { url, path, shallow, token: t });
+    return clonedPath;
   } catch (e) {
     error.value = String(e);
-    return false;
+    return null;
   } finally {
     loading.value = false;
   }
