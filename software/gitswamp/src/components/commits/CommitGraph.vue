@@ -477,7 +477,7 @@ onUnmounted(() => {
           @contextmenu="onCtx($event, item.node.commit)"
         >
           <!-- Branch / ref labels with local/remote icons -->
-          <div class="flex-shrink-0 flex items-center justify-end gap-0.5 overflow-hidden px-1 relative" :style="{ width: BRANCH_COL + 'px' }"
+          <div class="flex-shrink-0 flex items-center justify-start gap-0.5 overflow-hidden px-1 relative" :style="{ width: BRANCH_COL + 'px' }"
             @mouseenter="hoveredRefRow = item.idx" @mouseleave="hoveredRefRow = null"
           >
             <template v-if="topMergedRef(item.node.commit)">
