@@ -1,11 +1,22 @@
 use std::fs;
 use std::path::PathBuf;
 
-fn credentials_path() -> PathBuf {
+fn credentials_dir() -> PathBuf {
     let mut dir = dirs_next().unwrap_or_else(|| PathBuf::from("."));
     dir.push(".gitswamp");
     let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+fn credentials_path() -> PathBuf {
+    let mut dir = credentials_dir();
     dir.push("credentials");
+    dir
+}
+
+fn provider_credentials_path(provider: &str) -> PathBuf {
+    let mut dir = credentials_dir();
+    dir.push(format!("credentials_{}", provider));
     dir
 }
 
@@ -61,6 +72,41 @@ pub fn delete_token() -> Result<(), String> {
     let path = credentials_path();
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("Failed to delete token: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_provider_token(provider: String, token: String) -> Result<(), String> {
+    let path = provider_credentials_path(&provider);
+    let obfuscated = obfuscate(token.as_bytes());
+    let encoded = base64_encode(&obfuscated);
+    fs::write(&path, encoded).map_err(|e| format!("Failed to save {} token: {}", provider, e))
+}
+
+#[tauri::command]
+pub fn load_provider_token(provider: String) -> Result<Option<String>, String> {
+    let path = provider_credentials_path(&provider);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let encoded = fs::read_to_string(&path).map_err(|e| format!("Failed to read {} token: {}", provider, e))?;
+    let encoded = encoded.trim();
+    if encoded.is_empty() {
+        return Ok(None);
+    }
+    let obfuscated = base64_decode(encoded).map_err(|e| format!("Failed to decode {} token: {}", provider, e))?;
+    let bytes = obfuscate(&obfuscated);
+    String::from_utf8(bytes)
+        .map(|s| Some(s))
+        .map_err(|e| format!("Invalid {} token data: {}", provider, e))
+}
+
+#[tauri::command]
+pub fn delete_provider_token(provider: String) -> Result<(), String> {
+    let path = provider_credentials_path(&provider);
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| format!("Failed to delete {} token: {}", provider, e))?;
     }
     Ok(())
 }

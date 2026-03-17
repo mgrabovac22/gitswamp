@@ -17,6 +17,12 @@ import type { RepoInfo, CommitInfo } from "@/types";
 
 const git = useGit();
 
+// Initialize theme from localStorage
+const savedTheme = localStorage.getItem("gitswamp-theme");
+if (savedTheme === "light") {
+  document.documentElement.classList.add("light");
+}
+
 interface Tab {
   id: string;
   repo: RepoInfo | null;
@@ -36,6 +42,16 @@ const showStashDialog = ref(false);
 const showSettings = ref(false);
 const newBranchName = ref("");
 const stashMessage = ref("");
+const showEditMessageDialog = ref(false);
+const editMessageSha = ref("");
+const editMessageText = ref("");
+const showRenameDialog = ref(false);
+const renameBranchOld = ref("");
+const renameBranchNew = ref("");
+const showAnnotatedTagDialog = ref(false);
+const annotatedTagSha = ref("");
+const annotatedTagName = ref("");
+const annotatedTagMessage = ref("");
 
 // Track whether user clicked "working changes" vs a commit
 const viewingWorkingChanges = ref(false);
@@ -133,6 +149,14 @@ async function openRepo(path: string) {
         tab.path = repo.path;
       }
       addToRecent(repo);
+      // Auto-select right panel: working changes if any, otherwise last commit
+      if (git.stagedFiles.value.length > 0 || git.unstagedFiles.value.length > 0) {
+        viewingWorkingChanges.value = true;
+        git.selectedCommit.value = null;
+      } else if (git.displayedCommits.value.length > 0) {
+        viewingWorkingChanges.value = false;
+        git.selectedCommit.value = git.displayedCommits.value[0];
+      }
     }
   } catch {}
 }
@@ -195,6 +219,27 @@ function onSelectWorkingChanges() {
   git.selectedCommit.value = null;
 }
 
+async function handleCheckoutRemoteBranch(name: string) {
+  // Check if local branch exists and is behind remote
+  const localBranch = git.localBranches.value.find(b => b.name === name);
+  if (localBranch && localBranch.behind > 0) {
+    // Local exists and is behind remote - reset to remote
+    await git.resetBranchToRemote(name);
+  } else if (localBranch) {
+    // Local exists, just checkout
+    await git.checkoutBranch(name);
+  } else {
+    // No local branch, create tracking branch from remote
+    try {
+      await git.createBranch(name, "origin/" + name);
+      await git.checkoutBranch(name);
+    } catch {
+      // Fallback: try just checkout (git may auto-create tracking branch)
+      await git.checkoutBranch(name);
+    }
+  }
+}
+
 function handleCreateBranch() {
   showBranchDialog.value = true;
 }
@@ -211,6 +256,59 @@ function submitStash() {
   git.stashPush(stashMessage.value || undefined);
   showStashDialog.value = false;
   stashMessage.value = "";
+}
+
+function handleEditCommitMessage(sha: string) {
+  const commit = git.displayedCommits.value.find(c => c.sha === sha);
+  editMessageSha.value = sha;
+  editMessageText.value = commit ? commit.message : "";
+  showEditMessageDialog.value = true;
+}
+
+async function submitEditMessage() {
+  if (editMessageText.value.trim() && editMessageSha.value) {
+    await git.editCommitMessage(editMessageSha.value, editMessageText.value.trim());
+  }
+  showEditMessageDialog.value = false;
+  editMessageSha.value = "";
+  editMessageText.value = "";
+}
+
+function handleRenameBranch(name: string) {
+  renameBranchOld.value = name;
+  renameBranchNew.value = name;
+  showRenameDialog.value = true;
+}
+
+async function submitRenameBranch() {
+  if (renameBranchNew.value.trim() && renameBranchOld.value) {
+    await git.renameBranch(renameBranchOld.value, renameBranchNew.value.trim());
+  }
+  showRenameDialog.value = false;
+  renameBranchOld.value = "";
+  renameBranchNew.value = "";
+}
+
+async function handleDeleteBranchAndRemote(name: string) {
+  await git.deleteBranch(name);
+  await git.deleteRemoteBranch(name);
+}
+
+function handleCreateAnnotatedTag(sha: string) {
+  annotatedTagSha.value = sha;
+  annotatedTagName.value = "";
+  annotatedTagMessage.value = "";
+  showAnnotatedTagDialog.value = true;
+}
+
+async function submitAnnotatedTag() {
+  if (annotatedTagName.value.trim() && annotatedTagSha.value && annotatedTagMessage.value.trim()) {
+    await git.createAnnotatedTag(annotatedTagName.value.trim(), annotatedTagSha.value, annotatedTagMessage.value.trim());
+  }
+  showAnnotatedTagDialog.value = false;
+  annotatedTagName.value = "";
+  annotatedTagSha.value = "";
+  annotatedTagMessage.value = "";
 }
 
 const branchAtSha = ref("");
@@ -261,7 +359,7 @@ const openReposList = computed(() =>
 </script>
 
 <template>
-  <div class="h-screen w-screen flex flex-col bg-[#0d1017] overflow-hidden">
+  <div class="h-screen w-screen flex flex-col bg-[var(--background)] overflow-hidden">
     <TitleBar />
     <RepositoryTabs
       :tabs="tabs"
@@ -334,7 +432,19 @@ const openReposList = computed(() =>
               @reset-hard="git.resetToCommit($event, 'hard')"
               @copy-sha="() => {}"
               @create-tag-at="handleCreateTagAtCommit($event)"
+              @create-annotated-tag-at="handleCreateAnnotatedTag($event)"
               @checkout-branch="git.checkoutBranch($event)"
+              @checkout-remote-branch="handleCheckoutRemoteBranch($event)"
+              @pull="git.pull()"
+              @push="git.push()"
+              @set-upstream="(branch: string, remoteBranch: string) => git.setUpstream(branch, remoteBranch)"
+              @edit-commit-message="handleEditCommitMessage($event)"
+              @rename-branch="handleRenameBranch($event)"
+              @delete-branch="git.deleteBranch($event)"
+              @delete-remote-branch="git.deleteRemoteBranch($event)"
+              @delete-branch-and-remote="handleDeleteBranchAndRemote($event)"
+              @copy-branch-name="() => {}"
+              @reset-branch-to-remote="git.resetBranchToRemote($event)"
             />
             <CommitDetails
               :commit="git.selectedCommit.value"
@@ -366,54 +476,113 @@ const openReposList = computed(() =>
 
     <!-- Branch creation dialog -->
     <div v-if="showBranchDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showBranchDialog = false">
-      <div class="bg-[#0f1620] border border-[#8b5cf6]/20 rounded-lg p-6 w-96 shadow-2xl">
-        <h3 class="text-sm font-medium text-[#e2e8f0] mb-4">Create New Branch</h3>
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Create New Branch</h3>
         <input
           v-model="newBranchName"
           placeholder="Branch name..."
-          class="w-full px-3 py-2 bg-[#151d28] border border-[#8b5cf6]/15 rounded text-xs text-[#e2e8f0] placeholder:text-[#334155] focus:outline-none focus:ring-1 focus:ring-[#8b5cf6]/40 mb-4"
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
           @keyup.enter="submitCreateBranch(newBranchName)"
           autofocus
         />
         <div class="flex justify-end gap-2">
-          <button @click="showBranchDialog = false" class="px-3 py-1.5 text-xs text-[#64748b] hover:text-[#e2e8f0] rounded hover:bg-[#1e293b] transition-colors">Cancel</button>
-          <button @click="submitCreateBranch(newBranchName)" :disabled="!newBranchName.trim()" class="px-3 py-1.5 text-xs text-white bg-[#8b5cf6] hover:bg-[#7c3aed] rounded disabled:opacity-50 transition-colors">Create</button>
+          <button @click="showBranchDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button @click="submitCreateBranch(newBranchName)" :disabled="!newBranchName.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Create</button>
         </div>
       </div>
     </div>
 
     <!-- Stash dialog -->
     <div v-if="showStashDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showStashDialog = false">
-      <div class="bg-[#0f1620] border border-[#8b5cf6]/20 rounded-lg p-6 w-96 shadow-2xl">
-        <h3 class="text-sm font-medium text-[#e2e8f0] mb-4">Stash Changes</h3>
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Stash Changes</h3>
         <input
           v-model="stashMessage"
           placeholder="Stash message (optional)..."
-          class="w-full px-3 py-2 bg-[#151d28] border border-[#8b5cf6]/15 rounded text-xs text-[#e2e8f0] placeholder:text-[#334155] focus:outline-none focus:ring-1 focus:ring-[#8b5cf6]/40 mb-4"
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
           @keyup.enter="submitStash"
           autofocus
         />
         <div class="flex justify-end gap-2">
-          <button @click="showStashDialog = false" class="px-3 py-1.5 text-xs text-[#64748b] hover:text-[#e2e8f0] rounded hover:bg-[#1e293b] transition-colors">Cancel</button>
-          <button @click="submitStash" class="px-3 py-1.5 text-xs text-white bg-[#8b5cf6] hover:bg-[#7c3aed] rounded transition-colors">Stash</button>
+          <button @click="showStashDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button @click="submitStash" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded transition-colors">Stash</button>
         </div>
       </div>
     </div>
 
     <!-- Tag creation dialog -->
     <div v-if="showTagDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showTagDialog = false">
-      <div class="bg-[#0f1620] border border-[#8b5cf6]/20 rounded-lg p-6 w-96 shadow-2xl">
-        <h3 class="text-sm font-medium text-[#e2e8f0] mb-4">Create Tag</h3>
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Create Tag</h3>
         <input
           v-model="tagName"
           placeholder="Tag name..."
-          class="w-full px-3 py-2 bg-[#151d28] border border-[#8b5cf6]/15 rounded text-xs text-[#e2e8f0] placeholder:text-[#334155] focus:outline-none focus:ring-1 focus:ring-[#8b5cf6]/40 mb-4"
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
           @keyup.enter="submitCreateTag"
           autofocus
         />
         <div class="flex justify-end gap-2">
-          <button @click="showTagDialog = false" class="px-3 py-1.5 text-xs text-[#64748b] hover:text-[#e2e8f0] rounded hover:bg-[#1e293b] transition-colors">Cancel</button>
-          <button @click="submitCreateTag" :disabled="!tagName.trim()" class="px-3 py-1.5 text-xs text-white bg-[#8b5cf6] hover:bg-[#7c3aed] rounded disabled:opacity-50 transition-colors">Create</button>
+          <button @click="showTagDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button @click="submitCreateTag" :disabled="!tagName.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Annotated tag creation dialog -->
+    <div v-if="showAnnotatedTagDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showAnnotatedTagDialog = false">
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Create Annotated Tag</h3>
+        <input
+          v-model="annotatedTagName"
+          placeholder="Tag name..."
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-3"
+          autofocus
+        />
+        <textarea
+          v-model="annotatedTagMessage"
+          placeholder="Tag message..."
+          rows="3"
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-4"
+        />
+        <div class="flex justify-end gap-2">
+          <button @click="showAnnotatedTagDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button @click="submitAnnotatedTag" :disabled="!annotatedTagName.trim() || !annotatedTagMessage.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit commit message dialog -->
+    <div v-if="showEditMessageDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showEditMessageDialog = false">
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-[480px] shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Edit Commit Message</h3>
+        <textarea
+          v-model="editMessageText"
+          rows="5"
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-4"
+          autofocus
+        />
+        <div class="flex justify-end gap-2">
+          <button @click="showEditMessageDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button @click="submitEditMessage" :disabled="!editMessageText.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rename branch dialog -->
+    <div v-if="showRenameDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showRenameDialog = false">
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Rename Branch</h3>
+        <div class="text-[10px] text-[var(--muted-foreground)] mb-2">Rename "{{ renameBranchOld }}" to:</div>
+        <input
+          v-model="renameBranchNew"
+          placeholder="New branch name..."
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
+          @keyup.enter="submitRenameBranch"
+          autofocus
+        />
+        <div class="flex justify-end gap-2">
+          <button @click="showRenameDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button @click="submitRenameBranch" :disabled="!renameBranchNew.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Rename</button>
         </div>
       </div>
     </div>
@@ -422,13 +591,17 @@ const openReposList = computed(() =>
     <CloneDialog
       :visible="showCloneDialog"
       :token="git.githubToken.value"
+      :provider-tokens="git.providerTokens.value"
       @close="showCloneDialog = false"
       @clone="handleClone"
+      @save-provider-token="(provider: string, token: string) => git.saveProviderToken(provider, token)"
     />
     <InitDialog
       :visible="showInitDialog"
+      :provider-tokens="git.providerTokens.value"
       @close="showInitDialog = false"
       @init="handleInit"
+      @save-provider-token="(provider: string, token: string) => git.saveProviderToken(provider, token)"
     />
     <SettingsDialog
       v-if="showSettings"

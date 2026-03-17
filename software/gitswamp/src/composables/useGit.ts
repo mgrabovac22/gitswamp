@@ -26,6 +26,7 @@ const searchQuery = ref("");
 const searchResults = shallowRef<CommitInfo[] | null>(null);
 const terminalOutput = ref<string[]>([]);
 const githubToken = ref<string | null>(null);
+const providerTokens = ref<Record<string, string | null>>({});
 const hasMoreCommits = ref(true);
 const gitPath = ref("");
 
@@ -77,6 +78,7 @@ function startFileWatcher() {
         });
         if (topCheck.length > 0 && topCheck[0].sha !== commits.value[0]?.sha) {
           await refreshCommits();
+          await refreshBranches();
         }
       }
     } catch {}
@@ -100,6 +102,20 @@ async function loadSavedToken() {
   }
 }
 loadSavedToken();
+
+// Load provider tokens on init
+async function loadProviderTokens() {
+  const providers = ["gitlab", "bitbucket", "azure", "github-enterprise", "gitlab-self", "bitbucket-dc"];
+  for (const p of providers) {
+    try {
+      const token = await invoke<string | null>("load_provider_token", { provider: p });
+      providerTokens.value[p] = token || null;
+    } catch {
+      providerTokens.value[p] = null;
+    }
+  }
+}
+loadProviderTokens();
 
 // Load git path on init
 async function loadGitPath() {
@@ -129,8 +145,34 @@ async function deleteToken() {
   }
 }
 
+async function saveProviderToken(provider: string, token: string) {
+  try {
+    await invoke("save_provider_token", { provider, token });
+    providerTokens.value[provider] = token;
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function deleteProviderToken(provider: string) {
+  try {
+    await invoke("delete_provider_token", { provider });
+    providerTokens.value[provider] = null;
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
 function getTokenParam(): string | null {
   return githubToken.value || null;
+}
+
+function getTokenForUrl(url?: string): string | null {
+  if (!url) return getTokenParam();
+  if (url.includes("gitlab.com")) return providerTokens.value["gitlab"] || null;
+  if (url.includes("bitbucket.org")) return providerTokens.value["bitbucket"] || null;
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) return providerTokens.value["azure"] || null;
+  return getTokenParam();
 }
 
 async function openRepository(path: string) {
@@ -289,7 +331,7 @@ async function commitChanges(message: string) {
   if (!repoPath.value) return;
   try {
     await invoke("create_commit", { path: repoPath.value, message });
-    await Promise.all([refreshCommits(), refreshStatus()]);
+    await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
   } catch (e) {
     error.value = String(e);
   }
@@ -320,7 +362,7 @@ async function createBranch(name: string, startPoint?: string) {
       name,
       startPoint: startPoint || null,
     });
-    await refreshBranches();
+    await Promise.all([refreshBranches(), refreshCommits()]);
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -333,9 +375,93 @@ async function deleteBranch(name: string) {
   try {
     loading.value = true;
     await invoke("delete_branch", { path: repoPath.value, name });
+    await Promise.all([refreshBranches(), refreshCommits()]);
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function renameBranch(oldName: string, newName: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("rename_branch", { path: repoPath.value, oldName, newName });
+    terminalOutput.value.push("$ git branch -m " + oldName + " " + newName + "\n" + (result || "(done)"));
+    await Promise.all([refreshBranches(), refreshCommits()]);
+    repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git branch -m\nError: " + e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function deleteRemoteBranch(branch: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("delete_remote_branch", { path: repoPath.value, remote: "origin", branch });
+    terminalOutput.value.push("$ git push origin --delete " + branch + "\n" + (result || "(done)"));
+    await Promise.all([refreshBranches(), refreshCommits()]);
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git push origin --delete\nError: " + e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function setUpstream(branch: string, remoteBranch: string) {
+  if (!repoPath.value) return;
+  try {
+    const result = await invoke<string>("set_upstream", { path: repoPath.value, branch, remoteBranch });
+    terminalOutput.value.push("$ git branch --set-upstream-to=" + remoteBranch + " " + branch + "\n" + (result || "(done)"));
     await refreshBranches();
   } catch (e) {
     error.value = String(e);
+  }
+}
+
+async function editCommitMessage(sha: string, newMessage: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("edit_commit_message", { path: repoPath.value, sha, newMessage });
+    terminalOutput.value.push("$ git commit --amend\n" + (result || "(done)"));
+    await refreshCommits();
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git commit --amend\nError: " + e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function createAnnotatedTag(name: string, sha: string, message: string) {
+  if (!repoPath.value) return;
+  try {
+    await invoke<string>("create_annotated_tag", { path: repoPath.value, name, sha, message });
+    terminalOutput.value.push("$ git tag -a " + name + " " + sha.substring(0, 7) + "\n(done)");
+    await Promise.all([refreshTags(), refreshCommits()]);
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function resetBranchToRemote(branch: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("reset_branch_to_remote", { path: repoPath.value, branch });
+    terminalOutput.value.push("$ git reset --hard origin/" + branch + "\n" + (result || "(done)"));
+    repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+    await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git reset --hard origin/" + branch + "\nError: " + e);
   } finally {
     loading.value = false;
   }
@@ -387,7 +513,7 @@ async function fetchAll() {
       token: getTokenParam(),
     });
     terminalOutput.value.push("$ git fetch --all\n" + result);
-    await Promise.all([refreshBranches(), refreshCommits()]);
+    await Promise.all([refreshBranches(), refreshCommits(), refreshTags()]);
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git fetch --all\nError: " + e);
@@ -419,7 +545,7 @@ async function stashPush(message?: string) {
       message: message || null,
     });
     terminalOutput.value.push("$ git stash push" + (message ? ' -m "' + message + '"' : "") + "\n" + result);
-    await Promise.all([refreshStatus(), refreshStashes()]);
+    await Promise.all([refreshStatus(), refreshStashes(), refreshCommits()]);
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git stash push\nError: " + e);
@@ -469,11 +595,11 @@ async function stashDrop(index: number = 0) {
   }
 }
 
-async function cloneRepo(url: string, path: string, shallow: boolean = false): Promise<string | null> {
+async function cloneRepo(url: string, path: string, shallow: boolean = false, token?: string | null): Promise<string | null> {
   try {
     loading.value = true;
     error.value = null;
-    const t = getTokenParam();
+    const t = token || getTokenForUrl(url);
     const clonedPath = await invoke<string>("clone_repo", { url, path, shallow, token: t });
     return clonedPath;
   } catch (e) {
@@ -565,7 +691,7 @@ async function cherryPick(sha: string) {
     loading.value = true;
     const result = await invoke<string>("cherry_pick", { path: repoPath.value, sha });
     terminalOutput.value.push("$ git cherry-pick " + sha.substring(0, 7) + "\n" + (result || "(done)"));
-    await Promise.all([refreshCommits(), refreshStatus()]);
+    await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git cherry-pick\nError: " + e);
@@ -580,7 +706,7 @@ async function revertCommit(sha: string) {
     loading.value = true;
     const result = await invoke<string>("revert_commit", { path: repoPath.value, sha });
     terminalOutput.value.push("$ git revert " + sha.substring(0, 7) + "\n" + (result || "(done)"));
-    await Promise.all([refreshCommits(), refreshStatus()]);
+    await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git revert\nError: " + e);
@@ -595,7 +721,7 @@ async function resetToCommit(sha: string, mode: string) {
     loading.value = true;
     const result = await invoke<string>("reset_to_commit", { path: repoPath.value, sha, mode });
     terminalOutput.value.push("$ git reset --" + mode + " " + sha.substring(0, 7) + "\n" + (result || "(done)"));
-    await Promise.all([refreshCommits(), refreshStatus()]);
+    await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
     repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
   } catch (e) {
     error.value = String(e);
@@ -626,8 +752,7 @@ async function createTagAt(name: string, sha: string) {
   try {
     await invoke<string>("create_tag_at", { path: repoPath.value, name, sha });
     terminalOutput.value.push("$ git tag " + name + " " + sha.substring(0, 7) + "\n(done)");
-    await refreshTags();
-    await refreshCommits();
+    await Promise.all([refreshTags(), refreshCommits()]);
   } catch (e) {
     error.value = String(e);
   }
@@ -672,6 +797,7 @@ export function useGit() {
     displayedCommits,
     terminalOutput,
     githubToken,
+    providerTokens,
     hasMoreCommits,
     gitPath,
     openRepository,
@@ -691,6 +817,12 @@ export function useGit() {
     checkoutBranch,
     createBranch,
     deleteBranch,
+    renameBranch,
+    deleteRemoteBranch,
+    setUpstream,
+    editCommitMessage,
+    createAnnotatedTag,
+    resetBranchToRemote,
     pull,
     push,
     fetchAll,
@@ -707,6 +839,8 @@ export function useGit() {
     discardAll,
     saveToken,
     deleteToken,
+    saveProviderToken,
+    deleteProviderToken,
     startFileWatcher,
     stopFileWatcher,
     cherryPick,

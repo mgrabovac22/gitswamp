@@ -61,25 +61,25 @@ function focusInput() {
 </script>
 
 <template>
-  <div class="bg-[#0a0e14] border-t border-[#8b5cf6]/15 flex flex-col" @click="focusInput">
+  <div class="bg-[var(--terminal-bg)] border-t border-[var(--border)] flex flex-col" @click="focusInput">
     <!-- Header -->
-    <div class="flex items-center justify-between px-3 py-1.5 bg-[#0d1017] border-b border-[#8b5cf6]/10 flex-shrink-0">
-      <div class="flex items-center gap-2 text-xs text-[#64748b]">
-        <Terminal class="w-3.5 h-3.5 text-[#a78bfa]" />
-        <span class="font-medium text-[#e2e8f0]">Terminal</span>
-        <span class="text-[10px] text-[#475569]">git commands only</span>
+    <div class="flex items-center justify-between px-3 py-1.5 bg-[var(--background)] border-b border-[var(--border)] flex-shrink-0">
+      <div class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+        <Terminal class="w-3.5 h-3.5 text-[var(--primary)]" />
+        <span class="font-medium text-[var(--foreground)]">Terminal</span>
+        <span class="text-[10px] text-[var(--muted-foreground)]">git commands only</span>
       </div>
       <button
         @click="emit('close')"
-        class="p-1 rounded hover:bg-[#1e293b] transition-colors"
+        class="p-1 rounded hover:bg-[var(--secondary)] transition-colors"
       >
-        <X class="w-3.5 h-3.5 text-[#64748b]" />
+        <X class="w-3.5 h-3.5 text-[var(--muted-foreground)]" />
       </button>
     </div>
 
     <!-- Output area -->
     <div ref="outputRef" class="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs min-h-0">
-      <div v-if="output.length === 0" class="text-[#475569] py-2">
+      <div v-if="output.length === 0" class="text-[var(--muted-foreground)] py-2">
         Type a git command (e.g., "git status", "git log --oneline -5")
       </div>
       <div
@@ -88,7 +88,7 @@ function focusInput() {
         class="whitespace-pre-wrap mb-2"
       >
         <template v-for="(part, j) in line.split('\n')" :key="j">
-          <div :class="part.startsWith('$') ? 'text-[#a78bfa] font-medium' : part.startsWith('Error:') ? 'text-[#ef4444]' : 'text-[#94a3b8]'">
+          <div :class="part.startsWith('$') ? 'text-[var(--primary)] font-medium' : part.startsWith('Error:') ? 'text-[#ef4444]' : 'text-[var(--foreground)]'">
             {{ part }}
           </div>
         </template>
@@ -96,15 +96,15 @@ function focusInput() {
     </div>
 
     <!-- Input -->
-    <div class="flex items-center gap-2 px-3 py-2 border-t border-[#8b5cf6]/10 flex-shrink-0 bg-[#0d1017]">
-      <span class="text-[#a78bfa] text-xs font-mono font-bold">$</span>
+    <div class="flex items-center gap-2 px-3 py-2 border-t border-[var(--border)] flex-shrink-0 bg-[var(--background)]">
+      <span class="text-[var(--primary)] text-xs font-mono font-bold">$</span>
       <input
         ref="inputRef"
         v-model="command"
         @keyup.enter="submit"
         @keydown="onKeyDown"
         placeholder="git ..."
-        class="flex-1 bg-transparent text-xs text-[#e2e8f0] font-mono placeholder:text-[#334155] focus:outline-none"
+        class="flex-1 bg-transparent text-xs text-[var(--foreground)] font-mono placeholder:text-[var(--muted-foreground)] focus:outline-none"
       />
     </div>
   </div>

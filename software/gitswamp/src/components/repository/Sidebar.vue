@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref } from "vue";
 import {
-  Folder,
   Search,
   GitBranch,
   Archive,
@@ -68,21 +67,21 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
 </script>
 
 <template>
-  <div class="w-56 bg-[#0d1017] border-r border-[#8b5cf6]/10 flex flex-col h-full flex-shrink-0">
-    <div class="p-3 border-b border-[#8b5cf6]/10">
-      <div class="flex items-center gap-2 mb-2">
-        <Folder class="w-3.5 h-3.5 text-[#a78bfa]" />
-        <div>
-          <div class="text-[10px] text-[#64748b]">Branch</div>
-          <div class="text-xs text-[#e2e8f0] font-medium">{{ currentBranch }}</div>
+  <div class="w-56 bg-[var(--sidebar)] border-r border-[var(--sidebar-border)] flex flex-col h-full flex-shrink-0">
+    <div class="p-3 border-b border-[var(--sidebar-border)]">
+      <div class="flex items-center gap-2.5 mb-2.5 px-2 py-2 rounded-lg bg-[var(--sidebar-primary)]/15 border border-[var(--sidebar-primary)]/30">
+        <GitBranch class="w-4 h-4 text-[var(--sidebar-primary)] flex-shrink-0" />
+        <div class="flex-1 min-w-0">
+          <div class="text-[9px] text-[var(--sidebar-primary)]/70 uppercase tracking-wider font-semibold">Current Branch</div>
+          <div class="text-sm text-[var(--sidebar-primary)] font-bold truncate" :title="currentBranch">{{ currentBranch }}</div>
         </div>
       </div>
       <div class="relative">
-        <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[#64748b]" />
+        <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--muted-foreground)]" />
         <input
           v-model="branchFilter"
           placeholder="Filter branches..."
-          class="w-full h-7 pl-7 pr-2 bg-[#151921] border border-[#8b5cf6]/15 rounded text-[#e2e8f0] placeholder:text-[#64748b]/50 text-[11px] focus:outline-none focus:ring-1 focus:ring-[#8b5cf6]/40"
+          class="w-full h-7 pl-7 pr-2 bg-[var(--sidebar-accent)] border border-[var(--sidebar-border)] rounded text-[var(--sidebar-foreground)] placeholder:text-[var(--muted-foreground)]/50 text-[11px] focus:outline-none focus:ring-1 focus:ring-[var(--sidebar-ring)]/40"
         />
       </div>
     </div>
@@ -95,12 +94,11 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
         :expanded="expandedSections.local"
         @toggle="toggleSection('local')"
       >
-        <!-- Create branch button -->
         <div class="px-4 pb-1">
           <button
             v-if="!showNewBranch"
             @click="showNewBranch = true"
-            class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[#64748b] hover:text-[#a78bfa] hover:bg-[#151921] rounded transition-all"
+            class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
           >
             <Plus class="w-3 h-3" />
             New branch
@@ -111,10 +109,10 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
               @keyup.enter="submitNewBranch"
               @keyup.escape="showNewBranch = false"
               placeholder="branch-name"
-              class="flex-1 h-6 px-2 bg-[#151921] border border-[#8b5cf6]/20 rounded text-[10px] text-[#e2e8f0] placeholder:text-[#475569] focus:outline-none focus:ring-1 focus:ring-[#8b5cf6]/40"
+              class="flex-1 h-6 px-2 bg-[var(--sidebar-accent)] border border-[var(--sidebar-border)] rounded text-[10px] text-[var(--sidebar-foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--sidebar-ring)]/40"
               autofocus
             />
-            <button @click="submitNewBranch" class="p-1 rounded hover:bg-[#8b5cf6]/20 text-[#a78bfa]">
+            <button @click="submitNewBranch" class="p-1 rounded hover:bg-[var(--sidebar-primary)]/20 text-[var(--sidebar-primary)]">
               <Plus class="w-3 h-3" />
             </button>
           </div>
@@ -127,24 +125,24 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
           :class="[
             'w-full flex items-center gap-2 px-4 py-1 pl-8 text-[11px] transition-all group',
             branch.is_head
-              ? 'text-[#a78bfa] bg-[#8b5cf6]/10 font-medium'
-              : 'text-[#64748b] hover:text-[#e2e8f0] hover:bg-[#151921]',
+              ? 'text-[var(--sidebar-primary)] bg-[var(--sidebar-primary)]/10 font-medium'
+              : 'text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]',
           ]"
         >
           <span class="truncate flex-1 text-left">{{ branch.name }}</span>
           <span v-if="branch.upstream" class="flex items-center gap-0.5 flex-shrink-0">
             <span v-if="branch.ahead > 0" class="text-[9px] text-[#10b981]">↑{{ branch.ahead }}</span>
             <span v-if="branch.behind > 0" class="text-[9px] text-[#f59e0b]">↓{{ branch.behind }}</span>
-            <span v-if="branch.ahead === 0 && branch.behind === 0" class="text-[9px] text-[#475569]">✓</span>
+            <span v-if="branch.ahead === 0 && branch.behind === 0" class="text-[9px] text-[var(--muted-foreground)]">✓</span>
           </span>
-          <span v-else class="text-[9px] text-[#64748b] italic flex-shrink-0">local</span>
+          <span v-else class="text-[9px] text-[var(--muted-foreground)] italic flex-shrink-0">local</span>
           <button
             v-if="!branch.is_head"
             @click.stop="emit('deleteBranch', branch.name)"
             class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all flex-shrink-0"
             title="Delete branch"
           >
-            <Trash2 class="w-2.5 h-2.5 text-[#64748b] hover:text-[#ef4444]" />
+            <Trash2 class="w-2.5 h-2.5 text-[var(--muted-foreground)] hover:text-[#ef4444]" />
           </button>
         </button>
       </SidebarSection>
@@ -160,7 +158,7 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
           v-for="branch in filteredBranches(remoteBranches)"
           :key="branch.name"
           @click="emit('checkout', branch.name)"
-          class="w-full flex items-center gap-2 px-4 py-1 pl-10 text-[11px] text-[#64748b] hover:text-[#e2e8f0] hover:bg-[#151921] transition-all"
+          class="w-full flex items-center gap-2 px-4 py-1 pl-10 text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
         >
           <span class="truncate">{{ branch.name }}</span>
         </button>
@@ -173,20 +171,20 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
         :expanded="expandedSections.stashes"
         @toggle="toggleSection('stashes')"
       >
-        <div v-if="stashes.length === 0" class="px-4 py-2 text-[10px] text-[#475569] italic">
+        <div v-if="stashes.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
           No stashes
         </div>
         <div
           v-for="stash in stashes"
           :key="stash.index"
-          class="px-4 py-1.5 pl-8 hover:bg-[#151921] transition-all group"
+          class="px-4 py-1.5 pl-8 hover:bg-[var(--sidebar-accent)] transition-all group"
         >
-          <div class="text-[11px] text-[#e2e8f0] truncate">{{ stash.message || ('stash@{' + stash.index + '}') }}</div>
-          <div class="text-[9px] text-[#64748b]">on {{ stash.branch }}</div>
+          <div class="text-[11px] text-[var(--sidebar-foreground)] truncate">{{ stash.message || ('stash@{' + stash.index + '}') }}</div>
+          <div class="text-[9px] text-[var(--muted-foreground)]">on {{ stash.branch }}</div>
           <div class="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
               @click="emit('stashPop', stash.index)"
-              class="text-[9px] text-[#a78bfa] hover:text-[#c4b5fd] px-1 py-0.5 rounded hover:bg-[#8b5cf6]/10"
+              class="text-[9px] text-[var(--sidebar-primary)] hover:opacity-80 px-1 py-0.5 rounded hover:bg-[var(--sidebar-primary)]/10"
             >Pop</button>
             <button
               @click="emit('stashApply', stash.index)"
@@ -207,13 +205,13 @@ function filteredBranches(list: BranchInfo[]): BranchInfo[] {
         :expanded="expandedSections.tags"
         @toggle="toggleSection('tags')"
       >
-        <div v-if="tags.length === 0" class="px-4 py-2 text-[10px] text-[#475569] italic">
+        <div v-if="tags.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
           No tags
         </div>
         <div
           v-for="tag in tags"
           :key="tag.name"
-          class="px-4 py-1 pl-8 text-[11px] text-[#64748b] hover:text-[#e2e8f0] hover:bg-[#151921] transition-all"
+          class="px-4 py-1 pl-8 text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
         >
           <span class="truncate">{{ tag.name }}</span>
         </div>

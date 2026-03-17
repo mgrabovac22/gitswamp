@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { Shield, Eye, EyeOff, Check, Trash2, X } from "lucide-vue-next";
+import { Shield, Eye, EyeOff, Check, Trash2, X, Sun, Moon } from "lucide-vue-next";
 import AppButton from "@/components/ui/AppButton.vue";
 
 const props = defineProps<{
@@ -17,12 +17,25 @@ const emit = defineEmits<{
 const tokenInput = ref("");
 const showToken = ref(false);
 const saved = ref(false);
+const isDark = ref(true);
 
 onMounted(() => {
   if (props.token) {
     tokenInput.value = props.token;
   }
+  isDark.value = !document.documentElement.classList.contains("light");
 });
+
+function toggleTheme() {
+  isDark.value = !isDark.value;
+  if (isDark.value) {
+    document.documentElement.classList.remove("light");
+    localStorage.setItem("gitswamp-theme", "dark");
+  } else {
+    document.documentElement.classList.add("light");
+    localStorage.setItem("gitswamp-theme", "light");
+  }
+}
 
 function handleSave() {
   if (!tokenInput.value.trim()) return;
@@ -39,25 +52,46 @@ function handleDelete() {
 
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="emit('close')">
-    <div class="w-[440px] bg-[#111520] border border-[#8b5cf6]/20 rounded-xl shadow-2xl overflow-hidden">
+    <div class="w-[440px] bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden">
       <!-- Header -->
-      <div class="flex items-center justify-between px-5 py-4 border-b border-[#8b5cf6]/10">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
         <div class="flex items-center gap-2">
-          <Shield class="w-4 h-4 text-[#8b5cf6]" />
-          <h2 class="text-sm font-semibold text-[#e2e8f0]">Settings</h2>
+          <Shield class="w-4 h-4 text-[var(--primary)]" />
+          <h2 class="text-sm font-semibold text-[var(--foreground)]">Settings</h2>
         </div>
-        <button @click="emit('close')" class="p-1 rounded hover:bg-[#252b3d] transition-colors">
-          <X class="w-4 h-4 text-[#64748b]" />
+        <button @click="emit('close')" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors">
+          <X class="w-4 h-4 text-[var(--muted-foreground)]" />
         </button>
       </div>
 
       <!-- Content -->
       <div class="p-5 space-y-4">
-        <div>
-          <label class="text-xs font-medium text-[#e2e8f0] mb-1.5 block">GitHub Personal Access Token</label>
-          <p class="text-[10px] text-[#64748b] mb-3">
+        <!-- Theme Toggle -->
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="text-xs font-medium text-[var(--foreground)] block">Appearance</label>
+            <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Switch between dark and light mode</p>
+          </div>
+          <button
+            @click="toggleTheme"
+            class="relative w-14 h-7 rounded-full transition-colors duration-300 flex-shrink-0"
+            :class="isDark ? 'bg-[var(--accent)]' : 'bg-[var(--primary)]'"
+          >
+            <div
+              class="absolute top-0.5 w-6 h-6 rounded-full bg-white shadow-md flex items-center justify-center transition-all duration-300"
+              :class="isDark ? 'left-0.5' : 'left-[calc(100%-1.625rem)]'"
+            >
+              <Moon v-if="isDark" class="w-3.5 h-3.5 text-[var(--accent)]" />
+              <Sun v-else class="w-3.5 h-3.5 text-[var(--primary)]" />
+            </div>
+          </button>
+        </div>
+
+        <div class="border-t border-[var(--border)] pt-4">
+          <label class="text-xs font-medium text-[var(--foreground)] mb-1.5 block">GitHub Personal Access Token</label>
+          <p class="text-[10px] text-[var(--muted-foreground)] mb-3">
             Used for push, pull, and fetch over HTTPS. Generate one at
-            <span class="text-[#a78bfa]">GitHub → Settings → Developer settings → Personal access tokens</span>.
+            <span class="text-[var(--primary)]">GitHub → Settings → Developer settings → Personal access tokens</span>.
           </p>
           <div class="flex items-center gap-2">
             <div class="relative flex-1">
@@ -65,11 +99,11 @@ function handleDelete() {
                 v-model="tokenInput"
                 :type="showToken ? 'text' : 'password'"
                 placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                class="w-full px-3 py-2 pr-8 bg-[#151d28] border border-[#8b5cf6]/15 rounded text-xs text-[#e2e8f0] placeholder:text-[#334155] focus:outline-none focus:ring-1 focus:ring-[#8b5cf6]/40 font-mono"
+                class="w-full px-3 py-2 pr-8 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 font-mono"
               />
               <button
                 @click="showToken = !showToken"
-                class="absolute right-2 top-1/2 -translate-y-1/2 text-[#64748b] hover:text-[#e2e8f0] transition-colors"
+                class="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
               >
                 <EyeOff v-if="showToken" class="w-3.5 h-3.5" />
                 <Eye v-else class="w-3.5 h-3.5" />
@@ -80,7 +114,7 @@ function handleDelete() {
 
         <div class="flex items-center gap-2">
           <AppButton
-            class="flex-1 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white text-xs font-medium h-8"
+            class="flex-1 bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium h-8"
             :disabled="!tokenInput.trim()"
             @click="handleSave"
           >
@@ -106,12 +140,12 @@ function handleDelete() {
         </div>
 
         <!-- Git Path -->
-        <div class="border-t border-[#8b5cf6]/10 pt-4 mt-4">
-          <label class="text-xs font-medium text-[#e2e8f0] mb-1.5 block">Git Executable</label>
-          <div class="flex items-center gap-2 px-3 py-2 bg-[#151d28] border border-[#8b5cf6]/15 rounded text-xs font-mono text-[#a78bfa]">
+        <div class="border-t border-[var(--border)] pt-4 mt-4">
+          <label class="text-xs font-medium text-[var(--foreground)] mb-1.5 block">Git Executable</label>
+          <div class="flex items-center gap-2 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs font-mono text-[var(--primary)]">
             {{ gitPath || 'Detecting...' }}
           </div>
-          <p class="text-[10px] text-[#64748b] mt-1.5">
+          <p class="text-[10px] text-[var(--muted-foreground)] mt-1.5">
             Auto-detected git path. If push/pull fails with "program not found", ensure git is installed and in your PATH.
           </p>
         </div>

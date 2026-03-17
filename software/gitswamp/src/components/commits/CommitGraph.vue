@@ -40,7 +40,19 @@ const emit = defineEmits<{
   resetHard: [sha: string];
   copySha: [sha: string];
   createTagAt: [sha: string];
+  createAnnotatedTagAt: [sha: string];
   checkoutBranch: [name: string];
+  checkoutRemoteBranch: [name: string];
+  pull: [];
+  push: [];
+  setUpstream: [branch: string, remoteBranch: string];
+  editCommitMessage: [sha: string];
+  renameBranch: [oldName: string];
+  deleteBranch: [name: string];
+  deleteRemoteBranch: [name: string];
+  deleteBranchAndRemote: [name: string];
+  copyBranchName: [name: string];
+  resetBranchToRemote: [branch: string];
 }>();
 
 const searchInput = ref("");
@@ -55,6 +67,20 @@ const ctxX = ref(0);
 const ctxY = ref(0);
 const ctxCommit = ref<CommitInfo | null>(null);
 const ctxResetSub = ref(false);
+
+// Theme-reactive SVG background colors
+const isLight = ref(document.documentElement.classList.contains('light'));
+const themeObserver = new MutationObserver(() => {
+  isLight.value = document.documentElement.classList.contains('light');
+});
+onMounted(() => {
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+});
+onUnmounted(() => {
+  themeObserver.disconnect();
+});
+const svgBgOuter = computed(() => isLight.value ? '#d8dce6' : '#111520');
+const svgBgInner = computed(() => isLight.value ? '#eef0f5' : '#1a1f30');
 
 function nameHash(name: string): number {
   let h = 0;
@@ -92,15 +118,15 @@ function avatarSvg(name: string, cx: number, cy: number, r: number, branchColor:
       cells += '<rect x="' + (ox + s) + '" y="' + (oy + row * s) + '" width="' + s + '" height="' + s + '" rx="1" fill="' + c + '" opacity="0.9"/>';
     }
   }
-  return '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 1.5) + '" fill="#111520"/>'
-    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="#1a1f30"/>'
+  return '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 1.5) + '" fill="' + svgBgOuter.value + '"/>'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + svgBgInner.value + '"/>'
     + cells
     + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + branchColor + '" stroke-width="1.5" opacity="0.8"/>';
 }
 
 // Small merge dot (no avatar) for merge commits
 function mergeDotSvg(cx: number, cy: number, color: string): string {
-  return '<circle cx="' + cx + '" cy="' + cy + '" r="5" fill="#111520"/>'
+  return '<circle cx="' + cx + '" cy="' + cy + '" r="5" fill="' + svgBgOuter.value + '"/>'
     + '<circle cx="' + cx + '" cy="' + cy + '" r="4" fill="' + color + '" opacity="0.9"/>';
 }
 
@@ -333,8 +359,36 @@ function onScroll(e: Event) {
   }
 }
 
-function onRefDblClick(refName: string) {
-  emit("checkoutBranch", refName);
+function onRefDblClick(ref: MergedRef) {
+  if (ref.local) {
+    emit("checkoutBranch", ref.name);
+  } else {
+    emit("checkoutRemoteBranch", ref.name);
+  }
+}
+
+// Context menu - check if commit has branch refs
+function ctxHasBranch(): boolean {
+  if (!ctxCommit.value) return false;
+  return mergedRefs(ctxCommit.value).length > 0;
+}
+
+function ctxBranchName(): string {
+  if (!ctxCommit.value) return "";
+  const refs = mergedRefs(ctxCommit.value);
+  return refs.length > 0 ? refs[0].name : "";
+}
+
+function ctxBranchRef(): MergedRef | null {
+  if (!ctxCommit.value) return null;
+  const refs = mergedRefs(ctxCommit.value);
+  return refs.length > 0 ? refs[0] : null;
+}
+
+function ctxIsHeadCommit(): boolean {
+  if (!ctxCommit.value) return false;
+  const refs = mergedRefs(ctxCommit.value);
+  return refs.some(r => r.name === props.currentBranch);
 }
 
 // Context menu
@@ -355,6 +409,7 @@ function closeCtx() {
 function ctxAction(action: string) {
   if (!ctxCommit.value) return;
   const sha = ctxCommit.value.sha;
+  const branch = ctxBranchName();
   closeCtx();
   switch (action) {
     case "checkout": emit("checkout", sha); break;
@@ -369,6 +424,37 @@ function ctxAction(action: string) {
       emit("copySha", sha);
       break;
     case "tag": emit("createTagAt", sha); break;
+    case "annotated-tag": emit("createAnnotatedTagAt", sha); break;
+    case "pull": emit("pull"); break;
+    case "push": emit("push"); break;
+    case "set-upstream":
+      if (branch) emit("setUpstream", branch, "origin/" + branch);
+      break;
+    case "checkout-branch":
+      if (branch) emit("checkoutBranch", branch);
+      break;
+    case "edit-message": emit("editCommitMessage", sha); break;
+    case "rename-branch":
+      if (branch) emit("renameBranch", branch);
+      break;
+    case "delete-branch":
+      if (branch) emit("deleteBranch", branch);
+      break;
+    case "delete-remote-branch":
+      if (branch) emit("deleteRemoteBranch", branch);
+      break;
+    case "delete-both":
+      if (branch) emit("deleteBranchAndRemote", branch);
+      break;
+    case "copy-branch-name":
+      if (branch) {
+        navigator.clipboard.writeText(branch).catch(() => {});
+        emit("copyBranchName", branch);
+      }
+      break;
+    case "reset-to-remote":
+      if (branch) emit("resetBranchToRemote", branch);
+      break;
   }
 }
 
@@ -385,18 +471,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex-1 bg-[#111520] flex flex-col overflow-hidden min-w-0">
+  <div class="flex-1 bg-[var(--background)] flex flex-col overflow-hidden min-w-0">
     <!-- Header -->
-    <div class="flex-shrink-0 border-b border-[#8b5cf6]/10 bg-[#111520]/95 backdrop-blur-sm z-10">
+    <div class="flex-shrink-0 border-b border-[var(--border)] bg-[var(--background)]/95 backdrop-blur-sm z-10">
       <div class="px-3 py-1.5 flex items-center gap-2">
-        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-[#64748b] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input v-model="searchInput" @input="onSearch" placeholder="Search commits, messages, authors, SHA..." class="flex-1 bg-transparent text-xs text-[#e2e8f0] placeholder:text-[#475569] focus:outline-none" />
-        <button v-if="searchInput" @click="clearSearch" class="p-0.5 rounded hover:bg-[#252b3d] text-[#64748b] hover:text-[#e2e8f0] transition-colors">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-[var(--muted-foreground)] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input v-model="searchInput" @input="onSearch" placeholder="Search commits, messages, authors, SHA..." class="flex-1 bg-transparent text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none" />
+        <button v-if="searchInput" @click="clearSearch" class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
-        <span v-if="searchQuery" class="text-[10px] text-[#64748b]">{{ commits.length }} results</span>
+        <span v-if="searchQuery" class="text-[10px] text-[var(--muted-foreground)]">{{ commits.length }} results</span>
       </div>
-      <div class="flex items-center py-0.5 text-[9px] text-[#64748b] uppercase tracking-wider font-medium border-t border-[#8b5cf6]/5">
+      <div class="flex items-center py-0.5 text-[9px] text-[var(--muted-foreground)] uppercase tracking-wider font-medium border-t border-[var(--border)]">
         <div class="flex-shrink-0 px-2 text-right" :style="{ width: BRANCH_COL + 'px' }">Branch / Tag</div>
         <div class="flex-shrink-0 text-center" :style="{ width: graphWidth + 'px' }">Graph</div>
         <div class="flex-1 px-3">Commit Message</div>
@@ -406,7 +492,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Empty state -->
-    <div v-if="!commits.length && !hasWorkingChanges" class="flex-1 flex items-center justify-center text-sm text-[#475569]">
+    <div v-if="!commits.length && !hasWorkingChanges" class="flex-1 flex items-center justify-center text-sm text-[var(--muted-foreground)]">
       No commits to display
     </div>
 
@@ -451,19 +537,19 @@ onUnmounted(() => {
         <div
           v-if="hasWorkingChanges"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors"
-          :class="selected === null ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#1a2030]'"
+          :class="selected === null ? 'bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]'"
           :style="{ top: '0px', height: ROW_HEIGHT + 'px' }"
           @click="emit('selectWorkingChanges')"
         >
           <div class="flex-shrink-0" :style="{ width: BRANCH_COL + 'px' }" />
           <div class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
           <div class="flex-1 flex items-center px-3 min-w-0">
-            <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[#8b5cf6]/20 text-[#a78bfa] border border-[#8b5cf6]/30">
+            <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[var(--primary)]/20 text-[var(--primary)] border border-[var(--primary)]/30">
               ● Working Changes
             </span>
           </div>
-          <div class="flex-shrink-0 text-[10px] text-[#64748b] px-1" :style="{ width: AUTHOR_COL + 'px' }">—</div>
-          <div class="flex-shrink-0 text-[9px] font-mono text-[#64748b] px-1" :style="{ width: SHA_COL + 'px' }">—</div>
+          <div class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: AUTHOR_COL + 'px' }">—</div>
+          <div class="flex-shrink-0 text-[9px] font-mono text-[var(--muted-foreground)] px-1" :style="{ width: SHA_COL + 'px' }">—</div>
         </div>
 
         <!-- Commit rows -->
@@ -471,7 +557,7 @@ onUnmounted(() => {
           v-for="item in visibleNodes"
           :key="item.node.commit.sha"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
-          :class="selected?.sha === item.node.commit.sha ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#1a2030]'"
+          :class="selected?.sha === item.node.commit.sha ? 'bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]'"
           :style="{ top: (item.idx * ROW_HEIGHT + wcOffset) + 'px', height: ROW_HEIGHT + 'px' }"
           @click="emit('select', item.node.commit)"
           @contextmenu="onCtx($event, item.node.commit)"
@@ -482,10 +568,10 @@ onUnmounted(() => {
           >
             <template v-if="topMergedRef(item.node.commit)">
               <span
-                class="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-medium truncate max-w-[110px] cursor-pointer"
-                :style="{ backgroundColor: item.node.color + '20', color: item.node.color, border: '1px solid ' + item.node.color + '30' }"
+                class="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold truncate max-w-[110px] cursor-pointer shadow-sm"
+                :style="{ backgroundColor: item.node.color + '28', color: item.node.color, border: '1.5px solid ' + item.node.color + '55', textShadow: '0 0 8px ' + item.node.color + '40' }"
                 :title="topMergedRef(item.node.commit)?.name || ''"
-                @dblclick.stop="onRefDblClick(topMergedRef(item.node.commit)!.name)"
+                @dblclick.stop="onRefDblClick(topMergedRef(item.node.commit)!)"
               >
                 <svg v-if="topMergedRef(item.node.commit)?.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5" /><rect x="4" y="12" width="8" height="1.5" rx="0.5" opacity="0.6"/><rect x="6" y="13.5" width="4" height="1" rx="0.5" opacity="0.4"/></svg>
                 <svg v-if="topMergedRef(item.node.commit)?.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
@@ -493,21 +579,21 @@ onUnmounted(() => {
               </span>
               <span
                 v-if="extraMergedRefCount(item.node.commit) > 0"
-                class="flex-shrink-0 px-1 py-0.5 rounded-full text-[7px] font-bold"
-                :style="{ backgroundColor: '#f59e0b30', color: '#f59e0b' }"
+                class="flex-shrink-0 px-1 py-0.5 rounded-full text-[8px] font-bold shadow-sm"
+                :style="{ backgroundColor: '#f59e0b38', color: '#f59e0b', border: '1px solid #f59e0b44' }"
               >+{{ extraMergedRefCount(item.node.commit) }}</span>
             </template>
             <!-- Hover dropdown with all merged refs -->
             <div
               v-if="hoveredRefRow === item.idx && mergedRefs(item.node.commit).length > 1"
-              class="absolute right-0 top-full z-50 min-w-[140px] bg-[#1c2130] border border-[#8b5cf6]/20 rounded-lg shadow-2xl py-1"
+              class="absolute right-0 top-full z-50 min-w-[140px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1"
             >
               <button
                 v-for="mr in mergedRefs(item.node.commit)"
                 :key="mr.name"
-                class="w-full text-left px-2 py-1 text-[9px] hover:bg-[#8b5cf6]/15 transition-colors truncate flex items-center gap-1"
+                class="w-full text-left px-2 py-1 text-[9px] hover:bg-[var(--primary)]/15 transition-colors truncate flex items-center gap-1"
                 :style="{ color: item.node.color }"
-                @dblclick.stop="onRefDblClick(mr.name)"
+                @dblclick.stop="onRefDblClick(mr)"
               >
                 <svg v-if="mr.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5"/></svg>
                 <svg v-if="mr.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
@@ -532,13 +618,13 @@ onUnmounted(() => {
 
           <!-- Commit message -->
           <div class="flex-1 flex items-center px-3 min-w-0">
-            <span class="text-[11px] text-[#cbd5e1] truncate">{{ item.node.commit.message.split('\n')[0] }}</span>
+            <span class="text-[11px] text-[var(--foreground)] truncate opacity-85">{{ item.node.commit.message.split('\n')[0] }}</span>
           </div>
 
           <!-- Author -->
           <div class="flex-shrink-0 flex items-center gap-1 px-1" :style="{ width: AUTHOR_COL + 'px' }">
             <svg class="flex-shrink-0" :width="14" :height="14" viewBox="0 0 14 14" v-html="avatarSvg(item.node.commit.author_name, 7, 7, 6, item.node.color)" />
-            <span class="text-[10px] text-[#64748b] truncate">{{ item.node.commit.author_name }}</span>
+            <span class="text-[10px] text-[var(--muted-foreground)] truncate">{{ item.node.commit.author_name }}</span>
           </div>
 
           <!-- SHA -->
@@ -550,7 +636,7 @@ onUnmounted(() => {
         <!-- Load more -->
         <div
           v-if="hasMore"
-          class="absolute left-0 right-0 flex items-center justify-center text-[9px] text-[#64748b]"
+          class="absolute left-0 right-0 flex items-center justify-center text-[9px] text-[var(--muted-foreground)]"
           :style="{ top: totalH + 'px', height: ROW_HEIGHT + 'px' }"
         >
           Loading more commits...
@@ -562,35 +648,74 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="ctxVisible"
-        class="fixed z-[100] min-w-[200px] bg-[#1c2130] border border-[#8b5cf6]/20 rounded-lg shadow-2xl py-1 text-[11px] text-[#e2e8f0]"
+        class="fixed z-[100] min-w-[240px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1 text-[11px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
         :style="{ left: ctxX + 'px', top: ctxY + 'px' }"
         @click.stop
       >
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('checkout')">Checkout this commit</button>
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('branch')">Create branch here</button>
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('cherry-pick')">Cherry pick commit</button>
+        <!-- Branch-specific actions (shown when commit has branch refs) -->
+        <template v-if="ctxHasBranch()">
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('pull')">Pull (fast-forward if possible)</button>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('push')">Push</button>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('set-upstream')">Set Upstream</button>
+          <div class="border-t border-[var(--border)] my-1" />
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('checkout-branch')">Checkout</button>
+          <div class="border-t border-[var(--border)] my-1" />
+        </template>
+
+        <!-- Common actions -->
+        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('checkout')">Checkout this commit</button>
+        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('branch')">Create branch here</button>
+        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('cherry-pick')">Cherry pick commit</button>
+
+        <!-- Reset submenu -->
         <div class="relative">
           <button
-            class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors flex items-center justify-between"
+            class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors flex items-center justify-between"
             @click.stop="ctxResetSub = !ctxResetSub"
           >
-            <span>Reset to this commit</span>
-            <svg class="w-3 h-3 text-[#64748b]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <span>Reset {{ currentBranch }} to this commit</span>
+            <svg class="w-3 h-3 text-[var(--muted-foreground)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
           <div
             v-if="ctxResetSub"
-            class="absolute left-full top-0 ml-0.5 min-w-[200px] bg-[#1c2130] border border-[#8b5cf6]/20 rounded-lg shadow-2xl py-1"
+            class="absolute left-full top-0 ml-0.5 min-w-[240px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1"
           >
-            <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('reset-soft')">Soft – keep all changes</button>
-            <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('reset-mixed')">Mixed – keep working copy but reset index</button>
+            <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-soft')">Soft – keep all changes staged</button>
+            <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-mixed')">Mixed – keep working copy but reset index</button>
             <button class="w-full text-left px-3 py-1.5 hover:bg-[#ef4444]/15 text-[#ef4444] transition-colors" @click="ctxAction('reset-hard')">Hard – discard all changes</button>
           </div>
         </div>
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('revert')">Revert commit</button>
-        <div class="border-t border-[#8b5cf6]/10 my-1" />
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('copy-sha')">Copy commit SHA</button>
-        <div class="border-t border-[#8b5cf6]/10 my-1" />
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[#8b5cf6]/15 transition-colors" @click="ctxAction('tag')">Create tag here</button>
+
+        <!-- Branch-specific: edit message (only HEAD) -->
+        <template v-if="ctxHasBranch() && ctxIsHeadCommit()">
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('edit-message')">Edit commit message</button>
+        </template>
+
+        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('revert')">Revert commit</button>
+
+        <div class="border-t border-[var(--border)] my-1" />
+
+        <!-- Branch management (only for commits with branches) -->
+        <template v-if="ctxHasBranch()">
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('rename-branch')">Rename {{ ctxBranchName() }}</button>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('delete-branch')">Delete {{ ctxBranchName() }}</button>
+          <button v-if="ctxBranchRef()?.remote" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('delete-remote-branch')">Delete origin/{{ ctxBranchName() }}</button>
+          <button v-if="ctxBranchRef()?.local && ctxBranchRef()?.remote" class="w-full text-left px-3 py-1.5 hover:bg-[#ef4444]/15 text-[#ef4444] transition-colors" @click="ctxAction('delete-both')">Delete {{ ctxBranchName() }} and origin/{{ ctxBranchName() }}</button>
+          <div class="border-t border-[var(--border)] my-1" />
+          <button v-if="ctxBranchRef()?.remote && ctxBranchRef()?.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-to-remote')">Reset {{ ctxBranchName() }} to origin/{{ ctxBranchName() }}</button>
+        </template>
+
+        <!-- Copy actions -->
+        <template v-if="ctxHasBranch()">
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('copy-branch-name')">Copy branch name</button>
+        </template>
+        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('copy-sha')">Copy commit SHA</button>
+
+        <div class="border-t border-[var(--border)] my-1" />
+
+        <!-- Tag actions -->
+        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('tag')">Create tag here</button>
+        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('annotated-tag')">Create annotated tag here</button>
       </div>
     </Teleport>
   </div>
