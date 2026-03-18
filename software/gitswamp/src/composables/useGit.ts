@@ -18,6 +18,8 @@ const branches = ref<BranchInfo[]>([]);
 const fileStatuses = ref<FileStatusInfo[]>([]);
 const selectedCommit = ref<CommitInfo | null>(null);
 const selectedCommitFiles = ref<CommitFileInfo[]>([]);
+const selectedStash = ref<StashInfo | null>(null);
+const selectedStashFiles = ref<CommitFileInfo[]>([]);
 const stashes = ref<StashInfo[]>([]);
 const tags = ref<TagInfo[]>([]);
 const loading = ref(false);
@@ -281,6 +283,30 @@ async function getCommitFiles(sha: string) {
     error.value = String(e);
     selectedCommitFiles.value = [];
   }
+}
+
+async function selectStash(stash: StashInfo | null) {
+  selectedStash.value = stash;
+  selectedCommit.value = null;
+  selectedCommitFiles.value = [];
+  if (stash && repoPath.value) {
+    try {
+      selectedStashFiles.value = await invoke<CommitFileInfo[]>("stash_files", {
+        path: repoPath.value,
+        index: stash.index,
+      });
+    } catch (e) {
+      error.value = String(e);
+      selectedStashFiles.value = [];
+    }
+  } else {
+    selectedStashFiles.value = [];
+  }
+}
+
+function clearStashSelection() {
+  selectedStash.value = null;
+  selectedStashFiles.value = [];
 }
 
 async function stageFile(filePath: string) {
@@ -758,6 +784,18 @@ async function createTagAt(name: string, sha: string) {
   }
 }
 
+async function deleteTag(name: string) {
+  if (!repoPath.value) return;
+  try {
+    const result = await invoke<string>("delete_tag", { path: repoPath.value, name });
+    terminalOutput.value.push("$ git tag -d " + name + "\n" + (result || "(done)"));
+    await Promise.all([refreshTags(), refreshCommits()]);
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push("$ git tag -d " + name + "\nError: " + e);
+  }
+}
+
 async function searchGithubRepos(query: string): Promise<GithubRepo[]> {
   if (!githubToken.value) {
     error.value = "No GitHub token configured. Go to Settings to add one.";
@@ -787,6 +825,8 @@ export function useGit() {
     unstagedFiles,
     selectedCommit,
     selectedCommitFiles,
+    selectedStash,
+    selectedStashFiles,
     stashes,
     tags,
     currentBranch,
@@ -830,6 +870,8 @@ export function useGit() {
     stashPop,
     stashApply,
     stashDrop,
+    selectStash,
+    clearStashSelection,
     cloneRepo,
     initRepo,
     searchCommits,
@@ -848,6 +890,7 @@ export function useGit() {
     resetToCommit,
     checkoutCommit,
     createTagAt,
+    deleteTag,
     searchGithubRepos,
   };
 }

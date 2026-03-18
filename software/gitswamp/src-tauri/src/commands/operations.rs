@@ -52,6 +52,11 @@ pub fn create_tag_at(path: String, name: String, sha: String) -> Result<String, 
 }
 
 #[tauri::command]
+pub fn delete_tag(path: String, name: String) -> Result<String, String> {
+    GitService::delete_tag(&path, &name)
+}
+
+#[tauri::command]
 pub fn search_github_repos(token: String, query: String) -> Result<Vec<crate::models::GithubRepo>, String> {
     crate::services::git_service::GitService::search_github_repos(&token, &query)
 }

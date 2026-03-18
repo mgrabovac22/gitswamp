@@ -13,7 +13,7 @@ import SettingsDialog from "@/components/layout/SettingsDialog.vue";
 import { useGit } from "@/composables/useGit";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ref, watch, onMounted, computed } from "vue";
-import type { RepoInfo, CommitInfo } from "@/types";
+import type { RepoInfo, CommitInfo, StashInfo } from "@/types";
 
 const git = useGit();
 
@@ -53,8 +53,14 @@ const annotatedTagSha = ref("");
 const annotatedTagName = ref("");
 const annotatedTagMessage = ref("");
 
-// Track whether user clicked "working changes" vs a commit
+// Track whether user clicked "working changes" vs a commit vs a stash
 const viewingWorkingChanges = ref(false);
+const viewingStash = ref(false);
+
+// Whether to show the details panel (only when something is selected)
+const showDetailsPanel = computed(() =>
+  viewingWorkingChanges.value || viewingStash.value || git.selectedCommit.value !== null
+);
 
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
 
@@ -211,12 +217,23 @@ function clearRecent() {
 
 function onSelectCommit(commit: CommitInfo | null) {
   viewingWorkingChanges.value = false;
+  viewingStash.value = false;
   git.selectedCommit.value = commit;
+  git.clearStashSelection();
 }
 
 function onSelectWorkingChanges() {
   viewingWorkingChanges.value = true;
+  viewingStash.value = false;
   git.selectedCommit.value = null;
+  git.clearStashSelection();
+}
+
+function onSelectStash(stash: StashInfo) {
+  viewingWorkingChanges.value = false;
+  viewingStash.value = true;
+  git.selectedCommit.value = null;
+  git.selectStash(stash);
 }
 
 async function handleCheckoutRemoteBranch(name: string) {
@@ -412,12 +429,15 @@ const openReposList = computed(() =>
         <div class="flex-1 flex flex-col overflow-hidden">
           <div class="flex-1 flex overflow-hidden" :style="showTerminal ? 'height: 75%' : ''">
             <CommitGraph
+              :class="showDetailsPanel ? '' : 'flex-1'"
               :commits="git.displayedCommits.value"
               :selected="git.selectedCommit.value"
               :search-query="git.searchQuery.value"
               :has-working-changes="hasWorkingChanges"
               :current-branch="git.currentBranch.value"
               :has-more="git.hasMoreCommits.value"
+              :stashes="git.stashes.value"
+              :tags="git.tags.value"
               @select="onSelectCommit"
               @search="git.searchCommits($event)"
               @clear-search="git.clearSearch()"
@@ -445,13 +465,22 @@ const openReposList = computed(() =>
               @delete-branch-and-remote="handleDeleteBranchAndRemote($event)"
               @copy-branch-name="() => {}"
               @reset-branch-to-remote="git.resetBranchToRemote($event)"
+              @delete-tag="git.deleteTag($event)"
+              @stash-pop="git.stashPop($event)"
+              @stash-apply="git.stashApply($event)"
+              @stash-drop="git.stashDrop($event)"
+              @select-stash="onSelectStash($event)"
             />
             <CommitDetails
+              v-if="showDetailsPanel"
               :commit="git.selectedCommit.value"
               :staged-files="git.stagedFiles.value"
               :unstaged-files="git.unstagedFiles.value"
               :commit-files="git.selectedCommitFiles.value"
               :is-working-changes="viewingWorkingChanges"
+              :is-stash="viewingStash"
+              :selected-stash="git.selectedStash.value"
+              :stash-files="git.selectedStashFiles.value"
               @stage="git.stageFile($event)"
               @unstage="git.unstageFile($event)"
               @stage-all="git.stageAll()"
@@ -459,6 +488,9 @@ const openReposList = computed(() =>
               @commit="git.commitChanges($event)"
               @discard="git.discardFile($event)"
               @discard-all="git.discardAll()"
+              @stash-pop="git.stashPop($event)"
+              @stash-apply="git.stashApply($event)"
+              @stash-drop="git.stashDrop($event)"
             />
           </div>
           <!-- Terminal panel (25% height) -->

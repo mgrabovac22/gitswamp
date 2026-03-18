@@ -1,4 +1,5 @@
 use crate::models::StashInfo;
+use crate::models::CommitFileInfo;
 use crate::services::git_service::GitService;
 
 #[tauri::command]
@@ -24,4 +25,9 @@ pub fn stash_apply(path: String, index: usize) -> Result<String, String> {
 #[tauri::command]
 pub fn stash_drop(path: String, index: usize) -> Result<String, String> {
     GitService::stash_drop(&path, index)
+}
+
+#[tauri::command]
+pub fn stash_files(path: String, index: usize) -> Result<Vec<CommitFileInfo>, String> {
+    GitService::stash_files(&path, index)
 }

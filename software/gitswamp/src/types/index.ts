@@ -45,6 +45,7 @@ export interface StashInfo {
   message: string
   branch: string
   timestamp: string
+  parent_sha: string
 }
 
 export interface TagInfo {

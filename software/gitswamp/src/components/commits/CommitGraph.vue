@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from "vue";
-import type { CommitInfo, GraphNode, GraphEdge } from "@/types";
+import type { CommitInfo, GraphNode, GraphEdge, StashInfo, TagInfo } from "@/types";
 
 const LANE_WIDTH = 20;
 const ROW_HEIGHT = 28;
@@ -23,6 +23,8 @@ const props = defineProps<{
   hasWorkingChanges: boolean;
   currentBranch: string;
   hasMore?: boolean;
+  stashes?: StashInfo[];
+  tags?: TagInfo[];
 }>();
 
 const emit = defineEmits<{
@@ -53,6 +55,11 @@ const emit = defineEmits<{
   deleteBranchAndRemote: [name: string];
   copyBranchName: [name: string];
   resetBranchToRemote: [branch: string];
+  deleteTag: [name: string];
+  stashPop: [index: number];
+  stashApply: [index: number];
+  stashDrop: [index: number];
+  selectStash: [stash: StashInfo];
 }>();
 
 const searchInput = ref("");
@@ -60,6 +67,7 @@ const scrollContainer = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
 const viewportHeight = ref(600);
 const hoveredRefRow = ref<number | null>(null);
+const hoveredStashRow = ref<number | null>(null);
 
 // Context menu state
 const ctxVisible = ref(false);
@@ -67,6 +75,15 @@ const ctxX = ref(0);
 const ctxY = ref(0);
 const ctxCommit = ref<CommitInfo | null>(null);
 const ctxResetSub = ref(false);
+const refCtxVisible = ref(false);
+const refCtxX = ref(0);
+const refCtxY = ref(0);
+const refCtxRef = ref<DisplayRef | null>(null);
+const stashCtxVisible = ref(false);
+const stashCtxX = ref(0);
+const stashCtxY = ref(0);
+const stashCtxItem = ref<(StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) | null>(null);
+const stashCtxItems = ref<(StashInfo & { parentIdx: number; lane: number; offsetIdx: number })[]>([]);
 
 // Theme-reactive SVG background colors
 const isLight = ref(document.documentElement.classList.contains('light'));
@@ -248,7 +265,58 @@ const graph = computed(() => {
   return { nodes, edges, laneCount, branchLanes: laneMap };
 });
 
-const graphWidth = computed(() => Math.max((graph.value.laneCount + 1) * LANE_WIDTH + 8, 40));
+// Stash nodes mapped to their parent commit positions
+const STASH_COLOR = '#f59e0b';
+
+// Stash nodes — each stash gets its own lane offset to avoid overlap
+const stashNodes = computed(() => {
+  if (!props.stashes?.length) return [];
+  const shaIdx = new Map<string, number>();
+  props.commits.forEach((c, i) => shaIdx.set(c.sha, i));
+
+  // Count per parent to assign offsetIdx
+  const parentCount = new Map<number, number>();
+
+  return props.stashes.map(s => {
+    const parentIdx = shaIdx.get(s.parent_sha) ?? -1;
+    if (parentIdx < 0) return null;
+    const parentLane = graph.value.nodes[parentIdx]?.lane ?? 0;
+
+    const offsetIdx = parentCount.get(parentIdx) ?? 0;
+    parentCount.set(parentIdx, offsetIdx + 1);
+
+    // Each stash at the same parent goes one further lane right
+    const stashLane = parentLane + 1 + offsetIdx;
+    return { ...s, parentIdx, lane: stashLane, offsetIdx };
+  }).filter(Boolean) as (StashInfo & { parentIdx: number; lane: number; offsetIdx: number })[];
+});
+
+// Working changes lane - find a free lane that won't cross edges
+const wcLane = computed(() => {
+  if (!props.hasWorkingChanges) return 0;
+  const currentBranchLane = graph.value.branchLanes.get(props.currentBranch) ?? 0;
+  return currentBranchLane;
+});
+
+// Find the index of the HEAD commit (tip of current branch)
+const headCommitIndex = computed(() => {
+  for (let i = 0; i < props.commits.length; i++) {
+    const refs = mergedRefs(props.commits[i]);
+    if (refs.some(r => r.name === props.currentBranch && r.local)) {
+      return i;
+    }
+  }
+  return 0;
+});
+
+const graphWidth = computed(() => {
+  // Account for stash lanes
+  const maxStashLane = stashNodes.value.length > 0
+    ? Math.max(...stashNodes.value.map(s => s.lane))
+    : 0;
+  const totalLanes = Math.max(graph.value.laneCount, maxStashLane + 1);
+  return Math.max((totalLanes + 1) * LANE_WIDTH + 8, 40);
+});
 const wcOffset = computed(() => props.hasWorkingChanges ? ROW_HEIGHT : 0);
 const totalH = computed(() => props.commits.length * ROW_HEIGHT + wcOffset.value);
 
@@ -281,8 +349,25 @@ const visibleEdges = computed(() => {
   });
 });
 
+
+// Group stashes by parent commit index for showing badges
+const stashesByParent = computed(() => {
+  const map = new Map<number, (StashInfo & { parentIdx: number; lane: number; offsetIdx: number })[]>();
+  for (const s of stashNodes.value) {
+    const arr = map.get(s.parentIdx);
+    if (arr) arr.push(s);
+    else map.set(s.parentIdx, [s]);
+  }
+  return map;
+});
+
+function stashesAtCommit(idx: number) {
+  return stashesByParent.value.get(idx) ?? [];
+}
+
 function lx(lane: number) { return lane * LANE_WIDTH + LANE_WIDTH / 2 + 4; }
 function ry(index: number) { return index * ROW_HEIGHT + ROW_HEIGHT / 2 + wcOffset.value; }
+
 
 function ep(e: GraphEdge): string {
   const x1 = lx(e.fromLane), y1 = ry(e.fromIndex);
@@ -299,22 +384,44 @@ function ep(e: GraphEdge): string {
     + ' L ' + x2 + ' ' + y2;
 }
 
+// Working changes edge: from bottom edge of WC rect to top edge of HEAD commit node
 function wcEdge(): string {
-  const cl = graph.value.branchLanes.get(props.currentBranch) ?? 0;
-  const x = lx(cl);
-  return 'M ' + x + ' ' + (ROW_HEIGHT / 2) + ' L ' + x + ' ' + ry(0);
+  const x = lx(wcLane.value);
+  const startY = ROW_HEIGHT / 2 + 7;          // bottom edge of WC rect (rect h=14, cy=ROW_HEIGHT/2)
+  const endY   = ry(headCommitIndex.value) - 10; // top edge of HEAD avatar (NODE_RADIUS=10)
+  return 'M ' + x + ' ' + startY + ' L ' + x + ' ' + endY;
 }
 
-function wcLaneX(): number { return lx(graph.value.branchLanes.get(props.currentBranch) ?? 0); }
+function wcLaneX(): number { return lx(wcLane.value); }
 
 function brefs(commit: CommitInfo): string[] {
   return commit.refs.filter(r => !r.includes("HEAD") && !r.includes("->"));
 }
 
+const tagNameSet = computed(() => new Set((props.tags ?? []).map(t => t.name)));
+
+function commitTags(commit: CommitInfo): TagInfo[] {
+  const tags = props.tags ?? [];
+  return tags.filter(t => t.sha === commit.sha);
+}
+
+function branchRefs(commit: CommitInfo): string[] {
+  const tags = tagNameSet.value;
+  return brefs(commit).filter(r => !tags.has(r));
+}
+
 // Merge local + origin refs: e.g. "main" and "origin/main" → { name: "main", local: true, remote: true }
 interface MergedRef { name: string; local: boolean; remote: boolean; }
+interface DisplayRef {
+  kind: "branch" | "tag";
+  key: string;
+  name: string;
+  local?: boolean;
+  remote?: boolean;
+}
+
 function mergedRefs(commit: CommitInfo): MergedRef[] {
-  const raw = brefs(commit);
+  const raw = branchRefs(commit);
   const map = new Map<string, MergedRef>();
   for (const r of raw) {
     if (r.startsWith("origin/")) {
@@ -331,13 +438,31 @@ function mergedRefs(commit: CommitInfo): MergedRef[] {
   return Array.from(map.values());
 }
 
-function topMergedRef(commit: CommitInfo): MergedRef | null {
-  const refs = mergedRefs(commit);
+function displayRefs(commit: CommitInfo): DisplayRef[] {
+  const refs: DisplayRef[] = mergedRefs(commit).map(r => ({
+    kind: "branch",
+    key: "branch:" + r.name,
+    name: r.name,
+    local: r.local,
+    remote: r.remote,
+  }));
+  for (const t of commitTags(commit)) {
+    refs.push({
+      kind: "tag",
+      key: "tag:" + t.name,
+      name: t.name,
+    });
+  }
+  return refs;
+}
+
+function topDisplayRef(commit: CommitInfo): DisplayRef | null {
+  const refs = displayRefs(commit);
   return refs.length > 0 ? refs[0] : null;
 }
 
-function extraMergedRefCount(commit: CommitInfo): number {
-  return Math.max(0, mergedRefs(commit).length - 1);
+function extraDisplayRefCount(commit: CommitInfo): number {
+  return Math.max(0, displayRefs(commit).length - 1);
 }
 
 let st: ReturnType<typeof setTimeout> | null = null;
@@ -359,11 +484,137 @@ function onScroll(e: Event) {
   }
 }
 
-function onRefDblClick(ref: MergedRef) {
+function onRefDblClick(ref: DisplayRef, commit: CommitInfo) {
+  if (ref.kind === "tag") {
+    emit("checkout", commit.sha);
+    return;
+  }
   if (ref.local) {
     emit("checkoutBranch", ref.name);
   } else {
     emit("checkoutRemoteBranch", ref.name);
+  }
+}
+
+function onRefContextMenu(event: MouseEvent, ref: DisplayRef) {
+  event.preventDefault();
+  event.stopPropagation();
+  refCtxRef.value = ref;
+  // Position context menu within viewport
+  const menuWidth = 200;
+  const menuHeight = 160;
+  let x = event.clientX;
+  let y = event.clientY;
+  if (x + menuWidth > window.innerWidth) {
+    x = window.innerWidth - menuWidth - 8;
+  }
+  if (y + menuHeight > window.innerHeight) {
+    y = window.innerHeight - menuHeight - 8;
+  }
+  refCtxX.value = x;
+  refCtxY.value = y;
+  refCtxVisible.value = true;
+  ctxVisible.value = false;
+}
+
+function onStashClick(event: MouseEvent, stash: StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) {
+  // Left-click selects the stash to show its files
+  event.stopPropagation();
+  emit("selectStash", stash);
+  // Deselect current commit
+  emit("select", null);
+}
+
+function onStashContextMenu(event: MouseEvent, stash: StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) {
+  // Right-click shows context menu for single stash
+  event.preventDefault();
+  event.stopPropagation();
+  stashCtxItem.value = stash;
+  stashCtxItems.value = [];
+  const menuWidth = 180;
+  const menuHeight = 140;
+  let x = event.clientX;
+  let y = event.clientY;
+  if (x + menuWidth > window.innerWidth) {
+    x = window.innerWidth - menuWidth - 8;
+  }
+  if (y + menuHeight > window.innerHeight) {
+    y = window.innerHeight - menuHeight - 8;
+  }
+  stashCtxX.value = x;
+  stashCtxY.value = y;
+  stashCtxVisible.value = true;
+  ctxVisible.value = false;
+  refCtxVisible.value = false;
+}
+
+// Right-click on stash badge — if multiple stashes, show picker
+function onStashBadgeContextMenu(event: MouseEvent, stashes: (StashInfo & { parentIdx: number; lane: number; offsetIdx: number })[]) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (stashes.length === 1) {
+    onStashContextMenu(event, stashes[0]);
+    return;
+  }
+  stashCtxItems.value = stashes;
+  stashCtxItem.value = null;
+  const menuWidth = 220;
+  const menuHeight = 60 + stashes.length * 72;
+  let x = event.clientX;
+  let y = event.clientY;
+  if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 8;
+  if (y + menuHeight > window.innerHeight) y = Math.max(8, window.innerHeight - menuHeight - 8);
+  stashCtxX.value = x;
+  stashCtxY.value = y;
+  stashCtxVisible.value = true;
+  ctxVisible.value = false;
+  refCtxVisible.value = false;
+}
+
+function closeStashCtx() {
+  stashCtxVisible.value = false;
+  stashCtxItem.value = null;
+  stashCtxItems.value = [];
+}
+
+function stashAction(action: "pop" | "apply" | "drop" | "view", item?: StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) {
+  const target = item ?? stashCtxItem.value;
+  if (!target) return;
+  const idx = target.index;
+  closeStashCtx();
+  if (action === "pop") emit("stashPop", idx);
+  if (action === "apply") emit("stashApply", idx);
+  if (action === "drop") emit("stashDrop", idx);
+}
+
+function closeRefCtx() {
+  refCtxVisible.value = false;
+  refCtxRef.value = null;
+}
+
+function refAction(action: string) {
+  if (!refCtxRef.value) return;
+  const r = refCtxRef.value;
+  closeRefCtx();
+  switch (action) {
+    case "checkout-local":
+      emit("checkoutBranch", r.name);
+      break;
+    case "checkout-remote":
+      emit("checkoutRemoteBranch", r.name);
+      break;
+    case "delete-local":
+      emit("deleteBranch", r.name);
+      break;
+    case "delete-remote":
+      emit("deleteRemoteBranch", r.name);
+      break;
+    case "copy-name":
+      navigator.clipboard.writeText(r.name).catch(() => {});
+      break;
+    case "delete-tag":
+      emit("deleteTag", r.name);
+      break;
   }
 }
 
@@ -395,8 +646,19 @@ function ctxIsHeadCommit(): boolean {
 function onCtx(e: MouseEvent, commit: CommitInfo) {
   e.preventDefault();
   ctxCommit.value = commit;
-  ctxX.value = e.clientX;
-  ctxY.value = e.clientY;
+  // Position context menu within viewport
+  const menuWidth = 260;
+  const menuMaxHeight = window.innerHeight * 0.8;
+  let x = e.clientX;
+  let y = e.clientY;
+  if (x + menuWidth > window.innerWidth) {
+    x = window.innerWidth - menuWidth - 8;
+  }
+  if (y + menuMaxHeight > window.innerHeight) {
+    y = Math.max(8, window.innerHeight - menuMaxHeight - 8);
+  }
+  ctxX.value = x;
+  ctxY.value = y;
   ctxResetSub.value = false;
   ctxVisible.value = true;
 }
@@ -404,6 +666,8 @@ function onCtx(e: MouseEvent, commit: CommitInfo) {
 function closeCtx() {
   ctxVisible.value = false;
   ctxResetSub.value = false;
+  closeRefCtx();
+  closeStashCtx();
 }
 
 function ctxAction(action: string) {
@@ -458,6 +722,18 @@ function ctxAction(action: string) {
   }
 }
 
+function topRefStyle(commit: CommitInfo, color: string): Record<string, string> {
+  const ref = topDisplayRef(commit);
+  if (!ref) return {};
+  if (ref.kind === 'tag') {
+    return { backgroundColor: '#f59e0b2a', color: '#f59e0b', border: '1.5px solid #f59e0b66', textShadow: '0 0 8px #f59e0b40' };
+  }
+  if (ref.local && ref.name === props.currentBranch) {
+    return { backgroundColor: color + '35', color, border: '2px solid ' + color + 'cc', textShadow: '0 0 10px ' + color + '80', boxShadow: '0 0 8px ' + color + '50' };
+  }
+  return { backgroundColor: color + '28', color, border: '1.5px solid ' + color + '55', textShadow: '0 0 8px ' + color + '40' };
+}
+
 function onDocClick() { closeCtx(); }
 onMounted(() => {
   document.addEventListener("click", onDocClick);
@@ -501,9 +777,11 @@ onUnmounted(() => {
       <div class="relative" :style="{ height: totalH + 'px' }">
         <!-- SVG graph layer -->
         <svg
-          class="absolute top-0 pointer-events-none"
+          class="absolute top-0"
+          style="pointer-events: none;"
           :style="{ left: BRANCH_COL + 'px', width: graphWidth + 'px', height: totalH + 'px' }"
         >
+          <!-- Working changes dashed line — extends all the way down to the HEAD commit -->
           <path
             v-if="hasWorkingChanges && graph.nodes.length > 0"
             :d="wcEdge()"
@@ -520,9 +798,13 @@ onUnmounted(() => {
           />
           <rect
             v-if="hasWorkingChanges"
-            :x="wcLaneX() - 5" :y="ROW_HEIGHT / 2 - 5"
-            width="10" height="10" rx="2"
-            fill="#8b5cf6" opacity="0.9" class="animate-pulse"
+            :x="wcLaneX() - 7" :y="ROW_HEIGHT / 2 - 7"
+            width="14" height="14" rx="2"
+            fill="rgba(139, 92, 246, 0.14)"
+            stroke="#8b5cf6"
+            stroke-width="1.8"
+            stroke-dasharray="4 3"
+            class="working-node"
           />
           <!-- eslint-disable-next-line vue/no-v-html -->
           <g
@@ -531,6 +813,7 @@ onUnmounted(() => {
             v-html="isMergeCommit(item.node.commit) ? mergeDotSvg(lx(item.node.lane), ry(item.idx), item.node.color) : avatarSvg(item.node.commit.author_name, lx(item.node.lane), ry(item.idx), NODE_RADIUS, item.node.color)"
             class="node-pop"
           />
+
         </svg>
 
         <!-- Working changes row -->
@@ -564,40 +847,82 @@ onUnmounted(() => {
         >
           <!-- Branch / ref labels with local/remote icons -->
           <div class="flex-shrink-0 flex items-center justify-start gap-0.5 overflow-hidden px-1 relative" :style="{ width: BRANCH_COL + 'px' }"
-            @mouseenter="hoveredRefRow = item.idx" @mouseleave="hoveredRefRow = null"
+            @mouseenter="hoveredRefRow = item.idx" @mouseleave="hoveredRefRow = null; hoveredStashRow = null"
           >
-            <template v-if="topMergedRef(item.node.commit)">
+            <template v-if="topDisplayRef(item.node.commit)">
               <span
                 class="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold truncate max-w-[110px] cursor-pointer shadow-sm"
-                :style="{ backgroundColor: item.node.color + '28', color: item.node.color, border: '1.5px solid ' + item.node.color + '55', textShadow: '0 0 8px ' + item.node.color + '40' }"
-                :title="topMergedRef(item.node.commit)?.name || ''"
-                @dblclick.stop="onRefDblClick(topMergedRef(item.node.commit)!)"
+                :class="{
+                  'current-branch-badge': topDisplayRef(item.node.commit)?.kind === 'branch'
+                    && topDisplayRef(item.node.commit)?.local
+                    && topDisplayRef(item.node.commit)?.name === currentBranch
+                }"
+                :style="topRefStyle(item.node.commit, item.node.color)"
+                :title="topDisplayRef(item.node.commit)?.name || ''"
+                @dblclick.stop="onRefDblClick(topDisplayRef(item.node.commit)!, item.node.commit)"
+                @contextmenu.stop.prevent="onRefContextMenu($event, topDisplayRef(item.node.commit)!)"
               >
-                <svg v-if="topMergedRef(item.node.commit)?.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5" /><rect x="4" y="12" width="8" height="1.5" rx="0.5" opacity="0.6"/><rect x="6" y="13.5" width="4" height="1" rx="0.5" opacity="0.4"/></svg>
-                <svg v-if="topMergedRef(item.node.commit)?.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
-                <span class="truncate">{{ topMergedRef(item.node.commit)?.name }}</span>
+                <svg v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5" /><rect x="4" y="12" width="8" height="1.5" rx="0.5" opacity="0.6"/><rect x="6" y="13.5" width="4" height="1" rx="0.5" opacity="0.4"/></svg>
+                <svg v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
+                <svg v-if="topDisplayRef(item.node.commit)?.kind === 'tag'" class="w-2.5 h-2.5 flex-shrink-0 opacity-80" viewBox="0 0 16 16" fill="currentColor"><path d="M2 8.2V3.5C2 2.7 2.7 2 3.5 2h4.7c.4 0 .8.2 1.1.4l4.3 4.3c.6.6.6 1.6 0 2.1l-4.9 4.9c-.6.6-1.6.6-2.1 0L2.4 9.3C2.1 9 2 8.6 2 8.2zm4.2-3.5a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4z"/></svg>
+                <span class="truncate">{{ topDisplayRef(item.node.commit)?.name }}</span>
               </span>
               <span
-                v-if="extraMergedRefCount(item.node.commit) > 0"
-                class="flex-shrink-0 px-1 py-0.5 rounded-full text-[8px] font-bold shadow-sm"
-                :style="{ backgroundColor: '#f59e0b38', color: '#f59e0b', border: '1px solid #f59e0b44' }"
-              >+{{ extraMergedRefCount(item.node.commit) }}</span>
+                v-if="extraDisplayRefCount(item.node.commit) > 0"
+                class="flex-shrink-0 px-1 py-0.5 rounded-full text-[8px] font-bold shadow-sm cursor-pointer hover:scale-110 transition-transform"
+                :style="{ backgroundColor: item.node.color + '30', color: item.node.color, border: '1px solid ' + item.node.color + '55' }"
+              >+{{ extraDisplayRefCount(item.node.commit) }}</span>
             </template>
-            <!-- Hover dropdown with all merged refs -->
-            <div
-              v-if="hoveredRefRow === item.idx && mergedRefs(item.node.commit).length > 1"
-              class="absolute right-0 top-full z-50 min-w-[140px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1"
-            >
-              <button
-                v-for="mr in mergedRefs(item.node.commit)"
-                :key="mr.name"
-                class="w-full text-left px-2 py-1 text-[9px] hover:bg-[var(--primary)]/15 transition-colors truncate flex items-center gap-1"
-                :style="{ color: item.node.color }"
-                @dblclick.stop="onRefDblClick(mr)"
+
+            <!-- Stash badges for this commit -->
+            <template v-if="stashesAtCommit(item.idx).length > 0">
+              <span
+                class="stash-badge flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-md cursor-default select-none"
+                :title="stashesAtCommit(item.idx).map(s => 'stash@{' + s.index + '}: ' + (s.message || '')).join('\n')"
+                @contextmenu.stop.prevent="onStashBadgeContextMenu($event, stashesAtCommit(item.idx))"
               >
-                <svg v-if="mr.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5"/></svg>
-                <svg v-if="mr.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
-                {{ mr.name }}
+                <!-- archive icon -->
+                <svg class="w-3 h-3 flex-shrink-0" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="1" y="5" width="12" height="8" rx="1.5" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="1.2"/>
+                  <rect x="1" y="2" width="12" height="3.5" rx="1.2" fill="rgba(245,158,11,0.40)" stroke="#f59e0b" stroke-width="1.2"/>
+                  <rect x="4.5" y="1" width="5" height="2" rx="0.8" fill="rgba(245,158,11,0.55)" stroke="#f59e0b" stroke-width="1"/>
+                  <line x1="3.5" y1="9" x2="10.5" y2="9" stroke="#f59e0b" stroke-width="1" opacity="0.6"/>
+                </svg>
+                <span class="text-[9px] font-semibold truncate max-w-[75px]" style="color:#f59e0b;">
+                  {{ stashesAtCommit(item.idx).length > 1
+                    ? stashesAtCommit(item.idx).length + '×'
+                    : (stashesAtCommit(item.idx)[0].message || 'stash') }}
+                </span>
+              </span>
+            </template>
+
+            <!-- Hover dropdown with all merged refs — double-click to checkout, right-click for more -->
+            <div
+              v-if="hoveredRefRow === item.idx && displayRefs(item.node.commit).length > 1"
+              class="absolute left-0 top-full z-50 min-w-[150px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1"
+            >
+              <div class="px-2 py-0.5 text-[8px] text-[var(--muted-foreground)] border-b border-[var(--border)] mb-0.5 uppercase tracking-wider">
+                double-click to checkout
+              </div>
+              <button
+                v-for="mr in displayRefs(item.node.commit)"
+                :key="mr.key"
+                class="w-full text-left px-2 py-1.5 text-[9px] hover:bg-[var(--primary)]/15 transition-colors truncate flex items-center gap-1.5 group"
+                :class="{ 'font-bold': mr.kind === 'branch' && mr.local && mr.name === currentBranch }"
+                :style="mr.kind === 'tag' ? { color: '#f59e0b' } : { color: item.node.color }"
+                @dblclick.stop="onRefDblClick(mr, item.node.commit)"
+                @contextmenu.stop.prevent="onRefContextMenu($event, mr)"
+              >
+                <svg v-if="mr.kind === 'branch' && mr.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5"/></svg>
+                <svg v-if="mr.kind === 'branch' && mr.remote" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C5.2 1 3 3 3 5.5c0 .8.2 1.5.5 2.1C2.1 8.2 1 9.5 1 11c0 2 1.6 3.5 3.6 3.5h7.8c2 0 3.6-1.5 3.6-3.5 0-1.5-1.1-2.8-2.5-3.4.3-.6.5-1.3.5-2.1C13 3 10.8 1 8 1z"/></svg>
+                <svg v-if="mr.kind === 'tag'" class="w-2.5 h-2.5 flex-shrink-0 opacity-80" viewBox="0 0 16 16" fill="currentColor"><path d="M2 8.2V3.5C2 2.7 2.7 2 3.5 2h4.7c.4 0 .8.2 1.1.4l4.3 4.3c.6.6.6 1.6 0 2.1l-4.9 4.9c-.6.6-1.6.6-2.1 0L2.4 9.3C2.1 9 2 8.6 2 8.2zm4.2-3.5a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4z"/></svg>
+                <span class="truncate flex-1">{{ mr.name }}</span>
+                <!-- "current" badge if checked out -->
+                <span
+                  v-if="mr.kind === 'branch' && mr.local && mr.name === currentBranch"
+                  class="text-[7px] px-1 py-0.5 rounded-full font-bold flex-shrink-0"
+                  :style="{ backgroundColor: item.node.color + '30', border: '1px solid ' + item.node.color + '60' }"
+                >HEAD</span>
               </button>
             </div>
           </div>
@@ -644,8 +969,76 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Context menu -->
+    <!-- Context menus -->
     <Teleport to="body">
+      <div
+        v-if="refCtxVisible && refCtxRef"
+        class="fixed z-[120] min-w-[180px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1 text-[11px] text-[var(--foreground)]"
+        :style="{ left: refCtxX + 'px', top: refCtxY + 'px' }"
+        @click.stop
+      >
+        <template v-if="refCtxRef.kind === 'branch'">
+          <button v-if="refCtxRef.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('checkout-local')">Checkout {{ refCtxRef.name }}</button>
+          <button v-if="!refCtxRef.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('checkout-remote')">Checkout origin/{{ refCtxRef.name }}</button>
+          <button v-if="refCtxRef.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('delete-local')">Delete {{ refCtxRef.name }}</button>
+          <button v-if="refCtxRef.remote" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('delete-remote')">Delete origin/{{ refCtxRef.name }}</button>
+          <div class="border-t border-[var(--border)] my-1" />
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('copy-name')">Copy name</button>
+        </template>
+        <template v-else>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('delete-tag')">Delete tag {{ refCtxRef.name }}</button>
+          <div class="border-t border-[var(--border)] my-1" />
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('copy-name')">Copy name</button>
+        </template>
+      </div>
+
+      <!-- Stash context menu: single stash OR multi-stash picker -->
+      <div
+        v-if="stashCtxVisible && (stashCtxItem || stashCtxItems.length > 0)"
+        class="fixed z-[125] min-w-[200px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1 text-[11px] text-[var(--foreground)]"
+        :style="{ left: stashCtxX + 'px', top: stashCtxY + 'px' }"
+        @click.stop
+      >
+        <!-- Multi-stash picker: choose which stash to operate on -->
+        <template v-if="stashCtxItems.length > 0">
+          <div class="px-3 py-1 text-[10px] text-[var(--muted-foreground)] border-b border-[var(--border)] mb-1 flex items-center gap-1">
+            <svg class="w-3 h-3 opacity-60" viewBox="0 0 16 16" fill="currentColor"><path d="M2 5.5A1.5 1.5 0 013.5 4h9A1.5 1.5 0 0114 5.5v6A1.5 1.5 0 0112.5 13h-9A1.5 1.5 0 012 11.5v-6zm2 1v4h8v-4H4z"/></svg>
+            {{ stashCtxItems.length }} stashes — choose action
+          </div>
+          <div v-for="s in stashCtxItems" :key="s.index" class="border-b border-[var(--border)]/40 last:border-0">
+            <div class="px-3 py-1 text-[9px] text-[#f59e0b] font-mono font-semibold opacity-80">
+              stash@{{ '{' + s.index + '}' }}
+              <span v-if="s.message" class="text-[var(--muted-foreground)] font-normal normal-case ml-1 truncate inline-block max-w-[130px] align-bottom">{{ s.message }}</span>
+            </div>
+            <div class="flex pb-1">
+              <button class="flex-1 text-center py-1 hover:bg-[var(--primary)]/15 text-[10px] transition-colors flex items-center justify-center gap-0.5" @click="stashAction('view', s)">
+                <svg class="w-2.5 h-2.5 opacity-50" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="2.5"/><path d="M1.5 8C3 4.5 5.3 2.5 8 2.5S13 4.5 14.5 8C13 11.5 10.7 13.5 8 13.5S3 11.5 1.5 8z"/></svg>
+                View
+              </button>
+              <button class="flex-1 text-center py-1 hover:bg-[#f59e0b]/15 text-[#f59e0b] text-[10px] font-medium transition-colors" @click="stashAction('pop', s)">Pop</button>
+              <button class="flex-1 text-center py-1 hover:bg-[var(--primary)]/15 text-[10px] transition-colors" @click="stashAction('apply', s)">Apply</button>
+              <button class="flex-1 text-center py-1 hover:bg-[#ef4444]/15 text-[#ef4444] text-[10px] transition-colors" @click="stashAction('drop', s)">Drop</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Single stash actions -->
+        <template v-else-if="stashCtxItem">
+          <div class="px-3 py-1 text-[10px] text-[var(--muted-foreground)] border-b border-[var(--border)] mb-1">
+            stash@{{ '{' + stashCtxItem.index + '}' }}
+            <span v-if="stashCtxItem.message" class="ml-1 text-[var(--foreground)]/60 truncate">{{ stashCtxItem.message }}</span>
+          </div>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors flex items-center gap-2" @click="stashAction('view')">
+            <svg class="w-3 h-3 opacity-60" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="2.5"/><path d="M1.5 8C3 4.5 5.3 2.5 8 2.5S13 4.5 14.5 8C13 11.5 10.7 13.5 8 13.5S3 11.5 1.5 8z"/></svg>
+            View changes
+          </button>
+          <div class="border-t border-[var(--border)] my-1" />
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[#f59e0b]/15 text-[#f59e0b] transition-colors" @click="stashAction('pop')">Pop stash</button>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="stashAction('apply')">Apply stash</button>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-[#ef4444]/15 text-[#ef4444] transition-colors" @click="stashAction('drop')">Drop stash</button>
+        </template>
+      </div>
+
       <div
         v-if="ctxVisible"
         class="fixed z-[100] min-w-[240px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1 text-[11px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
@@ -674,11 +1067,11 @@ onUnmounted(() => {
             @click.stop="ctxResetSub = !ctxResetSub"
           >
             <span>Reset {{ currentBranch }} to this commit</span>
-            <svg class="w-3 h-3 text-[var(--muted-foreground)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <svg :class="['w-3 h-3 text-[var(--muted-foreground)] transition-transform', ctxResetSub ? 'rotate-90' : '']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
           <div
             v-if="ctxResetSub"
-            class="absolute left-full top-0 ml-0.5 min-w-[240px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1"
+            class="bg-[var(--popover)]/80 py-1 pl-4"
           >
             <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-soft')">Soft – keep all changes staged</button>
             <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-mixed')">Mixed – keep working copy but reset index</button>
@@ -735,6 +1128,7 @@ onUnmounted(() => {
 .commit-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(139, 92, 246, 0.35);
 }
+
 /* Node pop-in animation */
 .node-pop {
   transform-origin: center;
@@ -745,6 +1139,7 @@ onUnmounted(() => {
   70% { transform: scale(1.08); }
   100% { opacity: 1; transform: scale(1); }
 }
+
 /* Row fade-in */
 .graph-row {
   animation: rowFade 0.2s ease-out;
@@ -752,5 +1147,69 @@ onUnmounted(() => {
 @keyframes rowFade {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Stash badge */
+.stash-badge {
+  background: linear-gradient(135deg, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0.08) 100%);
+  border: 1px solid rgba(245,158,11,0.45);
+  border-radius: 5px;
+  box-shadow: 0 1px 4px rgba(245,158,11,0.12), inset 0 1px 0 rgba(255,255,255,0.06);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.stash-badge:hover {
+  border-color: rgba(245,158,11,0.7);
+  box-shadow: 0 1px 6px rgba(245,158,11,0.25);
+}
+
+.working-node {
+  animation: workingDash 1.2s linear infinite;
+}
+@keyframes workingDash {
+  to { stroke-dashoffset: -28; }
+}
+
+/* Current checked-out branch — spinning conic border */
+@property --cb-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.current-branch-badge {
+  position: relative;
+  z-index: 0;
+  border: none !important;
+}
+.current-branch-badge::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--cb-angle),
+    transparent       0deg,
+    currentColor     55deg,
+    currentColor     90deg,
+    transparent     145deg,
+    transparent     180deg,
+    currentColor    235deg,
+    currentColor    270deg,
+    transparent     325deg,
+    transparent     360deg
+  );
+  animation: cbSpin 2.4s linear infinite;
+  z-index: -1;
+  opacity: 0.9;
+}
+.current-branch-badge::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  background: inherit;
+  z-index: -1;
+}
+@keyframes cbSpin {
+  to { --cb-angle: 360deg; }
 }
 </style>

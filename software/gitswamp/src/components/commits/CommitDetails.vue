@@ -12,10 +12,11 @@ import {
   Plus,
   Minus,
   Trash2,
+  Archive,
 } from "lucide-vue-next";
 import AppButton from "@/components/ui/AppButton.vue";
 import GitCommitIcon from "@/components/ui/GitCommitIcon.vue";
-import type { CommitInfo, FileStatusInfo, CommitFileInfo } from "@/types";
+import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo } from "@/types";
 
 const props = defineProps<{
   commit: CommitInfo | null;
@@ -23,6 +24,9 @@ const props = defineProps<{
   unstagedFiles: FileStatusInfo[];
   commitFiles: CommitFileInfo[];
   isWorkingChanges: boolean;
+  isStash?: boolean;
+  selectedStash?: StashInfo | null;
+  stashFiles?: CommitFileInfo[];
 }>();
 
 const emit = defineEmits<{
@@ -33,12 +37,15 @@ const emit = defineEmits<{
   commit: [message: string];
   discard: [path: string];
   discardAll: [];
+  stashPop: [index: number];
+  stashApply: [index: number];
+  stashDrop: [index: number];
 }>();
 
 const commitSummary = ref("");
 const commitDescription = ref("");
 
-// Tab logic: working changes -> only "changes", commit -> "changes" and "info"
+// Tab logic: working changes -> only "changes", commit/stash -> "changes" and "info"
 const activeTab = ref<"changes" | "info">("changes");
 
 watch(() => props.commit, (newVal) => {
@@ -46,6 +53,12 @@ watch(() => props.commit, (newVal) => {
     activeTab.value = "info";
   } else {
     activeTab.value = "changes";
+  }
+});
+
+watch(() => props.selectedStash, (newVal) => {
+  if (newVal) {
+    activeTab.value = "changes"; // Show files first for stash
   }
 });
 
@@ -141,7 +154,7 @@ function copyToClipboard(text: string) {
           Changes
         </button>
         <button
-          v-if="commit && !isWorkingChanges"
+          v-if="(commit && !isWorkingChanges) || (isStash && selectedStash)"
           @click="activeTab = 'info'"
           :class="[
             'flex-1 text-xs font-medium tracking-wide transition-colors',
@@ -429,8 +442,131 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
+    <!-- Changes tab for a selected stash -->
+    <div v-show="activeTab === 'changes' && isStash && selectedStash" class="flex-1 flex flex-col overflow-hidden">
+      <div class="flex-1 overflow-y-auto">
+        <!-- Stash header -->
+        <div v-if="selectedStash" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[#f59e0b]/10 to-transparent">
+          <div class="flex items-center gap-2 mb-1">
+            <Archive class="w-4 h-4 text-[#f59e0b]" />
+            <span class="text-[11px] font-semibold text-[var(--foreground)]">stash@{{ '{' + selectedStash.index + '}' }}</span>
+          </div>
+          <div class="text-[10px] text-[var(--muted-foreground)]">{{ selectedStash.message || 'No message' }}</div>
+        </div>
+
+        <!-- Stash files -->
+        <div v-if="stashFiles && stashFiles.length > 0">
+          <div class="flex items-center gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)]">
+            <span class="font-medium">Stashed files</span>
+            <span class="text-[10px] bg-[#f59e0b]/20 text-[#f59e0b] px-1.5 py-0.5 rounded-full">{{ stashFiles.length }}</span>
+          </div>
+          <div
+            v-for="f in stashFiles"
+            :key="f.path"
+            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
+          >
+            <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
+            <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+            <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
+            <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
+          </div>
+        </div>
+        <div v-else class="px-4 py-12 flex flex-col items-center justify-center">
+          <div class="w-12 h-12 rounded-full bg-[var(--card)] flex items-center justify-center mb-3 border border-[var(--border)]">
+            <FileText class="w-6 h-6 text-[var(--muted-foreground)] opacity-40" />
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)]">No stashed changes</p>
+        </div>
+      </div>
+
+      <!-- Stash actions -->
+      <div v-if="selectedStash" class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0 space-y-2">
+        <AppButton
+          class="w-full bg-[#f59e0b] hover:bg-[#f59e0b]/90 text-white text-xs font-medium h-8"
+          @click="emit('stashPop', selectedStash.index)"
+        >
+          Pop Stash
+        </AppButton>
+        <div class="flex gap-2">
+          <AppButton
+            class="flex-1 bg-[var(--secondary)] hover:bg-[var(--secondary)]/80 text-[var(--foreground)] text-xs font-medium h-8"
+            @click="emit('stashApply', selectedStash.index)"
+          >
+            Apply
+          </AppButton>
+          <AppButton
+            class="flex-1 bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-medium h-8"
+            @click="emit('stashDrop', selectedStash.index)"
+          >
+            Drop
+          </AppButton>
+        </div>
+      </div>
+    </div>
+
+    <!-- Info tab for stash -->
+    <div v-show="activeTab === 'info' && isStash && selectedStash" class="flex-1 overflow-y-auto">
+      <div v-if="selectedStash" class="p-4 space-y-4">
+        <!-- Stash reference -->
+        <div>
+          <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Stash Reference</div>
+          <div class="flex items-center gap-2">
+            <code class="text-xs text-[#f59e0b] bg-[#f59e0b]/10 px-2 py-1 rounded font-mono border border-[#f59e0b]/20">stash@{{ '{' + selectedStash.index + '}' }}</code>
+          </div>
+        </div>
+
+        <!-- Message -->
+        <div v-if="selectedStash.message">
+          <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Message</div>
+          <div class="text-sm text-[var(--foreground)] leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)]">
+            {{ selectedStash.message }}
+          </div>
+        </div>
+
+        <div class="h-px bg-[var(--border)]" />
+
+        <!-- Branch -->
+        <div v-if="selectedStash.branch">
+          <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
+            <GitBranch class="w-3 h-3" />
+            Original Branch
+          </div>
+          <span class="px-2 py-0.5 text-[10px] font-medium rounded bg-[var(--primary)]/15 text-[var(--primary)] border border-[var(--primary)]/20">
+            {{ selectedStash.branch }}
+          </span>
+        </div>
+
+        <!-- Timestamp -->
+        <div v-if="selectedStash.timestamp">
+          <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
+            <Calendar class="w-3 h-3" />
+            Created
+          </div>
+          <div class="text-xs text-[var(--foreground)]">{{ selectedStash.timestamp }}</div>
+        </div>
+
+        <!-- Parent SHA -->
+        <div v-if="selectedStash.parent_sha">
+          <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
+            <Hash class="w-3 h-3" />
+            Parent Commit
+          </div>
+          <div class="flex items-center gap-2">
+            <code class="text-xs text-[var(--primary)] bg-[var(--input-background)] px-2 py-1 rounded font-mono">{{ selectedStash.parent_sha.substring(0, 7) }}</code>
+            <button
+              @click="copyToClipboard(selectedStash.parent_sha)"
+              class="p-1 rounded hover:bg-[var(--secondary)] transition-colors flex-shrink-0"
+              title="Copy SHA"
+            >
+              <Copy class="w-3 h-3 text-[var(--muted-foreground)]" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- No selection placeholder -->
-    <div v-if="!commit && !isWorkingChanges" class="flex-1 flex items-center justify-center">
+    <div v-if="!commit && !isWorkingChanges && !(isStash && selectedStash)" class="flex-1 flex items-center justify-center">
       <div class="text-center">
         <GitCommitIcon class="w-8 h-8 text-[var(--muted-foreground)] opacity-30 mx-auto mb-2" />
         <p class="text-xs text-[var(--muted-foreground)]">Select a commit to view details</p>

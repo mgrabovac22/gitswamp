@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use git2::{BranchType, Repository, Sort, StatusOptions};
+use git2::{BranchType, Repository, Sort, StashApplyOptions, StashFlags, StatusOptions};
 
 use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, GithubRepo, RepoInfo, StashInfo, TagInfo};
 
@@ -468,6 +468,13 @@ impl GitService {
                 }
             }
         }
+        if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
+            for item in branches.flatten() {
+                if let Some(oid) = item.0.get().target() {
+                    let _ = revwalk.push(oid);
+                }
+            }
+        }
         let _ = revwalk.push_head();
         revwalk
             .set_sorting(Sort::TIME | Sort::TOPOLOGICAL)
@@ -617,29 +624,30 @@ impl GitService {
     pub fn stage_file(path: &str, file_path: &str) -> Result<(), String> {
         let repo = Self::open(path)?;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
-            index 
-            .add_path(Path::new(file_path)) 
-            .map_err(|e| e.message().to_string())?; 
-        index.write().map_err(|e| e.message().to_string())?; 
-
+        let pathspec = [Path::new(file_path)];
+        index
+            .add_all(pathspec.iter(), git2::IndexAddOption::DEFAULT, None)
+            .map_err(|e| e.message().to_string())?;
+        index.write().map_err(|e| e.message().to_string())?;
         Ok(())
     }
 
     pub fn unstage_file(path: &str, file_path: &str) -> Result<(), String> {
-        // Use git CLI for robustness (handles all file states)
-        let result = Self::git_cli(path, &["reset", "HEAD", "--", file_path]);
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                // On initial commit (no HEAD), use rm --cached
-                if e.contains("ambiguous argument 'HEAD'") || e.contains("unknown revision") {
-                    Self::git_cli(path, &["rm", "--cached", "--", file_path])?;
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            }
+        let repo = Self::open(path)?;
+        let file = Path::new(file_path);
+
+        if let Ok(head_obj) = repo.revparse_single("HEAD") {
+            repo
+                .reset_default(Some(&head_obj), [file])
+                .map_err(|e| e.message().to_string())?;
+            return Ok(());
         }
+
+        // Initial commit (no HEAD): remove path from index directly.
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        let _ = index.remove_path(file);
+        index.write().map_err(|e| e.message().to_string())?;
+        Ok(())
     }
 
     pub fn create_commit(path: &str, message: &str) -> Result<String, String> {
@@ -1115,71 +1123,151 @@ impl GitService {
     }
 
     pub fn stash_list(path: &str) -> Result<Vec<StashInfo>, String> {
-        let output = Self::git_cli(path, &["stash", "list", "--format=%gd||%s||%gs"]);
-        match output {
-            Ok(text) => {
-                let mut stashes = Vec::new();
-                for line in text.lines() {
-                    if line.trim().is_empty() { continue; }
-                    let parts: Vec<&str> = line.splitn(3, "||").collect();
-                    let index_str = parts.first().unwrap_or(&"stash@{0}");
-                    let idx = index_str
-                        .trim_start_matches("stash@{")
-                        .trim_end_matches('}')
-                        .parse::<usize>()
-                        .unwrap_or(stashes.len());
-                    let subject = parts.get(1).unwrap_or(&"").to_string();
-                    let stash_msg = parts.get(2).unwrap_or(&"").to_string();
-                    // Parse branch from stash message: "WIP on branch: ..." or "On branch: ..."
-                    let (branch, message) = if let Some(after) = stash_msg
-                        .strip_prefix("WIP on ")
-                        .or_else(|| stash_msg.strip_prefix("On "))
-                    {
-                        if let Some(colon_pos) = after.find(": ") {
-                            (after[..colon_pos].to_string(), after[colon_pos + 2..].to_string())
-                        } else {
-                            (String::new(), subject)
-                        }
-                    } else {
-                        (String::new(), subject)
-                    };
-                    stashes.push(StashInfo {
-                        index: idx,
-                        message,
-                        branch,
-                        timestamp: String::new(),
-                    });
-                }
-                Ok(stashes)
-            }
-            Err(_) => Ok(Vec::new()),
+        let mut repo = Self::open(path)?;
+        let mut raw: Vec<(usize, String, String)> = Vec::new();
+
+        if repo
+            .stash_foreach(|index, name, oid| {
+                raw.push((index, name.to_string(), oid.to_string()));
+                true
+            })
+            .is_err()
+        {
+            return Ok(Vec::new());
         }
+
+        let mut stashes = Vec::with_capacity(raw.len());
+        for (index, stash_name, oid_str) in raw {
+            let parent_sha = git2::Oid::from_str(&oid_str)
+                .ok()
+                .and_then(|oid| repo.find_commit(oid).ok())
+                .and_then(|c| c.parent_id(0).ok())
+                .map(|oid| oid.to_string())
+                .unwrap_or_default();
+
+            // git2 stash name format is usually: "WIP on main: message" or "On main: message"
+            let (branch, message) = if let Some(after) = stash_name
+                .strip_prefix("WIP on ")
+                .or_else(|| stash_name.strip_prefix("On "))
+            {
+                if let Some(colon_pos) = after.find(": ") {
+                    (after[..colon_pos].to_string(), after[colon_pos + 2..].to_string())
+                } else {
+                    (String::new(), stash_name.clone())
+                }
+            } else {
+                (String::new(), stash_name.clone())
+            };
+
+            stashes.push(StashInfo {
+                index,
+                message,
+                branch,
+                timestamp: String::new(),
+                parent_sha,
+            });
+        }
+
+        Ok(stashes)
     }
 
     pub fn stash_push(path: &str, message: Option<&str>) -> Result<String, String> {
-        let mut args = vec!["stash", "push", "--include-untracked"];
-        let msg;
-        if let Some(m) = message {
-            args.push("-m");
-            msg = m.to_string();
-            args.push(&msg);
-        }
-        Self::git_cli(path, &args)
+        let mut repo = Self::open(path)?;
+        let sig = repo.signature().map_err(|e| e.message().to_string())?;
+        let msg = message.unwrap_or("WIP");
+        let oid = repo
+            .stash_save(&sig, msg, Some(StashFlags::INCLUDE_UNTRACKED))
+            .map_err(|e| e.message().to_string())?;
+        Ok(format!("Saved stash {}", oid))
     }
 
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {
-        let stash_ref = format!("stash@{{{}}}", index);
-        Self::git_cli(path, &["stash", "pop", &stash_ref])
+        let mut repo = Self::open(path)?;
+        let mut opts = StashApplyOptions::new();
+        repo
+            .stash_pop(index, Some(&mut opts))
+            .map_err(|e| e.message().to_string())?;
+        Ok(format!("Dropped and applied stash@{{{}}}", index))
     }
 
     pub fn stash_apply(path: &str, index: usize) -> Result<String, String> {
-        let stash_ref = format!("stash@{{{}}}", index);
-        Self::git_cli(path, &["stash", "apply", &stash_ref])
+        let mut repo = Self::open(path)?;
+        let mut opts = StashApplyOptions::new();
+        repo
+            .stash_apply(index, Some(&mut opts))
+            .map_err(|e| e.message().to_string())?;
+        Ok(format!("Applied stash@{{{}}}", index))
     }
 
     pub fn stash_drop(path: &str, index: usize) -> Result<String, String> {
-        let stash_ref = format!("stash@{{{}}}", index);
-        Self::git_cli(path, &["stash", "drop", &stash_ref])
+        let mut repo = Self::open(path)?;
+        repo.stash_drop(index).map_err(|e| e.message().to_string())?;
+        Ok(format!("Dropped stash@{{{}}}", index))
+    }
+
+    pub fn stash_files(path: &str, index: usize) -> Result<Vec<CommitFileInfo>, String> {
+        let mut repo = Self::open(path)?;
+        
+        // Find the stash commit by iterating through stashes
+        let mut stash_oid: Option<git2::Oid> = None;
+        let target_index = index;
+        
+        repo.stash_foreach(|idx, _name, oid| {
+            if idx == target_index {
+                stash_oid = Some(*oid);
+                false // stop iterating
+            } else {
+                true // continue
+            }
+        }).map_err(|e| e.message().to_string())?;
+        
+        let oid = stash_oid.ok_or_else(|| format!("Stash at index {} not found", index))?;
+        let stash_commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+        
+        // Stash commit structure:
+        // - stash commit has the working tree changes
+        // - parent[0] is the original commit (HEAD when stash was created)
+        // We diff the stash against its first parent to see what was stashed
+        let stash_tree = stash_commit.tree().map_err(|e| e.message().to_string())?;
+        
+        let parent_tree = if stash_commit.parent_count() > 0 {
+            Some(stash_commit.parent(0).map_err(|e| e.message().to_string())?
+                .tree().map_err(|e| e.message().to_string())?)
+        } else {
+            None
+        };
+        
+        let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&stash_tree), None)
+            .map_err(|e| e.message().to_string())?;
+        
+        let n = diff.deltas().len();
+        let mut files = Vec::with_capacity(n);
+        for idx in 0..n {
+            let delta = diff.get_delta(idx).unwrap();
+            let file_path = delta.new_file().path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let status = match delta.status() {
+                git2::Delta::Added => "added",
+                git2::Delta::Deleted => "deleted",
+                git2::Delta::Modified => "modified",
+                git2::Delta::Renamed => "renamed",
+                git2::Delta::Copied => "copied",
+                _ => "changed",
+            };
+            let (additions, deletions) = match git2::Patch::from_diff(&diff, idx) {
+                Ok(Some(patch)) => patch.line_stats().map(|(_, a, d)| (a, d)).unwrap_or((0, 0)),
+                _ => (0, 0),
+            };
+            files.push(CommitFileInfo {
+                path: file_path,
+                status: status.to_string(),
+                additions,
+                deletions,
+            });
+        }
+        Ok(files)
     }
 
     pub fn tags(path: &str) -> Result<Vec<TagInfo>, String> {
@@ -1189,14 +1277,27 @@ impl GitService {
         for name in tag_names.iter().flatten() {
             let refname = format!("refs/tags/{}", name);
             if let Ok(reference) = repo.find_reference(&refname) {
-                let target = reference.target().map(|o| o.to_string()).unwrap_or_default();
-                let (message, is_annotated) = if let Ok(tag) = repo.find_tag(
-                    reference.target().unwrap_or(git2::Oid::zero()),
-                ) {
-                    (tag.message().map(|m| m.to_string()), true)
+                let object = match repo.revparse_single(&refname) {
+                    Ok(o) => o,
+                    Err(_) => continue,
+                };
+
+                // For annotated tags, peel to commit so graph matching works.
+                let target = object
+                    .peel(git2::ObjectType::Commit)
+                    .map(|o| o.id().to_string())
+                    .unwrap_or_else(|_| object.id().to_string());
+
+                let (message, is_annotated) = if let Some(tag_oid) = reference.target() {
+                    if let Ok(tag) = repo.find_tag(tag_oid) {
+                        (tag.message().map(|m| m.to_string()), true)
+                    } else {
+                        (None, false)
+                    }
                 } else {
                     (None, false)
                 };
+
                 result.push(TagInfo {
                     name: name.to_string(),
                     sha: target,
@@ -1206,6 +1307,10 @@ impl GitService {
             }
         }
         Ok(result)
+    }
+
+    pub fn delete_tag(path: &str, name: &str) -> Result<String, String> {
+        Self::git_cli(path, &["tag", "-d", name])
     }
 
     pub fn run_git_command(path: &str, args: &[&str]) -> Result<String, String> {
