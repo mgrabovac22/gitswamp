@@ -76,3 +76,27 @@ export interface GithubRepo {
   is_private: boolean
   stars: number
 }
+
+export interface DiffLine {
+  line_type: 'context' | 'addition' | 'deletion' | 'hunk_header'
+  old_line_no: number | null
+  new_line_no: number | null
+  content: string
+}
+
+export interface DiffHunk {
+  old_start: number
+  old_lines: number
+  new_start: number
+  new_lines: number
+  header: string
+  lines: DiffLine[]
+}
+
+export interface FileDiff {
+  path: string
+  old_path: string | null
+  status: string
+  hunks: DiffHunk[]
+  is_binary: boolean
+}

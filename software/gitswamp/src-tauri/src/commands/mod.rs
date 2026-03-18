@@ -2,6 +2,7 @@ pub mod repository;
 pub mod commits;
 pub mod commit_files;
 pub mod branches;
+pub mod diff;
 pub mod operations;
 pub mod status;
 pub mod clone_init;

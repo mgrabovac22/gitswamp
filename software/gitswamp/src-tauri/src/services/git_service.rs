@@ -8,7 +8,7 @@ use std::os::windows::process::CommandExt;
 
 use git2::{BranchType, Repository, Sort, StashApplyOptions, StashFlags, StatusOptions};
 
-use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, GithubRepo, RepoInfo, StashInfo, TagInfo};
+use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, DiffHunk, DiffLine, FileDiff, FileStatusInfo, GithubRepo, RepoInfo, StashInfo, TagInfo};
 
 static GIT_PATH: OnceLock<String> = OnceLock::new();
 static FULL_PATH: OnceLock<String> = OnceLock::new();
@@ -1418,6 +1418,244 @@ impl GitService {
             })
         }).collect();
         Ok(repos)
+    }
+
+    /// Get diff for a working directory file (unstaged or staged)
+    pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<FileDiff, String> {
+        let repo = Self::open(path)?;
+        
+        let diff = if staged {
+            // Staged: diff HEAD vs index
+            let head_tree = repo.head()
+                .and_then(|h| h.peel_to_tree())
+                .ok();
+            repo.diff_tree_to_index(head_tree.as_ref(), None, None)
+                .map_err(|e| e.message().to_string())?
+        } else {
+            // Unstaged: diff index vs workdir
+            repo.diff_index_to_workdir(None, None)
+                .map_err(|e| e.message().to_string())?
+        };
+
+        Self::extract_file_diff(&diff, file_path)
+    }
+
+    /// Get diff for a file in a specific commit
+    pub fn get_commit_diff(path: &str, sha: &str, file_path: &str) -> Result<FileDiff, String> {
+        let repo = Self::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+        let tree = commit.tree().map_err(|e| e.message().to_string())?;
+        
+        let parent_tree = commit.parent(0)
+            .and_then(|p| p.tree())
+            .ok();
+        
+        let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+            .map_err(|e| e.message().to_string())?;
+
+        Self::extract_file_diff(&diff, file_path)
+    }
+
+    /// Get full file content from working directory or a commit
+    pub fn get_file_content(path: &str, file_path: &str, sha: Option<&str>) -> Result<String, String> {
+        let repo = Self::open(path)?;
+        
+        if let Some(commit_sha) = sha {
+            // Get file from a specific commit
+            let oid = git2::Oid::from_str(commit_sha).map_err(|e| e.message().to_string())?;
+            let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+            let tree = commit.tree().map_err(|e| e.message().to_string())?;
+            let entry = tree.get_path(Path::new(file_path))
+                .map_err(|_| format!("File '{}' not found in commit", file_path))?;
+            let blob = repo.find_blob(entry.id())
+                .map_err(|e| e.message().to_string())?;
+            if blob.is_binary() {
+                return Err("Binary file".to_string());
+            }
+            String::from_utf8(blob.content().to_vec())
+                .map_err(|_| "File is not valid UTF-8".to_string())
+        } else {
+            // Get file from working directory
+            let full_path = Path::new(path).join(file_path);
+            std::fs::read_to_string(&full_path)
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    fn extract_file_diff(diff: &git2::Diff, target_path: &str) -> Result<FileDiff, String> {
+        let mut result: Option<FileDiff> = None;
+        let num_deltas = diff.deltas().len();
+
+        for idx in 0..num_deltas {
+            let delta = diff.get_delta(idx).unwrap();
+            let new_file = delta.new_file();
+            let old_file = delta.old_file();
+            
+            let file_path = new_file.path()
+                .or(old_file.path())
+                .and_then(|p| p.to_str())
+                .unwrap_or("");
+            
+            // Skip if not our target file
+            if file_path != target_path && old_file.path().and_then(|p| p.to_str()) != Some(target_path) {
+                continue;
+            }
+
+            let status = match delta.status() {
+                git2::Delta::Added => "added",
+                git2::Delta::Deleted => "deleted",
+                git2::Delta::Modified => "modified",
+                git2::Delta::Renamed => "renamed",
+                git2::Delta::Copied => "copied",
+                _ => "modified",
+            };
+
+            let old_path = if delta.status() == git2::Delta::Renamed {
+                old_file.path().and_then(|p| p.to_str()).map(|s| s.to_string())
+            } else {
+                None
+            };
+
+            let is_binary = new_file.is_binary() || old_file.is_binary();
+
+            // Get patch with hunks
+            let mut hunks: Vec<DiffHunk> = Vec::new();
+            
+            if let Ok(Some(patch)) = git2::Patch::from_diff(diff, idx) {
+                let num_hunks = patch.num_hunks();
+                for hunk_idx in 0..num_hunks {
+                    if let Ok((hunk, num_lines)) = patch.hunk(hunk_idx) {
+                        let header = String::from_utf8_lossy(hunk.header()).to_string();
+                        let mut lines: Vec<DiffLine> = Vec::new();
+
+                        for line_idx in 0..num_lines {
+                            if let Ok(line) = patch.line_in_hunk(hunk_idx, line_idx) {
+                                let line_type = match line.origin() {
+                                    '+' => "addition",
+                                    '-' => "deletion",
+                                    ' ' => "context",
+                                    _ => "context",
+                                };
+                                lines.push(DiffLine {
+                                    line_type: line_type.to_string(),
+                                    old_line_no: line.old_lineno(),
+                                    new_line_no: line.new_lineno(),
+                                    content: String::from_utf8_lossy(line.content()).to_string(),
+                                });
+                            }
+                        }
+
+                        hunks.push(DiffHunk {
+                            old_start: hunk.old_start(),
+                            old_lines: hunk.old_lines(),
+                            new_start: hunk.new_start(),
+                            new_lines: hunk.new_lines(),
+                            header,
+                            lines,
+                        });
+                    }
+                }
+            }
+
+            result = Some(FileDiff {
+                path: file_path.to_string(),
+                old_path,
+                status: status.to_string(),
+                hunks,
+                is_binary,
+            });
+            break;
+        }
+
+        result.ok_or_else(|| format!("File '{}' not found in diff", target_path))
+    }
+
+    /// Save content to a file in the working directory
+    pub fn save_file_content(path: &str, file_path: &str, content: &str) -> Result<(), String> {
+        let full_path = Path::new(path).join(file_path);
+        std::fs::write(&full_path, content).map_err(|e| e.to_string())
+    }
+
+    /// Revert a specific hunk in a file (for working directory changes)
+    pub fn revert_hunk(path: &str, file_path: &str, hunk_index: usize, staged: bool) -> Result<(), String> {
+        // Get the diff to find the hunk
+        let diff_info = if staged {
+            Self::get_working_diff(path, file_path, true)?
+        } else {
+            Self::get_working_diff(path, file_path, false)?
+        };
+
+        if hunk_index >= diff_info.hunks.len() {
+            return Err(format!("Hunk index {} out of range", hunk_index));
+        }
+
+        let hunk = &diff_info.hunks[hunk_index];
+        
+        // Read the current file content
+        let full_path = Path::new(path).join(file_path);
+        let current_content = std::fs::read_to_string(&full_path)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+        
+        let lines: Vec<&str> = current_content.lines().collect();
+        let mut new_lines: Vec<String> = Vec::new();
+        
+        // Build a set of line numbers that are additions (to remove)
+        // and collect the deletions (to restore)
+        let mut additions_to_remove: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut deletions_to_restore: Vec<(u32, String)> = Vec::new();
+        
+        for line in &hunk.lines {
+            if line.line_type == "addition" {
+                if let Some(ln) = line.new_line_no {
+                    additions_to_remove.insert(ln);
+                }
+            } else if line.line_type == "deletion" {
+                if let Some(ln) = line.old_line_no {
+                    deletions_to_restore.push((ln, line.content.clone()));
+                }
+            }
+        }
+        
+        // Sort deletions by line number
+        deletions_to_restore.sort_by_key(|(ln, _)| *ln);
+        
+        // Reconstruct the file
+        let mut current_line_no: u32 = 1;
+        let mut deletion_idx = 0;
+        
+        for line in &lines {
+            // Check if we need to insert deletions before this line
+            while deletion_idx < deletions_to_restore.len() {
+                let (del_ln, _) = &deletions_to_restore[deletion_idx];
+                if *del_ln < current_line_no {
+                    let content = deletions_to_restore[deletion_idx].1.trim_end_matches('\n');
+                    new_lines.push(content.to_string());
+                    deletion_idx += 1;
+                } else {
+                    break;
+                }
+            }
+            
+            // Skip additions
+            if !additions_to_remove.contains(&current_line_no) {
+                new_lines.push(line.to_string());
+            }
+            current_line_no += 1;
+        }
+        
+        // Add any remaining deletions at the end
+        while deletion_idx < deletions_to_restore.len() {
+            let content = deletions_to_restore[deletion_idx].1.trim_end_matches('\n');
+            new_lines.push(content.to_string());
+            deletion_idx += 1;
+        }
+        
+        // Write the reverted content
+        let new_content = new_lines.join("\n") + if current_content.ends_with('\n') { "\n" } else { "" };
+        std::fs::write(&full_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
+        
+        Ok(())
     }
 }
 

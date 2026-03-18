@@ -1,6 +1,7 @@
 pub mod commit;
 pub mod commit_file;
 pub mod branch;
+pub mod diff;
 pub mod file_status;
 pub mod github;
 pub mod repository;
@@ -10,6 +11,7 @@ pub mod tag;
 pub use commit::CommitInfo;
 pub use commit_file::CommitFileInfo;
 pub use branch::BranchInfo;
+pub use diff::{DiffLine, DiffHunk, FileDiff};
 pub use file_status::FileStatusInfo;
 pub use github::GithubRepo;
 pub use repository::RepoInfo;

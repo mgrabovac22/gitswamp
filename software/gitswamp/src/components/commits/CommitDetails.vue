@@ -13,6 +13,7 @@ import {
   Minus,
   Trash2,
   Archive,
+  Eye,
 } from "lucide-vue-next";
 import AppButton from "@/components/ui/AppButton.vue";
 import GitCommitIcon from "@/components/ui/GitCommitIcon.vue";
@@ -27,6 +28,7 @@ const props = defineProps<{
   isStash?: boolean;
   selectedStash?: StashInfo | null;
   stashFiles?: CommitFileInfo[];
+  repoPath: string;
 }>();
 
 const emit = defineEmits<{
@@ -40,10 +42,15 @@ const emit = defineEmits<{
   stashPop: [index: number];
   stashApply: [index: number];
   stashDrop: [index: number];
+  viewDiff: [{ path: string; sha: string | null; staged: boolean }];
 }>();
 
 const commitSummary = ref("");
 const commitDescription = ref("");
+
+function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
+  emit("viewDiff", { path: filePath, sha: commitSha, staged });
+}
 
 // Tab logic: working changes -> only "changes", commit/stash -> "changes" and "info"
 const activeTab = ref<"changes" | "info">("changes");
@@ -225,7 +232,14 @@ function copyToClipboard(text: string) {
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90" @click="emit('stage', f.path)">{{ f.path }}</span>
+              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90" @click="openDiff(f.path, null, false)">{{ f.path }}</span>
+              <button
+                @click.stop="openDiff(f.path, null, false)"
+                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--primary)]/20 transition-all"
+                title="View diff"
+              >
+                <Eye class="w-3 h-3 text-[var(--muted-foreground)] hover:text-[var(--primary)]" />
+              </button>
               <button
                 @click.stop="emit('discard', f.path)"
                 class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all"
@@ -233,7 +247,7 @@ function copyToClipboard(text: string) {
               >
                 <Trash2 class="w-3 h-3 text-[var(--muted-foreground)] hover:text-[#ef4444]" />
               </button>
-              <Plus class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" @click="emit('stage', f.path)" />
+              <Plus class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" @click.stop="emit('stage', f.path)" />
             </div>
           </div>
         </div>
@@ -263,11 +277,17 @@ function copyToClipboard(text: string) {
               v-for="f in stagedFiles"
               :key="'s-' + f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
-              @click="emit('unstage', f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
-              <Minus class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity" />
+              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90" @click="openDiff(f.path, null, true)">{{ f.path }}</span>
+              <button
+                @click.stop="openDiff(f.path, null, true)"
+                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--primary)]/20 transition-all"
+                title="View diff"
+              >
+                <Eye class="w-3 h-3 text-[var(--muted-foreground)] hover:text-[var(--primary)]" />
+              </button>
+              <Minus class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" @click.stop="emit('unstage', f.path)" />
             </div>
           </div>
         </div>
@@ -317,10 +337,12 @@ function copyToClipboard(text: string) {
           <div
             v-for="f in commitFiles"
             :key="f.path"
-            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer"
+            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
+            @click="openDiff(f.path, commit!.sha, false)"
           >
             <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
             <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+            <Eye class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity" />
             <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
             <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
           </div>

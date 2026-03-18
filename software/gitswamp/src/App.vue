@@ -5,6 +5,7 @@ import RepositoryTabs from "@/components/repository/RepositoryTabs.vue";
 import Sidebar from "@/components/repository/Sidebar.vue";
 import CommitGraph from "@/components/commits/CommitGraph.vue";
 import CommitDetails from "@/components/commits/CommitDetails.vue";
+import FileDiffViewer from "@/components/ui/FileDiffViewer.vue";
 import LandingPage from "@/components/repository/LandingPage.vue";
 import CloneDialog from "@/components/repository/CloneDialog.vue";
 import InitDialog from "@/components/repository/InitDialog.vue";
@@ -56,6 +57,23 @@ const annotatedTagMessage = ref("");
 // Track whether user clicked "working changes" vs a commit vs a stash
 const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
+
+// Diff viewer state - replaces commit graph when viewing a file diff
+const showDiffViewer = ref(false);
+const diffFilePath = ref("");
+const diffCommitSha = ref<string | null>(null);
+const diffStaged = ref(false);
+
+function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
+  diffFilePath.value = filePath;
+  diffCommitSha.value = commitSha;
+  diffStaged.value = staged;
+  showDiffViewer.value = true;
+}
+
+function closeDiffViewer() {
+  showDiffViewer.value = false;
+}
 
 // Whether to show the details panel (only when something is selected)
 const showDetailsPanel = computed(() =>
@@ -426,7 +444,20 @@ const openReposList = computed(() =>
         />
         <div class="flex-1 flex flex-col overflow-hidden">
           <div class="flex-1 flex overflow-hidden" :style="showTerminal ? 'height: 75%' : ''">
+            <!-- Diff Viewer (replaces commit graph when viewing file diff) -->
+            <FileDiffViewer
+              v-if="showDiffViewer"
+              class="flex-1"
+              :repo-path="git.repoPath.value"
+              :file-path="diffFilePath"
+              :commit-sha="diffCommitSha"
+              :staged="diffStaged"
+              @close="closeDiffViewer"
+              @refresh="git.refreshStatus()"
+            />
+            <!-- Normal commit graph view -->
             <CommitGraph
+              v-else
               :class="showDetailsPanel ? '' : 'flex-1'"
               :commits="git.displayedCommits.value"
               :selected="git.selectedCommit.value"
@@ -479,6 +510,7 @@ const openReposList = computed(() =>
               :is-stash="viewingStash"
               :selected-stash="git.selectedStash.value"
               :stash-files="git.selectedStashFiles.value"
+              :repo-path="git.repoPath.value"
               @stage="git.stageFile($event)"
               @unstage="git.unstageFile($event)"
               @stage-all="git.stageAll()"
@@ -489,6 +521,7 @@ const openReposList = computed(() =>
               @stash-pop="git.stashPop($event)"
               @stash-apply="git.stashApply($event)"
               @stash-drop="git.stashDrop($event)"
+              @view-diff="openDiffViewer($event.path, $event.sha, $event.staged)"
             />
           </div>
           <!-- Terminal panel (25% height) -->
