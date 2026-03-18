@@ -740,12 +740,12 @@ function topRefStyle(commit: CommitInfo, color: string): Record<string, string> 
   const ref = topDisplayRef(commit);
   if (!ref) return {};
   if (ref.kind === 'tag') {
-    return { backgroundColor: '#f59e0b2a', color: '#f59e0b', border: '1.5px solid #f59e0b66', textShadow: '0 0 8px #f59e0b40' };
+    return { backgroundColor: '#f59e0b2a', color: '#f59e0b', border: '1.5px solid #f59e0b66' };
   }
   if (ref.local && ref.name === props.currentBranch) {
-    return { backgroundColor: color + '35', color, border: '2px solid ' + color + 'cc', textShadow: '0 0 10px ' + color + '80', boxShadow: '0 0 8px ' + color + '50' };
+    return { backgroundColor: color + '35', color };
   }
-  return { backgroundColor: color + '28', color, border: '1.5px solid ' + color + '55', textShadow: '0 0 8px ' + color + '40' };
+  return { backgroundColor: color + '28', color, border: '1.5px solid ' + color + '55' };
 }
 
 function onDocClick() { closeCtx(); }
@@ -1183,47 +1183,52 @@ onUnmounted(() => {
   to { stroke-dashoffset: -28; }
 }
 
-/* Current checked-out branch — spinning conic border */
-@property --cb-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
+/* Current checked-out branch — 2 lines circling fast */
 .current-branch-badge {
   position: relative;
   z-index: 0;
-  border: none !important;
+  overflow: visible;
 }
 .current-branch-badge::before {
   content: '';
   position: absolute;
-  inset: -1.5px;
+  inset: -2px;
   border-radius: inherit;
-  background: conic-gradient(
-    from var(--cb-angle),
-    transparent       0deg,
-    currentColor     70deg,
-    currentColor     80deg,
-    transparent     150deg,
-    transparent     180deg,
-    currentColor    250deg,
-    currentColor    260deg,
-    transparent     330deg,
-    transparent     360deg
-  );
-  animation: cbSpin 4s linear infinite;
-  z-index: -1;
-  opacity: 0.5;
+  border: 1.5px solid currentColor;
+  opacity: 0.15;
+  pointer-events: none;
 }
 .current-branch-badge::after {
   content: '';
   position: absolute;
-  inset: 1px;
+  inset: -2px;
   border-radius: inherit;
-  background: inherit;
-  z-index: -1;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--a),
+    transparent 0deg,
+    currentColor 20deg,
+    currentColor 40deg,
+    transparent 60deg,
+    transparent 180deg,
+    currentColor 200deg,
+    currentColor 220deg,
+    transparent 240deg
+  );
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  padding: 1.5px;
+  opacity: 0.9;
+  animation: rotateBorder 1.2s linear infinite;
 }
-@keyframes cbSpin {
-  to { --cb-angle: 360deg; }
+@property --a {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes rotateBorder {
+  to { --a: 360deg; }
 }
 </style>
