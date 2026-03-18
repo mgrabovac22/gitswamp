@@ -453,6 +453,19 @@ function displayRefs(commit: CommitInfo): DisplayRef[] {
       name: t.name,
     });
   }
+  // Sort so that current branch (HEAD) is first
+  refs.sort((a, b) => {
+    const aIsCurrent = a.kind === "branch" && a.local && a.name === props.currentBranch;
+    const bIsCurrent = b.kind === "branch" && b.local && b.name === props.currentBranch;
+    if (aIsCurrent && !bIsCurrent) return -1;
+    if (!aIsCurrent && bIsCurrent) return 1;
+    // Then prioritize local branches over remote-only
+    if (a.kind === "branch" && b.kind === "branch") {
+      if (a.local && !b.local) return -1;
+      if (!a.local && b.local) return 1;
+    }
+    return 0;
+  });
   return refs;
 }
 
@@ -585,6 +598,7 @@ function stashAction(action: "pop" | "apply" | "drop" | "view", item?: StashInfo
   if (action === "pop") emit("stashPop", idx);
   if (action === "apply") emit("stashApply", idx);
   if (action === "drop") emit("stashDrop", idx);
+  if (action === "view") emit("selectStash", target);
 }
 
 function closeRefCtx() {
@@ -846,7 +860,7 @@ onUnmounted(() => {
           @contextmenu="onCtx($event, item.node.commit)"
         >
           <!-- Branch / ref labels with local/remote icons -->
-          <div class="flex-shrink-0 flex items-center justify-start gap-0.5 overflow-hidden px-1 relative" :style="{ width: BRANCH_COL + 'px' }"
+          <div class="flex-shrink-0 flex items-center justify-start gap-0.5 px-1 relative" :style="{ width: BRANCH_COL + 'px' }"
             @mouseenter="hoveredRefRow = item.idx" @mouseleave="hoveredRefRow = null; hoveredStashRow = null"
           >
             <template v-if="topDisplayRef(item.node.commit)">
@@ -1188,18 +1202,18 @@ onUnmounted(() => {
   background: conic-gradient(
     from var(--cb-angle),
     transparent       0deg,
-    currentColor     55deg,
-    currentColor     90deg,
-    transparent     145deg,
+    currentColor     70deg,
+    currentColor     80deg,
+    transparent     150deg,
     transparent     180deg,
-    currentColor    235deg,
-    currentColor    270deg,
-    transparent     325deg,
+    currentColor    250deg,
+    currentColor    260deg,
+    transparent     330deg,
     transparent     360deg
   );
-  animation: cbSpin 2.4s linear infinite;
+  animation: cbSpin 4s linear infinite;
   z-index: -1;
-  opacity: 0.9;
+  opacity: 0.5;
 }
 .current-branch-badge::after {
   content: '';

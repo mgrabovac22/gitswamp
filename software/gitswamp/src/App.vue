@@ -237,14 +237,12 @@ function onSelectStash(stash: StashInfo) {
 }
 
 async function handleCheckoutRemoteBranch(name: string) {
-  // Check if local branch exists and is behind remote
+  // When user clicks on remote-only ref, they want to sync with remote
   const localBranch = git.localBranches.value.find(b => b.name === name);
-  if (localBranch && localBranch.behind > 0) {
-    // Local exists and is behind remote - reset to remote
+  if (localBranch) {
+    // Local exists - reset to remote (this handles behind > 0 case and also
+    // cases where upstream isn't set but user explicitly wants remote version)
     await git.resetBranchToRemote(name);
-  } else if (localBranch) {
-    // Local exists, just checkout
-    await git.checkoutBranch(name);
   } else {
     // No local branch, create tracking branch from remote
     try {

@@ -1368,9 +1368,25 @@ impl GitService {
     }
 
     pub fn reset_branch_to_remote(path: &str, branch: &str) -> Result<String, String> {
-        let remote_ref = format!("origin/{}", branch);
-        Self::git_cli(path, &["checkout", branch])?;
-        Self::git_cli(path, &["reset", "--hard", &remote_ref])
+        let repo = Self::open(path)?;
+        
+        // First checkout the branch using libgit2
+        Self::checkout_branch(path, branch)?;
+        
+        // Find the remote ref for origin/<branch>
+        let remote_ref_name = format!("refs/remotes/origin/{}", branch);
+        let remote_ref = repo.find_reference(&remote_ref_name)
+            .map_err(|e| format!("Cannot find remote branch origin/{}: {}", branch, e.message()))?;
+        let remote_oid = remote_ref.target()
+            .ok_or_else(|| format!("Remote branch origin/{} has no target", branch))?;
+        let remote_commit = repo.find_commit(remote_oid)
+            .map_err(|e| e.message().to_string())?;
+        
+        // Reset hard to the remote commit
+        repo.reset(remote_commit.as_object(), git2::ResetType::Hard, None)
+            .map_err(|e| e.message().to_string())?;
+        
+        Ok(format!("Reset {} to origin/{}", branch, branch))
     }
 
     pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
