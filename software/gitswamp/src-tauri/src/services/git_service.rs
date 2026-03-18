@@ -8,7 +8,7 @@ use std::os::windows::process::CommandExt;
 
 use git2::{BranchType, Repository, Sort, StashApplyOptions, StashFlags, StatusOptions};
 
-use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, DiffHunk, DiffLine, FileDiff, FileStatusInfo, GithubRepo, RepoInfo, StashInfo, TagInfo};
+use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, DiffHunk, DiffLine, FileDiff, FileStatusInfo, GithubRepo, GitlabRepo, RepoInfo, StashInfo, TagInfo};
 
 static GIT_PATH: OnceLock<String> = OnceLock::new();
 static FULL_PATH: OnceLock<String> = OnceLock::new();
@@ -1420,6 +1420,136 @@ impl GitService {
         Ok(repos)
     }
 
+    /// Search GitLab repositories
+    pub fn search_gitlab_repos(domain: &str, token: &str, query: &str) -> Result<Vec<GitlabRepo>, String> {
+        let base_url = format!("https://{}/api/v4", domain);
+        let url = if query.is_empty() {
+            format!("{}/projects?membership=true&per_page=50&order_by=last_activity_at", base_url)
+        } else {
+            format!("{}/projects?search={}&per_page=30&order_by=last_activity_at", base_url, urlencoded(query))
+        };
+        
+        let resp = ureq::get(&url)
+            .set("PRIVATE-TOKEN", token)
+            .set("Accept", "application/json")
+            .set("User-Agent", "GitSwamp")
+            .call()
+            .map_err(|e| format!("GitLab API error: {}", e))?;
+        
+        let body: serde_json::Value = resp.into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        
+        let items = body.as_array().cloned().unwrap_or_default();
+        let repos = items.iter().filter_map(|item| {
+            Some(GitlabRepo {
+                full_name: item["name_with_namespace"].as_str()?.to_string(),
+                path_with_namespace: item["path_with_namespace"].as_str()?.to_string(),
+                clone_url_ssh: item["ssh_url_to_repo"].as_str()?.to_string(),
+                clone_url_https: item["http_url_to_repo"].as_str()?.to_string(),
+                description: item["description"].as_str().unwrap_or("").to_string(),
+                is_private: item["visibility"].as_str() != Some("public"),
+                stars: item["star_count"].as_u64().unwrap_or(0) as u32,
+            })
+        }).collect();
+        Ok(repos)
+    }
+
+    /// Generate SSH key pair for GitLab/GitHub
+    pub fn generate_ssh_key(email: &str, key_name: &str) -> Result<(String, String), String> {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .map_err(|_| "Cannot find home directory")?;
+        
+        let ssh_dir = Path::new(&home).join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).map_err(|e| format!("Failed to create .ssh dir: {}", e))?;
+        
+        let key_path = ssh_dir.join(key_name);
+        let pub_key_path = ssh_dir.join(format!("{}.pub", key_name));
+        
+        // Check if key already exists
+        if key_path.exists() {
+            let pub_key = std::fs::read_to_string(&pub_key_path)
+                .map_err(|e| format!("Failed to read existing public key: {}", e))?;
+            return Ok((key_path.to_string_lossy().to_string(), pub_key));
+        }
+        
+        // Generate new key using ssh-keygen
+        // Try to find ssh-keygen in common locations
+        let ssh_keygen_paths = [
+            Path::new("C:\\Program Files\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
+            Path::new("C:\\Program Files (x86)\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
+            Path::new("/usr/bin/ssh-keygen").to_path_buf(),
+        ];
+        
+        let ssh_keygen = ssh_keygen_paths.iter()
+            .find(|p| p.exists())
+            .ok_or("ssh-keygen not found. Please ensure Git is installed with SSH support.")?;
+        
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        
+        let mut cmd = std::process::Command::new(ssh_keygen);
+        cmd.args(["-t", "ed25519", "-C", email, "-f"])
+            .arg(&key_path)
+            .arg("-N")
+            .arg(""); // Empty passphrase
+        
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        
+        let output = cmd.output().map_err(|e| format!("Failed to run ssh-keygen: {}", e))?;
+        
+        if !output.status.success() {
+            return Err(format!("ssh-keygen failed: {}", String::from_utf8_lossy(&output.stderr)));
+        }
+        
+        let pub_key = std::fs::read_to_string(&pub_key_path)
+            .map_err(|e| format!("Failed to read public key: {}", e))?;
+        
+        Ok((key_path.to_string_lossy().to_string(), pub_key))
+    }
+
+    /// Add SSH key to GitLab
+    pub fn add_gitlab_ssh_key(domain: &str, token: &str, title: &str, key: &str) -> Result<(), String> {
+        let url = format!("https://{}/api/v4/user/keys", domain);
+        
+        let body = serde_json::json!({
+            "title": title,
+            "key": key
+        });
+        
+        let resp = ureq::post(&url)
+            .set("PRIVATE-TOKEN", token)
+            .set("Content-Type", "application/json")
+            .set("User-Agent", "GitSwamp")
+            .send_json(&body)
+            .map_err(|e| format!("Failed to add SSH key to GitLab: {}", e))?;
+        
+        if resp.status() != 201 && resp.status() != 200 {
+            return Err(format!("GitLab returned status {}", resp.status()));
+        }
+        
+        Ok(())
+    }
+
+    /// Verify GitLab token and get user info
+    pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
+        let url = format!("https://{}/api/v4/user", domain);
+        
+        let resp = ureq::get(&url)
+            .set("PRIVATE-TOKEN", token)
+            .set("Accept", "application/json")
+            .set("User-Agent", "GitSwamp")
+            .call()
+            .map_err(|e| format!("GitLab API error: {}", e))?;
+        
+        let body: serde_json::Value = resp.into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        
+        let username = body["username"].as_str().unwrap_or("Unknown").to_string();
+        Ok(username)
+    }
+
     /// Get diff for a working directory file (unstaged or staged)
     pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<FileDiff, String> {
         let repo = Self::open(path)?;
@@ -1597,62 +1727,58 @@ impl GitService {
         let current_content = std::fs::read_to_string(&full_path)
             .map_err(|e| format!("Failed to read file: {}", e))?;
         
-        let lines: Vec<&str> = current_content.lines().collect();
-        let mut new_lines: Vec<String> = Vec::new();
+        let current_lines: Vec<&str> = current_content.lines().collect();
         
-        // Build a set of line numbers that are additions (to remove)
-        // and collect the deletions (to restore)
-        let mut additions_to_remove: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let mut deletions_to_restore: Vec<(u32, String)> = Vec::new();
+        // Build the new file by processing line by line
+        // Strategy: 
+        // - For lines in this hunk that are additions: skip them
+        // - For lines in this hunk that are deletions: restore them
+        // - For context lines and lines outside this hunk: keep them
         
+        let mut result_lines: Vec<String> = Vec::new();
+        let mut current_idx: usize = 0; // 0-indexed position in current file
+        
+        // hunk.new_start is 1-indexed line number where changes start in new file
+        let hunk_start = (hunk.new_start as usize).saturating_sub(1);
+        
+        // Copy lines before the hunk
+        while current_idx < hunk_start && current_idx < current_lines.len() {
+            result_lines.push(current_lines[current_idx].to_string());
+            current_idx += 1;
+        }
+        
+        // Process the hunk: restore original lines
+        // The deletions tell us what was removed (restore these)
+        // The additions tell us what was added (skip these in current file)
         for line in &hunk.lines {
-            if line.line_type == "addition" {
-                if let Some(ln) = line.new_line_no {
-                    additions_to_remove.insert(ln);
+            match line.line_type.as_str() {
+                "deletion" => {
+                    // This line was deleted, restore it
+                    result_lines.push(line.content.trim_end_matches('\n').to_string());
                 }
-            } else if line.line_type == "deletion" {
-                if let Some(ln) = line.old_line_no {
-                    deletions_to_restore.push((ln, line.content.clone()));
+                "addition" => {
+                    // This line was added, skip it in current file
+                    current_idx += 1;
                 }
+                "context" => {
+                    // Context line - copy from current
+                    if current_idx < current_lines.len() {
+                        result_lines.push(current_lines[current_idx].to_string());
+                    }
+                    current_idx += 1;
+                }
+                _ => {}
             }
         }
         
-        // Sort deletions by line number
-        deletions_to_restore.sort_by_key(|(ln, _)| *ln);
-        
-        // Reconstruct the file
-        let mut current_line_no: u32 = 1;
-        let mut deletion_idx = 0;
-        
-        for line in &lines {
-            // Check if we need to insert deletions before this line
-            while deletion_idx < deletions_to_restore.len() {
-                let (del_ln, _) = &deletions_to_restore[deletion_idx];
-                if *del_ln < current_line_no {
-                    let content = deletions_to_restore[deletion_idx].1.trim_end_matches('\n');
-                    new_lines.push(content.to_string());
-                    deletion_idx += 1;
-                } else {
-                    break;
-                }
-            }
-            
-            // Skip additions
-            if !additions_to_remove.contains(&current_line_no) {
-                new_lines.push(line.to_string());
-            }
-            current_line_no += 1;
-        }
-        
-        // Add any remaining deletions at the end
-        while deletion_idx < deletions_to_restore.len() {
-            let content = deletions_to_restore[deletion_idx].1.trim_end_matches('\n');
-            new_lines.push(content.to_string());
-            deletion_idx += 1;
+        // Copy remaining lines after the hunk
+        while current_idx < current_lines.len() {
+            result_lines.push(current_lines[current_idx].to_string());
+            current_idx += 1;
         }
         
         // Write the reverted content
-        let new_content = new_lines.join("\n") + if current_content.ends_with('\n') { "\n" } else { "" };
+        let new_content = result_lines.join("\n") + if current_content.ends_with('\n') { "\n" } else { "" };
         std::fs::write(&full_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
         
         Ok(())

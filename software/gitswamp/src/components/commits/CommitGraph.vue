@@ -265,9 +265,6 @@ const graph = computed(() => {
   return { nodes, edges, laneCount, branchLanes: laneMap };
 });
 
-// Stash nodes mapped to their parent commit positions
-const STASH_COLOR = '#f59e0b';
-
 // Stash nodes — each stash gets its own lane offset to avoid overlap
 const stashNodes = computed(() => {
   if (!props.stashes?.length) return [];

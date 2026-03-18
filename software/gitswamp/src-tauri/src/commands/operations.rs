@@ -62,6 +62,26 @@ pub fn search_github_repos(token: String, query: String) -> Result<Vec<crate::mo
 }
 
 #[tauri::command]
+pub fn search_gitlab_repos(domain: String, token: String, query: String) -> Result<Vec<crate::models::GitlabRepo>, String> {
+    crate::services::git_service::GitService::search_gitlab_repos(&domain, &token, &query)
+}
+
+#[tauri::command]
+pub fn generate_ssh_key(email: String, key_name: String) -> Result<(String, String), String> {
+    crate::services::git_service::GitService::generate_ssh_key(&email, &key_name)
+}
+
+#[tauri::command]
+pub fn add_gitlab_ssh_key(domain: String, token: String, title: String, key: String) -> Result<(), String> {
+    crate::services::git_service::GitService::add_gitlab_ssh_key(&domain, &token, &title, &key)
+}
+
+#[tauri::command]
+pub fn verify_gitlab_token(domain: String, token: String) -> Result<String, String> {
+    crate::services::git_service::GitService::verify_gitlab_token(&domain, &token)
+}
+
+#[tauri::command]
 pub fn rename_branch(path: String, old_name: String, new_name: String) -> Result<String, String> {
     GitService::rename_branch(&path, &old_name, &new_name)
 }

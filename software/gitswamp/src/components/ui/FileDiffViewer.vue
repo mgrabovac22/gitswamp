@@ -22,6 +22,7 @@ const viewMode = ref<ViewMode>("diff");
 
 const diff = ref<FileDiff | null>(null);
 const fileContent = ref<string>("");
+const originalContent = ref<string>(""); // Content before changes (for full file view)
 const editContent = ref<string>("");
 const loading = ref(true);
 const error = ref<string | null>(null);
@@ -76,13 +77,23 @@ async function reload() {
       });
     }
     
-    // For file-diff mode, also load the full file
+    // For file-diff mode, load both current and original content
     if (viewMode.value === "file-diff") {
       fileContent.value = await invoke<string>("get_file_content", {
         path: props.repoPath,
         filePath: props.filePath,
-        sha: null, // Always get working copy for file-diff
+        sha: null,
       });
+      // Get original content from HEAD for comparison
+      try {
+        originalContent.value = await invoke<string>("get_file_content", {
+          path: props.repoPath,
+          filePath: props.filePath,
+          sha: "HEAD",
+        });
+      } catch {
+        originalContent.value = "";
+      }
     }
   } catch (e) {
     error.value = String(e);
@@ -158,18 +169,23 @@ function startFileWatch() {
     if (!isUnstaged.value || viewMode.value === "edit") return;
     
     try {
-      // Quick check if file changed by reloading diff
       const newDiff = await invoke<FileDiff>("get_working_diff", {
         path: props.repoPath,
         filePath: props.filePath,
         staged: false,
       });
       
-      // Simple hash comparison
       const newHash = JSON.stringify(newDiff.hunks.map(h => h.lines.length));
       if (newHash !== lastFileHash) {
         lastFileHash = newHash;
         diff.value = newDiff;
+        if (viewMode.value === "file-diff") {
+          fileContent.value = await invoke<string>("get_file_content", {
+            path: props.repoPath,
+            filePath: props.filePath,
+            sha: null,
+          });
+        }
       }
     } catch {
       // Ignore errors during polling
@@ -184,7 +200,6 @@ function stopFileWatch() {
   }
 }
 
-// Start/stop watching based on conditions
 watch(isUnstaged, (val) => {
   if (val) {
     startFileWatch();
@@ -214,6 +229,85 @@ function navigateHunk(dir: "prev" | "next") {
   const el = document.getElementById(`hunk-${currentHunkIndex.value}`);
   el?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
+
+// Build full file lines with diff information
+interface FullFileLine {
+  lineNo: number;
+  oldLineNo: number | null;
+  content: string;
+  type: 'context' | 'addition' | 'deletion';
+  hunkIdx: number | null;
+}
+
+const fullFileLines = computed((): FullFileLine[] => {
+  if (!diff.value || !fileContent.value) return [];
+  
+  const lines = fileContent.value.split('\n');
+  const result: FullFileLine[] = [];
+  
+  // Build a map of line numbers that are additions (new_line_no -> line info)
+  const additionLines = new Map<number, { content: string; hunkIdx: number }>();
+  const deletionsByHunk = new Map<number, DiffLine[]>();
+  
+  diff.value.hunks.forEach((hunk, hunkIdx) => {
+    const deletions: DiffLine[] = [];
+    hunk.lines.forEach(line => {
+      if (line.line_type === 'addition' && line.new_line_no) {
+        additionLines.set(line.new_line_no, { content: line.content, hunkIdx });
+      } else if (line.line_type === 'deletion') {
+        deletions.push(line);
+      }
+    });
+    if (deletions.length > 0) {
+      deletionsByHunk.set(hunkIdx, deletions);
+    }
+  });
+  
+  // Process each line in the current file
+  let deletionInsertPoint: number | null = null;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const lineNo = i + 1;
+    const addInfo = additionLines.get(lineNo);
+    
+    // Check if we need to insert deletions before this addition
+    if (addInfo && deletionInsertPoint !== addInfo.hunkIdx) {
+      const deletions = deletionsByHunk.get(addInfo.hunkIdx);
+      if (deletions) {
+        deletions.forEach(del => {
+          result.push({
+            lineNo: 0,
+            oldLineNo: del.old_line_no,
+            content: del.content.replace(/\n$/, ''),
+            type: 'deletion',
+            hunkIdx: addInfo.hunkIdx,
+          });
+        });
+        deletionInsertPoint = addInfo.hunkIdx;
+      }
+    }
+    
+    if (addInfo) {
+      result.push({
+        lineNo,
+        oldLineNo: null,
+        content: lines[i],
+        type: 'addition',
+        hunkIdx: addInfo.hunkIdx,
+      });
+    } else {
+      result.push({
+        lineNo,
+        oldLineNo: lineNo, 
+        content: lines[i],
+        type: 'context',
+        hunkIdx: null,
+      });
+    }
+  }
+  
+  return result;
+});
 
 // Word-level diff helpers
 function getWordDiffPairs(lines: DiffLine[]): Map<number, { del: DiffLine; add: DiffLine }[]> {
@@ -496,58 +590,30 @@ function onEditInput() {
       </div>
 
       <!-- FILE-DIFF VIEW: Whole file with change highlights -->
-      <div v-else-if="viewMode === 'file-diff' && diff" class="min-w-fit">
-        <!-- Show all hunks inline within full file context -->
-        <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
-          <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[#161b22] px-3 py-1 sticky top-0 z-10 border-y border-[#30363d]">
-            <span class="text-xs text-[#58a6ff]">
-              @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
-            </span>
-            <button
-              v-if="isWorkingChanges"
-              @click="revertHunk(hunkIdx)"
-              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[#30363d] bg-[#21262d] hover:bg-[#30363d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
-            >
-              <Undo2 class="w-3 h-3" />
-              Revert
-            </button>
-          </div>
-          <template v-for="(line, lineIdx) in hunk.lines" :key="`${hunkIdx}-${lineIdx}`">
-            <div :class="['flex', lineClass(line.line_type)]">
-              <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
-                {{ line.old_line_no ?? '' }}
-              </div>
-              <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
-                {{ line.new_line_no ?? '' }}
-              </div>
-              <div 
-                class="w-5 flex-shrink-0 text-center select-none font-bold"
-                :class="line.line_type === 'addition' ? 'text-[#3fb950]' : line.line_type === 'deletion' ? 'text-[#f85149]' : 'text-[#484f58]'"
-              >
-                {{ linePrefix(line.line_type) }}
-              </div>
-              <pre 
-                class="flex-1 px-1.5 whitespace-pre overflow-x-auto"
-                :class="line.line_type === 'addition' ? 'text-[#aff5b4]' : line.line_type === 'deletion' ? 'text-[#ffa198]' : 'text-[#c9d1d9]'"
-              ><template v-if="line.line_type === 'deletion' || line.line_type === 'addition'"><template v-for="(part, pIdx) in (() => {
-                  const pairs = getWordDiffPairs(hunk.lines);
-                  const pairData = pairs.get(lineIdx);
-                  if (pairData && pairData.length > 0) {
-                    const pair = pairData[0];
-                    const inlineDiff = computeInlineDiff(
-                      pair.del.content.replace(/\n$/, ''),
-                      pair.add.content.replace(/\n$/, '')
-                    );
-                    return line.line_type === 'deletion' ? inlineDiff.old : inlineDiff.new;
-                  }
-                  return [{ text: line.content.replace(/\n$/, ''), highlight: false }];
-                })()" :key="pIdx"><span 
-                    v-if="part.highlight" 
-                    :class="line.line_type === 'addition' ? 'bg-[#2ea043]/60 rounded-sm' : 'bg-[#b62324]/60 rounded-sm'"
-                  >{{ part.text }}</span><template v-else>{{ part.text }}</template></template></template><template v-else>{{ line.content.replace(/\n$/, '') }}</template></pre>
+      <div v-else-if="viewMode === 'file-diff'" class="min-w-fit">
+        <template v-for="(line, idx) in fullFileLines" :key="idx">
+          <div :class="['flex', lineClass(line.type)]">
+            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
+              {{ line.oldLineNo ?? '' }}
             </div>
-          </template>
+            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
+              {{ line.lineNo || '' }}
+            </div>
+            <div 
+              class="w-5 flex-shrink-0 text-center select-none font-bold"
+              :class="line.type === 'addition' ? 'text-[#3fb950]' : line.type === 'deletion' ? 'text-[#f85149]' : 'text-[#484f58]'"
+            >
+              {{ linePrefix(line.type) }}
+            </div>
+            <pre 
+              class="flex-1 px-1.5 whitespace-pre overflow-x-auto"
+              :class="line.type === 'addition' ? 'text-[#aff5b4]' : line.type === 'deletion' ? 'text-[#ffa198]' : 'text-[#c9d1d9]'"
+            >{{ line.content }}</pre>
+          </div>
         </template>
+        <div v-if="fullFileLines.length === 0 && !loading" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
+          No file content available
+        </div>
       </div>
 
       <!-- EDIT VIEW -->

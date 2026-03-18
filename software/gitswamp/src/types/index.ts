@@ -77,6 +77,16 @@ export interface GithubRepo {
   stars: number
 }
 
+export interface GitlabRepo {
+  full_name: string
+  path_with_namespace: string
+  clone_url_ssh: string
+  clone_url_https: string
+  description: string
+  is_private: boolean
+  stars: number
+}
+
 export interface DiffLine {
   line_type: 'context' | 'addition' | 'deletion' | 'hunk_header'
   old_line_no: number | null
