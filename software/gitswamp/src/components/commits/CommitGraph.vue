@@ -1106,23 +1106,25 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="refCtxVisible && refCtxRef"
-        class="fixed z-[120] min-w-[180px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1 text-[11px] text-[var(--foreground)]"
+        class="fixed z-[120] w-[280px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)]"
         :style="{ left: refCtxX + 'px', top: refCtxY + 'px' }"
         @click.stop
       >
         <template v-if="refCtxRef.kind === 'branch'">
-          <button v-if="refCtxRef.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('checkout-local')">Checkout {{ refCtxRef.name }}</button>
-          <button v-if="!refCtxRef.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('checkout-remote')">Checkout origin/{{ refCtxRef.name }}</button>
-          <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('merge-into-current')">Merge into {{ currentBranch }}</button>
-          <button v-if="refCtxRef.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('delete-local')">Delete {{ refCtxRef.name }}</button>
-          <button v-if="refCtxRef.remote" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('delete-remote')">Delete origin/{{ refCtxRef.name }}</button>
-          <div class="border-t border-[var(--border)] my-1" />
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('copy-name')">Copy name</button>
+          <div class="space-y-1">
+            <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('checkout-local')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout branch</span><span class="ctx-sub">Switch to local branch {{ refCtxRef.name }}</span></button>
+            <button v-if="!refCtxRef.local" class="ctx-item" @click="refAction('checkout-remote')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout remote branch</span><span class="ctx-sub">Create/switch to origin/{{ refCtxRef.name }}</span></button>
+            <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
+            <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('delete-local')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local branch</span><span class="ctx-sub">Delete {{ refCtxRef.name }} from local repository</span></button>
+            <button v-if="refCtxRef.remote" class="ctx-item" @click="refAction('delete-remote')"><span class="ctx-icon">🛰</span><span class="ctx-main">Delete remote branch</span><span class="ctx-sub">Delete origin/{{ refCtxRef.name }} on remote</span></button>
+            <button class="ctx-item" @click="refAction('copy-name')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy branch name</span><span class="ctx-sub">Copy name to clipboard</span></button>
+          </div>
         </template>
         <template v-else>
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('delete-tag')">Delete tag {{ refCtxRef.name }}</button>
-          <div class="border-t border-[var(--border)] my-1" />
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="refAction('copy-name')">Copy name</button>
+          <div class="space-y-1">
+            <button class="ctx-item" @click="refAction('delete-tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Delete tag</span><span class="ctx-sub">Delete tag {{ refCtxRef.name }}</span></button>
+            <button class="ctx-item" @click="refAction('copy-name')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy tag name</span><span class="ctx-sub">Copy name to clipboard</span></button>
+          </div>
         </template>
       </div>
 
@@ -1172,67 +1174,69 @@ onUnmounted(() => {
 
       <div
         v-if="ctxVisible"
-        class="fixed z-[100] min-w-[240px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl py-1 text-[11px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
+        class="fixed z-[100] w-[360px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
         :style="{ left: ctxX + 'px', top: ctxY + 'px' }"
         @click.stop
       >
         <template v-if="ctxHasBranch()">
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('pull')">Pull (fast-forward if possible)</button>
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('push')">Push</button>
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('set-upstream')">Set Upstream</button>
-          <div class="border-t border-[var(--border)] my-1" />
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('checkout-branch')">Checkout</button>
+          <div class="space-y-1">
+            <button class="ctx-item" @click="ctxAction('pull')"><span class="ctx-icon">⬇</span><span class="ctx-main">Pull changes</span><span class="ctx-sub">Fetch and fast-forward current branch</span></button>
+            <button class="ctx-item" @click="ctxAction('push')"><span class="ctx-icon">⬆</span><span class="ctx-main">Push changes</span><span class="ctx-sub">Push current branch commits to remote</span></button>
+            <button class="ctx-item" @click="ctxAction('set-upstream')"><span class="ctx-icon">🔗</span><span class="ctx-main">Set upstream</span><span class="ctx-sub">Link local branch to origin/{{ ctxBranchName() }}</span></button>
+            <button class="ctx-item" @click="ctxAction('checkout-branch')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout branch</span><span class="ctx-sub">Switch working tree to {{ ctxBranchName() }}</span></button>
+          </div>
           <div class="border-t border-[var(--border)] my-1" />
         </template>
 
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('checkout')">Checkout this commit</button>
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('branch')">Create branch here</button>
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('cherry-pick')">Cherry pick commit</button>
+        <div class="space-y-1">
+          <button class="ctx-item" @click="ctxAction('checkout')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout this commit</span><span class="ctx-sub">Detached HEAD at {{ ctxCommit?.short_sha }}</span></button>
+          <button class="ctx-item" @click="ctxAction('branch')"><span class="ctx-icon">🌿</span><span class="ctx-main">Create branch here</span><span class="ctx-sub">Create new branch from this commit</span></button>
+          <button class="ctx-item" @click="ctxAction('cherry-pick')"><span class="ctx-icon">🍒</span><span class="ctx-main">Cherry-pick commit</span><span class="ctx-sub">Apply this commit on top of current branch</span></button>
+          <button class="ctx-item" @click="ctxAction('revert')"><span class="ctx-icon">↩</span><span class="ctx-main">Revert commit</span><span class="ctx-sub">Create new commit that undoes this one</span></button>
+        </div>
 
         <div class="relative">
           <button
-            class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors flex items-center justify-between"
+            class="ctx-item ctx-item-reset mt-1 w-full"
             @click.stop="ctxResetSub = !ctxResetSub"
           >
-            <span>Reset {{ currentBranch }} to this commit</span>
-            <svg :class="['w-3 h-3 text-[var(--muted-foreground)] transition-transform', ctxResetSub ? 'rotate-90' : '']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <span class="ctx-icon">🔄</span>
+            <span class="ctx-main !whitespace-nowrap">Reset {{ currentBranch }} to this commit</span>
+            <svg :class="['ctx-arrow w-3 h-3 text-[var(--muted-foreground)] transition-transform', ctxResetSub ? 'rotate-90' : '']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <span class="ctx-sub">Choose Soft / Mixed / Hard reset mode</span>
           </button>
           <div
             v-if="ctxResetSub"
-            class="bg-[var(--popover)]/80 py-1 pl-4"
+            class="bg-[var(--popover)]/80 py-1 pl-2 pr-1"
           >
-            <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-soft')">Soft – keep all changes staged</button>
-            <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-mixed')">Mixed – keep working copy but reset index</button>
-            <button class="w-full text-left px-3 py-1.5 hover:bg-[#ef4444]/15 text-[#ef4444] transition-colors" @click="ctxAction('reset-hard')">Hard – discard all changes</button>
+            <button class="ctx-item-sub" @click="ctxAction('reset-soft')">Soft — move HEAD, keep all changes staged</button>
+            <button class="ctx-item-sub" @click="ctxAction('reset-mixed')">Mixed — move HEAD, unstage files, keep working tree</button>
+            <button class="ctx-item-sub text-[#ef4444] hover:bg-[#ef4444]/15" @click="ctxAction('reset-hard')">Hard — move HEAD and discard all working changes</button>
           </div>
         </div>
 
         <template v-if="ctxHasBranch() && ctxIsHeadCommit()">
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('edit-message')">Edit commit message</button>
+          <button class="ctx-item mt-1" @click="ctxAction('edit-message')"><span class="ctx-icon">✏</span><span class="ctx-main">Edit commit message</span><span class="ctx-sub">Amend message of current HEAD commit</span></button>
         </template>
-
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('revert')">Revert commit</button>
 
         <div class="border-t border-[var(--border)] my-1" />
 
         <template v-if="ctxHasBranch()">
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('rename-branch')">Rename {{ ctxBranchName() }}</button>
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('delete-branch')">Delete {{ ctxBranchName() }}</button>
-          <button v-if="ctxBranchRef()?.remote" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('delete-remote-branch')">Delete origin/{{ ctxBranchName() }}</button>
-          <button v-if="ctxBranchRef()?.local && ctxBranchRef()?.remote" class="w-full text-left px-3 py-1.5 hover:bg-[#ef4444]/15 text-[#ef4444] transition-colors" @click="ctxAction('delete-both')">Delete {{ ctxBranchName() }} and origin/{{ ctxBranchName() }}</button>
-          <div class="border-t border-[var(--border)] my-1" />
-          <button v-if="ctxBranchRef()?.remote && ctxBranchRef()?.local" class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('reset-to-remote')">Reset {{ ctxBranchName() }} to origin/{{ ctxBranchName() }}</button>
+          <div class="space-y-1">
+            <button class="ctx-item" @click="ctxAction('rename-branch')"><span class="ctx-icon">✏</span><span class="ctx-main">Rename branch</span><span class="ctx-sub">Rename local branch {{ ctxBranchName() }}</span></button>
+            <button class="ctx-item" @click="ctxAction('delete-branch')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local branch</span><span class="ctx-sub">Remove local branch {{ ctxBranchName() }}</span></button>
+            <button v-if="ctxBranchRef()?.remote" class="ctx-item" @click="ctxAction('delete-remote-branch')"><span class="ctx-icon">🛰</span><span class="ctx-main">Delete remote branch</span><span class="ctx-sub">Remove origin/{{ ctxBranchName() }} on remote</span></button>
+            <button v-if="ctxBranchRef()?.local && ctxBranchRef()?.remote" class="ctx-item text-[#ef4444] hover:bg-[#ef4444]/15" @click="ctxAction('delete-both')"><span class="ctx-icon">💥</span><span class="ctx-main">Delete local and remote</span><span class="ctx-sub">Delete both {{ ctxBranchName() }} and origin/{{ ctxBranchName() }}</span></button>
+            <button v-if="ctxBranchRef()?.remote && ctxBranchRef()?.local" class="ctx-item" @click="ctxAction('reset-to-remote')"><span class="ctx-icon">🔄</span><span class="ctx-main">Reset branch to remote</span><span class="ctx-sub">Force local {{ ctxBranchName() }} to origin/{{ ctxBranchName() }}</span></button>
+            <button class="ctx-item" @click="ctxAction('copy-branch-name')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy branch name</span><span class="ctx-sub">Copy branch name to clipboard</span></button>
+          </div>
         </template>
+        <div class="space-y-1 mt-1">
+          <button class="ctx-item" @click="ctxAction('copy-sha')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy commit SHA</span><span class="ctx-sub">Copy full commit hash to clipboard</span></button>
+          <button class="ctx-item" @click="ctxAction('tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Create lightweight tag</span><span class="ctx-sub">Create tag on this commit</span></button>
+          <button class="ctx-item" @click="ctxAction('annotated-tag')"><span class="ctx-icon">🏷✏</span><span class="ctx-main">Create annotated tag</span><span class="ctx-sub">Create tag with message and metadata</span></button>
+        </div>
 
-        <template v-if="ctxHasBranch()">
-          <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('copy-branch-name')">Copy branch name</button>
-        </template>
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('copy-sha')">Copy commit SHA</button>
-
-        <div class="border-t border-[var(--border)] my-1" />
-
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('tag')">Create tag here</button>
-        <button class="w-full text-left px-3 py-1.5 hover:bg-[var(--primary)]/15 transition-colors" @click="ctxAction('annotated-tag')">Create annotated tag here</button>
       </div>
     </Teleport>
   </div>
@@ -1336,6 +1340,62 @@ onUnmounted(() => {
 }
 @keyframes rotateBorder {
   to { --a: 360deg; }
+}
+.ctx-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.32rem 0.45rem;
+  border-radius: 0.4rem;
+  transition: background-color 0.15s ease;
+  display: grid;
+  grid-template-columns: 1rem 1fr;
+  grid-template-areas:
+    "icon main"
+    "icon sub";
+  column-gap: 0.45rem;
+  row-gap: 0.05rem;
+}
+.ctx-item:hover {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+}
+.ctx-icon {
+  grid-area: icon;
+  width: 1rem;
+  text-align: center;
+  line-height: 1rem;
+}
+.ctx-main {
+  grid-area: main;
+  font-size: 10px;
+  line-height: 1.2;
+}
+.ctx-sub {
+  grid-area: sub;
+  font-size: 8px;
+  line-height: 1.2;
+  color: var(--muted-foreground);
+}
+.ctx-item-reset {
+  grid-template-columns: 1rem 1fr auto;
+  grid-template-areas:
+    "icon main arrow"
+    "sub sub";
+}
+.ctx-arrow {
+  grid-area: arrow;
+  align-self: center;
+}
+.ctx-item-sub {
+  width: 100%;
+  text-align: left;
+  padding: 0.3rem 0.45rem;
+  border-radius: 0.35rem;
+  transition: background-color 0.15s ease;
+  font-size: 9px;
+  line-height: 1.25;
+}
+.ctx-item-sub:hover {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
 }
 </style>
 
