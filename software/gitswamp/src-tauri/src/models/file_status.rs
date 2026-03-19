@@ -5,4 +5,5 @@ pub struct FileStatusInfo {
     pub path: String,
     pub status: String,
     pub staged: bool,
+    pub conflicted: bool,
 }

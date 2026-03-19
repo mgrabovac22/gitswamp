@@ -25,3 +25,13 @@ pub fn create_commit(path: String, message: String) -> Result<String, String> {
 pub fn discard_file(path: String, file_path: String) -> Result<(), String> {
     GitService::discard_file(&path, &file_path)
 }
+
+#[tauri::command]
+pub fn resolve_conflict_file(path: String, file_path: String, strategy: String) -> Result<(), String> {
+    GitService::resolve_conflict_file(&path, &file_path, &strategy)
+}
+
+#[tauri::command]
+pub fn resolve_all_conflicts(path: String, strategy: String) -> Result<(), String> {
+    GitService::resolve_all_conflicts(&path, &strategy)
+}

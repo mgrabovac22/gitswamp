@@ -11,17 +11,33 @@ import CloneDialog from "@/components/repository/CloneDialog.vue";
 import InitDialog from "@/components/repository/InitDialog.vue";
 import TerminalPanel from "@/components/layout/TerminalPanel.vue";
 import SettingsDialog from "@/components/layout/SettingsDialog.vue";
+import ToastContainer from "@/components/ui/ToastContainer.vue";
 import { useGit } from "@/composables/useGit";
+import { useToast } from "@/composables/useToast";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ref, watch, onMounted, computed } from "vue";
 import type { RepoInfo, CommitInfo, StashInfo } from "@/types";
 
 const git = useGit();
+const toast = useToast();
 
-// Initialize theme from localStorage
 const savedTheme = localStorage.getItem("gitswamp-theme");
 if (savedTheme === "light") {
   document.documentElement.classList.add("light");
+}
+
+const savedFontSize = localStorage.getItem("gitswamp-font-size");
+if (savedFontSize) {
+  const fontSizes: Record<string, string> = { small: "14px", medium: "16px", large: "18px" };
+  document.documentElement.style.setProperty("--font-size", fontSizes[savedFontSize] || "16px");
+}
+const savedCompact = localStorage.getItem("gitswamp-compact-mode");
+if (savedCompact === "true") {
+  document.documentElement.classList.add("compact");
+}
+const savedAvatars = localStorage.getItem("gitswamp-show-avatars");
+if (savedAvatars === "false") {
+  document.documentElement.classList.add("hide-avatars");
 }
 
 interface Tab {
@@ -54,11 +70,9 @@ const annotatedTagSha = ref("");
 const annotatedTagName = ref("");
 const annotatedTagMessage = ref("");
 
-// Track whether user clicked "working changes" vs a commit vs a stash
 const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
 
-// Diff viewer state - replaces commit graph when viewing a file diff
 const showDiffViewer = ref(false);
 const diffFilePath = ref("");
 const diffCommitSha = ref<string | null>(null);
@@ -75,18 +89,15 @@ function closeDiffViewer() {
   showDiffViewer.value = false;
 }
 
-// Whether to show the details panel (only when something is selected)
 const showDetailsPanel = computed(() =>
   viewingWorkingChanges.value || viewingStash.value || git.selectedCommit.value !== null
 );
 
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
 
-const hasWorkingChanges = computed(() =>
-  git.stagedFiles.value.length > 0 || git.unstagedFiles.value.length > 0
-);
+const hasWorkingChanges = computed(() => git.stagedFiles.value.length > 0 || git.unstagedFiles.value.length > 0);
+const hasConflicts = computed(() => git.hasConflicts.value);
 
-// Load saved state
 onMounted(() => {
   try {
     const saved = localStorage.getItem("gitswamp-tabs");
@@ -108,7 +119,6 @@ onMounted(() => {
   }
 });
 
-// Save tabs on change
 watch([tabs, activeTabId], () => {
   try {
     localStorage.setItem(
@@ -118,14 +128,12 @@ watch([tabs, activeTabId], () => {
   } catch {}
 }, { deep: true });
 
-// Save recent repos
 watch(recentRepos, () => {
   try {
     localStorage.setItem("gitswamp-recent", JSON.stringify(recentRepos.value));
   } catch {}
 }, { deep: true });
 
-// Fetch commit files when a commit is selected
 watch(() => git.selectedCommit.value, (commit) => {
   if (commit) {
     viewingWorkingChanges.value = false;
@@ -173,7 +181,6 @@ async function openRepo(path: string) {
         tab.path = repo.path;
       }
       addToRecent(repo);
-      // Auto-select right panel: working changes if any, otherwise last commit
       if (git.stagedFiles.value.length > 0 || git.unstagedFiles.value.length > 0) {
         viewingWorkingChanges.value = true;
         git.selectedCommit.value = null;
@@ -198,11 +205,22 @@ async function browseAndOpen() {
   } catch {}
 }
 
-async function handleClone(url: string, path: string, shallow: boolean) {
-  const clonedPath = await git.cloneRepo(url, path, shallow);
-  if (clonedPath) {
+async function handleClone(url: string, path: string, shallow: boolean, done?: (ok: boolean, error?: string) => void) {
+  try {
+    toast.info("Cloning repository...");
+    const clonedPath = await git.cloneRepo(url, path, shallow);
+    if (!clonedPath) {
+      done?.(false, git.error.value || "Clone failed.");
+      toast.error("Clone failed: " + (git.error.value || "Unknown error"));
+      return;
+    }
     showCloneDialog.value = false;
     await openRepo(clonedPath);
+    done?.(true);
+    toast.success("Repository cloned successfully");
+  } catch (e) {
+    done?.(false, String(e));
+    toast.error("Clone failed: " + String(e));
   }
 }
 
@@ -247,6 +265,13 @@ function onSelectWorkingChanges() {
   git.clearStashSelection();
 }
 
+function onSelectConflicts() {
+  viewingWorkingChanges.value = true;
+  viewingStash.value = false;
+  git.selectedCommit.value = null;
+  git.clearStashSelection();
+}
+
 function onSelectStash(stash: StashInfo) {
   viewingWorkingChanges.value = false;
   viewingStash.value = true;
@@ -254,22 +279,41 @@ function onSelectStash(stash: StashInfo) {
   git.selectStash(stash);
 }
 
+function handleRequestMerge(payload: { source: string; sourceRemote: boolean; target: string }) {
+  if (!payload.source || !payload.target || payload.source === payload.target) return;
+  toast.action(
+    "warning",
+    `Merge ${payload.sourceRemote ? "origin/" + payload.source : payload.source} into ${payload.target}?`,
+    [
+      {
+        label: "Merge",
+        style: "primary",
+        onClick: () => git.mergeBranchIntoCurrent(payload.source, payload.sourceRemote, payload.target),
+      },
+      {
+        label: "Cancel",
+        style: "neutral",
+        onClick: () => {},
+      },
+    ],
+    18000
+  );
+}
+
 async function handleCheckoutRemoteBranch(name: string) {
-  // When user clicks on remote-only ref, they want to sync with remote
   const localBranch = git.localBranches.value.find(b => b.name === name);
   if (localBranch) {
-    // Local exists - reset to remote (this handles behind > 0 case and also
-    // cases where upstream isn't set but user explicitly wants remote version)
     await git.resetBranchToRemote(name);
   } else {
-    // No local branch, create tracking branch from remote
     try {
       await git.createBranch(name, "origin/" + name);
       await git.checkoutBranch(name);
     } catch {
-      // Fallback: try just checkout (git may auto-create tracking branch)
       await git.checkoutBranch(name);
     }
+  }
+  if (!git.error.value) {
+    toast.success(`Remote branch "${name}" checked out`);
   }
 }
 
@@ -402,7 +446,6 @@ const openReposList = computed(() =>
       @new-tab="newTab"
     />
 
-    <!-- Landing page -->
     <template v-if="isLanding">
       <LandingPage
         :open-repos="openReposList"
@@ -416,7 +459,6 @@ const openReposList = computed(() =>
       />
     </template>
 
-    <!-- Repository view -->
     <template v-else-if="git.repoInfo.value">
       <AppHeader
         :loading="git.loading.value"
@@ -435,6 +477,7 @@ const openReposList = computed(() =>
           :current-branch="git.currentBranch.value"
           :stashes="git.stashes.value"
           :tags="git.tags.value"
+          :remote-provider="git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
           @checkout="git.checkoutBranch($event)"
           @create-branch="submitCreateBranch"
           @delete-branch="git.deleteBranch($event)"
@@ -444,7 +487,6 @@ const openReposList = computed(() =>
         />
         <div class="flex-1 flex flex-col overflow-hidden">
           <div class="flex-1 flex overflow-hidden" :style="showTerminal ? 'height: 75%' : ''">
-            <!-- Diff Viewer (replaces commit graph when viewing file diff) -->
             <FileDiffViewer
               v-if="showDiffViewer"
               class="flex-1"
@@ -455,7 +497,6 @@ const openReposList = computed(() =>
               @close="closeDiffViewer"
               @refresh="git.refreshStatus()"
             />
-            <!-- Normal commit graph view -->
             <CommitGraph
               v-else
               :class="showDetailsPanel ? '' : 'flex-1'"
@@ -463,14 +504,17 @@ const openReposList = computed(() =>
               :selected="git.selectedCommit.value"
               :search-query="git.searchQuery.value"
               :has-working-changes="hasWorkingChanges"
+              :has-conflicts="hasConflicts"
               :current-branch="git.currentBranch.value"
-              :has-more="git.hasMoreCommits.value"
+              :has-more="git.searchQuery.value ? git.hasMoreSearchResults.value : git.hasMoreCommits.value"
               :stashes="git.stashes.value"
               :tags="git.tags.value"
+              :remote-provider="git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
               @select="onSelectCommit"
               @search="git.searchCommits($event)"
               @clear-search="git.clearSearch()"
               @select-working-changes="onSelectWorkingChanges"
+              @select-conflicts="onSelectConflicts"
               @load-more="git.loadMoreCommits()"
               @checkout="git.checkoutCommit($event)"
               @create-branch-at="handleCreateBranchAtCommit($event)"
@@ -499,12 +543,15 @@ const openReposList = computed(() =>
               @stash-apply="git.stashApply($event)"
               @stash-drop="git.stashDrop($event)"
               @select-stash="onSelectStash($event)"
+              @request-merge="handleRequestMerge($event)"
             />
             <CommitDetails
               v-if="showDetailsPanel"
               :commit="git.selectedCommit.value"
               :staged-files="git.stagedFiles.value"
               :unstaged-files="git.unstagedFiles.value"
+              :conflict-files="git.conflictFiles.value"
+              :has-conflicts="git.hasConflicts.value"
               :commit-files="git.selectedCommitFiles.value"
               :is-working-changes="viewingWorkingChanges"
               :is-stash="viewingStash"
@@ -518,13 +565,14 @@ const openReposList = computed(() =>
               @commit="git.commitChanges($event)"
               @discard="git.discardFile($event)"
               @discard-all="git.discardAll()"
+              @resolve-all-conflicts="git.resolveAllConflicts()"
+              @resolve-conflict="git.promptResolveConflict($event)"
               @stash-pop="git.stashPop($event)"
               @stash-apply="git.stashApply($event)"
               @stash-drop="git.stashDrop($event)"
               @view-diff="openDiffViewer($event.path, $event.sha, $event.staged)"
             />
           </div>
-          <!-- Terminal panel (25% height) -->
           <TerminalPanel
             v-if="showTerminal"
             :output="git.terminalOutput.value"
@@ -537,7 +585,6 @@ const openReposList = computed(() =>
       </div>
     </template>
 
-    <!-- Branch creation dialog -->
     <div v-if="showBranchDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showBranchDialog = false">
       <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
         <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Create New Branch</h3>
@@ -555,7 +602,6 @@ const openReposList = computed(() =>
       </div>
     </div>
 
-    <!-- Stash dialog -->
     <div v-if="showStashDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showStashDialog = false">
       <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
         <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Stash Changes</h3>
@@ -573,7 +619,6 @@ const openReposList = computed(() =>
       </div>
     </div>
 
-    <!-- Tag creation dialog -->
     <div v-if="showTagDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showTagDialog = false">
       <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
         <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Create Tag</h3>
@@ -591,7 +636,6 @@ const openReposList = computed(() =>
       </div>
     </div>
 
-    <!-- Annotated tag creation dialog -->
     <div v-if="showAnnotatedTagDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showAnnotatedTagDialog = false">
       <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
         <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Create Annotated Tag</h3>
@@ -614,7 +658,6 @@ const openReposList = computed(() =>
       </div>
     </div>
 
-    <!-- Edit commit message dialog -->
     <div v-if="showEditMessageDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showEditMessageDialog = false">
       <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-[480px] shadow-2xl">
         <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Edit Commit Message</h3>
@@ -631,7 +674,6 @@ const openReposList = computed(() =>
       </div>
     </div>
 
-    <!-- Rename branch dialog -->
     <div v-if="showRenameDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showRenameDialog = false">
       <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
         <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Rename Branch</h3>
@@ -650,7 +692,6 @@ const openReposList = computed(() =>
       </div>
     </div>
 
-    <!-- Dialogs -->
     <CloneDialog
       :visible="showCloneDialog"
       :token="git.githubToken.value"
@@ -674,5 +715,6 @@ const openReposList = computed(() =>
       @delete="git.deleteToken()"
       @close="showSettings = false"
     />
+    <ToastContainer />
   </div>
 </template>

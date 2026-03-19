@@ -1,5 +1,6 @@
 import { ref, computed, shallowRef } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { useToast } from "@/composables/useToast";
 import type {
   CommitInfo,
   BranchInfo,
@@ -10,6 +11,8 @@ import type {
   TagInfo,
   GithubRepo,
 } from "@/types";
+
+const toast = useToast();
 
 const repoPath = ref("");
 const repoInfo = ref<RepoInfo | null>(null);
@@ -23,6 +26,7 @@ const selectedStashFiles = ref<CommitFileInfo[]>([]);
 const stashes = ref<StashInfo[]>([]);
 const tags = ref<TagInfo[]>([]);
 const loading = ref(false);
+const loadingMore = ref(false);
 const error = ref<string | null>(null);
 const searchQuery = ref("");
 const searchResults = shallowRef<CommitInfo[] | null>(null);
@@ -30,12 +34,14 @@ const terminalOutput = ref<string[]>([]);
 const githubToken = ref<string | null>(null);
 const providerTokens = ref<Record<string, string | null>>({});
 const hasMoreCommits = ref(true);
+const hasMoreSearchResults = ref(false);
 const gitPath = ref("");
 
 const PAGE_SIZE = 200;
 
 let watchInterval: ReturnType<typeof setInterval> | null = null;
 let lastStatusHash = "";
+let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null;
 
 const localBranches = computed(() =>
   branches.value.filter((b) => !b.is_remote)
@@ -44,11 +50,20 @@ const remoteBranches = computed(() =>
   branches.value.filter((b) => b.is_remote)
 );
 const stagedFiles = computed(() =>
-  fileStatuses.value.filter((f) => f.staged)
+  fileStatuses.value.filter((f) => f.staged && !f.conflicted)
 );
 const unstagedFiles = computed(() =>
-  fileStatuses.value.filter((f) => !f.staged)
+  fileStatuses.value.filter((f) => !f.staged && !f.conflicted)
 );
+const conflictFiles = computed(() => {
+  const byPath = new Map<string, FileStatusInfo>();
+  for (const f of fileStatuses.value) {
+    if (!f.conflicted) continue;
+    if (!byPath.has(f.path)) byPath.set(f.path, f);
+  }
+  return Array.from(byPath.values());
+});
+const hasConflicts = computed(() => conflictFiles.value.length > 0);
 const currentBranch = computed(
   () => repoInfo.value?.current_branch ?? ""
 );
@@ -58,7 +73,7 @@ const displayedCommits = computed(() =>
 );
 
 function statusHash(files: FileStatusInfo[]): string {
-  return files.map((f) => f.path + ":" + f.status + ":" + f.staged).join("|");
+  return files.map((f) => f.path + ":" + f.status + ":" + f.staged + ":" + (!!f.conflicted)).join("|");
 }
 
 function startFileWatcher() {
@@ -171,6 +186,14 @@ function getTokenParam(): string | null {
 
 function getTokenForUrl(url?: string): string | null {
   if (!url) return getTokenParam();
+  if (url.includes("gitlab.") || url.includes("/gitlab")) {
+    const stored = providerTokens.value["gitlab-self"];
+    if (stored && stored.includes("|")) {
+      const parts = stored.split("|");
+      return parts[1] || null;
+    }
+    return providerTokens.value["gitlab"] || null;
+  }
   if (url.includes("gitlab.com")) return providerTokens.value["gitlab"] || null;
   if (url.includes("bitbucket.org")) return providerTokens.value["bitbucket"] || null;
   if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) return providerTokens.value["azure"] || null;
@@ -207,8 +230,25 @@ async function refreshCommits() {
   }
 }
 
-async function loadMoreCommits() {
-  if (!repoPath.value || !hasMoreCommits.value || loading.value) return;
+function loadMoreCommits() {
+  // Debounce to avoid multiple rapid calls while scrolling
+  if (loadMoreDebounce) {
+    clearTimeout(loadMoreDebounce);
+  }
+  loadMoreDebounce = setTimeout(() => {
+    _doLoadMoreCommits();
+  }, 50);
+}
+
+async function _doLoadMoreCommits() {
+  // Keep old search behavior: no incremental loading while search is active
+  if (searchQuery.value && searchResults.value !== null) {
+    return;
+  }
+  
+  if (!repoPath.value || !hasMoreCommits.value || loadingMore.value) return;
+  
+  loadingMore.value = true;
   try {
     const currentCount = commits.value.length;
     const nextCount = currentCount + PAGE_SIZE;
@@ -224,6 +264,8 @@ async function loadMoreCommits() {
     }
   } catch (e) {
     error.value = String(e);
+  } finally {
+    loadingMore.value = false;
   }
 }
 
@@ -365,6 +407,10 @@ async function commitChanges(message: string) {
 
 async function checkoutBranch(branchName: string) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot checkout branch while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     loading.value = true;
     await invoke("checkout_branch", { path: repoPath.value, branchName });
@@ -372,8 +418,10 @@ async function checkoutBranch(branchName: string) {
       path: repoPath.value,
     });
     await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
+    toast.success(`Checked out branch "${branchName}"`);
   } catch (e) {
     error.value = String(e);
+    toast.error("Checkout branch failed: " + String(e));
   } finally {
     loading.value = false;
   }
@@ -479,6 +527,10 @@ async function createAnnotatedTag(name: string, sha: string, message: string) {
 
 async function resetBranchToRemote(branch: string) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot reset branch while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     loading.value = true;
     const result = await invoke<string>("reset_branch_to_remote", { path: repoPath.value, branch });
@@ -504,9 +556,11 @@ async function pull() {
     terminalOutput.value.push("$ git pull\n" + result);
     await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
     repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+    toast.success("Pull completed successfully");
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git pull\nError: " + e);
+    toast.error("Pull failed: " + String(e));
   } finally {
     loading.value = false;
   }
@@ -522,9 +576,11 @@ async function push() {
     });
     terminalOutput.value.push("$ git push\n" + result);
     await Promise.all([refreshCommits(), refreshBranches()]);
+    toast.success("Push completed successfully");
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git push\nError: " + e);
+    toast.error("Push failed: " + String(e));
   } finally {
     loading.value = false;
   }
@@ -540,9 +596,11 @@ async function fetchAll() {
     });
     terminalOutput.value.push("$ git fetch --all\n" + result);
     await Promise.all([refreshBranches(), refreshCommits(), refreshTags()]);
+    toast.success("Fetch completed successfully");
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git fetch --all\nError: " + e);
+    toast.error("Fetch failed: " + String(e));
   } finally {
     loading.value = false;
   }
@@ -565,6 +623,10 @@ async function refreshAll() {
 
 async function stashPush(message?: string) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot stash while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     const result = await invoke<string>("stash_push", {
       path: repoPath.value,
@@ -580,6 +642,10 @@ async function stashPush(message?: string) {
 
 async function stashPop(index: number = 0) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot pop stash while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     const result = await invoke<string>("stash_pop", {
       path: repoPath.value,
@@ -595,6 +661,10 @@ async function stashPop(index: number = 0) {
 
 async function stashApply(index: number = 0) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot apply stash while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     const result = await invoke<string>("stash_apply", {
       path: repoPath.value,
@@ -655,15 +725,19 @@ async function searchCommits(query: string) {
   if (!query.trim()) {
     searchQuery.value = "";
     searchResults.value = null;
+    hasMoreSearchResults.value = false;
     return;
   }
   try {
     searchQuery.value = query;
-    searchResults.value = await invoke<CommitInfo[]>("search_commits", {
+    // Load more results initially for better UX
+    const result = await invoke<CommitInfo[]>("search_commits", {
       path: repoPath.value,
       query,
       maxCount: 2000,
     });
+    searchResults.value = result;
+    hasMoreSearchResults.value = false;
   } catch (e) {
     error.value = String(e);
   }
@@ -672,6 +746,7 @@ async function searchCommits(query: string) {
 function clearSearch() {
   searchQuery.value = "";
   searchResults.value = null;
+  hasMoreSearchResults.value = false;
 }
 
 async function runTerminalCommand(command: string) {
@@ -711,8 +786,70 @@ async function discardAll() {
   }
 }
 
+async function resolveAllConflicts() {
+  if (!repoPath.value) return;
+  if (!hasConflicts.value) return;
+  try {
+    loading.value = true;
+    await invoke("resolve_all_conflicts", { path: repoPath.value, strategy: "ours" });
+    await refreshStatus();
+    toast.success("All conflicts resolved");
+  } catch (e) {
+    error.value = String(e);
+    toast.error("Resolve all conflicts failed: " + String(e));
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function resolveConflictFile(filePath: string, strategy: "ours" | "theirs" | "delete") {
+  if (!repoPath.value) return;
+  try {
+    await invoke("resolve_conflict_file", { path: repoPath.value, filePath, strategy });
+    await refreshStatus();
+    const labels: Record<string, string> = {
+      ours: "Kept modified version",
+      theirs: "Kept base version",
+      delete: "Deleted file",
+    };
+    toast.success(`${labels[strategy]}: ${filePath}`);
+  } catch (e) {
+    error.value = String(e);
+    toast.error("Resolve conflict failed: " + String(e));
+  }
+}
+
+function promptResolveConflict(filePath: string) {
+  toast.action("warning", `Resolve conflict: ${filePath}`, [
+    {
+      label: "Keep modified",
+      style: "primary",
+      onClick: () => resolveConflictFile(filePath, "ours"),
+    },
+    {
+      label: "Keep base",
+      style: "neutral",
+      onClick: () => resolveConflictFile(filePath, "theirs"),
+    },
+    {
+      label: "Delete file",
+      style: "danger",
+      onClick: () => resolveConflictFile(filePath, "delete"),
+    },
+    {
+      label: "Cancel",
+      style: "neutral",
+      onClick: () => {},
+    },
+  ], 20000);
+}
+
 async function cherryPick(sha: string) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot cherry-pick while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     loading.value = true;
     const result = await invoke<string>("cherry_pick", { path: repoPath.value, sha });
@@ -728,6 +865,10 @@ async function cherryPick(sha: string) {
 
 async function revertCommit(sha: string) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot revert while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     loading.value = true;
     const result = await invoke<string>("revert_commit", { path: repoPath.value, sha });
@@ -743,15 +884,21 @@ async function revertCommit(sha: string) {
 
 async function resetToCommit(sha: string, mode: string) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot reset while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     loading.value = true;
     const result = await invoke<string>("reset_to_commit", { path: repoPath.value, sha, mode });
     terminalOutput.value.push("$ git reset --" + mode + " " + sha.substring(0, 7) + "\n" + (result || "(done)"));
     await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
     repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+    toast.success(`Reset to ${sha.substring(0, 7)} (${mode})`);
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git reset\nError: " + e);
+    toast.error("Reset failed: " + String(e));
   } finally {
     loading.value = false;
   }
@@ -759,15 +906,21 @@ async function resetToCommit(sha: string, mode: string) {
 
 async function checkoutCommit(sha: string) {
   if (!repoPath.value) return;
+  if (hasConflicts.value) {
+    toast.error("Cannot checkout commit while conflicts exist. Resolve conflicts first.");
+    return;
+  }
   try {
     loading.value = true;
     const result = await invoke<string>("checkout_commit", { path: repoPath.value, sha });
     terminalOutput.value.push("$ git checkout " + sha.substring(0, 7) + "\n" + (result || "(done)"));
     repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
     await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
+    toast.success(`Checked out ${sha.substring(0, 7)}`);
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git checkout\nError: " + e);
+    toast.error("Checkout failed: " + String(e));
   } finally {
     loading.value = false;
   }
@@ -779,8 +932,10 @@ async function createTagAt(name: string, sha: string) {
     await invoke<string>("create_tag_at", { path: repoPath.value, name, sha });
     terminalOutput.value.push("$ git tag " + name + " " + sha.substring(0, 7) + "\n(done)");
     await Promise.all([refreshTags(), refreshCommits()]);
+    toast.success(`Tag "${name}" created`);
   } catch (e) {
     error.value = String(e);
+    toast.error("Create tag failed: " + String(e));
   }
 }
 
@@ -793,6 +948,33 @@ async function deleteTag(name: string) {
   } catch (e) {
     error.value = String(e);
     terminalOutput.value.push("$ git tag -d " + name + "\nError: " + e);
+  }
+}
+
+async function mergeBranchIntoCurrent(sourceBranch: string, sourceRemote = false, targetBranch?: string) {
+  if (!repoPath.value) return;
+  const current = repoInfo.value?.current_branch || targetBranch || "";
+  if (!current) {
+    toast.error("No active branch to merge into.");
+    return;
+  }
+  const sourceRef = sourceRemote ? `origin/${sourceBranch}` : sourceBranch;
+  try {
+    loading.value = true;
+    const result = await invoke<string>("run_git_command", {
+      path: repoPath.value,
+      args: ["merge", sourceRef],
+    });
+    terminalOutput.value.push(`$ git merge ${sourceRef}\n` + (result || "(done)"));
+    await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
+    repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+    toast.success(`Merged ${sourceRef} into ${current}`);
+  } catch (e) {
+    error.value = String(e);
+    terminalOutput.value.push(`$ git merge ${sourceRef}\nError: ${e}`);
+    toast.error("Merge failed: " + String(e));
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -823,6 +1005,8 @@ export function useGit() {
     fileStatuses,
     stagedFiles,
     unstagedFiles,
+    conflictFiles,
+    hasConflicts,
     selectedCommit,
     selectedCommitFiles,
     selectedStash,
@@ -831,6 +1015,7 @@ export function useGit() {
     tags,
     currentBranch,
     loading,
+    loadingMore,
     error,
     searchQuery,
     searchResults,
@@ -839,6 +1024,7 @@ export function useGit() {
     githubToken,
     providerTokens,
     hasMoreCommits,
+    hasMoreSearchResults,
     gitPath,
     openRepository,
     refreshCommits,
@@ -879,6 +1065,8 @@ export function useGit() {
     runTerminalCommand,
     discardFile,
     discardAll,
+    resolveAllConflicts,
+    promptResolveConflict,
     saveToken,
     deleteToken,
     saveProviderToken,
@@ -891,6 +1079,7 @@ export function useGit() {
     checkoutCommit,
     createTagAt,
     deleteTag,
+    mergeBranchIntoCurrent,
     searchGithubRepos,
   };
 }

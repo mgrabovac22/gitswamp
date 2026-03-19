@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,7 +8,7 @@ use std::os::windows::process::CommandExt;
 
 use git2::{BranchType, Repository, Sort, StashApplyOptions, StashFlags, StatusOptions};
 
-use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, DiffHunk, DiffLine, FileDiff, FileStatusInfo, GithubRepo, GitlabRepo, RepoInfo, StashInfo, TagInfo};
+use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, DiffHunk, DiffLine, FileDiff, FileStatusInfo, GithubRepo, GitlabRepo, RemoteInfo, RepoInfo, StashInfo, TagInfo};
 
 static GIT_PATH: OnceLock<String> = OnceLock::new();
 static FULL_PATH: OnceLock<String> = OnceLock::new();
@@ -448,13 +448,46 @@ impl GitService {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
 
+        // Get remotes and detect provider
+        let mut remotes = Vec::new();
+        if let Ok(remote_names) = repo.remotes() {
+            for remote_name in remote_names.iter().flatten() {
+                if let Ok(remote) = repo.find_remote(remote_name) {
+                    if let Some(url) = remote.url() {
+                        let provider = Self::detect_provider(url);
+                        remotes.push(RemoteInfo {
+                            name: remote_name.to_string(),
+                            url: url.to_string(),
+                            provider,
+                        });
+                    }
+                }
+            }
+        }
+
         Ok(RepoInfo {
             path: path.to_string(),
             name,
             current_branch: branch_name,
             is_clean: statuses.is_empty(),
             head_sha,
+            remotes,
         })
+    }
+
+    fn detect_provider(url: &str) -> String {
+        let url_lower = url.to_lowercase();
+        if url_lower.contains("github.com") || url_lower.contains("github.") {
+            "github".to_string()
+        } else if url_lower.contains("gitlab.com") || url_lower.contains("gitlab.") {
+            "gitlab".to_string()
+        } else if url_lower.contains("bitbucket.org") || url_lower.contains("bitbucket.") {
+            "bitbucket".to_string()
+        } else if url_lower.contains("dev.azure.com") || url_lower.contains("visualstudio.com") {
+            "azure".to_string()
+        } else {
+            "unknown".to_string()
+        }
     }
 
     pub fn commits(path: &str, max_count: usize) -> Result<Vec<CommitInfo>, String> {
@@ -601,6 +634,7 @@ impl GitService {
                     path: file_path.clone(),
                     status: Self::index_status_label(s),
                     staged: true,
+                    conflicted: s.is_conflicted(),
                 });
             }
 
@@ -611,9 +645,19 @@ impl GitService {
                 || s.is_wt_typechange()
             {
                 files.push(FileStatusInfo {
-                    path: file_path,
+                    path: file_path.clone(),
                     status: Self::wt_status_label(s),
                     staged: false,
+                    conflicted: s.is_conflicted(),
+                });
+            }
+
+            if s.is_conflicted() && !files.iter().any(|f| f.path == file_path) {
+                files.push(FileStatusInfo {
+                    path: file_path,
+                    status: "conflicted".to_string(),
+                    staged: false,
+                    conflicted: true,
                 });
             }
         }
@@ -974,31 +1018,29 @@ impl GitService {
             .trim_end_matches(".git");
         let dest = Path::new(path).join(repo_name);
 
-        let clone_url = if let Some(t) = token {
-            if url.starts_with("https://") {
-                let host_part = if url.contains('@') {
-                    let after_proto = &url[8..];
-                    if let Some(at_pos) = after_proto.find('@') {
-                        &after_proto[at_pos + 1..]
-                    } else {
-                        after_proto
-                    }
-                } else {
-                    &url[8..]
-                };
-                format!("https://x-access-token:{}@{}", t, host_part)
-            } else {
-                url.to_string()
-            }
-        } else {
-            url.to_string()
-        };
+        let clone_url = url.to_string();
 
         let mut callbacks = git2::RemoteCallbacks::new();
         if let Some(t) = token {
             let tok = t.to_string();
-            callbacks.credentials(move |_url, _username, _allowed| {
-                git2::Cred::userpass_plaintext("x-access-token", &tok)
+            callbacks.credentials(move |remote_url, username_from_url, allowed| {
+                if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                    let user = if remote_url.contains("github.com") {
+                        "x-access-token"
+                    } else {
+                        username_from_url.unwrap_or("oauth2")
+                    };
+                    return git2::Cred::userpass_plaintext(user, &tok);
+                }
+                if allowed.contains(git2::CredentialType::USERNAME) {
+                    let user = if remote_url.contains("github.com") {
+                        "x-access-token"
+                    } else {
+                        username_from_url.unwrap_or("oauth2")
+                    };
+                    return git2::Cred::username(user);
+                }
+                git2::Cred::default()
             });
         }
         let mut fetch_opts = git2::FetchOptions::new();
@@ -1319,22 +1361,70 @@ impl GitService {
 
     pub fn discard_file(path: &str, file_path: &str) -> Result<(), String> {
         let repo = Self::open(path)?;
-        // Check if the file is tracked
         let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+        let is_conflicted = statuses.iter().any(|s| {
+            s.path() == Some(file_path) && s.status().is_conflicted()
+        });
+        if is_conflicted {
+            return Self::resolve_conflict_file(path, file_path, "ours");
+        }
         let is_untracked = statuses.iter().any(|s| {
             s.path() == Some(file_path) && s.status().contains(git2::Status::WT_NEW)
         });
         if is_untracked {
-            // Untracked file: just delete it
             let full = Path::new(path).join(file_path);
             std::fs::remove_file(&full).map_err(|e| e.to_string())?;
         } else {
-            // Tracked file: checkout from HEAD
             repo.checkout_head(Some(
                 git2::build::CheckoutBuilder::default()
                     .path(file_path)
                     .force()
             )).map_err(|e| e.message().to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn resolve_conflict_file(path: &str, file_path: &str, strategy: &str) -> Result<(), String> {
+        let repo = Self::open(path)?;
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.path(file_path).force();
+        match strategy {
+            "ours" => {
+                checkout.use_ours(true);
+                repo.checkout_index(Some(&mut index), Some(&mut checkout))
+                    .map_err(|e| e.message().to_string())?;
+            }
+            "theirs" => {
+                checkout.use_theirs(true);
+                repo.checkout_index(Some(&mut index), Some(&mut checkout))
+                    .map_err(|e| e.message().to_string())?;
+            }
+            "delete" => {
+                let full = Path::new(path).join(file_path);
+                if full.exists() {
+                    std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+                }
+            }
+            _ => return Err("Invalid resolve strategy".to_string()),
+        }
+        if strategy == "delete" {
+            index.remove_path(Path::new(file_path)).map_err(|e| e.message().to_string())?;
+        } else {
+            index.add_path(Path::new(file_path)).map_err(|e| e.message().to_string())?;
+        }
+        index.write().map_err(|e| e.message().to_string())?;
+        Ok(())
+    }
+
+    pub fn resolve_all_conflicts(path: &str, strategy: &str) -> Result<(), String> {
+        let conflicts = Self::status(path)?
+            .into_iter()
+            .filter(|f| f.conflicted)
+            .map(|f| f.path)
+            .collect::<Vec<_>>();
+        for file_path in conflicts {
+            Self::resolve_conflict_file(path, &file_path, strategy)?;
         }
         Ok(())
     }
@@ -1476,14 +1566,49 @@ impl GitService {
         // Generate new key using ssh-keygen
         // Try to find ssh-keygen in common locations
         let ssh_keygen_paths = [
+            // Git for Windows locations
             Path::new("C:\\Program Files\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
             Path::new("C:\\Program Files (x86)\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
+            Path::new("C:\\Program Files\\Git\\bin\\ssh-keygen.exe").to_path_buf(),
+            Path::new("C:\\Program Files (x86)\\Git\\bin\\ssh-keygen.exe").to_path_buf(),
+            // Git cmd directory
+            Path::new("C:\\Program Files\\Git\\cmd\\ssh-keygen.exe").to_path_buf(),
+            // Windows OpenSSH (built-in)
+            Path::new("C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe").to_path_buf(),
+            // Unix locations
             Path::new("/usr/bin/ssh-keygen").to_path_buf(),
+            Path::new("/usr/local/bin/ssh-keygen").to_path_buf(),
         ];
         
-        let ssh_keygen = ssh_keygen_paths.iter()
-            .find(|p| p.exists())
-            .ok_or("ssh-keygen not found. Please ensure Git is installed with SSH support.")?;
+        // First try from PATH using where/which command
+        let from_path: Option<PathBuf> = {
+            #[cfg(windows)]
+            {
+                std::process::Command::new("where")
+                    .arg("ssh-keygen")
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .and_then(|s| s.lines().next().map(|l| PathBuf::from(l.trim())))
+                    .filter(|p: &PathBuf| p.exists())
+            }
+            #[cfg(not(windows))]
+            {
+                std::process::Command::new("which")
+                    .arg("ssh-keygen")
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| PathBuf::from(s.trim()))
+                    .filter(|p: &PathBuf| p.exists())
+            }
+        };
+        
+        let ssh_keygen = from_path
+            .or_else(|| ssh_keygen_paths.iter().find(|p| p.exists()).cloned())
+            .ok_or("ssh-keygen not found. Please ensure Git is installed with SSH support, or install Windows OpenSSH.")?;
         
         #[cfg(windows)]
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -1518,18 +1643,39 @@ impl GitService {
             "key": key
         });
         
-        let resp = ureq::post(&url)
+        let result = ureq::post(&url)
             .set("PRIVATE-TOKEN", token)
             .set("Content-Type", "application/json")
             .set("User-Agent", "GitSwamp")
-            .send_json(&body)
-            .map_err(|e| format!("Failed to add SSH key to GitLab: {}", e))?;
+            .send_json(&body);
         
-        if resp.status() != 201 && resp.status() != 200 {
-            return Err(format!("GitLab returned status {}", resp.status()));
+        match result {
+            Ok(resp) => {
+                if resp.status() == 201 || resp.status() == 200 {
+                    Ok(())
+                } else {
+                    Err(format!("GitLab returned status {}", resp.status()))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                // Try to get error message from response
+                if let Ok(body) = resp.into_string() {
+                    let body_lower = body.to_lowercase();
+                    if body_lower.contains("has already been taken")
+                        || body_lower.contains("already exists")
+                        || body_lower.contains("fingerprint has already been taken")
+                        || body_lower.contains("key has already been taken")
+                    {
+                        // Key already exists, that's fine
+                        return Ok(());
+                    }
+                    Err(format!("GitLab error ({}): {}", code, body))
+                } else {
+                    Err(format!("GitLab returned status {}", code))
+                }
+            }
+            Err(e) => Err(format!("Failed to add SSH key: {}", e))
         }
-        
-        Ok(())
     }
 
     /// Verify GitLab token and get user info

@@ -23,6 +23,13 @@ export interface FileStatusInfo {
   path: string
   status: string
   staged: boolean
+  conflicted?: boolean
+}
+
+export interface RemoteInfo {
+  name: string
+  url: string
+  provider: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown'
 }
 
 export interface RepoInfo {
@@ -31,6 +38,7 @@ export interface RepoInfo {
   current_branch: string
   is_clean: boolean
   head_sha: string | null
+  remotes: RemoteInfo[]
 }
 
 export interface CommitFileInfo {

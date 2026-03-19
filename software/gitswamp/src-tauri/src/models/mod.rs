@@ -16,6 +16,6 @@ pub use diff::{DiffLine, DiffHunk, FileDiff};
 pub use file_status::FileStatusInfo;
 pub use github::GithubRepo;
 pub use gitlab::GitlabRepo;
-pub use repository::RepoInfo;
+pub use repository::{RepoInfo, RemoteInfo};
 pub use stash::StashInfo;
 pub use tag::TagInfo;

@@ -58,61 +58,73 @@
   --terminal-bg: #090b10;
 }
 html.light {
-  --swamp-deep: #f4f6f9;
-  --swamp-dark: #eef1f5;
-  --swamp-moss: #e2e7ed;
-  --swamp-water: #e8ecf2;
-  --swamp-bark: #9ca8b8;
-  --swamp-leaf: #5b21b6;
-  --swamp-mud: #d5dce6;
-  --swamp-reed: #5b21b6;
-  --swamp-fog: #2d3748;
+  --swamp-deep: #e8ecf2;
+  --swamp-dark: #dfe4ec;
+  --swamp-moss: #cdd5e0;
+  --swamp-water: #d5dce6;
+  --swamp-bark: #8694a8;
+  --swamp-leaf: #6d28d9;
+  --swamp-mud: #bcc6d4;
+  --swamp-reed: #6d28d9;
+  --swamp-fog: #3d4a5c;
   --swamp-light: #4c1d95;
 
-  --header-bg: #e8ecf2;
+  --header-bg: #cdd5e0;
   --header-fg: #1a202c;
-  --header-hover: #d8dfe9;
+  --header-hover: #bcc6d4;
 
-  --background: #f4f6f9;
-  --foreground: #1a202c;
-  --card: #ffffff;
-  --card-foreground: #1a202c;
-  --popover: #ffffff;
-  --popover-foreground: #1a202c;
-  --primary: #5b21b6;
+  --background: #dfe4ec;
+  --foreground: #1e293b;
+  --card: #e8ecf2;
+  --card-foreground: #1e293b;
+  --popover: #e8ecf2;
+  --popover-foreground: #1e293b;
+  --primary: #6d28d9;
   --primary-foreground: #ffffff;
-  --secondary: #e8ecf2;
-  --secondary-foreground: #1a202c;
-  --muted: #d5dce6;
-  --muted-foreground: #4a5568;
-  --accent: #5b21b6;
+  --secondary: #cdd5e0;
+  --secondary-foreground: #1e293b;
+  --muted: #bcc6d4;
+  --muted-foreground: #475569;
+  --accent: #6d28d9;
   --accent-foreground: #ffffff;
-  --destructive: #c53030;
+  --destructive: #dc2626;
   --destructive-foreground: #ffffff;
-  --border: rgba(45, 55, 72, 0.18);
-  --input: rgba(45, 55, 72, 0.12);
-  --input-background: #ffffff;
-  --switch-background: #5b21b6;
-  --ring: #5b21b6;
-  --sidebar: #eef1f5;
-  --sidebar-foreground: #1a202c;
-  --sidebar-primary: #5b21b6;
+  --border: rgba(30, 41, 59, 0.18);
+  --input: rgba(30, 41, 59, 0.12);
+  --input-background: #e8ecf2;
+  --switch-background: #6d28d9;
+  --ring: #6d28d9;
+  --sidebar: #dfe4ec;
+  --sidebar-foreground: #1e293b;
+  --sidebar-primary: #6d28d9;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #e2e7ed;
-  --sidebar-accent-foreground: #1a202c;
-  --sidebar-border: rgba(45, 55, 72, 0.15);
-  --sidebar-ring: #5b21b6;
-  --terminal-bg: #f4f6f9;
+  --sidebar-accent: #cdd5e0;
+  --sidebar-accent-foreground: #1e293b;
+  --sidebar-border: rgba(30, 41, 59, 0.15);
+  --sidebar-ring: #6d28d9;
+  --terminal-bg: #d5dce6;
 }
 
 html.light *::-webkit-scrollbar-thumb {
-  background: rgba(124, 58, 237, 0.2);
+  background: rgba(109, 40, 217, 0.18);
 }
 html.light *::-webkit-scrollbar-thumb:hover {
-  background: rgba(124, 58, 237, 0.35);
+  background: rgba(109, 40, 217, 0.3);
 }
 html.light * {
-  scrollbar-color: rgba(124, 58, 237, 0.15) transparent;
+  scrollbar-color: rgba(109, 40, 217, 0.12) transparent;
+}
+
+/* Reduce glow effects in light mode */
+html.light .drop-shadow-\[0_0_6px_var\(--sidebar-primary\)\],
+html.light .drop-shadow-\[0_0_8px_var\(--sidebar-primary\)\] {
+  filter: none !important;
+}
+html.light [class*="shadow-[var(--sidebar-primary)]"] {
+  --tw-shadow-color: transparent !important;
+}
+html.light .current-branch-badge {
+  box-shadow: none !important;
 }
 
 @theme inline {
@@ -184,6 +196,19 @@ html.light * {
 
   html {
     font-size: var(--font-size);
+  }
+
+  /* Compact mode - reduce row heights */
+  html.compact .commit-row {
+    height: 22px !important;
+  }
+  html.compact .commit-row-height {
+    --row-height: 22px;
+  }
+
+  /* Hide avatars mode */
+  html.hide-avatars .commit-avatar {
+    display: none !important;
   }
 
   h1 {

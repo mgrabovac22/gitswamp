@@ -11,7 +11,6 @@ import {
   Copy,
   Plus,
   Minus,
-  Trash2,
   Archive,
   Eye,
 } from "lucide-vue-next";
@@ -23,6 +22,8 @@ const props = defineProps<{
   commit: CommitInfo | null;
   stagedFiles: FileStatusInfo[];
   unstagedFiles: FileStatusInfo[];
+  conflictFiles?: FileStatusInfo[];
+  hasConflicts?: boolean;
   commitFiles: CommitFileInfo[];
   isWorkingChanges: boolean;
   isStash?: boolean;
@@ -39,6 +40,8 @@ const emit = defineEmits<{
   commit: [message: string];
   discard: [path: string];
   discardAll: [];
+  resolveAllConflicts: [];
+  resolveConflict: [path: string];
   stashPop: [index: number];
   stashApply: [index: number];
   stashDrop: [index: number];
@@ -52,7 +55,6 @@ function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
   emit("viewDiff", { path: filePath, sha: commitSha, staged });
 }
 
-// Tab logic: working changes -> only "changes", commit/stash -> "changes" and "info"
 const activeTab = ref<"changes" | "info">("changes");
 
 watch(() => props.commit, (newVal) => {
@@ -65,7 +67,7 @@ watch(() => props.commit, (newVal) => {
 
 watch(() => props.selectedStash, (newVal) => {
   if (newVal) {
-    activeTab.value = "changes"; // Show files first for stash
+    activeTab.value = "changes";
   }
 });
 
@@ -146,7 +148,6 @@ function copyToClipboard(text: string) {
 
 <template>
   <div class="w-80 bg-[var(--card)] border-l border-[var(--border)] flex flex-col h-full overflow-hidden">
-    <!-- Tabs -->
     <div class="border-b border-[var(--border)] flex-shrink-0">
       <div class="h-9 flex">
         <button
@@ -175,19 +176,21 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
-    <!-- Changes tab for working directory (uncommitted) -->
     <div v-show="activeTab === 'changes' && isWorkingChanges" class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto">
-        <!-- Summary header -->
         <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent">
           <div class="flex items-center gap-2 mb-1">
             <div class="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse" />
             <span class="text-[11px] font-semibold text-[var(--foreground)]">Working Changes</span>
           </div>
           <div class="flex items-center gap-3 text-[10px] text-[var(--muted-foreground)]">
+            <span v-if="hasConflicts && (conflictFiles?.length || 0) > 0" class="flex items-center gap-1 text-[#ef4444]">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#ef4444]" />
+              {{ conflictFiles?.length || 0 }} unresolved
+            </span>
             <span v-if="unstagedFiles.length > 0" class="flex items-center gap-1">
               <span class="w-1.5 h-1.5 rounded-full bg-[#f59e0b]" />
-              {{ unstagedFiles.length }} unstaged
+              {{ unstagedFiles.length }} resolved
             </span>
             <span v-if="stagedFiles.length > 0" class="flex items-center gap-1">
               <span class="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
@@ -196,7 +199,34 @@ function copyToClipboard(text: string) {
           </div>
         </div>
 
-        <!-- Unstaged (shown first) -->
+        <div v-if="hasConflicts" class="border-b border-[var(--border)]">
+          <div class="flex items-center justify-between px-3 py-2 bg-[var(--card)]">
+            <span class="text-xs font-medium text-[#ef4444]">Conflicts</span>
+            <button
+              @click="emit('resolveAllConflicts')"
+              class="text-[10px] text-[#ef4444] hover:text-[#f87171] transition-colors px-1.5 py-0.5 rounded hover:bg-[#ef4444]/10"
+            >
+              Resolve All
+            </button>
+          </div>
+          <div
+            v-for="f in (conflictFiles ?? [])"
+            :key="'c-' + f.path"
+            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#ef4444]/8 transition-all group cursor-pointer"
+            @click="emit('resolveConflict', f.path)"
+          >
+            <span class="text-[10px] font-bold w-4 text-center text-[#ef4444]">!</span>
+            <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+            <button
+              @click.stop="emit('resolveConflict', f.path)"
+              class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all"
+              title="Resolve conflict"
+            >
+              <Plus class="w-3 h-3 text-[#ef4444]" />
+            </button>
+          </div>
+        </div>
+
         <div v-if="unstagedFiles.length > 0" class="border-b border-[var(--border)]">
           <div class="flex items-center justify-between px-3 py-2 bg-[var(--card)]">
             <button
@@ -227,12 +257,13 @@ function copyToClipboard(text: string) {
           </div>
           <div v-if="expandedUnstaged">
             <div
-              v-for="f in unstagedFiles"
+              v-for="f in unstagedFiles.filter(x => !x.conflicted)"
               :key="'u-' + f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
+              @click="openDiff(f.path, null, false)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90" @click="openDiff(f.path, null, false)">{{ f.path }}</span>
+              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
               <button
                 @click.stop="openDiff(f.path, null, false)"
                 class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--primary)]/20 transition-all"
@@ -252,7 +283,6 @@ function copyToClipboard(text: string) {
           </div>
         </div>
 
-        <!-- Staged -->
         <div v-if="stagedFiles.length > 0" class="border-b border-[var(--border)]">
           <div class="flex items-center justify-between px-3 py-2 bg-[var(--card)]">
             <button
@@ -274,12 +304,13 @@ function copyToClipboard(text: string) {
           </div>
           <div v-if="expandedStaged">
             <div
-              v-for="f in stagedFiles"
+              v-for="f in stagedFiles.filter(x => !x.conflicted)"
               :key="'s-' + f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
+              @click="openDiff(f.path, null, true)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90" @click="openDiff(f.path, null, true)">{{ f.path }}</span>
+              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
               <button
                 @click.stop="openDiff(f.path, null, true)"
                 class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--primary)]/20 transition-all"
@@ -292,7 +323,7 @@ function copyToClipboard(text: string) {
           </div>
         </div>
 
-        <div v-if="stagedFiles.length === 0 && unstagedFiles.length === 0" class="px-4 py-12 flex flex-col items-center justify-center">
+        <div v-if="stagedFiles.length === 0 && unstagedFiles.length === 0 && !(conflictFiles && conflictFiles.length > 0)" class="px-4 py-12 flex flex-col items-center justify-center">
           <div class="w-14 h-14 rounded-full bg-[var(--card)] flex items-center justify-center mb-3 border border-[var(--border)]">
             <FileText class="w-6 h-6 text-[var(--muted-foreground)] opacity-40" />
           </div>
@@ -301,7 +332,6 @@ function copyToClipboard(text: string) {
         </div>
       </div>
 
-      <!-- Commit form -->
       <div class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0">
         <input
           v-model="commitSummary"
@@ -326,7 +356,6 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
-    <!-- Changes tab for a selected commit -->
     <div v-show="activeTab === 'changes' && !isWorkingChanges && commit" class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto">
         <div v-if="commitFiles.length > 0">
@@ -356,10 +385,8 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
-    <!-- Info tab (only for commits) -->
     <div v-show="activeTab === 'info' && commit && !isWorkingChanges" class="flex-1 overflow-y-auto">
       <div v-if="commit" class="p-4 space-y-4">
-        <!-- Commit message -->
         <div>
           <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Commit Message</div>
           <div class="text-sm text-[var(--foreground)] leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)]">
@@ -367,7 +394,6 @@ function copyToClipboard(text: string) {
           </div>
         </div>
 
-        <!-- Description (body) -->
         <div v-if="commitBody(commit.message)">
           <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Description</div>
           <div class="text-xs text-[var(--foreground)] opacity-80 leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)] whitespace-pre-wrap">
@@ -377,7 +403,6 @@ function copyToClipboard(text: string) {
 
         <div class="h-px bg-[var(--border)]" />
 
-        <!-- Author -->
         <div class="flex items-center gap-3">
           <div class="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
             {{ commit.author_name.charAt(0).toUpperCase() }}
@@ -390,7 +415,6 @@ function copyToClipboard(text: string) {
 
         <div class="h-px bg-[var(--border)]" />
 
-        <!-- SHA -->
         <div>
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
             <Hash class="w-3 h-3" />
@@ -408,7 +432,6 @@ function copyToClipboard(text: string) {
           </div>
         </div>
 
-        <!-- Date -->
         <div>
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
             <Calendar class="w-3 h-3" />
@@ -418,7 +441,6 @@ function copyToClipboard(text: string) {
           <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5">{{ commit.time_ago }}</div>
         </div>
 
-        <!-- Parents -->
         <div v-if="commit.parent_shas.length > 0">
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
             <GitCommitIcon class="w-3 h-3" />
@@ -433,7 +455,6 @@ function copyToClipboard(text: string) {
           </div>
         </div>
 
-        <!-- Branches / Refs -->
         <div v-if="branchRefs(commit).length > 0">
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
             <GitBranch class="w-3 h-3" />
@@ -448,7 +469,6 @@ function copyToClipboard(text: string) {
               {{ r }}
             </span>
           </div>
-          <!-- Push status -->
           <div class="mt-2 flex items-center gap-2 text-[10px]">
             <span v-if="refStatus(commit).local && refStatus(commit).remote" class="flex items-center gap-1 text-[#10b981]">
               <ArrowUp class="w-3 h-3" /><ArrowDown class="w-3 h-3" /> Local & Remote
@@ -464,10 +484,8 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
-    <!-- Changes tab for a selected stash -->
     <div v-show="activeTab === 'changes' && isStash && selectedStash" class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto">
-        <!-- Stash header -->
         <div v-if="selectedStash" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[#f59e0b]/10 to-transparent">
           <div class="flex items-center gap-2 mb-1">
             <Archive class="w-4 h-4 text-[#f59e0b]" />
@@ -476,7 +494,6 @@ function copyToClipboard(text: string) {
           <div class="text-[10px] text-[var(--muted-foreground)]">{{ selectedStash.message || 'No message' }}</div>
         </div>
 
-        <!-- Stash files -->
         <div v-if="stashFiles && stashFiles.length > 0">
           <div class="flex items-center gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)]">
             <span class="font-medium">Stashed files</span>
@@ -501,7 +518,6 @@ function copyToClipboard(text: string) {
         </div>
       </div>
 
-      <!-- Stash actions -->
       <div v-if="selectedStash" class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0 space-y-2">
         <AppButton
           class="w-full bg-[#f59e0b] hover:bg-[#f59e0b]/90 text-white text-xs font-medium h-8"
@@ -526,10 +542,8 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
-    <!-- Info tab for stash -->
     <div v-show="activeTab === 'info' && isStash && selectedStash" class="flex-1 overflow-y-auto">
       <div v-if="selectedStash" class="p-4 space-y-4">
-        <!-- Stash reference -->
         <div>
           <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Stash Reference</div>
           <div class="flex items-center gap-2">
@@ -537,7 +551,6 @@ function copyToClipboard(text: string) {
           </div>
         </div>
 
-        <!-- Message -->
         <div v-if="selectedStash.message">
           <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Message</div>
           <div class="text-sm text-[var(--foreground)] leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)]">
@@ -547,7 +560,6 @@ function copyToClipboard(text: string) {
 
         <div class="h-px bg-[var(--border)]" />
 
-        <!-- Branch -->
         <div v-if="selectedStash.branch">
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
             <GitBranch class="w-3 h-3" />
@@ -558,7 +570,6 @@ function copyToClipboard(text: string) {
           </span>
         </div>
 
-        <!-- Timestamp -->
         <div v-if="selectedStash.timestamp">
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
             <Calendar class="w-3 h-3" />
@@ -567,7 +578,6 @@ function copyToClipboard(text: string) {
           <div class="text-xs text-[var(--foreground)]">{{ selectedStash.timestamp }}</div>
         </div>
 
-        <!-- Parent SHA -->
         <div v-if="selectedStash.parent_sha">
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">
             <Hash class="w-3 h-3" />
@@ -587,7 +597,6 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
-    <!-- No selection placeholder -->
     <div v-if="!commit && !isWorkingChanges && !(isStash && selectedStash)" class="flex-1 flex items-center justify-center">
       <div class="text-center">
         <GitCommitIcon class="w-8 h-8 text-[var(--muted-foreground)] opacity-30 mx-auto mb-2" />

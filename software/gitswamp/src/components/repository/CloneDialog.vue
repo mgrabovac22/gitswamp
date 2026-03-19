@@ -22,7 +22,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  clone: [url: string, path: string, shallow: boolean];
+  clone: [url: string, path: string, shallow: boolean, done?: (ok: boolean, error?: string) => void];
   searchGithub: [query: string];
   saveProviderToken: [provider: string, token: string];
 }>();
@@ -94,6 +94,7 @@ const gitlabLoading = ref(false);
 const gitlabError = ref<string | null>(null);
 const gitlabSshKeyGenerated = ref(false);
 const gitlabPublicKey = ref("");
+const gitlabSearchInput = ref<HTMLInputElement | null>(null);
 
 const showGrid = computed(() => activeSource.value === null);
 
@@ -177,7 +178,22 @@ async function onClone() {
   if (!cloneUrl.value.trim() || !clonePath.value.trim()) return;
   cloning.value = true;
   cloneError.value = null;
-  emit("clone", cloneUrl.value.trim(), clonePath.value.trim(), shallowClone.value);
+  emit(
+    "clone",
+    cloneUrl.value.trim(),
+    clonePath.value.trim(),
+    shallowClone.value,
+    (ok: boolean, error?: string) => {
+      cloning.value = false;
+      if (!ok) {
+        cloneError.value = error || "Clone failed.";
+      }
+    }
+  );
+}
+
+function copyGitlabPublicKey() {
+  window.navigator.clipboard.writeText(gitlabPublicKey.value);
 }
 
 function selectRepo(repo: GithubRepo) {
@@ -251,6 +267,7 @@ async function generateSshKey() {
   const token = getProviderToken(activeSource.value || "");
   if (!token || !gitlabDomain.value) return;
   
+  gitlabError.value = null;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const [_, pubKey] = await invoke<[string, string]>("generate_ssh_key", {
@@ -259,15 +276,25 @@ async function generateSshKey() {
     });
     gitlabPublicKey.value = pubKey;
     
-    // Add key to GitLab
-    await invoke("add_gitlab_ssh_key", {
-      domain: gitlabDomain.value,
-      token: token,
-      title: "GitSwamp SSH Key",
-      key: pubKey,
-    });
-    
-    gitlabSshKeyGenerated.value = true;
+    // Try to add key to GitLab automatically
+    try {
+      await invoke("add_gitlab_ssh_key", {
+        domain: gitlabDomain.value,
+        token: token,
+        title: "GitSwamp SSH Key",
+        key: pubKey,
+      });
+      gitlabSshKeyGenerated.value = true;
+    } catch (addErr) {
+      const msg = String(addErr || "");
+      if (msg.includes("already exists") || msg.includes("has already been taken")) {
+        gitlabSshKeyGenerated.value = true;
+        gitlabError.value = null;
+        return;
+      }
+      // Key generated but could not be added automatically - show it for manual addition
+      gitlabError.value = `Key generated. Add it manually to GitLab SSH keys: ${addErr}`;
+    }
   } catch (e) {
     gitlabError.value = `SSH key error: ${e}`;
   }
@@ -278,16 +305,33 @@ watch(activeSource, (src) => {
   if (src === "github" && githubRepos.value.length === 0 && props.token) {
     doGithubSearch();
   }
+  // Auto-load gitlab repos when connected
+  if (src === "gitlab-self" && !needsConnection.value && gitlabRepos.value.length === 0) {
+    doGitlabSearch();
+  }
   // Reset gitlab state when switching
   if (src !== "gitlab-self") {
     gitlabRepos.value = [];
     gitlabSearch.value = "";
+    gitlabPublicKey.value = "";
+    gitlabSshKeyGenerated.value = false;
+  }
+});
+
+// Also auto-load when needsConnection changes (e.g., after connecting)
+watch(needsConnection, (needs) => {
+  if (!needs && activeSource.value === "gitlab-self" && gitlabRepos.value.length === 0) {
+    doGitlabSearch();
   }
 });
 
 const isUrlMode = computed(() => activeSource.value === "url");
 const isGithubMode = computed(() => activeSource.value === "github");
 const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
+
+// Not-implemented providers
+const unimplementedProviders = ["github-enterprise", "gitlab", "bitbucket", "bitbucket-dc", "azure"];
+const isUnimplemented = computed(() => activeSource.value && unimplementedProviders.includes(activeSource.value));
 </script>
 
 <template>
@@ -468,11 +512,11 @@ const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
                 <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
                 <div class="flex-1 relative">
                   <input
+                    ref="gitlabSearchInput"
                     v-model="gitlabSearch"
                     @input="onGitlabSearch"
                     placeholder="Search your repositories..."
                     class="w-full px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
-                    autofocus
                   />
                   <Loader2 v-if="gitlabLoading" class="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-[var(--muted-foreground)]" />
                 </div>
@@ -481,14 +525,30 @@ const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
               <div class="flex items-center gap-2 px-2 flex-shrink-0">
                 <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
                 <span class="text-[10px] text-[#10b981]">Connected to {{ gitlabDomain }}</span>
-                <button v-if="!gitlabSshKeyGenerated" @click="generateSshKey" class="ml-auto text-[10px] text-[var(--primary)] hover:underline flex items-center gap-1">
+                <button v-if="!gitlabSshKeyGenerated && !gitlabPublicKey" @click="generateSshKey" class="ml-auto text-[10px] text-[var(--primary)] hover:underline flex items-center gap-1">
                   <Key class="w-3 h-3" />
                   Generate SSH Key
                 </button>
-                <span v-else class="ml-auto text-[10px] text-[#10b981] flex items-center gap-1">
+                <span v-else-if="gitlabSshKeyGenerated" class="ml-auto text-[10px] text-[#10b981] flex items-center gap-1">
                   <Key class="w-3 h-3" />
-                  SSH Key Added
+                  SSH Key Added to GitLab
                 </span>
+              </div>
+
+              <!-- Show public key if generated (for manual addition) -->
+              <div v-if="gitlabPublicKey && !gitlabSshKeyGenerated" class="px-2 flex-shrink-0 space-y-1">
+                <div class="text-[10px] text-[var(--muted-foreground)]">Add this SSH key to your GitLab settings:</div>
+                <div class="relative">
+                  <textarea
+                    :value="gitlabPublicKey"
+                    readonly
+                    class="w-full h-16 px-2 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[9px] font-mono text-[var(--foreground)] resize-none focus:outline-none"
+                  />
+                  <button 
+                    @click="copyGitlabPublicKey"
+                    class="absolute top-1 right-1 px-2 py-0.5 text-[9px] bg-[var(--primary)] text-white rounded hover:opacity-90"
+                  >Copy</button>
+                </div>
               </div>
 
               <div v-if="gitlabError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ gitlabError }}</div>
@@ -496,7 +556,7 @@ const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
               <!-- Repo list -->
               <div class="flex-1 overflow-y-auto min-h-0 border border-[var(--border)] rounded-lg bg-[var(--background)]">
                 <div v-if="!gitlabRepos.length && !gitlabLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
-                  {{ gitlabSearch ? 'No repos found' : 'Search for repositories or view your projects...' }}
+                  {{ gitlabSearch ? 'No repos found' : 'Loading your projects...' }}
                 </div>
                 <button
                   v-for="repo in gitlabRepos"
@@ -529,8 +589,28 @@ const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
             </template>
           </template>
 
+          <!-- Unimplemented providers - show coming soon -->
+          <template v-if="isUnimplemented">
+            <div class="flex flex-col items-center justify-center py-12 gap-4">
+              <div class="w-20 h-20 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '15' }">
+                <component :is="sources.find(s => s.id === activeSource)?.icon" class="w-10 h-10" :style="{ color: sources.find(s => s.id === activeSource)?.color }" />
+              </div>
+              <div class="text-lg text-[var(--foreground)] font-semibold">{{ providerNames[activeSource!] }}</div>
+              <div class="px-4 py-2 bg-[var(--primary)]/10 text-[var(--primary)] text-xs font-medium rounded-full border border-[var(--primary)]/30">
+                Coming Soon
+              </div>
+              <p class="text-[11px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed mt-2">
+                Support for {{ providerNames[activeSource!] }} is being developed.<br/>
+                In the meantime, you can use <strong>Clone with URL</strong> to clone any repository.
+              </p>
+              <button @click="selectSource('url')" class="mt-2 px-4 py-2 bg-[var(--secondary)] text-[var(--foreground)] text-xs font-medium rounded-lg hover:bg-[var(--secondary)]/80 transition-colors">
+                Use URL Instead
+              </button>
+            </div>
+          </template>
+
           <!-- Not-url, not-github, not-gitlab-self mode: provider with token support -->
-          <template v-if="!isUrlMode && !isGithubMode && !isGitlabSelfMode && activeSource">
+          <template v-if="!isUrlMode && !isGithubMode && !isGitlabSelfMode && !isUnimplemented && activeSource">
             <!-- Provider not connected -->
             <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '20' }">
