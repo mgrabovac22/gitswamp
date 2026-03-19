@@ -2,7 +2,7 @@
 import { Folder, Plus, X, Home } from "lucide-vue-next";
 import type { RepoInfo } from "@/types";
 
-const props = defineProps<{
+defineProps<{
   tabs: { id: string; repo: RepoInfo | null; label: string }[];
   activeTabId: string;
 }>();

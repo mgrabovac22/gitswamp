@@ -584,12 +584,6 @@ function canMergeRefIntoCurrent(ref: DisplayRef): boolean {
   return true;
 }
 
-function onStashClick(event: MouseEvent, stash: StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) {
-  event.stopPropagation();
-  emit("selectStash", stash);
-  emit("select", null);
-}
-
 function onStashContextMenu(event: MouseEvent, stash: StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) {
   event.preventDefault();
   event.stopPropagation();

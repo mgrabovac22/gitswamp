@@ -564,7 +564,7 @@ function onEditInput() {
       </div>
 
       <div v-else-if="viewMode === 'file-diff'" class="min-w-fit">
-        <template v-for="(line, idx) in fullFileLines" :key="idx">
+        <template v-for="(line, _idx) in fullFileLines" :key="_idx">
           <div :class="['flex', lineClass(line.type)]">
             <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
               {{ line.oldLineNo ?? '' }}

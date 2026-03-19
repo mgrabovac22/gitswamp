@@ -1,16 +1,11 @@
 <script setup lang="ts">
 import {
-  ArrowLeft,
-  ArrowRight,
-  Download,
   Upload,
   RefreshCw,
   GitBranch,
   Archive,
-  GitPullRequest,
   Terminal,
   Settings,
-  User,
   Loader2,
 } from "lucide-vue-next";
 import AppButton from "@/components/ui/AppButton.vue";

@@ -10,7 +10,6 @@ import {
   Trash2,
   Github,
 } from "lucide-vue-next";
-import AppInput from "@/components/ui/AppInput.vue";
 import SidebarSection from "./SidebarSection.vue";
 import type { BranchInfo, StashInfo, TagInfo } from "@/types";
 
@@ -22,10 +21,6 @@ const props = defineProps<{
   tags: TagInfo[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
 }>();
-
-const GitLabIcon = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 14.5l-2.3-7h4.6L8 14.5zM1.4 7.5L.5 10.3c-.1.2 0 .5.2.6L8 14.5 1.4 7.5zm.8-2.2L.5 10.3h3.6l1.1-3.4-3 1.6zm11.4 2.2L15.5 10.3c.1.2 0 .5-.2.6L8 14.5l6.6-7zm-.8-2.2l1.7 5 h-3.6l-1.1-3.4 3-1.6z"/></svg>`;
-const BitbucketIcon = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M.8 1.5h14.4c.5 0 .8.4.8.8 0 .1 0 .2 0 .2l-2 12c-.1.4-.4.7-.8.7H3c-.4 0-.8-.3-.8-.7L.1 2.5c0-.4.3-.8.7-.8zm8.4 9H6.8L6 6.5h4l-.8 4z"/></svg>`;
-const AzureIcon = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M4.8 1.5L1 6.3l2.3 8.2h9.4l2.3-8.2L11.2 1.5H4.8zM8 5l2 3.5H6L8 5z"/></svg>`;
 
 const emit = defineEmits<{
   checkout: [branchName: string];

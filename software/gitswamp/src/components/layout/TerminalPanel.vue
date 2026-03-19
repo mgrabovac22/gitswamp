@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from "vue";
-import { Terminal, X, ChevronUp } from "lucide-vue-next";
+import { Terminal, X } from "lucide-vue-next";
 
 const props = defineProps<{
   output: string[];
@@ -85,7 +85,7 @@ function focusInput() {
         :key="i"
         class="whitespace-pre-wrap mb-2"
       >
-        <template v-for="(part, j) in line.split('\n')" :key="j">
+        <template v-for="(part, _j) in line.split('\n')" :key="_j">
           <div :class="part.startsWith('$') ? 'text-[var(--primary)] font-medium' : part.startsWith('Error:') ? 'text-[#ef4444]' : 'text-[var(--foreground)]'">
             {{ part }}
           </div>
