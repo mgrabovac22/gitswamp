@@ -34,7 +34,6 @@ onMounted(() => {
   }
   isDark.value = !document.documentElement.classList.contains("light");
   
-  // Load saved settings
   const savedFontSize = localStorage.getItem("gitswamp-font-size");
   if (savedFontSize && (savedFontSize === "small" || savedFontSize === "medium" || savedFontSize === "large")) {
     fontSize.value = savedFontSize;
@@ -91,7 +90,6 @@ function handleDelete() {
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="emit('close')">
     <div class="w-[480px] max-h-[90vh] bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden flex flex-col">
-      <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-[var(--border)] flex-shrink-0">
         <div class="flex items-center gap-2">
           <Shield class="w-4 h-4 text-[var(--primary)]" />
@@ -102,16 +100,13 @@ function handleDelete() {
         </button>
       </div>
 
-      <!-- Content -->
       <div class="p-5 space-y-4 overflow-y-auto flex-1">
-        <!-- Appearance Section -->
         <div class="space-y-3">
           <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">
             <Monitor class="w-3 h-3" />
             Appearance
           </div>
           
-          <!-- Theme Toggle -->
           <div class="flex items-center justify-between py-2">
             <div>
               <label class="text-xs font-medium text-[var(--foreground)] block">Theme</label>
@@ -132,7 +127,6 @@ function handleDelete() {
             </button>
           </div>
 
-          <!-- Font Size -->
           <div class="flex items-center justify-between py-2">
             <div>
               <label class="text-xs font-medium text-[var(--foreground)] block">Font Size</label>
@@ -153,7 +147,6 @@ function handleDelete() {
             </div>
           </div>
 
-          <!-- Compact Mode -->
           <div class="flex items-center justify-between py-2">
             <div>
               <label class="text-xs font-medium text-[var(--foreground)] block">Compact Mode</label>
@@ -171,7 +164,6 @@ function handleDelete() {
             </button>
           </div>
 
-          <!-- Show Avatars -->
           <div class="flex items-center justify-between py-2">
             <div>
               <label class="text-xs font-medium text-[var(--foreground)] block">Show Avatars</label>
@@ -190,7 +182,6 @@ function handleDelete() {
           </div>
         </div>
 
-        <!-- Authentication Section -->
         <div class="border-t border-[var(--border)] pt-4 space-y-3">
           <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">
             <Shield class="w-3 h-3" />
@@ -250,7 +241,6 @@ function handleDelete() {
           </div>
         </div>
 
-        <!-- System Section -->
         <div class="border-t border-[var(--border)] pt-4">
           <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider mb-3">
             <Layout class="w-3 h-3" />
@@ -271,3 +261,4 @@ function handleDelete() {
     </div>
   </div>
 </template>
+

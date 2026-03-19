@@ -75,19 +75,16 @@ const shallowClone = ref(false);
 const cloning = ref(false);
 const cloneError = ref<string | null>(null);
 
-// Token input for providers
 const tokenInput = ref("");
 const showTokenInput = ref(false);
 const gitlabDomain = ref(""); // For self-hosted GitLab
 
-// GitHub search state
 const githubSearch = ref("");
 const githubRepos = ref<GithubRepo[]>([]);
 const githubLoading = ref(false);
 const githubError = ref<string | null>(null);
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
-// GitLab search state
 const gitlabSearch = ref("");
 const gitlabRepos = ref<GitlabRepo[]>([]);
 const gitlabLoading = ref(false);
@@ -101,7 +98,6 @@ const showGrid = computed(() => activeSource.value === null);
 function getProviderToken(provider: string): string | null {
   if (provider === "github") return props.token || null;
   const stored = props.providerTokens?.[provider] || null;
-  // For gitlab-self, token is stored as "domain|token"
   if (provider === "gitlab-self" && stored && stored.includes("|")) {
     const parts = stored.split("|");
     gitlabDomain.value = parts[0];
@@ -139,7 +135,6 @@ function startTokenConnect() {
 async function saveToken() {
   if (!tokenInput.value.trim() || !activeSource.value) return;
   
-  // For GitLab self-hosted, validate domain and verify token first
   if (activeSource.value === "gitlab-self" && gitlabDomain.value.trim()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -147,7 +142,6 @@ async function saveToken() {
         domain: gitlabDomain.value.trim(),
         token: tokenInput.value.trim(),
       });
-      // Store domain with token (format: domain|token)
       emit("saveProviderToken", activeSource.value, `${gitlabDomain.value.trim()}|${tokenInput.value.trim()}`);
     } catch (e) {
       gitlabError.value = `Token verification failed: ${e}`;
@@ -228,7 +222,6 @@ async function doGithubSearch() {
   }
 }
 
-// GitLab search functions
 function onGitlabSearch() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
@@ -276,7 +269,6 @@ async function generateSshKey() {
     });
     gitlabPublicKey.value = pubKey;
     
-    // Try to add key to GitLab automatically
     try {
       await invoke("add_gitlab_ssh_key", {
         domain: gitlabDomain.value,
@@ -292,7 +284,6 @@ async function generateSshKey() {
         gitlabError.value = null;
         return;
       }
-      // Key generated but could not be added automatically - show it for manual addition
       gitlabError.value = `Key generated. Add it manually to GitLab SSH keys: ${addErr}`;
     }
   } catch (e) {
@@ -300,16 +291,13 @@ async function generateSshKey() {
   }
 }
 
-// Auto-load repos when switching to github source
 watch(activeSource, (src) => {
   if (src === "github" && githubRepos.value.length === 0 && props.token) {
     doGithubSearch();
   }
-  // Auto-load gitlab repos when connected
   if (src === "gitlab-self" && !needsConnection.value && gitlabRepos.value.length === 0) {
     doGitlabSearch();
   }
-  // Reset gitlab state when switching
   if (src !== "gitlab-self") {
     gitlabRepos.value = [];
     gitlabSearch.value = "";
@@ -318,7 +306,6 @@ watch(activeSource, (src) => {
   }
 });
 
-// Also auto-load when needsConnection changes (e.g., after connecting)
 watch(needsConnection, (needs) => {
   if (!needs && activeSource.value === "gitlab-self" && gitlabRepos.value.length === 0) {
     doGitlabSearch();
@@ -329,7 +316,6 @@ const isUrlMode = computed(() => activeSource.value === "url");
 const isGithubMode = computed(() => activeSource.value === "github");
 const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
 
-// Not-implemented providers
 const unimplementedProviders = ["github-enterprise", "gitlab", "bitbucket", "bitbucket-dc", "azure"];
 const isUnimplemented = computed(() => activeSource.value && unimplementedProviders.includes(activeSource.value));
 </script>
@@ -337,7 +323,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
 <template>
   <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="emit('close')">
     <div class="w-[680px] bg-[var(--popover)] rounded-xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden" :style="showGrid ? 'height: auto' : 'height: 500px'">
-      <!-- Title bar -->
       <div class="flex items-center justify-between px-5 py-3.5 border-b border-[var(--border)]">
         <div class="flex items-center gap-2">
           <button v-if="!showGrid" @click="backToGrid" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors mr-1">
@@ -350,7 +335,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
         </button>
       </div>
 
-      <!-- Grid source selection -->
       <div v-if="showGrid" class="p-6">
         <p class="text-xs text-[var(--muted-foreground)] mb-4">Choose a source to clone from</p>
         <div class="grid grid-cols-4 gap-3">
@@ -371,10 +355,8 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
         </div>
       </div>
 
-      <!-- Source-specific content -->
       <div v-if="!showGrid" class="flex-1 p-5 flex flex-col overflow-hidden">
         <div class="space-y-3 flex-1 overflow-hidden flex flex-col">
-          <!-- Clone path -->
           <div class="flex items-center gap-3 flex-shrink-0">
             <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Clone to</label>
             <div class="flex-1 flex gap-2">
@@ -391,7 +373,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             </div>
           </div>
 
-          <!-- URL input for url mode -->
           <div v-if="isUrlMode" class="flex items-center gap-3 flex-shrink-0">
             <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
             <input
@@ -402,7 +383,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             />
           </div>
 
-          <!-- GitHub search mode -->
           <template v-if="isGithubMode">
             <div class="flex items-center gap-3 flex-shrink-0">
               <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
@@ -420,7 +400,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
 
             <div v-if="githubError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ githubError }}</div>
 
-            <!-- Repo list -->
             <div class="flex-1 overflow-y-auto min-h-0 border border-[var(--border)] rounded-lg bg-[var(--background)]">
               <div v-if="!token" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)] p-4 text-center">
                 No GitHub token configured.<br/>Go to Settings and add a Personal Access Token first.
@@ -449,7 +428,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
               </button>
             </div>
 
-            <!-- Selected URL display -->
             <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
               <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
               <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
@@ -458,9 +436,7 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             </div>
           </template>
 
-          <!-- GitLab Self-Hosted mode -->
           <template v-if="isGitlabSelfMode">
-            <!-- Not connected - show domain + token input -->
             <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#e24329]/20">
                 <GitBranch class="w-8 h-8 text-[#e24329]" />
@@ -475,7 +451,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
               </button>
             </div>
 
-            <!-- Token/domain input form -->
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
                 <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Domain</label>
@@ -506,7 +481,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
               </p>
             </div>
 
-            <!-- Connected - show search & repos -->
             <template v-if="!needsConnection">
               <div class="flex items-center gap-3 flex-shrink-0">
                 <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
@@ -535,7 +509,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
                 </span>
               </div>
 
-              <!-- Show public key if generated (for manual addition) -->
               <div v-if="gitlabPublicKey && !gitlabSshKeyGenerated" class="px-2 flex-shrink-0 space-y-1">
                 <div class="text-[10px] text-[var(--muted-foreground)]">Add this SSH key to your GitLab settings:</div>
                 <div class="relative">
@@ -553,7 +526,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
 
               <div v-if="gitlabError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ gitlabError }}</div>
 
-              <!-- Repo list -->
               <div class="flex-1 overflow-y-auto min-h-0 border border-[var(--border)] rounded-lg bg-[var(--background)]">
                 <div v-if="!gitlabRepos.length && !gitlabLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
                   {{ gitlabSearch ? 'No repos found' : 'Loading your projects...' }}
@@ -579,7 +551,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
                 </button>
               </div>
 
-              <!-- Selected URL display -->
               <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
                 <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
                 <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
@@ -589,7 +560,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             </template>
           </template>
 
-          <!-- Unimplemented providers - show coming soon -->
           <template v-if="isUnimplemented">
             <div class="flex flex-col items-center justify-center py-12 gap-4">
               <div class="w-20 h-20 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '15' }">
@@ -609,9 +579,7 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             </div>
           </template>
 
-          <!-- Not-url, not-github, not-gitlab-self mode: provider with token support -->
           <template v-if="!isUrlMode && !isGithubMode && !isGitlabSelfMode && !isUnimplemented && activeSource">
-            <!-- Provider not connected -->
             <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '20' }">
                 <component :is="sources.find(s => s.id === activeSource)?.icon" class="w-8 h-8" :style="{ color: sources.find(s => s.id === activeSource)?.color }" />
@@ -626,7 +594,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
               </button>
             </div>
 
-            <!-- Token input form -->
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
                 <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</label>
@@ -648,7 +615,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
               </p>
             </div>
 
-            <!-- Connected: show URL input -->
             <div v-if="!needsConnection" class="flex items-center gap-3 flex-shrink-0">
               <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
               <input
@@ -664,7 +630,6 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             </div>
           </template>
 
-          <!-- Options -->
           <div class="flex items-center gap-6 flex-shrink-0">
             <label class="flex items-center gap-2 cursor-pointer text-xs text-[var(--muted-foreground)]">
               <input type="checkbox" v-model="shallowClone" class="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--background)] accent-[var(--primary)]" />
@@ -672,13 +637,11 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             </label>
           </div>
 
-          <!-- Error -->
           <div v-if="cloneError" class="text-xs text-[#ef4444] bg-[#ef4444]/10 rounded px-3 py-2 border border-[#ef4444]/20 flex-shrink-0">
             {{ cloneError }}
           </div>
         </div>
 
-        <!-- Clone button -->
         <div class="flex justify-end mt-4 flex-shrink-0">
           <button
             @click="onClone"
@@ -693,3 +656,4 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
     </div>
   </div>
 </template>
+

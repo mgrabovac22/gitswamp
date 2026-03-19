@@ -103,7 +103,6 @@ function onInit() {
 <template>
   <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="emit('close')">
     <div class="w-[720px] bg-[var(--popover)] rounded-xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden" :style="showGrid ? 'height: auto' : 'height: 520px'">
-      <!-- Title bar -->
       <div class="flex items-center justify-between px-5 py-3.5 border-b border-[var(--border)]">
         <div class="flex items-center gap-2">
           <button v-if="!showGrid" @click="backToGrid" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors mr-1">
@@ -116,7 +115,6 @@ function onInit() {
         </button>
       </div>
 
-      <!-- Grid source selection -->
       <div v-if="showGrid" class="p-6">
         <p class="text-xs text-[var(--muted-foreground)] mb-4">Choose where to create your repository</p>
         <div class="grid grid-cols-4 gap-3">
@@ -137,9 +135,7 @@ function onInit() {
         </div>
       </div>
 
-      <!-- Source-specific content with sidebar -->
       <div v-if="!showGrid" class="flex-1 flex overflow-hidden">
-        <!-- Sidebar: source list -->
         <div class="w-44 border-r border-[var(--border)] bg-[var(--sidebar-background)] py-2 flex-shrink-0 overflow-y-auto">
           <button
             v-for="src in sources"
@@ -158,16 +154,13 @@ function onInit() {
           </button>
         </div>
 
-        <!-- Main form area -->
         <div class="flex-1 p-5 flex flex-col overflow-y-auto">
-          <!-- Provider not connected warning -->
           <div v-if="activeSource && activeSource !== 'local' && !isProviderConnected(activeSource)" class="mb-4 p-3 rounded-lg border border-[#f59e0b]/30 bg-[#f59e0b]/10">
             <div class="text-xs text-[#f59e0b] font-medium mb-1">{{ providerNames[activeSource] }} is not connected</div>
             <p class="text-[10px] text-[var(--muted-foreground)]">The repository will be created locally. Connect in Clone dialog or Settings to push automatically.</p>
           </div>
 
           <div class="space-y-3.5 flex-1">
-            <!-- Name -->
             <div class="flex items-center gap-3">
               <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">Name</label>
               <input
@@ -178,7 +171,6 @@ function onInit() {
               />
             </div>
 
-            <!-- Initialize in -->
             <div class="flex items-center gap-3">
               <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">Initialize in</label>
               <div class="flex-1 flex gap-2">
@@ -195,13 +187,11 @@ function onInit() {
               </div>
             </div>
 
-            <!-- Full path (read-only) -->
             <div class="flex items-center gap-3">
               <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">Full path</label>
               <span class="text-xs text-[var(--muted-foreground)] font-mono truncate">{{ fullPath }}</span>
             </div>
 
-            <!-- Default branch name -->
             <div class="flex items-center gap-3">
               <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">Default branch</label>
               <input
@@ -211,7 +201,6 @@ function onInit() {
               />
             </div>
 
-            <!-- .gitignore template -->
             <div class="flex items-center gap-3">
               <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">.gitignore</label>
               <select
@@ -222,7 +211,6 @@ function onInit() {
               </select>
             </div>
 
-            <!-- License -->
             <div class="flex items-center gap-3">
               <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">License</label>
               <select
@@ -233,7 +221,6 @@ function onInit() {
               </select>
             </div>
 
-            <!-- Git LFS -->
             <div class="flex items-center gap-3">
               <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0"></label>
               <label class="flex items-center gap-2 cursor-pointer text-xs text-[var(--muted-foreground)]">
@@ -242,13 +229,11 @@ function onInit() {
               </label>
             </div>
 
-            <!-- Error -->
             <div v-if="initError" class="text-xs text-[#ef4444] bg-[#ef4444]/10 rounded px-3 py-2 border border-[#ef4444]/20">
               {{ initError }}
             </div>
           </div>
 
-          <!-- Create button -->
           <div class="flex justify-end mt-4 flex-shrink-0">
             <button
               @click="onInit"
@@ -264,3 +249,4 @@ function onInit() {
     </div>
   </div>
 </template>
+

@@ -13,7 +13,6 @@ use crate::models::{BranchInfo, CommitFileInfo, CommitInfo, DiffHunk, DiffLine, 
 static GIT_PATH: OnceLock<String> = OnceLock::new();
 static FULL_PATH: OnceLock<String> = OnceLock::new();
 
-/// Expand all %VAR% references in a string using environment variables
 #[allow(dead_code)]
 fn expand_env_vars(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
@@ -39,7 +38,6 @@ fn expand_env_vars(input: &str) -> String {
     result
 }
 
-/// Extract PATH dirs from a registry query line
 #[allow(dead_code)]
 fn extract_reg_paths(text: &str, paths: &mut Vec<String>) {
     for line in text.lines() {
@@ -56,12 +54,15 @@ fn extract_reg_paths(text: &str, paths: &mut Vec<String>) {
     }
 }
 
-/// Build the full system + user PATH by reading from the Windows registry.
 fn get_full_path() -> &'static str {
     FULL_PATH.get_or_init(|| {
+        #[cfg(not(windows))]
+        {
+            return std::env::var("PATH").unwrap_or_default();
+        }
+
         let mut paths: Vec<String> = Vec::new();
 
-        // Start with current process PATH
         if let Ok(current) = std::env::var("PATH") {
             for dir in current.split(';') {
                 let d = dir.trim().to_string();
@@ -73,7 +74,6 @@ fn get_full_path() -> &'static str {
 
         #[cfg(windows)]
         {
-            // System PATH from registry
             if let Ok(output) = std::process::Command::new("reg")
                 .args(&["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "/v", "Path"])
                 .creation_flags(0x08000000)
@@ -84,7 +84,6 @@ fn get_full_path() -> &'static str {
                 }
             }
 
-            // User PATH from registry
             if let Ok(output) = std::process::Command::new("reg")
                 .args(&["query", r"HKCU\Environment", "/v", "Path"])
                 .creation_flags(0x08000000)
@@ -100,32 +99,53 @@ fn get_full_path() -> &'static str {
     })
 }
 
+fn path_separator() -> char {
+    if cfg!(windows) { ';' } else { ':' }
+}
+
 fn find_git() -> String {
-    // 1. Search current PATH environment variable
+    let git_name = if cfg!(windows) { "git.exe" } else { "git" };
+    let separator = path_separator();
+
     if let Ok(path_var) = std::env::var("PATH") {
-        let separator = if cfg!(windows) { ';' } else { ':' };
         for dir in path_var.split(separator) {
             let dir = dir.trim();
             if dir.is_empty() { continue; }
-            let git_path = Path::new(dir).join(if cfg!(windows) { "git.exe" } else { "git" });
+            let git_path = Path::new(dir).join(git_name);
             if git_path.exists() {
                 return git_path.to_string_lossy().to_string();
             }
         }
     }
 
-    // 1b. Search the full system+user PATH (from registry, may have more entries)
     let full = get_full_path();
-    for dir in full.split(';') {
+    for dir in full.split(separator) {
         let dir = dir.trim();
         if dir.is_empty() { continue; }
-        let git_path = Path::new(dir).join(if cfg!(windows) { "git.exe" } else { "git" });
+        let git_path = Path::new(dir).join(git_name);
         if git_path.exists() {
             return git_path.to_string_lossy().to_string();
         }
     }
 
-    // 2. Common Windows install locations
+    #[cfg(not(windows))]
+    {
+        for p in ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git", "/opt/local/bin/git"] {
+            if Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+        if let Ok(output) = std::process::Command::new("which").arg("git").output() {
+            if output.status.success() {
+                let found = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !found.is_empty() && Path::new(&found).exists() {
+                    return found;
+                }
+            }
+        }
+        return "git".to_string();
+    }
+
     let candidates = [
         r"C:\Program Files\Git\cmd\git.exe",
         r"C:\Program Files\Git\bin\git.exe",
@@ -139,7 +159,6 @@ fn find_git() -> String {
         }
     }
 
-    // 3. Check user-specific locations via env vars
     for env_key in &["LOCALAPPDATA", "APPDATA", "USERPROFILE"] {
         if let Ok(base) = std::env::var(env_key) {
             let paths = [
@@ -157,7 +176,6 @@ fn find_git() -> String {
         }
     }
 
-    // 4. Check PROGRAMFILES variants from env
     for env_key in &["PROGRAMFILES", "ProgramFiles(x86)", "ProgramW6432"] {
         if let Ok(pf) = std::env::var(env_key) {
             let p = format!(r"{}\Git\cmd\git.exe", pf);
@@ -171,7 +189,6 @@ fn find_git() -> String {
         }
     }
 
-    // 5. Try Windows registry for Git install path (HKLM)
     #[cfg(windows)]
     {
         for reg_path in &[
@@ -181,7 +198,7 @@ fn find_git() -> String {
         ] {
             if let Ok(output) = std::process::Command::new("reg")
                 .args(&["query", reg_path, "/v", "InstallPath"])
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .creation_flags(0x08000000)
                 .output()
             {
                 if output.status.success() {
@@ -203,7 +220,6 @@ fn find_git() -> String {
             }
         }
 
-        // 6. Read system PATH from registry with full env var expansion
         if let Ok(output) = std::process::Command::new("reg")
             .args(&["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "/v", "Path"])
             .creation_flags(0x08000000)
@@ -228,7 +244,6 @@ fn find_git() -> String {
             }
         }
 
-        // 7. Read user PATH from registry with full env var expansion
         if let Ok(output) = std::process::Command::new("reg")
             .args(&["query", r"HKCU\Environment", "/v", "Path"])
             .creation_flags(0x08000000)
@@ -254,7 +269,6 @@ fn find_git() -> String {
         }
     }
 
-    // 8. Try running "git" directly as last resort
     if let Ok(output) = std::process::Command::new("git")
         .arg("--version")
         .output()
@@ -264,7 +278,6 @@ fn find_git() -> String {
         }
     }
 
-    // 9. Try where.exe with full PATH
     #[cfg(windows)]
     {
         if let Ok(output) = std::process::Command::new("where.exe")
@@ -284,7 +297,6 @@ fn find_git() -> String {
             }
         }
 
-        // 10. Try cmd /c where git with full PATH
         if let Ok(output) = std::process::Command::new("cmd")
             .args(&["/c", "where", "git"])
             .creation_flags(0x08000000)
@@ -310,7 +322,6 @@ fn git_executable() -> &'static str {
     GIT_PATH.get_or_init(find_git)
 }
 
-/// Try executing git with given executable path, returning output or error
 #[allow(unused_variables)]
 fn try_git_exec(exe: &str, cwd: Option<&str>, args: &[&str], path_env: &str) -> Result<std::process::Output, std::io::Error> {
     let mut cmd = std::process::Command::new(exe);
@@ -327,7 +338,7 @@ fn try_git_exec(exe: &str, cwd: Option<&str>, args: &[&str], path_env: &str) -> 
     cmd.output()
 }
 
-/// Hardcoded common git locations as last resort
+#[cfg(windows)]
 const COMMON_GIT_PATHS: &[&str] = &[
     r"C:\Program Files\Git\cmd\git.exe",
     r"C:\Program Files\Git\bin\git.exe",
@@ -336,19 +347,19 @@ const COMMON_GIT_PATHS: &[&str] = &[
     r"C:\Program Files (x86)\Git\bin\git.exe",
 ];
 
-/// Central function to run git commands with multiple fallback strategies.
 fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
     let primary = git_executable();
     let full_path = get_full_path();
+    let separator = path_separator();
+    let git_name = if cfg!(windows) { "git.exe" } else { "git" };
+    let split_count = full_path.split(separator).filter(|s| !s.trim().is_empty()).count();
 
-    // Strategy 1: Use the detected git executable
     if let Ok(output) = try_git_exec(primary, cwd, args, full_path) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Ok(format!("{}{}", stdout, stderr).trim().to_string());
         } else {
-            // Git ran but returned an error — that's a real git error, return it
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let msg = if !stderr.is_empty() { stderr } else { stdout };
@@ -358,11 +369,10 @@ fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
         }
     }
 
-    // Strategy 2: Search full PATH for git.exe directly
-    for dir in full_path.split(';') {
+    for dir in full_path.split(separator) {
         let dir = dir.trim();
         if dir.is_empty() { continue; }
-        let candidate = Path::new(dir).join("git.exe");
+        let candidate = Path::new(dir).join(git_name);
         if candidate.exists() {
             let exe_str = candidate.to_string_lossy().to_string();
             if exe_str != primary {
@@ -379,7 +389,7 @@ fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
         }
     }
 
-    // Strategy 3: Hardcoded common git locations
+    #[cfg(windows)]
     for fallback in COMMON_GIT_PATHS {
         if Path::new(fallback).exists() {
             if let Ok(output) = try_git_exec(fallback, cwd, args, full_path) {
@@ -394,7 +404,6 @@ fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
         }
     }
 
-    // Strategy 4: Use cmd.exe /c git (cmd.exe has its own PATH resolution)
     #[cfg(windows)]
     {
         let mut cmd_args = vec!["/c", "git"];
@@ -418,8 +427,16 @@ fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
         }
     }
 
-    Err(format!("Git not found. Detected path: '{}'. Searched {} PATH dirs and {} common locations.",
-        primary, full_path.split(';').count(), COMMON_GIT_PATHS.len()))
+    #[cfg(windows)]
+    {
+        return Err(format!("Git not found. Detected path: '{}'. Searched {} PATH dirs and {} common locations.",
+            primary, split_count, COMMON_GIT_PATHS.len()));
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err(format!("Git not found. Detected path: '{}'. Searched {} PATH dirs.", primary, split_count))
+    }
 }
 
 pub struct GitService;
@@ -432,7 +449,7 @@ impl GitService {
     pub fn get_git_path() -> String {
         let exe = git_executable();
         let full = get_full_path();
-        let path_count = full.split(';').filter(|s| !s.trim().is_empty()).count();
+        let path_count = full.split(path_separator()).filter(|s| !s.trim().is_empty()).count();
         format!("{} (PATH has {} dirs)", exe, path_count)
     }
 
@@ -448,7 +465,6 @@ impl GitService {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
 
-        // Get remotes and detect provider
         let mut remotes = Vec::new();
         if let Ok(remote_names) = repo.remotes() {
             for remote_name in remote_names.iter().flatten() {
@@ -687,7 +703,6 @@ impl GitService {
             return Ok(());
         }
 
-        // Initial commit (no HEAD): remove path from index directly.
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
         let _ = index.remove_path(file);
         index.write().map_err(|e| e.message().to_string())?;
@@ -941,7 +956,6 @@ impl GitService {
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         repo.cherrypick(&commit, None).map_err(|e| e.message().to_string())?;
-        // Auto-commit the cherry-pick
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
         if index.has_conflicts() {
             return Err("Cherry-pick has conflicts. Resolve them manually.".to_string());
@@ -963,7 +977,6 @@ impl GitService {
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         repo.revert(&commit, None).map_err(|e| e.message().to_string())?;
-        // Auto-commit the revert
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
         if index.has_conflicts() {
             return Err("Revert has conflicts. Resolve them manually.".to_string());
@@ -1013,7 +1026,6 @@ impl GitService {
     }
 
     pub fn clone_repo(url: &str, path: &str, shallow: bool, token: Option<&str>) -> Result<String, String> {
-        // Determine final clone directory: path/repoName (matching git clone behavior)
         let repo_name = url.split('/').last().unwrap_or("repo")
             .trim_end_matches(".git");
         let dest = Path::new(path).join(repo_name);
@@ -1061,7 +1073,6 @@ impl GitService {
         std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
         let repo = Repository::init(path).map_err(|e| e.message().to_string())?;
         let branch = branch_name.unwrap_or("main");
-        // Set initial branch name via HEAD reference
         repo.set_head(&format!("refs/heads/{}", branch))
             .map_err(|e| e.message().to_string())?;
         Ok(format!("Initialized repository with branch '{}'.", branch))
@@ -1187,7 +1198,6 @@ impl GitService {
                 .map(|oid| oid.to_string())
                 .unwrap_or_default();
 
-            // git2 stash name format is usually: "WIP on main: message" or "On main: message"
             let (branch, message) = if let Some(after) = stash_name
                 .strip_prefix("WIP on ")
                 .or_else(|| stash_name.strip_prefix("On "))
@@ -1250,26 +1260,21 @@ impl GitService {
     pub fn stash_files(path: &str, index: usize) -> Result<Vec<CommitFileInfo>, String> {
         let mut repo = Self::open(path)?;
         
-        // Find the stash commit by iterating through stashes
         let mut stash_oid: Option<git2::Oid> = None;
         let target_index = index;
         
         repo.stash_foreach(|idx, _name, oid| {
             if idx == target_index {
                 stash_oid = Some(*oid);
-                false // stop iterating
+                false
             } else {
-                true // continue
+                true
             }
         }).map_err(|e| e.message().to_string())?;
         
         let oid = stash_oid.ok_or_else(|| format!("Stash at index {} not found", index))?;
         let stash_commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         
-        // Stash commit structure:
-        // - stash commit has the working tree changes
-        // - parent[0] is the original commit (HEAD when stash was created)
-        // We diff the stash against its first parent to see what was stashed
         let stash_tree = stash_commit.tree().map_err(|e| e.message().to_string())?;
         
         let parent_tree = if stash_commit.parent_count() > 0 {
@@ -1324,7 +1329,6 @@ impl GitService {
                     Err(_) => continue,
                 };
 
-                // For annotated tags, peel to commit so graph matching works.
                 let target = object
                     .peel(git2::ObjectType::Commit)
                     .map(|o| o.id().to_string())
@@ -1442,7 +1446,6 @@ impl GitService {
     }
 
     pub fn edit_commit_message(path: &str, sha: &str, new_message: &str) -> Result<String, String> {
-        // Only works for HEAD commit
         let repo = Self::open(path)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let head_commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
@@ -1460,10 +1463,8 @@ impl GitService {
     pub fn reset_branch_to_remote(path: &str, branch: &str) -> Result<String, String> {
         let repo = Self::open(path)?;
         
-        // First checkout the branch using libgit2
         Self::checkout_branch(path, branch)?;
         
-        // Find the remote ref for origin/<branch>
         let remote_ref_name = format!("refs/remotes/origin/{}", branch);
         let remote_ref = repo.find_reference(&remote_ref_name)
             .map_err(|e| format!("Cannot find remote branch origin/{}: {}", branch, e.message()))?;
@@ -1472,7 +1473,6 @@ impl GitService {
         let remote_commit = repo.find_commit(remote_oid)
             .map_err(|e| e.message().to_string())?;
         
-        // Reset hard to the remote commit
         repo.reset(remote_commit.as_object(), git2::ResetType::Hard, None)
             .map_err(|e| e.message().to_string())?;
         
@@ -1510,7 +1510,6 @@ impl GitService {
         Ok(repos)
     }
 
-    /// Search GitLab repositories
     pub fn search_gitlab_repos(domain: &str, token: &str, query: &str) -> Result<Vec<GitlabRepo>, String> {
         let base_url = format!("https://{}/api/v4", domain);
         let url = if query.is_empty() {
@@ -1544,7 +1543,6 @@ impl GitService {
         Ok(repos)
     }
 
-    /// Generate SSH key pair for GitLab/GitHub
     pub fn generate_ssh_key(email: &str, key_name: &str) -> Result<(String, String), String> {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
@@ -1556,31 +1554,23 @@ impl GitService {
         let key_path = ssh_dir.join(key_name);
         let pub_key_path = ssh_dir.join(format!("{}.pub", key_name));
         
-        // Check if key already exists
         if key_path.exists() {
             let pub_key = std::fs::read_to_string(&pub_key_path)
                 .map_err(|e| format!("Failed to read existing public key: {}", e))?;
             return Ok((key_path.to_string_lossy().to_string(), pub_key));
         }
         
-        // Generate new key using ssh-keygen
-        // Try to find ssh-keygen in common locations
         let ssh_keygen_paths = [
-            // Git for Windows locations
             Path::new("C:\\Program Files\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
             Path::new("C:\\Program Files (x86)\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
             Path::new("C:\\Program Files\\Git\\bin\\ssh-keygen.exe").to_path_buf(),
             Path::new("C:\\Program Files (x86)\\Git\\bin\\ssh-keygen.exe").to_path_buf(),
-            // Git cmd directory
             Path::new("C:\\Program Files\\Git\\cmd\\ssh-keygen.exe").to_path_buf(),
-            // Windows OpenSSH (built-in)
             Path::new("C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe").to_path_buf(),
-            // Unix locations
             Path::new("/usr/bin/ssh-keygen").to_path_buf(),
             Path::new("/usr/local/bin/ssh-keygen").to_path_buf(),
         ];
         
-        // First try from PATH using where/which command
         let from_path: Option<PathBuf> = {
             #[cfg(windows)]
             {
@@ -1617,7 +1607,7 @@ impl GitService {
         cmd.args(["-t", "ed25519", "-C", email, "-f"])
             .arg(&key_path)
             .arg("-N")
-            .arg(""); // Empty passphrase
+            .arg("");
         
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -1634,7 +1624,6 @@ impl GitService {
         Ok((key_path.to_string_lossy().to_string(), pub_key))
     }
 
-    /// Add SSH key to GitLab
     pub fn add_gitlab_ssh_key(domain: &str, token: &str, title: &str, key: &str) -> Result<(), String> {
         let url = format!("https://{}/api/v4/user/keys", domain);
         
@@ -1658,7 +1647,6 @@ impl GitService {
                 }
             }
             Err(ureq::Error::Status(code, resp)) => {
-                // Try to get error message from response
                 if let Ok(body) = resp.into_string() {
                     let body_lower = body.to_lowercase();
                     if body_lower.contains("has already been taken")
@@ -1666,7 +1654,6 @@ impl GitService {
                         || body_lower.contains("fingerprint has already been taken")
                         || body_lower.contains("key has already been taken")
                     {
-                        // Key already exists, that's fine
                         return Ok(());
                     }
                     Err(format!("GitLab error ({}): {}", code, body))
@@ -1678,7 +1665,6 @@ impl GitService {
         }
     }
 
-    /// Verify GitLab token and get user info
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
         let url = format!("https://{}/api/v4/user", domain);
         
@@ -1696,19 +1682,16 @@ impl GitService {
         Ok(username)
     }
 
-    /// Get diff for a working directory file (unstaged or staged)
     pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<FileDiff, String> {
         let repo = Self::open(path)?;
         
         let diff = if staged {
-            // Staged: diff HEAD vs index
             let head_tree = repo.head()
                 .and_then(|h| h.peel_to_tree())
                 .ok();
             repo.diff_tree_to_index(head_tree.as_ref(), None, None)
                 .map_err(|e| e.message().to_string())?
         } else {
-            // Unstaged: diff index vs workdir
             repo.diff_index_to_workdir(None, None)
                 .map_err(|e| e.message().to_string())?
         };
@@ -1716,7 +1699,6 @@ impl GitService {
         Self::extract_file_diff(&diff, file_path)
     }
 
-    /// Get diff for a file in a specific commit
     pub fn get_commit_diff(path: &str, sha: &str, file_path: &str) -> Result<FileDiff, String> {
         let repo = Self::open(path)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
@@ -1733,12 +1715,10 @@ impl GitService {
         Self::extract_file_diff(&diff, file_path)
     }
 
-    /// Get full file content from working directory or a commit
     pub fn get_file_content(path: &str, file_path: &str, sha: Option<&str>) -> Result<String, String> {
         let repo = Self::open(path)?;
         
         if let Some(commit_sha) = sha {
-            // Get file from a specific commit
             let oid = git2::Oid::from_str(commit_sha).map_err(|e| e.message().to_string())?;
             let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
             let tree = commit.tree().map_err(|e| e.message().to_string())?;
@@ -1752,7 +1732,6 @@ impl GitService {
             String::from_utf8(blob.content().to_vec())
                 .map_err(|_| "File is not valid UTF-8".to_string())
         } else {
-            // Get file from working directory
             let full_path = Path::new(path).join(file_path);
             std::fs::read_to_string(&full_path)
                 .map_err(|e| e.to_string())
@@ -1773,7 +1752,6 @@ impl GitService {
                 .and_then(|p| p.to_str())
                 .unwrap_or("");
             
-            // Skip if not our target file
             if file_path != target_path && old_file.path().and_then(|p| p.to_str()) != Some(target_path) {
                 continue;
             }
@@ -1795,7 +1773,6 @@ impl GitService {
 
             let is_binary = new_file.is_binary() || old_file.is_binary();
 
-            // Get patch with hunks
             let mut hunks: Vec<DiffHunk> = Vec::new();
             
             if let Ok(Some(patch)) = git2::Patch::from_diff(diff, idx) {
@@ -1847,15 +1824,12 @@ impl GitService {
         result.ok_or_else(|| format!("File '{}' not found in diff", target_path))
     }
 
-    /// Save content to a file in the working directory
     pub fn save_file_content(path: &str, file_path: &str, content: &str) -> Result<(), String> {
         let full_path = Path::new(path).join(file_path);
         std::fs::write(&full_path, content).map_err(|e| e.to_string())
     }
 
-    /// Revert a specific hunk in a file (for working directory changes)
     pub fn revert_hunk(path: &str, file_path: &str, hunk_index: usize, staged: bool) -> Result<(), String> {
-        // Get the diff to find the hunk
         let diff_info = if staged {
             Self::get_working_diff(path, file_path, true)?
         } else {
@@ -1868,46 +1842,32 @@ impl GitService {
 
         let hunk = &diff_info.hunks[hunk_index];
         
-        // Read the current file content
         let full_path = Path::new(path).join(file_path);
         let current_content = std::fs::read_to_string(&full_path)
             .map_err(|e| format!("Failed to read file: {}", e))?;
         
         let current_lines: Vec<&str> = current_content.lines().collect();
         
-        // Build the new file by processing line by line
-        // Strategy: 
-        // - For lines in this hunk that are additions: skip them
-        // - For lines in this hunk that are deletions: restore them
-        // - For context lines and lines outside this hunk: keep them
         
         let mut result_lines: Vec<String> = Vec::new();
-        let mut current_idx: usize = 0; // 0-indexed position in current file
+        let mut current_idx: usize = 0;
         
-        // hunk.new_start is 1-indexed line number where changes start in new file
         let hunk_start = (hunk.new_start as usize).saturating_sub(1);
         
-        // Copy lines before the hunk
         while current_idx < hunk_start && current_idx < current_lines.len() {
             result_lines.push(current_lines[current_idx].to_string());
             current_idx += 1;
         }
         
-        // Process the hunk: restore original lines
-        // The deletions tell us what was removed (restore these)
-        // The additions tell us what was added (skip these in current file)
         for line in &hunk.lines {
             match line.line_type.as_str() {
                 "deletion" => {
-                    // This line was deleted, restore it
                     result_lines.push(line.content.trim_end_matches('\n').to_string());
                 }
                 "addition" => {
-                    // This line was added, skip it in current file
                     current_idx += 1;
                 }
                 "context" => {
-                    // Context line - copy from current
                     if current_idx < current_lines.len() {
                         result_lines.push(current_lines[current_idx].to_string());
                     }
@@ -1917,13 +1877,11 @@ impl GitService {
             }
         }
         
-        // Copy remaining lines after the hunk
         while current_idx < current_lines.len() {
             result_lines.push(current_lines[current_idx].to_string());
             current_idx += 1;
         }
         
-        // Write the reverted content
         let new_content = result_lines.join("\n") + if current_content.ends_with('\n') { "\n" } else { "" };
         std::fs::write(&full_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
         
@@ -1947,3 +1905,4 @@ fn urlencoded(s: &str) -> String {
     }
     result
 }
+

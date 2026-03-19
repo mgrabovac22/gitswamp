@@ -2,7 +2,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiffLine {
-    pub line_type: String,       // "context", "addition", "deletion", "hunk_header"
+    pub line_type: String,
     pub old_line_no: Option<u32>,
     pub new_line_no: Option<u32>,
     pub content: String,
@@ -21,7 +21,7 @@ pub struct DiffHunk {
 #[derive(Debug, Clone, Serialize)]
 pub struct FileDiff {
     pub path: String,
-    pub old_path: Option<String>,  // For renames
+    pub old_path: Option<String>,
     pub status: String,
     pub hunks: Vec<DiffHunk>,
     pub is_binary: bool,

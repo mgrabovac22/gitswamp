@@ -48,12 +48,10 @@ const filteredRecent = computed(() => {
 <template>
   <div class="flex-1 overflow-y-auto bg-[var(--background)]">
     <div class="max-w-5xl mx-auto px-8 py-6">
-      <!-- Title -->
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-xl font-bold text-[var(--foreground)]">Repository Management</h1>
       </div>
 
-      <!-- Action buttons -->
       <div class="flex items-center gap-2 mb-6">
         <button @click="emit('browse')" class="px-4 py-2 bg-[var(--secondary)] hover:opacity-80 text-[var(--foreground)] text-xs font-medium rounded-md border border-[var(--border)] transition-colors flex items-center gap-2">
           <FolderOpen class="w-3.5 h-3.5" />
@@ -69,7 +67,6 @@ const filteredRecent = computed(() => {
         </button>
       </div>
 
-      <!-- Search -->
       <div class="relative mb-6">
         <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--muted-foreground)]" />
         <input
@@ -79,7 +76,6 @@ const filteredRecent = computed(() => {
         />
       </div>
 
-      <!-- Open repositories -->
       <div class="mb-6">
         <button
           @click="expandedSections.open = !expandedSections.open"
@@ -112,7 +108,6 @@ const filteredRecent = computed(() => {
         </div>
       </div>
 
-      <!-- Favorites -->
       <div class="mb-6">
         <button
           @click="expandedSections.favorites = !expandedSections.favorites"
@@ -129,7 +124,6 @@ const filteredRecent = computed(() => {
         </div>
       </div>
 
-      <!-- Recent repositories -->
       <div>
         <div class="flex items-center justify-between mb-3">
           <button
@@ -185,3 +179,4 @@ const filteredRecent = computed(() => {
     </div>
   </div>
 </template>
+

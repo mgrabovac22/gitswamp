@@ -62,7 +62,6 @@ function focusInput() {
 
 <template>
   <div class="bg-[var(--terminal-bg)] border-t border-[var(--border)] flex flex-col" @click="focusInput">
-    <!-- Header -->
     <div class="flex items-center justify-between px-3 py-1.5 bg-[var(--background)] border-b border-[var(--border)] flex-shrink-0">
       <div class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
         <Terminal class="w-3.5 h-3.5 text-[var(--primary)]" />
@@ -77,7 +76,6 @@ function focusInput() {
       </button>
     </div>
 
-    <!-- Output area -->
     <div ref="outputRef" class="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs min-h-0">
       <div v-if="output.length === 0" class="text-[var(--muted-foreground)] py-2">
         Type a git command (e.g., "git status", "git log --oneline -5")
@@ -95,7 +93,6 @@ function focusInput() {
       </div>
     </div>
 
-    <!-- Input -->
     <div class="flex items-center gap-2 px-3 py-2 border-t border-[var(--border)] flex-shrink-0 bg-[var(--background)]">
       <span class="text-[var(--primary)] text-xs font-mono font-bold">$</span>
       <input
@@ -109,3 +106,4 @@ function focusInput() {
     </div>
   </div>
 </template>
+

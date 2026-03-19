@@ -16,7 +16,6 @@ const emit = defineEmits<{
   refresh: [];
 }>();
 
-// View modes: diff (hunks only), file-diff (whole file with highlights), edit
 type ViewMode = "diff" | "file-diff" | "edit";
 const viewMode = ref<ViewMode>("diff");
 
@@ -30,14 +29,12 @@ const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
 
-// File watcher for live updates (only for unstaged working changes)
 let fileWatchInterval: ReturnType<typeof setInterval> | null = null;
 let lastFileHash = "";
 
 const isWorkingChanges = computed(() => !props.commitSha);
 const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
 
-// Watch for file/staged prop changes - reload when switching files
 watch(
   () => [props.filePath, props.staged, props.commitSha],
   () => {
@@ -46,7 +43,6 @@ watch(
   }
 );
 
-// Watch for view mode changes
 watch(viewMode, (mode) => {
   if (mode === "edit") {
     loadFileForEdit();
@@ -62,7 +58,6 @@ async function reload() {
   error.value = null;
   
   try {
-    // Always load diff
     if (props.commitSha) {
       diff.value = await invoke<FileDiff>("get_commit_diff", {
         path: props.repoPath,
@@ -77,14 +72,12 @@ async function reload() {
       });
     }
     
-    // For file-diff mode, load both current and original content
     if (viewMode.value === "file-diff") {
       fileContent.value = await invoke<string>("get_file_content", {
         path: props.repoPath,
         filePath: props.filePath,
         sha: null,
       });
-      // Get original content from HEAD for comparison
       try {
         originalContent.value = await invoke<string>("get_file_content", {
           path: props.repoPath,
@@ -161,7 +154,6 @@ async function revertHunk(hunkIdx: number) {
   }
 }
 
-// Live file watching for unstaged changes
 function startFileWatch() {
   if (fileWatchInterval) return;
   
@@ -188,7 +180,6 @@ function startFileWatch() {
         }
       }
     } catch {
-      // Ignore errors during polling
     }
   }, 1000);
 }
@@ -230,7 +221,6 @@ function navigateHunk(dir: "prev" | "next") {
   el?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// Build full file lines with diff information
 interface FullFileLine {
   lineNo: number;
   oldLineNo: number | null;
@@ -245,7 +235,6 @@ const fullFileLines = computed((): FullFileLine[] => {
   const lines = fileContent.value.split('\n');
   const result: FullFileLine[] = [];
   
-  // Build a map of line numbers that are additions (new_line_no -> line info)
   const additionLines = new Map<number, { content: string; hunkIdx: number }>();
   const deletionsByHunk = new Map<number, DiffLine[]>();
   
@@ -263,14 +252,12 @@ const fullFileLines = computed((): FullFileLine[] => {
     }
   });
   
-  // Process each line in the current file
   let deletionInsertPoint: number | null = null;
   
   for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
     const addInfo = additionLines.get(lineNo);
     
-    // Check if we need to insert deletions before this addition
     if (addInfo && deletionInsertPoint !== addInfo.hunkIdx) {
       const deletions = deletionsByHunk.get(addInfo.hunkIdx);
       if (deletions) {
@@ -309,7 +296,6 @@ const fullFileLines = computed((): FullFileLine[] => {
   return result;
 });
 
-// Word-level diff helpers
 function getWordDiffPairs(lines: DiffLine[]): Map<number, { del: DiffLine; add: DiffLine }[]> {
   const pairs = new Map<number, { del: DiffLine; add: DiffLine }[]>();
   let i = 0;
@@ -401,7 +387,6 @@ function onEditInput() {
 
 <template>
   <div class="h-full flex flex-col bg-[var(--card)] overflow-hidden">
-    <!-- Header -->
     <div class="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] bg-[var(--card)] flex-shrink-0">
       <div class="flex items-center gap-3 min-w-0">
         <Pencil v-if="isWorkingChanges" class="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
@@ -414,7 +399,6 @@ function onEditInput() {
       </div>
       
       <div class="flex items-center gap-2 flex-shrink-0">
-        <!-- View mode buttons -->
         <div class="flex bg-[var(--secondary)] rounded-md overflow-hidden">
           <button
             @click="viewMode = 'diff'"
@@ -457,7 +441,6 @@ function onEditInput() {
           </button>
         </div>
 
-        <!-- Edit mode actions -->
         <template v-if="viewMode === 'edit'">
           <button
             @click="saveFile"
@@ -477,7 +460,6 @@ function onEditInput() {
           </button>
         </template>
 
-        <!-- Hunk navigation (only in diff mode) -->
         <div v-if="viewMode === 'diff' && diff && diff.hunks.length > 1" class="flex items-center gap-0.5">
           <button
             @click="navigateHunk('prev')"
@@ -498,7 +480,6 @@ function onEditInput() {
           </button>
         </div>
 
-        <!-- Close button -->
         <button
           @click="emit('close')"
           class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
@@ -508,28 +489,22 @@ function onEditInput() {
       </div>
     </div>
 
-    <!-- Content -->
     <div class="flex-1 overflow-auto bg-[#0d1117] font-mono text-[13px] leading-[1.5]">
-      <!-- Loading -->
       <div v-if="loading" class="flex items-center justify-center h-full">
         <div class="text-[var(--muted-foreground)]">Loading...</div>
       </div>
 
-      <!-- Error -->
       <div v-else-if="error" class="flex flex-col items-center justify-center h-full gap-2">
         <div class="text-red-400">{{ error }}</div>
         <button @click="reload" class="text-xs text-[#58a6ff] hover:underline">Retry</button>
       </div>
 
-      <!-- Binary file -->
       <div v-else-if="diff?.is_binary" class="flex items-center justify-center h-full">
         <div class="text-[var(--muted-foreground)]">Binary file - cannot display diff</div>
       </div>
 
-      <!-- DIFF VIEW: Show only hunks -->
       <div v-else-if="viewMode === 'diff' && diff" class="min-w-fit">
         <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
-          <!-- Hunk header -->
           <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[#161b22] px-3 py-1.5 sticky top-0 z-10 border-y border-[#30363d]">
             <span class="text-xs text-[#58a6ff]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
@@ -544,7 +519,6 @@ function onEditInput() {
             </button>
           </div>
 
-          <!-- Hunk lines -->
           <div>
             <template v-for="(line, lineIdx) in hunk.lines" :key="lineIdx">
               <div :class="['flex', lineClass(line.line_type)]">
@@ -589,7 +563,6 @@ function onEditInput() {
         </div>
       </div>
 
-      <!-- FILE-DIFF VIEW: Whole file with change highlights -->
       <div v-else-if="viewMode === 'file-diff'" class="min-w-fit">
         <template v-for="(line, idx) in fullFileLines" :key="idx">
           <div :class="['flex', lineClass(line.type)]">
@@ -616,7 +589,6 @@ function onEditInput() {
         </div>
       </div>
 
-      <!-- EDIT VIEW -->
       <div v-else-if="viewMode === 'edit'" class="min-w-fit h-full">
         <textarea
           v-model="editContent"
@@ -628,3 +600,4 @@ function onEditInput() {
     </div>
   </div>
 </template>
+

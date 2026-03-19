@@ -21,7 +21,6 @@ fn provider_credentials_path(provider: &str) -> PathBuf {
 }
 
 fn dirs_next() -> Option<PathBuf> {
-    // Use APPDATA on Windows, HOME/.config on others
     std::env::var("APPDATA")
         .ok()
         .map(PathBuf::from)
@@ -32,7 +31,6 @@ fn dirs_next() -> Option<PathBuf> {
         })
 }
 
-// Simple XOR obfuscation with a fixed key (not true encryption, but hides plaintext)
 fn obfuscate(data: &[u8]) -> Vec<u8> {
     let key = b"GitSwamp2026SecretKey!";
     data.iter()
@@ -111,7 +109,6 @@ pub fn delete_provider_token(provider: String) -> Result<(), String> {
     Ok(())
 }
 
-// Minimal base64 encode/decode to avoid adding a dependency
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::new();
@@ -169,3 +166,4 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     }
     Ok(result)
 }
+

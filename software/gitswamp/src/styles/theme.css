@@ -115,7 +115,6 @@ html.light * {
   scrollbar-color: rgba(109, 40, 217, 0.12) transparent;
 }
 
-/* Reduce glow effects in light mode */
 html.light .drop-shadow-\[0_0_6px_var\(--sidebar-primary\)\],
 html.light .drop-shadow-\[0_0_8px_var\(--sidebar-primary\)\] {
   filter: none !important;
@@ -198,7 +197,6 @@ html.light .current-branch-badge {
     font-size: var(--font-size);
   }
 
-  /* Compact mode - reduce row heights */
   html.compact .commit-row {
     height: 22px !important;
   }
@@ -206,7 +204,6 @@ html.light .current-branch-badge {
     --row-height: 22px;
   }
 
-  /* Hide avatars mode */
   html.hide-avatars .commit-avatar {
     display: none !important;
   }
@@ -253,3 +250,4 @@ html.light .current-branch-badge {
     line-height: 1.5;
   }
 }
+

@@ -88,7 +88,6 @@ function startFileWatcher() {
       if (newHash !== lastStatusHash) {
         lastStatusHash = newHash;
         fileStatuses.value = newStatuses;
-        // Check if top commit changed (new commits from external tools)
         const topCheck = await invoke<CommitInfo[]>("get_commits", {
           path: repoPath.value,
           maxCount: 1,
@@ -109,7 +108,6 @@ function stopFileWatcher() {
   }
 }
 
-// Load saved token on init
 async function loadSavedToken() {
   try {
     const token = await invoke<string | null>("load_token");
@@ -120,7 +118,6 @@ async function loadSavedToken() {
 }
 loadSavedToken();
 
-// Load provider tokens on init
 async function loadProviderTokens() {
   const providers = ["gitlab", "bitbucket", "azure", "github-enterprise", "gitlab-self", "bitbucket-dc"];
   for (const p of providers) {
@@ -134,7 +131,6 @@ async function loadProviderTokens() {
 }
 loadProviderTokens();
 
-// Load git path on init
 async function loadGitPath() {
   try {
     gitPath.value = await invoke<string>("get_git_path");
@@ -231,7 +227,6 @@ async function refreshCommits() {
 }
 
 function loadMoreCommits() {
-  // Debounce to avoid multiple rapid calls while scrolling
   if (loadMoreDebounce) {
     clearTimeout(loadMoreDebounce);
   }
@@ -241,7 +236,6 @@ function loadMoreCommits() {
 }
 
 async function _doLoadMoreCommits() {
-  // Keep old search behavior: no incremental loading while search is active
   if (searchQuery.value && searchResults.value !== null) {
     return;
   }
@@ -299,7 +293,6 @@ async function refreshStashes() {
       path: repoPath.value,
     });
   } catch (e) {
-    // Stash might not be available
   }
 }
 
@@ -310,7 +303,6 @@ async function refreshTags() {
       path: repoPath.value,
     });
   } catch (e) {
-    // Tags might fail on empty repo
   }
 }
 
@@ -730,7 +722,6 @@ async function searchCommits(query: string) {
   }
   try {
     searchQuery.value = query;
-    // Load more results initially for better UX
     const result = await invoke<CommitInfo[]>("search_commits", {
       path: repoPath.value,
       query,
@@ -1083,3 +1074,4 @@ export function useGit() {
     searchGithubRepos,
   };
 }
+

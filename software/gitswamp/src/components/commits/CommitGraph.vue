@@ -1253,7 +1253,6 @@ onUnmounted(() => {
   background: rgba(139, 92, 246, 0.35);
 }
 
-/* Node pop-in animation */
 .node-pop {
   transform-origin: center;
   animation: popIn 0.3s ease-out forwards;
@@ -1264,7 +1263,6 @@ onUnmounted(() => {
   100% { opacity: 1; transform: scale(1); }
 }
 
-/* Row fade-in */
 .graph-row {
   animation: rowFade 0.2s ease-out;
 }
@@ -1273,7 +1271,6 @@ onUnmounted(() => {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Stash badge */
 .stash-badge {
   background: linear-gradient(135deg, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0.08) 100%);
   border: 1px solid rgba(245,158,11,0.45);
@@ -1293,7 +1290,6 @@ onUnmounted(() => {
   to { stroke-dashoffset: -28; }
 }
 
-/* Current checked-out branch — 2 lines circling fast */
 .current-branch-badge {
   position: relative;
   z-index: 0;
@@ -1342,3 +1338,4 @@ onUnmounted(() => {
   to { --a: 360deg; }
 }
 </style>
+

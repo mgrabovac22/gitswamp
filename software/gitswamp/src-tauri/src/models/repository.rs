@@ -4,7 +4,7 @@ use serde::Serialize;
 pub struct RemoteInfo {
     pub name: String,
     pub url: String,
-    pub provider: String, // "github", "gitlab", "bitbucket", "azure", "unknown"
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
