@@ -6,6 +6,7 @@ import Sidebar from "@/components/repository/Sidebar.vue";
 import CommitGraph from "@/components/commits/CommitGraph.vue";
 import CommitDetails from "@/components/commits/CommitDetails.vue";
 import FileDiffViewer from "@/components/ui/FileDiffViewer.vue";
+import ConflictResolver from "@/components/ui/ConflictResolver.vue";
 import LandingPage from "@/components/repository/LandingPage.vue";
 import CloneDialog from "@/components/repository/CloneDialog.vue";
 import InitDialog from "@/components/repository/InitDialog.vue";
@@ -78,6 +79,9 @@ const diffFilePath = ref("");
 const diffCommitSha = ref<string | null>(null);
 const diffStaged = ref(false);
 
+const showConflictResolver = ref(false);
+const conflictResolverPath = ref("");
+
 function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
   diffFilePath.value = filePath;
   diffCommitSha.value = commitSha;
@@ -87,6 +91,21 @@ function openDiffViewer(filePath: string, commitSha: string | null, staged: bool
 
 function closeDiffViewer() {
   showDiffViewer.value = false;
+}
+
+function openConflictResolver(filePath: string) {
+  conflictResolverPath.value = filePath;
+  showConflictResolver.value = true;
+}
+
+function closeConflictResolver() {
+  showConflictResolver.value = false;
+}
+
+function onConflictResolved() {
+  showConflictResolver.value = false;
+  git.refreshAll();
+  toast.success("Conflict resolved and file staged");
 }
 
 const showDetailsPanel = computed(() =>
@@ -567,6 +586,7 @@ const openReposList = computed(() =>
               @discard-all="git.discardAll()"
               @resolve-all-conflicts="git.resolveAllConflicts()"
               @resolve-conflict="git.promptResolveConflict($event)"
+              @manual-resolve="openConflictResolver($event)"
               @stash-pop="git.stashPop($event)"
               @stash-apply="git.stashApply($event)"
               @stash-drop="git.stashDrop($event)"
@@ -714,6 +734,13 @@ const openReposList = computed(() =>
       @save="git.saveToken($event); showSettings = false"
       @delete="git.deleteToken()"
       @close="showSettings = false"
+    />
+    <ConflictResolver
+      v-if="showConflictResolver && git.repoPath.value"
+      :repo-path="git.repoPath.value"
+      :file-path="conflictResolverPath"
+      @close="closeConflictResolver"
+      @resolved="onConflictResolved"
     />
     <ToastContainer />
   </div>

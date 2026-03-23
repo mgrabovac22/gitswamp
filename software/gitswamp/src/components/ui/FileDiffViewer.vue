@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw } from "lucide-vue-next";
 import type { FileDiff, DiffLine } from "@/types";
@@ -24,10 +24,17 @@ const fileContent = ref<string>("");
 const originalContent = ref<string>(""); // Content before changes (for full file view)
 const editContent = ref<string>("");
 const loading = ref(true);
+const loadingFileContent = ref(false);
 const error = ref<string | null>(null);
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
+
+// Virtualization state
+const scrollTop = ref(0);
+const containerHeight = ref(400);
+const LINE_HEIGHT = 20; // pixels per line
+const OVERSCAN = 10;
 
 let fileWatchInterval: ReturnType<typeof setInterval> | null = null;
 let lastFileHash = "";
@@ -46,6 +53,8 @@ watch(
 watch(viewMode, (mode) => {
   if (mode === "edit") {
     loadFileForEdit();
+  } else if (mode === "file-diff") {
+    loadFileContentAsync();
   } else {
     reload();
   }
@@ -72,26 +81,48 @@ async function reload() {
       });
     }
     
+    // Don't load file content synchronously - do it lazily
     if (viewMode.value === "file-diff") {
-      fileContent.value = await invoke<string>("get_file_content", {
-        path: props.repoPath,
-        filePath: props.filePath,
-        sha: null,
-      });
-      try {
-        originalContent.value = await invoke<string>("get_file_content", {
-          path: props.repoPath,
-          filePath: props.filePath,
-          sha: "HEAD",
-        });
-      } catch {
-        originalContent.value = "";
-      }
+      await loadFileContentAsync();
     }
   } catch (e) {
     error.value = String(e);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadFileContentAsync() {
+  if (loadingFileContent.value) return;
+  loadingFileContent.value = true;
+  
+  try {
+    // Use requestAnimationFrame to prevent blocking
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    
+    fileContent.value = await invoke<string>("get_file_content", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      sha: null,
+    });
+    
+    // Allow UI to update
+    await nextTick();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    
+    try {
+      originalContent.value = await invoke<string>("get_file_content", {
+        path: props.repoPath,
+        filePath: props.filePath,
+        sha: "HEAD",
+      });
+    } catch {
+      originalContent.value = "";
+    }
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    loadingFileContent.value = false;
   }
 }
 
@@ -295,6 +326,29 @@ const fullFileLines = computed((): FullFileLine[] => {
   
   return result;
 });
+
+// Virtualization for file-diff view
+const visibleFileLines = computed(() => {
+  const all = fullFileLines.value;
+  if (!all.length) return [];
+  
+  const first = Math.max(0, Math.floor(scrollTop.value / LINE_HEIGHT) - OVERSCAN);
+  const last = Math.min(all.length - 1, Math.ceil((scrollTop.value + containerHeight.value) / LINE_HEIGHT) + OVERSCAN);
+  
+  const result = [];
+  for (let i = first; i <= last; i++) {
+    result.push({ line: all[i], idx: i });
+  }
+  return result;
+});
+
+const totalFileHeight = computed(() => fullFileLines.value.length * LINE_HEIGHT);
+
+function onFileDiffScroll(e: Event) {
+  const el = e.target as HTMLElement;
+  scrollTop.value = el.scrollTop;
+  containerHeight.value = el.clientHeight;
+}
 
 function getWordDiffPairs(lines: DiffLine[]): Map<number, { del: DiffLine; add: DiffLine }[]> {
   const pairs = new Map<number, { del: DiffLine; add: DiffLine }[]>();
@@ -563,28 +617,36 @@ function onEditInput() {
         </div>
       </div>
 
-      <div v-else-if="viewMode === 'file-diff'" class="min-w-fit">
-        <template v-for="(line, _idx) in fullFileLines" :key="_idx">
-          <div :class="['flex', lineClass(line.type)]">
-            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
-              {{ line.oldLineNo ?? '' }}
+      <div v-else-if="viewMode === 'file-diff'" class="min-w-fit h-full overflow-auto" @scroll="onFileDiffScroll">
+        <div v-if="loadingFileContent" class="flex items-center justify-center h-full">
+          <div class="text-[var(--muted-foreground)]">Loading file content...</div>
+        </div>
+        <div v-else-if="fullFileLines.length > 0" class="relative" :style="{ height: totalFileHeight + 'px' }">
+          <div
+            v-for="item in visibleFileLines"
+            :key="item.idx"
+            :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
+            :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
+          >
+            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px] leading-[20px]">
+              {{ item.line.oldLineNo ?? '' }}
             </div>
-            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
-              {{ line.lineNo || '' }}
+            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px] leading-[20px]">
+              {{ item.line.lineNo || '' }}
             </div>
             <div 
-              class="w-5 flex-shrink-0 text-center select-none font-bold"
-              :class="line.type === 'addition' ? 'text-[#3fb950]' : line.type === 'deletion' ? 'text-[#f85149]' : 'text-[#484f58]'"
+              class="w-5 flex-shrink-0 text-center select-none font-bold leading-[20px]"
+              :class="item.line.type === 'addition' ? 'text-[#3fb950]' : item.line.type === 'deletion' ? 'text-[#f85149]' : 'text-[#484f58]'"
             >
-              {{ linePrefix(line.type) }}
+              {{ linePrefix(item.line.type) }}
             </div>
             <pre 
-              class="flex-1 px-1.5 whitespace-pre overflow-x-auto"
-              :class="line.type === 'addition' ? 'text-[#aff5b4]' : line.type === 'deletion' ? 'text-[#ffa198]' : 'text-[#c9d1d9]'"
-            >{{ line.content }}</pre>
+              class="flex-1 px-1.5 whitespace-pre overflow-x-auto leading-[20px] m-0"
+              :class="item.line.type === 'addition' ? 'text-[#aff5b4]' : item.line.type === 'deletion' ? 'text-[#ffa198]' : 'text-[#c9d1d9]'"
+            >{{ item.line.content }}</pre>
           </div>
-        </template>
-        <div v-if="fullFileLines.length === 0 && !loading" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
+        </div>
+        <div v-else-if="!loading && !loadingFileContent" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
           No file content available
         </div>
       </div>

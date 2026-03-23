@@ -1,0 +1,481 @@
+# User Guide
+
+## 1. Getting Started
+
+### 1.1 Installation
+
+**Download GitSwamp:**
+1. Visit [GitHub Releases](https://github.com/mgrabovac22/gitswamp/releases)
+2. Download for your operating system:
+   - Windows: `gitswamp-setup.msi`
+   - macOS: `GitSwamp.dmg`
+   - Linux: `gitswamp.AppImage`
+
+**Install:**
+
+**Windows:**
+- Run the `.msi` installer
+- Follow installation wizard
+- Application starts automatically
+
+**macOS:**
+- Open `.dmg` file
+- Drag GitSwamp to Applications folder
+- Launch from Applications
+
+**Linux:**
+- Make AppImage executable: `chmod +x gitswamp.AppImage`
+- Run: `./gitswamp.AppImage`
+
+### 1.2 First Launch
+
+1. Open GitSwamp
+2. Choose action:
+   - **Open Repository** - Load existing Git repository
+   - **Clone Repository** - Clone from GitHub/GitLab
+   - **Initialize Repository** - Create new repository
+
+## 2. Opening a Repository
+
+### 2.1 Open Existing Repository
+
+1. Click "Open Repository"
+2. Select folder containing `.git` directory
+3. Click "Open"
+4. Application loads repository
+
+### 2.2 Clone Repository
+
+1. Click "Clone Repository"
+2. Enter repository URL:
+   - HTTPS: `https://github.com/user/repo.git`
+   - SSH: `git@github.com:user/repo.git`
+3. Select destination folder
+4. Click "Clone"
+5. Application opens cloned repository
+
+### 2.3 Initialize New Repository
+
+1. Click "Initialize Repository"
+2. Select empty folder
+3. Click "Initialize"
+4. New repository created and opened
+
+## 3. Understanding the Interface
+
+### 3.1 Main Areas
+
+**Top Bar (Title Bar):**
+- Repository name and path
+- Settings button (gear icon)
+- Theme toggle
+
+**Header:**
+- Current branch name
+- Commit count
+- Remote status
+
+**Left Sidebar:**
+- Branches section (expand/collapse)
+- Stashes section
+- Tags section
+
+**Main Area:**
+- Commit graph (center)
+- Commit details (right panel)
+
+**Bottom:**
+- Status bar
+- Terminal output (if visible)
+
+## 4. Viewing Commits
+
+### 4.1 Commit Graph
+
+The main area shows your commit history as a graph:
+- **X-axis:** Horizontal timeline
+- **Lanes:** Vertical branches
+- **Lines:** Parent-child relationships
+- **Dots:** Individual commits
+
+**Interaction:**
+- Click commit to select it
+- Double-click to checkout
+- Right-click for context menu
+
+### 4.2 Commit Details
+
+Right panel shows selected commit:
+- **Header:** Commit hash (copyable)
+- **Author:** Name and email
+- **Date:** Commit timestamp
+- **Message:** Full commit message
+- **Files:** List of changed files
+- **Stats:** Total insertions/deletions
+
+## 5. Managing Branches
+
+### 5.1 Switch Branches
+
+**Method 1: Sidebar**
+1. Find branch in "Branches" section
+2. Click to checkout
+3. Working directory updates
+
+**Method 2: Header**
+1. Click branch name in header
+2. Select branch from dropdown
+3. Click to switch
+
+### 5.2 Create New Branch
+
+1. Click "+" next to "Branches" in sidebar
+2. Enter new branch name
+3. Select source (current: HEAD)
+4. Click "Create"
+
+**Branch Naming Tips:**
+- Use lowercase with hyphens
+- Examples: `feature/new-ui`, `fix/memory-leak`
+
+### 5.3 Delete Branch
+
+1. Right-click branch in sidebar
+2. Select "Delete Branch"
+3. Confirm deletion
+4. Branch removed
+
+### 5.4 Rename Branch
+
+1. Right-click branch in sidebar
+2. Select "Rename Branch"
+3. Enter new name
+4. Confirm
+
+## 6. Staging and Committing
+
+### 6.1 View Changes
+
+1. Open repository
+2. Left sidebar shows changed files
+3. Click file to view diff in right panel
+
+### 6.2 Stage Files
+
+**Stage Single File:**
+1. Click file in changes list
+2. Click "Stage" button
+3. File moves to "Staged" section
+
+**Stage All Files:**
+1. Click "Stage All" button
+2. All changes staged
+
+### 6.3 View Diffs
+
+**Working Directory Diff:**
+1. Click unstaged file
+2. Right panel shows diff
+3. Toggle between:
+   - Side-by-side view
+   - Unified view
+
+**Commit Diff:**
+1. Click commit in history
+2. Click file in file list
+3. Shows changes in that commit
+
+### 6.4 Create Commit
+
+1. Stage desired files
+2. Scroll down to "Commit Message"
+3. Enter message (first line < 50 chars)
+4. Add detailed description (optional)
+5. Click "Commit"
+6. New commit appears in graph
+
+**Commit Message Format:**
+```
+feat: add new feature
+
+This is the detailed description.
+It can span multiple lines.
+Each line should be under 72 characters.
+```
+
+## 7. Pushing and Pulling
+
+### 7.1 Push Commits
+
+1. Create commits locally
+2. Click "Push" in header
+3. Commits sent to remote
+4. Remote branch updates
+
+### 7.2 Pull Changes
+
+1. Click "Pull" in header
+2. Fetches and merges from remote
+3. Local branch updates
+4. Commit graph refreshes
+
+### 7.3 Fetch Changes
+
+1. Click "Fetch" button
+2. Downloads latest remote info
+3. No merge (safe operation)
+4. Check differences before pulling
+
+## 8. Working with Stashes
+
+### 8.1 Stash Changes
+
+1. Make changes (don't stage)
+2. Click "Stash" button
+3. Enter stash message
+4. Working directory cleaned
+5. Stash appears in sidebar
+
+### 8.2 Apply Stash
+
+1. Find stash in sidebar
+2. Click stash
+3. Click "Apply" button
+4. Changes restored to working directory
+
+### 8.3 Pop Stash
+
+1. Find stash in sidebar
+2. Click stash
+3. Click "Pop" button
+4. Changes restored
+5. Stash deleted
+
+## 9. Tags
+
+### 9.1 View Tags
+
+1. Expand "Tags" section in sidebar
+2. See all repository tags
+3. Click tag to jump to commit
+
+### 9.2 Create Tag
+
+1. Click commit in history
+2. Right-click, select "Create Tag"
+3. Enter tag name
+4. Choose lightweight or annotated
+5. Tag created
+
+### 9.3 Delete Tag
+
+1. Right-click tag in sidebar
+2. Select "Delete Tag"
+3. Confirm
+4. Tag removed
+
+## 10. Settings and Preferences
+
+### 10.1 Open Settings
+
+1. Click gear icon (top right)
+2. Settings dialog opens
+
+### 10.2 Theme
+
+1. Open Settings
+2. Toggle "Dark Mode" / "Light Mode"
+3. Interface updates immediately
+
+### 10.3 Font Size
+
+1. Open Settings
+2. Adjust "Font Size" slider
+3. Preview updates in real-time
+4. Apply to all text
+
+### 10.4 Compact Mode
+
+1. Open Settings
+2. Toggle "Compact Mode"
+3. UI reduces padding and margins
+4. More content visible
+
+## 11. Searching Commits
+
+### 11.1 Search by Message
+
+1. Click search icon
+2. Type commit message
+3. Results filter in real-time
+4. Click result to jump
+
+### 11.2 Search by Author
+
+1. Click search icon
+2. Prefix with `author:`
+3. Type author name
+4. Results show matching commits
+
+## 12. Resolving Conflicts
+
+### 12.1 Merge Conflicts
+
+If conflicts occur during pull/merge:
+
+1. Dialog appears showing conflicted files
+2. Conflict Resolver opens automatically
+3. Show three versions:
+   - **Original:** Base version
+   - **Current:** Your version
+   - **Incoming:** Remote version
+
+### 12.2 Resolving
+
+1. View conflicts side-by-side
+2. Choose resolution:
+   - "Use Ours" - Keep local changes
+   - "Use Theirs" - Accept remote changes
+   - "Use Both" - Combine both
+3. Edit manually if needed
+4. Mark resolved
+5. Commit to complete merge
+
+## 13. Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+O` | Open repository |
+| `Ctrl+N` | New repository |
+| `Ctrl+K` | Clone repository |
+| `Ctrl+B` | Show branches |
+| `Ctrl+S` | Stage changes |
+| `Ctrl+D` | View diff |
+| `Ctrl+M` | Create commit |
+| `Ctrl+P` | Push commits |
+| `Ctrl+U` | Pull changes |
+| `Ctrl+F` | Search commits |
+| `Ctrl+,` | Open settings |
+| `F11` | Toggle fullscreen |
+
+## 14. Tips and Tricks
+
+### 14.1 Efficient Workflows
+
+**Quick Commit:**
+1. Make changes
+2. Stage files
+3. Type message
+4. Press `Ctrl+Enter` to commit
+
+**Feature Branch Workflow:**
+1. Create branch from main
+2. Make commits
+3. Push branch
+4. Create pull request on GitHub
+
+### 14.2 Viewing History
+
+**See who changed what:**
+1. Click file in commit
+2. View file diff
+3. Shows exact changes by line
+
+**Track branch evolution:**
+1. Right-click branch
+2. View branch history
+3. See commits on this branch
+
+### 14.3 Safe Operations
+
+**Before dangerous operations:**
+1. Create backup branch
+2. Stash uncommitted changes
+3. Verify you're on correct branch
+4. Review changes before committing
+
+## 15. Troubleshooting
+
+### 15.1 Application Won't Start
+
+**Windows:**
+- Run as Administrator
+- Check Windows Defender allows it
+- Reinstall latest version
+
+**macOS:**
+- Allow in Security & Privacy settings
+- Install required dependencies
+
+**Linux:**
+- Ensure executable permission: `chmod +x gitswamp.AppImage`
+- Install required libraries
+
+### 15.2 Repository Won't Open
+
+**Possible Causes:**
+- Path doesn't contain `.git` folder
+- Insufficient permissions
+- Corrupted repository
+
+**Solutions:**
+- Verify path contains `.git`
+- Check file permissions
+- Run `git fsck` to check integrity
+
+### 15.3 Can't Push/Pull
+
+**Common Issues:**
+- Authentication failed
+- Network connection
+- Remote deleted
+
+**Solutions:**
+- Verify git credentials
+- Check internet connection
+- Fetch to see remote status
+- Delete and recreate remote if needed
+
+### 15.4 Commits Not Showing
+
+**Causes:**
+- Filter applied
+- Wrong branch selected
+- Loading in progress
+
+**Solutions:**
+- Clear search filters
+- Switch to correct branch
+- Wait for commit loading
+- Fetch from remote
+
+## 16. Getting Help
+
+### 16.1 Documentation
+
+- Check [GitHub Wiki](https://github.com/mgrabovac22/gitswamp/wiki)
+- See [FAQ Section](#faq)
+- Review [Video Tutorials](#tutorials)
+
+### 16.2 Report Issues
+
+1. Check [existing issues](https://github.com/mgrabovac22/gitswamp/issues)
+2. Provide:
+   - OS and version
+   - GitSwamp version
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Screenshots if applicable
+
+### 16.3 Feature Requests
+
+1. Check [feature requests](https://github.com/mgrabovac22/gitswamp/discussions)
+2. Describe use case
+3. Explain expected behavior
+4. Vote on similar requests
+
+---
+
+**For Technical Documentation:**
+- Developers: See [Development Setup](./DOCUMENTATION_19_DEVELOPMENT_SETUP.md)
+- Admins: See [Deployment Guide](./DOCUMENTATION_22_DEPLOYMENT_GUIDE.md)

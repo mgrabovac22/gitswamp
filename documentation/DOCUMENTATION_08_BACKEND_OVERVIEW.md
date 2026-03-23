@@ -1,0 +1,498 @@
+# Backend Overview
+
+## 1. Backend Architecture
+
+GitSwamp's backend is built with Rust and Tauri, providing type-safe, high-performance Git operations through an Inter-Process Communication (IPC) protocol with the frontend.
+
+### 1.1 Technology Stack
+
+| Technology | Version | Purpose |
+|-----------|---------|---------|
+| Tauri | 2.0 | Desktop application framework |
+| Rust | Latest | Systems programming language |
+| git2-rs | 0.19 | Rust bindings for libgit2 |
+| serde | 1.0 | Serialization framework |
+| ureq | 2.0 | HTTP client for APIs |
+
+## 2. Project Structure
+
+### 2.1 Cargo Workspace
+
+```
+src-tauri/
+├── src/
+│   ├── commands/                  # Tauri command handlers (12 modules)
+│   │   ├── mod.rs                # Module exports
+│   │   ├── repository.rs         # Repository metadata
+│   │   ├── commits.rs            # Commit history
+│   │   ├── commit_files.rs       # Files in commits
+│   │   ├── branches.rs           # Branch operations
+│   │   ├── status.rs             # Working directory status
+│   │   ├── diff.rs               # Diff generation
+│   │   ├── stash.rs              # Stash management
+│   │   ├── tags.rs               # Tag operations
+│   │   ├── clone_init.rs         # Repo creation
+│   │   ├── operations.rs         # Advanced operations
+│   │   └── credentials.rs        # Token management
+│   │
+│   ├── models/                    # Data models (10 structs)
+│   │   ├── mod.rs
+│   │   ├── commit.rs
+│   │   ├── branch.rs
+│   │   ├── file_status.rs
+│   │   ├── repository.rs
+│   │   ├── commit_file.rs
+│   │   ├── stash.rs
+│   │   ├── tag.rs
+│   │   ├── diff.rs
+│   │   ├── github.rs
+│   │   └── gitlab.rs
+│   │
+│   ├── services/                  # Service layer
+│   │   ├── mod.rs
+│   │   └── git_service.rs        # Git2-rs wrapper
+│   │
+│   ├── lib.rs                     # Library entry point
+│   └── main.rs                    # Binary entry point
+│
+├── Cargo.toml                      # Rust manifest
+├── Cargo.lock                      # Dependency lock
+├── tauri.conf.json                # Tauri configuration
+├── build.rs                        # Build script
+└── icons/                          # App icons
+```
+
+## 3. Tauri Configuration
+
+### 3.1 Core Configuration
+
+**File:** `tauri.conf.json`
+
+```json
+{
+  "appIdentifier": "com.wortex.gitswamp",
+  "appName": "GitSwamp",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "GitSwamp",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "tauri": {
+    "cli": {},
+    "bundle": {
+      "active": true,
+      "targets": ["deb", "appimage", "msi", "dmg"]
+    }
+  }
+}
+```
+
+### 3.2 Window Configuration
+
+- **Size:** 1400x900 pixels
+- **Minimum:** 800x600 pixels
+- **Custom Titlebar:** No decorations (custom implementation)
+- **Transparency:** Disabled
+- **Resizable:** Yes
+
+## 4. Command System
+
+### 4.1 Command Architecture
+
+```
+Vue Component.invoke("command_name")
+    │
+    └─> Tauri IPC Layer
+            │
+            └─> Rust Async Runtime
+                    │
+                    └─> Command Handler
+                            │
+                            ├─ Parse arguments
+                            ├─ Validate input
+                            ├─ Perform operation
+                            └─ Serialize result
+                                    │
+                                    └─ Return to Frontend (JSON)
+```
+
+### 4.2 Command Registration
+
+Commands are registered in `lib.rs`:
+
+```rust
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            commands::repository::get_repo_info,
+            commands::commits::get_commits,
+            commands::branches::get_branches,
+            // ... more commands
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+```
+
+## 5. Command Modules
+
+### 5.1 Repository Commands (repository.rs)
+
+**Functions:**
+- `get_repo_info(path: String) -> Result<RepoInfo, String>`
+
+**Purpose:** Retrieve metadata about a Git repository
+
+**Returns:**
+```rust
+RepoInfo {
+    path: String,
+    is_bare: bool,
+    head: String,
+    current_branch: String,
+    remotes: Vec<RemoteInfo>,
+    has_conflicts: bool,
+    workdir: Option<String>,
+}
+```
+
+### 5.2 Commits Commands (commits.rs)
+
+**Functions:**
+- `get_commits(repo_path: String, offset: usize, limit: usize) -> Result<Vec<CommitInfo>, String>`
+- `search_commits(repo_path: String, query: String) -> Result<Vec<CommitInfo>, String>`
+
+**Purpose:** Fetch and search commit history
+
+### 5.3 Commit Files Commands (commit_files.rs)
+
+**Functions:**
+- `get_commit_files(repo_path: String, commit_id: String) -> Result<Vec<CommitFileInfo>, String>`
+
+**Purpose:** Get files changed in a specific commit
+
+### 5.4 Branches Commands (branches.rs)
+
+**Functions:**
+- `get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String>`
+- `checkout_branch(repo_path: String, branch_name: String) -> Result<(), String>`
+- `create_branch(repo_path: String, branch_name: String) -> Result<(), String>`
+- `delete_branch(repo_path: String, branch_name: String) -> Result<(), String>`
+- `rename_branch(repo_path: String, old_name: String, new_name: String) -> Result<(), String>`
+
+**Purpose:** Manage branches
+
+### 5.5 Status Commands (status.rs)
+
+**Functions:**
+- `get_status(repo_path: String) -> Result<Vec<FileStatusInfo>, String>`
+- `stage_file(repo_path: String, file_path: String) -> Result<(), String>`
+- `unstage_file(repo_path: String, file_path: String) -> Result<(), String>`
+- `create_commit(repo_path: String, message: String) -> Result<String, String>`
+- `discard_file(repo_path: String, file_path: String) -> Result<(), String>`
+- `resolve_conflict_file(repo_path: String, file_path: String, resolution: String) -> Result<(), String>`
+- `resolve_all_conflicts(repo_path: String) -> Result<(), String>`
+
+**Purpose:** Manage working directory and staging area
+
+### 5.6 Diff Commands (diff.rs)
+
+**Functions:**
+- `get_working_diff(repo_path: String, file_path: Option<String>) -> Result<FileDiff, String>`
+- `get_commit_diff(repo_path: String, commit_id: String, file_path: Option<String>) -> Result<FileDiff, String>`
+- `get_file_content(repo_path: String, commit_id: String, file_path: String) -> Result<String, String>`
+- `save_file_content(repo_path: String, file_path: String, content: String) -> Result<(), String>`
+- `revert_hunk(repo_path: String, file_path: String, hunk_index: usize) -> Result<(), String>`
+
+**Purpose:** Generate and manage diffs
+
+### 5.7 Stash Commands (stash.rs)
+
+**Functions:**
+- `stash_list(repo_path: String) -> Result<Vec<StashInfo>, String>`
+- `stash_push(repo_path: String, message: String) -> Result<(), String>`
+- `stash_pop(repo_path: String, stash_index: usize) -> Result<(), String>`
+- `stash_apply(repo_path: String, stash_index: usize) -> Result<(), String>`
+- `stash_drop(repo_path: String, stash_index: usize) -> Result<(), String>`
+- `stash_files(repo_path: String, stash_index: usize) -> Result<Vec<CommitFileInfo>, String>`
+
+**Purpose:** Manage stashes
+
+### 5.8 Tags Commands (tags.rs)
+
+**Functions:**
+- `get_tags(repo_path: String) -> Result<Vec<TagInfo>, String>`
+- `create_tag_at(repo_path: String, tag_name: String, target: String) -> Result<(), String>`
+- `delete_tag(repo_path: String, tag_name: String) -> Result<(), String>`
+- `create_annotated_tag(repo_path: String, tag_name: String, message: String) -> Result<(), String>`
+
+**Purpose:** Manage tags
+
+### 5.9 Clone/Init Commands (clone_init.rs)
+
+**Functions:**
+- `clone_repo(url: String, path: String) -> Result<(), String>`
+- `init_repo(path: String) -> Result<(), String>`
+
+**Purpose:** Repository initialization
+
+### 5.10 Operations Commands (operations.rs)
+
+**Advanced Git Operations:**
+- `pull(repo_path: String) -> Result<(), String>`
+- `push(repo_path: String) -> Result<(), String>`
+- `fetch_all(repo_path: String) -> Result<(), String>`
+- `cherry_pick(repo_path: String, commit_id: String) -> Result<(), String>`
+- `revert_commit(repo_path: String, commit_id: String) -> Result<(), String>`
+- `reset_to_commit(repo_path: String, commit_id: String) -> Result<(), String>`
+- `checkout_commit(repo_path: String, commit_id: String) -> Result<(), String>`
+- `reset_branch_to_remote(repo_path: String, branch: String, remote: String) -> Result<(), String>`
+- `set_upstream(repo_path: String, branch: String, upstream: String) -> Result<(), String>`
+- `edit_commit_message(repo_path: String, commit_id: String, new_message: String) -> Result<(), String>`
+
+### 5.11 Credentials Commands (credentials.rs)
+
+**Functions:**
+- `save_token(provider: String, token: String) -> Result<(), String>`
+- `load_token(provider: String) -> Result<Option<String>, String>`
+- `delete_token(provider: String) -> Result<(), String>`
+- `save_provider_token(provider: String, username: String, token: String, expires_at: Option<i64>) -> Result<(), String>`
+- `load_provider_token(provider: String) -> Result<Option<ProviderToken>, String>`
+- `delete_provider_token(provider: String) -> Result<(), String>`
+
+**Purpose:** Token and credential management
+
+### 5.12 GitHub/GitLab Integration (operations.rs)
+
+**GitHub Functions:**
+- `search_github_repos(query: String, page: u32) -> Result<Vec<GithubRepo>, String>`
+- `verify_github_token(token: String) -> Result<bool, String>`
+
+**GitLab Functions:**
+- `search_gitlab_repos(query: String, page: u32) -> Result<Vec<GitlabRepo>, String>`
+- `verify_gitlab_token(token: String) -> Result<bool, String>`
+- `generate_ssh_key() -> Result<String, String>`
+- `add_gitlab_ssh_key(token: String, public_key: String) -> Result<(), String>`
+
+## 6. Services Layer
+
+### 6.1 GitService
+
+**File:** `src/services/git_service.rs`
+
+**Purpose:** High-level wrapper around git2-rs library
+
+**Key Methods:**
+- Repository opening and validation
+- Commit history retrieval with graph info
+- Branch operations
+- File status checking
+- Diff generation
+- Merge and conflict handling
+- Stash operations
+- Tag operations
+- Remote operations (push, pull, fetch)
+- Credential handling
+
+### 6.2 Error Handling
+
+```rust
+pub type GitResult<T> = Result<T, String>;
+
+fn handle_git_error(error: git2::Error) -> String {
+    format!("Git error: {}", error.message())
+}
+```
+
+## 7. Data Models
+
+### 7.1 Model Count
+
+**Total Models:** 10+
+
+1. **CommitInfo** - Commit metadata
+2. **BranchInfo** - Branch information
+3. **FileStatusInfo** - File status
+4. **RepoInfo** - Repository metadata
+5. **CommitFileInfo** - Files in commit
+6. **StashInfo** - Stash metadata
+7. **TagInfo** - Tag information
+8. **FileDiff** - Diff data
+9. **GithubRepo** - GitHub API model
+10. **GitlabRepo** - GitLab API model
+
+### 7.2 Model Serialization
+
+All models use `serde` for JSON serialization:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CommitInfo {
+    pub id: String,
+    pub author: String,
+    pub email: String,
+    pub timestamp: i64,
+    pub message: String,
+    pub parent_ids: Vec<String>,
+    pub branch: Option<String>,
+    pub tags: Vec<String>,
+}
+```
+
+## 8. Cargo Dependencies
+
+### 8.1 Key Dependencies
+
+```toml
+[dependencies]
+tauri = { version = "2", features = ["shell-open", "dialog"] }
+tauri-plugin-dialog = "2.6"
+tauri-plugin-opener = "2"
+git2 = "0.19"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "2"
+tokio = { version = "1", features = ["full"] }
+```
+
+### 8.2 Build Dependencies
+
+```toml
+[build-dependencies]
+tauri-build = "2"
+```
+
+## 9. Async/Await Pattern
+
+### 9.1 Async Commands
+
+All Tauri commands are automatically async:
+
+```rust
+#[tauri::command]
+pub async fn get_commits(
+    repo_path: String,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<CommitInfo>, String> {
+    // Async operation
+    tokio::task::spawn_blocking(move || {
+        // CPU-bound work here
+    }).await.unwrap()
+}
+```
+
+### 9.2 Blocking Operations
+
+Git operations are CPU-intensive, so they're run in blocking tasks:
+
+```rust
+#[tauri::command]
+pub async fn get_repo_info(path: String) -> Result<RepoInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        git_service::get_repo_info(&path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+```
+
+## 10. Error Handling
+
+### 10.1 Error Propagation
+
+```rust
+#[tauri::command]
+pub async fn checkout_branch(
+    repo_path: String,
+    branch_name: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let repo = git2::Repository::open(&repo_path)
+            .map_err(|e| e.to_string())?;
+        
+        let obj = repo.revparse_single(&branch_name)
+            .map_err(|e| format!("Branch not found: {}", e))?;
+        
+        repo.set_head_detached(obj.id())
+            .map_err(|e| format!("Failed to checkout: {}", e))?;
+        
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+```
+
+### 10.2 Error Types
+
+| Error Type | Handling | Example |
+|-----------|----------|---------|
+| Git Operation Error | Return as String | Repository not found |
+| IO Error | Return as String | File not accessible |
+| Serialization Error | Return as String | Invalid data format |
+| API Error | Return as String | Network failure |
+
+## 11. Security Considerations
+
+### 11.1 Path Validation
+
+All file paths are validated:
+```rust
+fn validate_path(path: &str) -> Result<(), String> {
+    if path.contains("..") {
+        return Err("Invalid path".into());
+    }
+    Ok(())
+}
+```
+
+### 11.2 Credential Security
+
+Credentials are:
+- Stored encrypted on disk
+- Never logged
+- Cleared from memory after use
+- Protected with file permissions
+
+## 12. Performance Optimization
+
+### 12.1 Git2-rs Efficiency
+
+- Uses libgit2 native C library
+- Efficient repository iteration
+- Minimal memory allocation
+- Caching where appropriate
+
+### 12.2 Command Execution
+
+- Async/await for non-blocking operations
+- Blocking task pool for CPU-intensive work
+- Efficient serialization with serde
+
+---
+
+**Related Documentation:**
+- [09_COMMANDS_REFERENCE.md](./DOCUMENTATION_09_COMMANDS_REFERENCE.md) - Detailed command reference
+- [10_SERVICES_GUIDE.md](./DOCUMENTATION_10_SERVICES_GUIDE.md) - Service layer documentation
+- [02_DATA_MODELS.md](./DOCUMENTATION_02_DATA_MODELS.md) - Data models reference

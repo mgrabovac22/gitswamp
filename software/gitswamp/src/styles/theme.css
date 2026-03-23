@@ -58,72 +58,89 @@
   --terminal-bg: #090b10;
 }
 html.light {
-  --swamp-deep: #e8ecf2;
-  --swamp-dark: #dfe4ec;
-  --swamp-moss: #cdd5e0;
-  --swamp-water: #d5dce6;
-  --swamp-bark: #8694a8;
-  --swamp-leaf: #6d28d9;
-  --swamp-mud: #bcc6d4;
-  --swamp-reed: #6d28d9;
-  --swamp-fog: #3d4a5c;
-  --swamp-light: #4c1d95;
+  --swamp-deep: #f4f6f9;
+  --swamp-dark: #e8ecf2;
+  --swamp-moss: #d8dfe8;
+  --swamp-water: #dfe4ec;
+  --swamp-bark: #6b7a8f;
+  --swamp-leaf: #7c3aed;
+  --swamp-mud: #c8d1de;
+  --swamp-reed: #7c3aed;
+  --swamp-fog: #4a5568;
+  --swamp-light: #5b21b6;
 
-  --header-bg: #cdd5e0;
+  --header-bg: #d8dfe8;
   --header-fg: #1a202c;
-  --header-hover: #bcc6d4;
+  --header-hover: #c8d1de;
 
-  --background: #dfe4ec;
-  --foreground: #1e293b;
-  --card: #e8ecf2;
-  --card-foreground: #1e293b;
-  --popover: #e8ecf2;
-  --popover-foreground: #1e293b;
-  --primary: #6d28d9;
+  --background: #f0f3f7;
+  --foreground: #1a202c;
+  --card: #f8fafc;
+  --card-foreground: #1a202c;
+  --popover: #ffffff;
+  --popover-foreground: #1a202c;
+  --primary: #7c3aed;
   --primary-foreground: #ffffff;
-  --secondary: #cdd5e0;
+  --secondary: #e2e8f0;
   --secondary-foreground: #1e293b;
-  --muted: #bcc6d4;
+  --muted: #cbd5e1;
   --muted-foreground: #475569;
-  --accent: #6d28d9;
+  --accent: #7c3aed;
   --accent-foreground: #ffffff;
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
-  --border: rgba(30, 41, 59, 0.18);
-  --input: rgba(30, 41, 59, 0.12);
-  --input-background: #e8ecf2;
-  --switch-background: #6d28d9;
-  --ring: #6d28d9;
-  --sidebar: #dfe4ec;
-  --sidebar-foreground: #1e293b;
-  --sidebar-primary: #6d28d9;
+  --border: rgba(71, 85, 105, 0.2);
+  --input: rgba(71, 85, 105, 0.1);
+  --input-background: #ffffff;
+  --switch-background: #7c3aed;
+  --ring: #7c3aed;
+  --sidebar: #f0f3f7;
+  --sidebar-foreground: #1a202c;
+  --sidebar-primary: #7c3aed;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #cdd5e0;
+  --sidebar-accent: #e2e8f0;
   --sidebar-accent-foreground: #1e293b;
-  --sidebar-border: rgba(30, 41, 59, 0.15);
-  --sidebar-ring: #6d28d9;
-  --terminal-bg: #d5dce6;
+  --sidebar-border: rgba(71, 85, 105, 0.15);
+  --sidebar-ring: #7c3aed;
+  --terminal-bg: #e8ecf2;
 }
 
 html.light *::-webkit-scrollbar-thumb {
-  background: rgba(109, 40, 217, 0.18);
+  background: rgba(124, 58, 237, 0.15);
 }
 html.light *::-webkit-scrollbar-thumb:hover {
-  background: rgba(109, 40, 217, 0.3);
+  background: rgba(124, 58, 237, 0.25);
 }
 html.light * {
-  scrollbar-color: rgba(109, 40, 217, 0.12) transparent;
+  scrollbar-color: rgba(124, 58, 237, 0.1) transparent;
 }
 
+/* Remove all glow effects in light mode */
 html.light .drop-shadow-\[0_0_6px_var\(--sidebar-primary\)\],
-html.light .drop-shadow-\[0_0_8px_var\(--sidebar-primary\)\] {
+html.light .drop-shadow-\[0_0_8px_var\(--sidebar-primary\)\],
+html.light [class*="drop-shadow"] {
   filter: none !important;
+  --tw-drop-shadow: none !important;
 }
 html.light [class*="shadow-[var(--sidebar-primary)]"] {
   --tw-shadow-color: transparent !important;
+  box-shadow: none !important;
 }
 html.light .current-branch-badge {
   box-shadow: none !important;
+}
+/* Softer shadows for light mode */
+html.light .shadow-sm {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+}
+html.light .shadow-md {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06) !important;
+}
+html.light .shadow-lg {
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08) !important;
+}
+html.light .shadow-2xl {
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1) !important;
 }
 
 @theme inline {

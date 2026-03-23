@@ -1073,8 +1073,33 @@ impl GitService {
         std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
         let repo = Repository::init(path).map_err(|e| e.message().to_string())?;
         let branch = branch_name.unwrap_or("main");
+        
+        // Create an initial empty commit so the branch exists
+        let sig = repo.signature()
+            .or_else(|_| git2::Signature::now("GitSwamp", "gitswamp@local"))
+            .map_err(|e| e.message().to_string())?;
+        
+        // Create an empty tree
+        let tree_id = repo.index()
+            .map_err(|e| e.message().to_string())?
+            .write_tree()
+            .map_err(|e| e.message().to_string())?;
+        let tree = repo.find_tree(tree_id).map_err(|e| e.message().to_string())?;
+        
+        // Create initial commit
+        repo.commit(
+            Some(&format!("refs/heads/{}", branch)),
+            &sig,
+            &sig,
+            "Initial commit",
+            &tree,
+            &[],
+        ).map_err(|e| e.message().to_string())?;
+        
+        // Set HEAD to point to the new branch
         repo.set_head(&format!("refs/heads/{}", branch))
             .map_err(|e| e.message().to_string())?;
+        
         Ok(format!("Initialized repository with branch '{}'.", branch))
     }
 

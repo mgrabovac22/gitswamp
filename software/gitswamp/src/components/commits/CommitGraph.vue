@@ -1010,6 +1010,7 @@ onUnmounted(() => {
             <template v-if="stashesAtCommit(item.idx).length > 0">
               <span
                 class="stash-badge flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-md cursor-default select-none"
+                :class="{ 'stash-compact': topDisplayRef(item.node.commit) !== null }"
                 :title="stashesAtCommit(item.idx).map(s => 'stash@{' + s.index + '}: ' + (s.message || '')).join('\n')"
                 @contextmenu.stop.prevent="onStashBadgeContextMenu($event, stashesAtCommit(item.idx))"
               >
@@ -1019,10 +1020,13 @@ onUnmounted(() => {
                   <rect x="4.5" y="1" width="5" height="2" rx="0.8" fill="rgba(245,158,11,0.55)" stroke="#f59e0b" stroke-width="1"/>
                   <line x1="3.5" y1="9" x2="10.5" y2="9" stroke="#f59e0b" stroke-width="1" opacity="0.6"/>
                 </svg>
-                <span class="text-[9px] font-semibold truncate max-w-[75px]" style="color:#f59e0b;">
+                <span v-if="!topDisplayRef(item.node.commit)" class="text-[9px] font-semibold truncate max-w-[75px]" style="color:#f59e0b;">
                   {{ stashesAtCommit(item.idx).length > 1
                     ? stashesAtCommit(item.idx).length + '×'
                     : (stashesAtCommit(item.idx)[0].message || 'stash') }}
+                </span>
+                <span v-else-if="stashesAtCommit(item.idx).length > 1" class="text-[9px] font-semibold" style="color:#f59e0b;">
+                  {{ stashesAtCommit(item.idx).length }}
                 </span>
               </span>
             </template>

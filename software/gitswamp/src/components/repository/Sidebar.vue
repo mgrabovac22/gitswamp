@@ -195,7 +195,7 @@ const remoteIcon = computed(() => {
           class="px-4 py-1.5 pl-8 hover:bg-[var(--sidebar-accent)] transition-all group"
         >
           <div class="text-[11px] text-[var(--sidebar-foreground)] truncate">{{ stash.message || ('stash@{' + stash.index + '}') }}</div>
-          <div class="text-[9px] text-[var(--muted-foreground)]">on {{ stash.branch }}</div>
+          <div class="text-[9px] text-[var(--muted-foreground)] truncate" :title="'on ' + stash.branch">on {{ stash.branch }}</div>
           <div class="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
               @click="emit('stashPop', stash.index)"
