@@ -56,6 +56,7 @@ const branchName = ref("main");
 const gitignoreTemplate = ref("None");
 const licenseTemplate = ref("None");
 const initWithLfs = ref(false);
+const repoVisibility = ref<"public" | "private">("private");
 const initError = ref<string | null>(null);
 const initializing = ref(false);
 
@@ -199,6 +200,17 @@ function onInit() {
                 placeholder="main"
                 class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
               />
+            </div>
+
+            <div v-if="activeSource === 'github' || activeSource === 'github-enterprise'" class="flex items-center gap-3">
+              <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">Visibility</label>
+              <select
+                v-model="repoVisibility"
+                class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+              >
+                <option value="private">Private</option>
+                <option value="public">Public</option>
+              </select>
             </div>
 
             <div class="flex items-center gap-3">

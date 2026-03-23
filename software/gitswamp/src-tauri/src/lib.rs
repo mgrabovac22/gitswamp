@@ -7,8 +7,8 @@ use commands::clone_init::{clone_repo, init_repo, search_commits};
 use commands::commit_files::get_commit_files;
 use commands::commits::get_commits;
 use commands::credentials::{delete_token, load_token, save_token, save_provider_token, load_provider_token, delete_provider_token};
-use commands::diff::{get_working_diff, get_commit_diff, get_file_content, save_file_content, revert_hunk};
-use commands::operations::{cherry_pick, checkout_commit, create_tag_at, delete_tag, fetch_all, get_git_path, pull, push, reset_to_commit, revert_commit, run_git_command, search_github_repos, search_gitlab_repos, generate_ssh_key, add_gitlab_ssh_key, verify_gitlab_token, rename_branch, delete_remote_branch, set_upstream, edit_commit_message, create_annotated_tag, reset_branch_to_remote};
+use commands::diff::{get_working_diff, get_commit_diff, get_file_content, save_file_content, revert_hunk, has_conflict_markers};
+use commands::operations::{cherry_pick, checkout_commit, create_tag_at, delete_tag, fetch_all, get_git_path, pull, push, reset_to_commit, revert_commit, run_git_command, search_github_repos, search_gitlab_repos, generate_ssh_key, add_gitlab_ssh_key, verify_gitlab_token, rename_branch, delete_remote_branch, set_upstream, edit_commit_message, create_annotated_tag, reset_branch_to_remote, push_to_platform, check_origin};
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
 use commands::status::{create_commit, discard_file, get_status, resolve_all_conflicts, resolve_conflict_file, stage_file, unstage_file};
@@ -72,11 +72,14 @@ pub fn run() {
             edit_commit_message,
             create_annotated_tag,
             reset_branch_to_remote,
+            push_to_platform,
+            check_origin,
             get_working_diff,
             get_commit_diff,
             get_file_content,
             save_file_content,
             revert_hunk,
+            has_conflict_markers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

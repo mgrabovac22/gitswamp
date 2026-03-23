@@ -110,3 +110,13 @@ pub fn create_annotated_tag(path: String, name: String, sha: String, message: St
 pub fn reset_branch_to_remote(path: String, branch: String) -> Result<String, String> {
     GitService::reset_branch_to_remote(&path, &branch)
 }
+
+#[tauri::command]
+pub fn push_to_platform(path: String, platform: String, provider_token: String, repo_name: String) -> Result<String, String> {
+    GitService::push_to_platform(&path, &platform, &provider_token, &repo_name)
+}
+
+#[tauri::command]
+pub fn check_origin(path: String) -> Result<bool, String> {
+    GitService::check_origin(&path)
+}

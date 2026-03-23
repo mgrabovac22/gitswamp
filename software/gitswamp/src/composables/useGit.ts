@@ -112,6 +112,10 @@ async function loadSavedToken() {
   try {
     const token = await invoke<string | null>("load_token");
     githubToken.value = token || null;
+    // Also set as provider token for GitHub
+    if (token) {
+      providerTokens.value["github"] = token;
+    }
   } catch {
     githubToken.value = null;
   }
@@ -119,7 +123,7 @@ async function loadSavedToken() {
 loadSavedToken();
 
 async function loadProviderTokens() {
-  const providers = ["gitlab", "bitbucket", "azure", "github-enterprise", "gitlab-self", "bitbucket-dc"];
+  const providers = ["github", "gitlab", "bitbucket", "azure", "github-enterprise", "gitlab-self", "bitbucket-dc"];
   for (const p of providers) {
     try {
       const token = await invoke<string | null>("load_provider_token", { provider: p });
@@ -144,6 +148,8 @@ async function saveToken(token: string) {
   try {
     await invoke("save_token", { token });
     githubToken.value = token;
+    // Also set as provider token for GitHub
+    providerTokens.value["github"] = token;
   } catch (e) {
     error.value = String(e);
   }
@@ -194,6 +200,10 @@ function getTokenForUrl(url?: string): string | null {
   if (url.includes("bitbucket.org")) return providerTokens.value["bitbucket"] || null;
   if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) return providerTokens.value["azure"] || null;
   return getTokenParam();
+}
+
+function getOriginUrl(): string | undefined {
+  return repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url;
 }
 
 async function openRepository(path: string) {
@@ -543,7 +553,7 @@ async function pull() {
     loading.value = true;
     const result = await invoke<string>("pull", {
       path: repoPath.value,
-      token: getTokenParam(),
+      token: getTokenForUrl(getOriginUrl()),
     });
     terminalOutput.value.push("$ git pull\n" + result);
     await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
@@ -564,15 +574,64 @@ async function push() {
     loading.value = true;
     const result = await invoke<string>("push", {
       path: repoPath.value,
-      token: getTokenParam(),
+      token: getTokenForUrl(getOriginUrl()),
     });
     terminalOutput.value.push("$ git push\n" + result);
     await Promise.all([refreshCommits(), refreshBranches()]);
     toast.success("Push completed successfully");
   } catch (e) {
+    // Check if error is because no origin exists
+    const errorMsg = String(e);
+    if (errorMsg.includes("No remote 'origin'") || errorMsg.includes("not found")) {
+      // Emit event to show platform selection dialog
+      // This will be handled by the parent component
+      error.value = "NO_ORIGIN";
+      terminalOutput.value.push("$ git push\nError: No origin remote configured");
+      toast.error("No origin remote. Select a platform to push to.");
+    } else {
+      error.value = String(e);
+      terminalOutput.value.push("$ git push\nError: " + e);
+      toast.error("Push failed: " + String(e));
+    }
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function checkOriginExists() {
+  if (!repoPath.value) return false;
+  try {
+    return await invoke<boolean>("check_origin", {
+      path: repoPath.value,
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function pushToMultiplePlatforms(platform: string, repoName: string) {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const providerToken = providerTokens.value[platform];
+    if (!providerToken) {
+      toast.error(`No token configured for ${platform}`);
+      return;
+    }
+    const result = await invoke<string>("push_to_platform", {
+      path: repoPath.value,
+      platform: platform,
+      providerToken: providerToken,
+      repoName: repoName,
+    });
+    terminalOutput.value.push(`$ git push ${platform}\n` + result);
+    await Promise.all([refreshCommits(), refreshBranches()]);
+    toast.success(`Push to ${platform} completed successfully`);
+    error.value = null;
+  } catch (e) {
     error.value = String(e);
-    terminalOutput.value.push("$ git push\nError: " + e);
-    toast.error("Push failed: " + String(e));
+    terminalOutput.value.push(`$ git push ${platform}\nError: ` + e);
+    toast.error(`Push to ${platform} failed: ` + String(e));
   } finally {
     loading.value = false;
   }
@@ -584,7 +643,7 @@ async function fetchAll() {
     loading.value = true;
     const result = await invoke<string>("fetch_all", {
       path: repoPath.value,
-      token: getTokenParam(),
+      token: getTokenForUrl(getOriginUrl()),
     });
     terminalOutput.value.push("$ git fetch --all\n" + result);
     await Promise.all([refreshBranches(), refreshCommits(), refreshTags()]);
@@ -1042,6 +1101,8 @@ export function useGit() {
     resetBranchToRemote,
     pull,
     push,
+    pushToMultiplePlatforms,
+    checkOriginExists,
     fetchAll,
     stashPush,
     stashPop,

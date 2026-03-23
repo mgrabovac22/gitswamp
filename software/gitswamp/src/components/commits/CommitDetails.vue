@@ -213,23 +213,17 @@ function copyToClipboard(text: string) {
           <div
             v-for="f in (conflictFiles ?? [])"
             :key="'c-' + f.path"
-            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#ef4444]/8 transition-all group"
+            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#ef4444]/8 transition-all group cursor-pointer"
+            @click="emit('manualResolve', f.path)"
           >
             <span class="text-[10px] font-bold w-4 text-center text-[#ef4444]">!</span>
             <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
             <button
               @click.stop="emit('manualResolve', f.path)"
-              class="px-1.5 py-0.5 rounded text-[9px] font-medium opacity-0 group-hover:opacity-100 bg-[var(--primary)]/15 text-[var(--primary)] hover:bg-[var(--primary)]/25 transition-all"
-              title="Manual line-by-line resolution"
-            >
-              Manual
-            </button>
-            <button
-              @click.stop="emit('resolveConflict', f.path)"
               class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all"
-              title="Quick resolve (ours/theirs/delete)"
+              title="Resolve conflict (line-by-line or simple)"
             >
-              <Plus class="w-3 h-3 text-[#ef4444]" />
+              <Plus class="w-4 h-4 text-[#ef4444]" />
             </button>
           </div>
         </div>

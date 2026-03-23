@@ -8,11 +8,12 @@ fn credentials_dir() -> PathBuf {
     dir
 }
 
-fn credentials_path() -> PathBuf {
-    let mut dir = credentials_dir();
-    dir.push("credentials");
-    dir
-}
+// Legacy function - now using provider_credentials_path("github") instead
+// fn credentials_path() -> PathBuf {
+//     let mut dir = credentials_dir();
+//     dir.push("credentials");
+//     dir
+// }
 
 fn provider_credentials_path(provider: &str) -> PathBuf {
     let mut dir = credentials_dir();
@@ -41,7 +42,7 @@ fn obfuscate(data: &[u8]) -> Vec<u8> {
 
 #[tauri::command]
 pub fn save_token(token: String) -> Result<(), String> {
-    let path = credentials_path();
+    let path = provider_credentials_path("github");
     let obfuscated = obfuscate(token.as_bytes());
     let encoded = base64_encode(&obfuscated);
     fs::write(&path, encoded).map_err(|e| format!("Failed to save token: {}", e))
@@ -49,7 +50,7 @@ pub fn save_token(token: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn load_token() -> Result<Option<String>, String> {
-    let path = credentials_path();
+    let path = provider_credentials_path("github");
     if !path.exists() {
         return Ok(None);
     }
@@ -67,7 +68,7 @@ pub fn load_token() -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub fn delete_token() -> Result<(), String> {
-    let path = credentials_path();
+    let path = provider_credentials_path("github");
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("Failed to delete token: {}", e))?;
     }

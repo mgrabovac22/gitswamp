@@ -17,6 +17,11 @@ pub fn get_file_content(path: String, file_path: String, sha: Option<String>) ->
 }
 
 #[tauri::command]
+pub fn has_conflict_markers(path: String, file_path: String) -> Result<bool, String> {
+    GitService::has_conflict_markers(&path, &file_path)
+}
+
+#[tauri::command]
 pub fn save_file_content(path: String, file_path: String, content: String) -> Result<(), String> {
     GitService::save_file_content(&path, &file_path, &content)
 }

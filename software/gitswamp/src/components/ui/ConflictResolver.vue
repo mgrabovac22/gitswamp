@@ -15,9 +15,15 @@ const emit = defineEmits<{
 
 interface ConflictHunk {
   startLine: number;
+  oursStartLine: number;
+  theirsStartLine: number;
   oursLines: string[];
   theirsLines: string[];
   baseLines?: string[];
+  contextBefore: string[];
+  contextAfter: string[];
+  contextBeforeStartLine: number;
+  contextAfterStartLine: number;
 }
 
 interface LineSelection {
@@ -33,6 +39,9 @@ const error = ref<string | null>(null);
 const fileContent = ref<string>("");
 const hunks = ref<ConflictHunk[]>([]);
 const selections = ref<LineSelection[]>([]);
+const hasMarkers = ref(false);
+const simpleResolution = ref<'keep-modified' | 'keep-base' | 'delete' | null>(null);
+const CONTEXT_LINES = 5;
 
 // Parse conflict markers from file content
 function parseConflicts(content: string): ConflictHunk[] {
@@ -42,10 +51,14 @@ function parseConflicts(content: string): ConflictHunk[] {
   let i = 0;
   while (i < lines.length) {
     if (lines[i].startsWith('<<<<<<<')) {
-      const startLine = i;
+      const markerStartIdx = i;
+      const startLine = markerStartIdx;
+      // Displayed line numbers are 1-based for users.
+      const oursStartLine = markerStartIdx + 2;
       const oursLines: string[] = [];
       const baseLines: string[] = [];
       const theirsLines: string[] = [];
+      let theirsStartLine = markerStartIdx + 2;
       
       i++; // skip <<<<<<< marker
       
@@ -67,6 +80,7 @@ function parseConflicts(content: string): ConflictHunk[] {
       // Skip ======= marker
       if (i < lines.length && lines[i].startsWith('=======')) {
         i++;
+        theirsStartLine = i + 1;
       }
       
       // Read "theirs" section
@@ -80,11 +94,31 @@ function parseConflicts(content: string): ConflictHunk[] {
         i++;
       }
       
+      // Gather context before conflict (up to 3 lines)
+      const beforeStartIdx = Math.max(0, startLine - CONTEXT_LINES);
+      const contextBefore: string[] = [];
+      for (let j = beforeStartIdx; j < startLine; j++) {
+        contextBefore.push(lines[j]);
+      }
+      
+      // Gather context after conflict (up to CONTEXT_LINES lines)
+      const afterStartIdx = i;
+      const contextAfter: string[] = [];
+      for (let j = afterStartIdx; j < Math.min(lines.length, afterStartIdx + CONTEXT_LINES); j++) {
+        contextAfter.push(lines[j]);
+      }
+      
       conflicts.push({
         startLine,
+        oursStartLine,
+        theirsStartLine,
         oursLines,
         theirsLines,
         baseLines: baseLines.length > 0 ? baseLines : undefined,
+        contextBefore,
+        contextAfter,
+        contextBeforeStartLine: beforeStartIdx + 1,
+        contextAfterStartLine: afterStartIdx + 1,
       });
     } else {
       i++;
@@ -106,6 +140,7 @@ function initSelections(conflictHunks: ConflictHunk[]): LineSelection[] {
 async function loadFile() {
   loading.value = true;
   error.value = null;
+  simpleResolution.value = null;
   
   try {
     fileContent.value = await invoke<string>("get_file_content", {
@@ -114,17 +149,30 @@ async function loadFile() {
       sha: null,
     });
     
-    hunks.value = parseConflicts(fileContent.value);
-    selections.value = initSelections(hunks.value);
+    // Check if file has actual conflict markers
+    hasMarkers.value = fileContent.value.includes('<<<<<<<') && 
+                       fileContent.value.includes('=======') && 
+                       fileContent.value.includes('>>>>>>>');
     
-    if (hunks.value.length === 0) {
-      error.value = "No conflict markers found in this file";
+    if (hasMarkers.value) {
+      hunks.value = parseConflicts(fileContent.value);
+      selections.value = initSelections(hunks.value);
+    } else {
+      // No markers - show options to user
+      hunks.value = [];
+      selections.value = [];
     }
   } catch (e) {
-    error.value = String(e);
+    error.value = `Failed to load file: ${String(e)}`;
   } finally {
     loading.value = false;
   }
+}
+
+function toggleOursLine(hunkIdx: number, lineIdx: number) {
+  const sel = selections.value[hunkIdx];
+  sel.oursSelected[lineIdx] = !sel.oursSelected[lineIdx];
+  sel.side = 'none'; // Manual selection
 }
 
 function selectAllOurs(hunkIdx: number) {
@@ -148,10 +196,16 @@ function selectBoth(hunkIdx: number) {
   sel.theirsSelected = new Array(hunks.value[hunkIdx].theirsLines.length).fill(true);
 }
 
-function toggleOursLine(hunkIdx: number, lineIdx: number) {
+function selectNone(hunkIdx: number) {
   const sel = selections.value[hunkIdx];
-  sel.oursSelected[lineIdx] = !sel.oursSelected[lineIdx];
-  sel.side = 'none'; // Manual selection
+  sel.side = 'none';
+  sel.oursSelected = new Array(hunks.value[hunkIdx].oursLines.length).fill(false);
+  sel.theirsSelected = new Array(hunks.value[hunkIdx].theirsLines.length).fill(false);
+}
+
+function formatRange(start: number, length: number): string {
+  if (length <= 1) return `${start}`;
+  return `${start}-${start + length - 1}`;
 }
 
 function toggleTheirsLine(hunkIdx: number, lineIdx: number) {
@@ -205,7 +259,62 @@ const resolvedLines = computed(() => {
 
 const previewContent = computed(() => resolvedLines.value.join('\n'));
 
+const simpleResolutionContent = computed(() => {
+  if (!simpleResolution.value || hasMarkers.value) return fileContent.value;
+  
+  // For delete, return empty string
+  if (simpleResolution.value === 'delete') {
+    return '';
+  }
+  
+  const lines = fileContent.value.split('\n');
+  const result: string[] = [];
+  let i = 0;
+  
+  while (i < lines.length) {
+    if (lines[i].startsWith('<<<<<<<')) {
+      const oursContent: string[] = [];
+      const theirsContent: string[] = [];
+      
+      i++; // skip <<<<<<<
+      while (i < lines.length && !lines[i].startsWith('=======')) {
+        oursContent.push(lines[i]);
+        i++;
+      }
+      
+      i++; // skip =======
+      while (i < lines.length && !lines[i].startsWith('>>>>>>>')) {
+        theirsContent.push(lines[i]);
+        i++;
+      }
+      
+      i++; // skip >>>>>>>
+      
+      // Apply resolution
+      if (simpleResolution.value === 'keep-modified') {
+        // Keep our version (modified)
+        result.push(...oursContent);
+      } else if (simpleResolution.value === 'keep-base') {
+        // Keep their version (base)
+        result.push(...theirsContent);
+      }
+    } else {
+      result.push(lines[i]);
+      i++;
+    }
+  }
+  
+  return result.join('\n');
+});
+
+const displayContent = computed(() => {
+  return hasMarkers.value ? previewContent.value : simpleResolutionContent.value;
+});
+
 const allHunksResolved = computed(() => {
+  if (!hasMarkers.value) {
+    return simpleResolution.value !== null;
+  }
   return selections.value.every(sel => 
     sel.oursSelected.some(s => s) || sel.theirsSelected.some(s => s)
   );
@@ -221,7 +330,7 @@ async function saveResolution() {
     await invoke("save_file_content", {
       path: props.repoPath,
       filePath: props.filePath,
-      content: previewContent.value,
+      content: displayContent.value,
     });
     
     // Stage the resolved file
@@ -253,13 +362,13 @@ watch(() => props.filePath, () => {
 
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" @click.self="emit('close')">
-    <div class="w-[95vw] max-w-[1400px] h-[90vh] bg-[var(--card)] rounded-xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden">
+    <div class="w-[98vw] max-w-[1600px] h-[95vh] bg-[var(--card)] rounded-xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-3 border-b border-[var(--border)] bg-[var(--card)] flex-shrink-0">
         <div class="flex items-center gap-3">
           <AlertTriangle class="w-5 h-5 text-[#f59e0b]" />
           <div>
-            <span class="text-sm font-semibold text-[var(--foreground)]">Resolve Conflicts</span>
+            <span class="text-sm font-semibold text-[var(--foreground)]">{{ hasMarkers ? 'Resolve Conflicts - Line by Line' : 'Resolve Conflicts - Choose Method' }}</span>
             <span class="text-xs text-[var(--muted-foreground)] ml-2">{{ filePath }}</span>
           </div>
         </div>
@@ -289,174 +398,330 @@ watch(() => props.filePath, () => {
       </div>
 
       <!-- Content -->
-      <div class="flex-1 overflow-hidden flex">
-        <!-- Conflict hunks -->
-        <div class="flex-1 overflow-y-auto p-4 space-y-6">
-          <div v-if="loading" class="flex items-center justify-center h-full">
-            <div class="text-[var(--muted-foreground)]">Loading...</div>
+      <div class="flex-1 overflow-hidden flex flex-col">
+        <div v-if="loading" class="flex items-center justify-center h-full">
+          <div class="text-[var(--muted-foreground)]">Loading conflict file...</div>
+        </div>
+
+        <div v-else-if="error" class="flex flex-col items-center justify-center h-full gap-2">
+          <AlertTriangle class="w-8 h-8 text-[#ef4444]" />
+          <div class="text-[#ef4444] font-medium">{{ error }}</div>
+          <button @click="loadFile" class="text-xs text-[var(--primary)] hover:underline">Retry</button>
+        </div>
+
+        <div v-else class="flex-1 overflow-y-auto space-y-4 p-4">
+          <!-- Simple Mode (No Markers) -->
+          <div v-if="!hasMarkers" class="flex items-center justify-center h-full">
+            <div class="bg-[var(--card)] border border-[#f59e0b] rounded-lg shadow-2xl p-8 max-w-md w-full">
+              <div class="text-center mb-8">
+                <div class="w-12 h-12 bg-[#f59e0b]/20 rounded-lg flex items-center justify-center mx-auto mb-4">
+                  <AlertTriangle class="w-6 h-6 text-[#f59e0b]" />
+                </div>
+                <h3 class="text-lg font-semibold text-[var(--foreground)] mb-2">Resolve Conflict</h3>
+                <p class="text-sm text-[var(--muted-foreground)]">{{ filePath }}</p>
+              </div>
+              
+              <p class="text-xs text-[#f59e0b] text-center mb-6">
+                No clear conflict markers found. Choose how to resolve:
+              </p>
+
+              <!-- Result Preview -->
+              <div class="mb-6">
+                <div class="text-xs font-semibold text-[#f59e0b] mb-2">PREVIEW (First 50 lines):</div>
+                <div class="bg-[var(--background)] border border-[var(--border)] rounded p-3 font-mono text-[11px] max-h-64 overflow-y-auto">
+                  <pre class="whitespace-pre-wrap text-[#8b949e]">{{ displayContent.split('\n').slice(0, 50).join('\n') }}</pre>
+                  <div v-if="displayContent.split('\n').length > 50" class="text-xs text-[#f59e0b] mt-2 p-2 bg-[#f59e0b]/10 rounded">
+                    ... and {{ displayContent.split('\n').length - 50 }} more lines
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-col gap-2">
+                <div class="flex gap-2">
+                  <button
+                    @click="simpleResolution = 'keep-modified'; saveResolution()"
+                    :disabled="saving"
+                    class="flex-1 px-4 py-2 rounded bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold transition-colors disabled:opacity-50"
+                  >
+                    {{ saving && simpleResolution === 'keep-modified' ? 'Saving...' : 'Keep Modified' }}
+                  </button>
+                  <button
+                    @click="simpleResolution = 'keep-base'; saveResolution()"
+                    :disabled="saving"
+                    class="flex-1 px-4 py-2 rounded bg-[#1f6feb] hover:bg-[#388bfd] text-white text-xs font-semibold transition-colors disabled:opacity-50"
+                  >
+                    {{ saving && simpleResolution === 'keep-base' ? 'Saving...' : 'Keep Base' }}
+                  </button>
+                </div>
+                <div class="flex gap-2">
+                  <button
+                    @click="simpleResolution = 'delete'; saveResolution()"
+                    :disabled="saving"
+                    class="flex-1 px-4 py-2 rounded bg-[#da3633] hover:bg-[#f85149] text-white text-xs font-semibold transition-colors disabled:opacity-50"
+                  >
+                    {{ saving && simpleResolution === 'delete' ? 'Deleting...' : 'Delete File' }}
+                  </button>
+                  <button
+                    @click="emit('close')"
+                    class="flex-1 px-4 py-2 rounded border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--secondary)] text-[var(--foreground)] text-xs font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div v-else-if="error" class="flex flex-col items-center justify-center h-full gap-2">
-            <div class="text-[#ef4444]">{{ error }}</div>
-            <button @click="loadFile" class="text-xs text-[var(--primary)] hover:underline">Retry</button>
-          </div>
-
-          <div v-else v-for="(hunk, hunkIdx) in hunks" :key="hunkIdx" class="border border-[var(--border)] rounded-lg overflow-hidden">
-            <!-- Hunk header -->
-            <div class="flex items-center justify-between px-4 py-2 bg-[var(--secondary)] border-b border-[var(--border)]">
-              <span class="text-xs font-medium text-[var(--foreground)]">Conflict {{ hunkIdx + 1 }} of {{ hunks.length }}</span>
-              <div class="flex items-center gap-2">
+          <!-- Line-by-Line Mode (With Markers) -->
+          <div v-else class="space-y-4">
+          <!-- Conflict Hunks -->
+          <div v-for="(hunk, hunkIdx) in hunks" :key="hunkIdx" class="border border-[var(--border)] rounded-lg overflow-hidden">
+            <!-- Hunk Header - Always Expanded -->
+            <div 
+              class="flex items-center justify-between px-4 py-3 bg-[var(--secondary)] border-b border-[var(--border)]"
+            >
+              <div class="flex items-center gap-3 flex-1">
+                <span class="text-xs font-semibold text-[var(--foreground)]">Conflict {{ hunkIdx + 1 }} of {{ hunks.length }}</span>
+                <span class="text-xs text-[var(--muted-foreground)]">
+                  ({{ hunk.oursLines.length }} ours, {{ hunk.theirsLines.length }} theirs{{ hunk.baseLines ? `, ${hunk.baseLines.length} base` : '' }})
+                </span>
+                <span class="text-xs text-[var(--muted-foreground)]">around line {{ hunk.startLine + 1 }} • context ±{{ CONTEXT_LINES }}</span>
+              </div>
+              
+              <!-- Quick Actions -->
+              <div class="flex items-center gap-2" @click.stop>
                 <button
-                  @click="selectAllOurs(hunkIdx)"
+                  @click.stop="selectAllOurs(hunkIdx)"
                   :class="[
                     'px-2.5 py-1 text-[10px] font-semibold rounded transition-colors',
                     selections[hunkIdx].side === 'ours'
                       ? 'bg-[#238636] text-white'
                       : 'bg-[var(--card)] text-[var(--muted-foreground)] hover:bg-[#238636]/20 hover:text-[#238636] border border-[var(--border)]'
                   ]"
+                  title="Take all from your branch"
                 >
                   <ChevronLeft class="w-3 h-3 inline mr-0.5" />
-                  Keep Ours
+                  Ours
                 </button>
                 <button
-                  @click="selectBoth(hunkIdx)"
+                  @click.stop="selectBoth(hunkIdx)"
                   :class="[
                     'px-2.5 py-1 text-[10px] font-semibold rounded transition-colors',
                     selections[hunkIdx].side === 'both'
                       ? 'bg-[var(--primary)] text-white'
                       : 'bg-[var(--card)] text-[var(--muted-foreground)] hover:bg-[var(--primary)]/20 hover:text-[var(--primary)] border border-[var(--border)]'
                   ]"
+                  title="Keep both sections"
                 >
-                  Keep Both
+                  Both
                 </button>
                 <button
-                  @click="selectAllTheirs(hunkIdx)"
+                  @click.stop="selectAllTheirs(hunkIdx)"
                   :class="[
                     'px-2.5 py-1 text-[10px] font-semibold rounded transition-colors',
                     selections[hunkIdx].side === 'theirs'
                       ? 'bg-[#1f6feb] text-white'
                       : 'bg-[var(--card)] text-[var(--muted-foreground)] hover:bg-[#1f6feb]/20 hover:text-[#1f6feb] border border-[var(--border)]'
                   ]"
+                  title="Take all from incoming branch"
                 >
-                  Keep Theirs
+                  Theirs
                   <ChevronRight class="w-3 h-3 inline ml-0.5" />
+                </button>
+                <button
+                  @click.stop="selectNone(hunkIdx)"
+                  :class="[
+                    'px-2.5 py-1 text-[10px] font-semibold rounded transition-colors',
+                    'bg-[var(--card)] text-[var(--muted-foreground)] hover:bg-[#ef4444]/20 hover:text-[#ef4444] border border-[var(--border)]'
+                  ]"
+                  title="Clear all selections"
+                >
+                  Clear
                 </button>
               </div>
             </div>
 
-            <!-- Split view -->
-            <div class="flex divide-x divide-[var(--border)]">
-              <!-- Ours (left) -->
-              <div class="flex-1 bg-[#1a4d2e]/10">
-                <div class="px-3 py-1.5 text-[10px] font-semibold text-[#3fb950] border-b border-[var(--border)] bg-[#238636]/10">
-                  OURS (Current Branch)
-                </div>
-                <div class="font-mono text-[12px]">
-                  <div
-                    v-for="(line, lineIdx) in hunk.oursLines"
-                    :key="'o-' + lineIdx"
-                    class="flex items-center hover:bg-[#238636]/15 cursor-pointer transition-colors"
-                    @click="toggleOursLine(hunkIdx, lineIdx)"
-                  >
-                    <div class="w-8 flex-shrink-0 flex items-center justify-center border-r border-[var(--border)]">
-                      <input
-                        type="checkbox"
-                        :checked="selections[hunkIdx].oursSelected[lineIdx]"
-                        @click.stop
-                        @change="toggleOursLine(hunkIdx, lineIdx)"
-                        class="w-3.5 h-3.5 rounded border-[#3fb950] text-[#238636] focus:ring-[#238636] cursor-pointer"
-                      />
-                    </div>
-                    <div class="w-8 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none text-[10px]">
-                      {{ lineIdx + 1 }}
-                    </div>
-                    <pre 
-                      class="flex-1 px-2 py-0.5 whitespace-pre overflow-x-auto"
-                      :class="selections[hunkIdx].oursSelected[lineIdx] ? 'text-[#aff5b4] bg-[#238636]/20' : 'text-[#8b949e]'"
-                    >{{ line }}</pre>
+            <!-- Content - Always Visible (Not Collapsable) -->
+            <div class="bg-[var(--card)]">
+              <!-- Side by side editor -->
+              <div class="flex divide-x divide-[var(--border)] max-h-full overflow-hidden">
+                <!-- OURS (Left) -->
+                <div class="flex-1 flex flex-col min-w-0 bg-[#1a4d2e]/5">
+                  <div class="px-3 py-2 text-[10px] font-semibold text-[#3fb950] border-b border-[var(--border)] bg-[#238636]/10 flex-shrink-0">
+                    YOUR CHANGES (Lines {{ formatRange(hunk.oursStartLine, hunk.oursLines.length) }})
                   </div>
-                  <div v-if="hunk.oursLines.length === 0" class="px-4 py-3 text-xs text-[var(--muted-foreground)] italic">
-                    (empty)
+                  <div class="flex-1 overflow-y-auto font-mono text-[11px]">
+                    <!-- Context before -->
+                    <div v-if="hunk.contextBefore.length > 0" class="border-b border-[var(--border)]/20 bg-[#1a4d2e]/2">
+                      <div v-for="(line, idx) in hunk.contextBefore" :key="'before-' + idx" class="flex items-start text-[#666]">
+                        <div class="w-7 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/20">
+                          {{ hunk.contextBeforeStartLine + idx }}
+                        </div>
+                        <div class="w-7 flex-shrink-0"></div>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                      </div>
+                    </div>
+
+                    <!-- Conflict lines -->
+                    <div
+                      v-for="(line, lineIdx) in hunk.oursLines"
+                      :key="'o-' + lineIdx"
+                      class="flex items-start hover:bg-[#238636]/10 transition-colors border-b border-[var(--border)]/30"
+                      @click="toggleOursLine(hunkIdx, lineIdx)"
+                    >
+                      <div class="w-7 flex-shrink-0 flex items-center justify-center border-r border-[var(--border)]/30 cursor-pointer hover:bg-[#238636]/15">
+                        <input
+                          type="checkbox"
+                          :checked="selections[hunkIdx].oursSelected[lineIdx]"
+                          @click.stop
+                          @change="toggleOursLine(hunkIdx, lineIdx)"
+                          class="w-3 h-3 rounded border-[#3fb950] text-[#238636] cursor-pointer"
+                        />
+                      </div>
+                      <div class="w-6 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/30">
+                        {{ hunk.oursStartLine + lineIdx }}
+                      </div>
+                      <pre 
+                        class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto"
+                        :class="selections[hunkIdx].oursSelected[lineIdx] ? 'text-[#aff5b4] bg-[#238636]/20' : 'text-[#8b949e]'"
+                      >{{ line }}</pre>
+                    </div>
+
+                    <!-- Context after -->
+                    <div v-if="hunk.contextAfter.length > 0" class="border-t border-[var(--border)]/20 bg-[#1a4d2e]/2">
+                      <div v-for="(line, idx) in hunk.contextAfter" :key="'after-' + idx" class="flex items-start text-[#666]">
+                        <div class="w-7 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/20">
+                          {{ hunk.contextAfterStartLine + idx }}
+                        </div>
+                        <div class="w-7 flex-shrink-0"></div>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                      </div>
+                    </div>
+
+                    <div v-if="hunk.oursLines.length === 0" class="px-4 py-4 text-xs text-[var(--muted-foreground)] italic">
+                      (no content)
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Base (Middle optional) -->
+                <div v-if="hunk.baseLines && hunk.baseLines.length > 0" class="w-1/3 flex flex-col min-w-0 bg-[#f59e0b]/5">
+                  <div class="px-3 py-2 text-[10px] font-semibold text-[#f59e0b] border-b border-[var(--border)] bg-[#f59e0b]/10 flex-shrink-0">
+                    ORIGINAL (Base)
+                  </div>
+                  <div class="flex-1 overflow-y-auto font-mono text-[11px]">
+                    <div
+                      v-for="(line, lineIdx) in hunk.baseLines"
+                      :key="'base-' + lineIdx"
+                      class="flex items-start border-b border-[var(--border)]/30 last:border-0"
+                    >
+                      <div class="w-6 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/30">
+                        {{ lineIdx + 1 }}
+                      </div>
+                      <pre class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto text-[#999]">{{ line }}</pre>
+                    </div>
+                    <div v-if="hunk.baseLines.length === 0" class="px-4 py-4 text-xs text-[var(--muted-foreground)] italic">
+                      (no content)
+                    </div>
+                  </div>
+                </div>
+
+                <!-- THEIRS (Right) -->
+                <div :class="['flex-1 flex flex-col min-w-0 bg-[#1f6feb]/5', hunk.baseLines && hunk.baseLines.length > 0 ? '' : '']">
+                  <div class="px-3 py-2 text-[10px] font-semibold text-[#58a6ff] border-b border-[var(--border)] bg-[#1f6feb]/10 flex-shrink-0">
+                    INCOMING CHANGES (Lines {{ formatRange(hunk.theirsStartLine, hunk.theirsLines.length) }})
+                  </div>
+                  <div class="flex-1 overflow-y-auto font-mono text-[11px]">
+                    <!-- Context before -->
+                    <div v-if="hunk.contextBefore.length > 0" class="border-b border-[var(--border)]/20 bg-[#1f6feb]/2">
+                      <div v-for="(line, idx) in hunk.contextBefore" :key="'theirs-before-' + idx" class="flex items-start text-[#666]">
+                        <div class="w-7 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/20">
+                          {{ hunk.contextBeforeStartLine + idx }}
+                        </div>
+                        <div class="w-7 flex-shrink-0"></div>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                      </div>
+                    </div>
+
+                    <!-- Conflict lines -->
+                    <div
+                      v-for="(line, lineIdx) in hunk.theirsLines"
+                      :key="'t-' + lineIdx"
+                      class="flex items-start hover:bg-[#1f6feb]/10 transition-colors border-b border-[var(--border)]/30"
+                      @click="toggleTheirsLine(hunkIdx, lineIdx)"
+                    >
+                      <div class="w-7 flex-shrink-0 flex items-center justify-center border-r border-[var(--border)]/30 cursor-pointer hover:bg-[#1f6feb]/15">
+                        <input
+                          type="checkbox"
+                          :checked="selections[hunkIdx].theirsSelected[lineIdx]"
+                          @click.stop
+                          @change="toggleTheirsLine(hunkIdx, lineIdx)"
+                          class="w-3 h-3 rounded border-[#58a6ff] text-[#1f6feb] cursor-pointer"
+                        />
+                      </div>
+                      <div class="w-6 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/30">
+                        {{ hunk.theirsStartLine + lineIdx }}
+                      </div>
+                      <pre 
+                        class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto"
+                        :class="selections[hunkIdx].theirsSelected[lineIdx] ? 'text-[#a5d6ff] bg-[#1f6feb]/20' : 'text-[#8b949e]'"
+                      >{{ line }}</pre>
+                    </div>
+
+                    <!-- Context after -->
+                    <div v-if="hunk.contextAfter.length > 0" class="border-t border-[var(--border)]/20 bg-[#1f6feb]/2">
+                      <div v-for="(line, idx) in hunk.contextAfter" :key="'theirs-after-' + idx" class="flex items-start text-[#666]">
+                        <div class="w-7 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/20">
+                          {{ hunk.contextAfterStartLine + idx }}
+                        </div>
+                        <div class="w-7 flex-shrink-0"></div>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                      </div>
+                    </div>
+
+                    <div v-if="hunk.theirsLines.length === 0" class="px-4 py-4 text-xs text-[var(--muted-foreground)] italic">
+                      (no content)
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <!-- Theirs (right) -->
-              <div class="flex-1 bg-[#1f6feb]/5">
-                <div class="px-3 py-1.5 text-[10px] font-semibold text-[#58a6ff] border-b border-[var(--border)] bg-[#1f6feb]/10">
-                  THEIRS (Incoming)
+              <!-- Resolution Preview -->
+              <div class="border-t border-[var(--border)]">
+                <div class="px-3 py-2 text-[10px] font-semibold text-[#3fb950] border-b border-[var(--border)] bg-[#238636]/5">
+                  RESULT
                 </div>
-                <div class="font-mono text-[12px]">
-                  <div
-                    v-for="(line, lineIdx) in hunk.theirsLines"
-                    :key="'t-' + lineIdx"
-                    class="flex items-center hover:bg-[#1f6feb]/15 cursor-pointer transition-colors"
-                    @click="toggleTheirsLine(hunkIdx, lineIdx)"
+                <div class="font-mono text-[11px] max-h-96 overflow-y-auto bg-[var(--background)]/50">
+                  <div 
+                    v-if="selections[hunkIdx].oursSelected.some(s => s) || selections[hunkIdx].theirsSelected.some(s => s)"
+                    class="p-2"
                   >
-                    <div class="w-8 flex-shrink-0 flex items-center justify-center border-r border-[var(--border)]">
-                      <input
-                        type="checkbox"
-                        :checked="selections[hunkIdx].theirsSelected[lineIdx]"
-                        @click.stop
-                        @change="toggleTheirsLine(hunkIdx, lineIdx)"
-                        class="w-3.5 h-3.5 rounded border-[#58a6ff] text-[#1f6feb] focus:ring-[#1f6feb] cursor-pointer"
-                      />
+                    <div v-for="(line, lineIdx) in [...hunk.oursLines.filter((_, i) => selections[hunkIdx].oursSelected[i]), ...hunk.theirsLines.filter((_, i) => selections[hunkIdx].theirsSelected[i])]" :key="'res-' + lineIdx" class="px-2 py-0.5 border-l-2 border-[#3fb950] text-[#aff5b4]">
+                      <pre class="whitespace-pre-wrap">{{ line }}</pre>
                     </div>
-                    <div class="w-8 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none text-[10px]">
-                      {{ lineIdx + 1 }}
-                    </div>
-                    <pre 
-                      class="flex-1 px-2 py-0.5 whitespace-pre overflow-x-auto"
-                      :class="selections[hunkIdx].theirsSelected[lineIdx] ? 'text-[#a5d6ff] bg-[#1f6feb]/20' : 'text-[#8b949e]'"
-                    >{{ line }}</pre>
                   </div>
-                  <div v-if="hunk.theirsLines.length === 0" class="px-4 py-3 text-xs text-[var(--muted-foreground)] italic">
-                    (empty)
+                  <div v-else class="px-3 py-3 text-xs text-[#f59e0b]">
+                    ⚠ No lines selected - conflict section will be empty
                   </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Resolution preview for this hunk -->
-            <div class="border-t border-[var(--border)] bg-[var(--card)]">
-              <div class="px-3 py-1.5 text-[10px] font-semibold text-[var(--primary)] border-b border-[var(--border)] bg-[var(--primary)]/5">
-                RESOLUTION PREVIEW
-              </div>
-              <div class="font-mono text-[12px] max-h-32 overflow-y-auto">
-                <template v-for="(line, lineIdx) in [...hunk.oursLines.filter((_, i) => selections[hunkIdx].oursSelected[i]), ...hunk.theirsLines.filter((_, i) => selections[hunkIdx].theirsSelected[i])]" :key="'p-' + lineIdx">
-                  <div class="flex">
-                    <div class="w-8 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]">
-                      {{ lineIdx + 1 }}
-                    </div>
-                    <pre class="flex-1 px-2 py-0.5 whitespace-pre overflow-x-auto text-[var(--foreground)]">{{ line }}</pre>
-                  </div>
-                </template>
-                <div 
-                  v-if="!selections[hunkIdx].oursSelected.some(s => s) && !selections[hunkIdx].theirsSelected.some(s => s)" 
-                  class="px-4 py-3 text-xs text-[#f59e0b] italic"
-                >
-                  ⚠ No lines selected - this conflict section will be empty
                 </div>
               </div>
             </div>
           </div>
+          </div>
         </div>
       </div>
 
-      <!-- Footer status -->
+      <!-- Footer -->
       <div class="flex items-center justify-between px-5 py-2.5 border-t border-[var(--border)] bg-[var(--secondary)] flex-shrink-0">
         <div class="flex items-center gap-2">
-          <span v-if="allHunksResolved" class="flex items-center gap-1.5 text-xs text-[#3fb950]">
+          <span v-if="allHunksResolved" class="flex items-center gap-1.5 text-xs text-[#3fb950] font-medium">
             <Check class="w-4 h-4" />
-            All conflicts resolved
+            {{ hasMarkers ? 'All conflicts resolved ✓' : 'Resolution method selected ✓' }}
           </span>
           <span v-else class="flex items-center gap-1.5 text-xs text-[#f59e0b]">
             <AlertTriangle class="w-4 h-4" />
-            {{ selections.filter(s => !s.oursSelected.some(x => x) && !s.theirsSelected.some(x => x)).length }} conflict(s) need resolution
+            {{ hasMarkers ? `${selections.filter(s => !s.oursSelected.some(x => x) && !s.theirsSelected.some(x => x)).length} unresolved conflict(s)` : 'Select resolution method' }}
           </span>
-        </div>
-        <div class="text-xs text-[var(--muted-foreground)]">
-          Select lines from each side or use quick actions
         </div>
       </div>
     </div>

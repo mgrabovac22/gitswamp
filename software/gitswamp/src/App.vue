@@ -10,12 +10,14 @@ import ConflictResolver from "@/components/ui/ConflictResolver.vue";
 import LandingPage from "@/components/repository/LandingPage.vue";
 import CloneDialog from "@/components/repository/CloneDialog.vue";
 import InitDialog from "@/components/repository/InitDialog.vue";
+import MultiPlatformPushDialog from "@/components/repository/MultiPlatformPushDialog.vue";
 import TerminalPanel from "@/components/layout/TerminalPanel.vue";
 import SettingsDialog from "@/components/layout/SettingsDialog.vue";
 import ToastContainer from "@/components/ui/ToastContainer.vue";
 import { useGit } from "@/composables/useGit";
 import { useToast } from "@/composables/useToast";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { ref, watch, onMounted, computed } from "vue";
 import type { RepoInfo, CommitInfo, StashInfo } from "@/types";
 
@@ -82,6 +84,13 @@ const diffStaged = ref(false);
 const showConflictResolver = ref(false);
 const conflictResolverPath = ref("");
 
+const showMultiPlatformPushDialog = ref(false);
+const multiPlatformPushRepoName = ref("");
+const showPushUsernameDialog = ref(false);
+const pushPlatform = ref("");
+const pushUsername = ref("");
+const pushDomain = ref("");
+
 function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
   diffFilePath.value = filePath;
   diffCommitSha.value = commitSha;
@@ -93,9 +102,60 @@ function closeDiffViewer() {
   showDiffViewer.value = false;
 }
 
-function openConflictResolver(filePath: string) {
-  conflictResolverPath.value = filePath;
-  showConflictResolver.value = true;
+async function openConflictResolver(filePath: string) {
+  try {
+    const hasMarkers = await invoke<boolean>("has_conflict_markers", {
+      path: git.repoPath.value,
+      filePath: filePath,
+    });
+
+    if (hasMarkers) {
+      // File has markers - open the large window with line-by-line resolver
+      conflictResolverPath.value = filePath;
+      showConflictResolver.value = true;
+    } else {
+      // File has no markers - show toast with 4 options
+      const actions = [
+        {
+          label: 'Keep Modified',
+          style: 'primary' as const,
+          onClick: async () => {
+            await resolveConflict(filePath, 'keep-modified');
+          }
+        },
+        {
+          label: 'Keep Base',
+          style: 'neutral' as const,
+          onClick: async () => {
+            await resolveConflict(filePath, 'keep-base');
+          }
+        },
+        {
+          label: 'Delete File',
+          style: 'danger' as const,
+          onClick: async () => {
+            await resolveConflict(filePath, 'delete');
+          }
+        },
+        {
+          label: 'Cancel',
+          style: 'neutral' as const,
+          onClick: async () => {
+            // Just close the toast, do nothing
+          }
+        }
+      ];
+
+      toast.action(
+        'warning',
+        `Resolve conflict: ${filePath}`,
+        actions,
+        30000 // 30 seconds for user to decide
+      );
+    }
+  } catch (e) {
+    toast.error(`Error opening conflict resolver: ${String(e)}`);
+  }
 }
 
 function closeConflictResolver() {
@@ -106,6 +166,29 @@ function onConflictResolved() {
   showConflictResolver.value = false;
   git.refreshAll();
   toast.success("Conflict resolved and file staged");
+}
+
+async function resolveConflict(filePath: string, resolution: 'keep-modified' | 'keep-base' | 'delete') {
+  try {
+    // Map resolution to git strategy
+    const strategy = resolution === 'keep-modified' 
+      ? 'ours' 
+      : resolution === 'keep-base' 
+        ? 'theirs' 
+        : 'delete';
+
+    // Use backend to resolve conflict properly
+    await invoke('resolve_conflict_file', {
+      path: git.repoPath.value,
+      filePath: filePath,
+      strategy: strategy,
+    });
+
+    await git.refreshAll();
+    toast.success(`Conflict resolved: ${filePath}`);
+  } catch (e) {
+    toast.error(`Failed to resolve conflict: ${String(e)}`);
+  }
 }
 
 const showDetailsPanel = computed(() =>
@@ -208,7 +291,10 @@ async function openRepo(path: string) {
         git.selectedCommit.value = git.displayedCommits.value[0];
       }
     }
-  } catch {}
+  } catch (e) {
+    console.error("Failed to open repository:", e);
+    toast.error(`Failed to open repository: ${String(e)}`);
+  }
 }
 
 async function browseAndOpen() {
@@ -248,6 +334,58 @@ async function handleInit(path: string, branchName: string) {
   if (ok) {
     showInitDialog.value = false;
     await openRepo(path);
+    toast.success("Repository initialized successfully");
+  } else {
+    toast.error(`Failed to initialize repository: ${git.error.value || "Unknown error"}`);
+  }
+}
+
+async function handlePush() {
+  // First, check if origin exists
+  const hasOrigin = await git.checkOriginExists();
+  if (!hasOrigin) {
+    // No origin, show dialog to select platform
+    const repoName = git.repoInfo.value?.name || "repository";
+    multiPlatformPushRepoName.value = repoName;
+    showMultiPlatformPushDialog.value = true;
+  } else {
+    // Origin exists, push normally
+    await git.push();
+  }
+}
+
+function handleMultiPlatformPush(platform: string) {
+  // For GitHub/GitLab and self-hosted, ask for username and domain first
+  if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted') {
+    pushPlatform.value = platform;
+    pushUsername.value = "";
+    pushDomain.value = "";
+    showPushUsernameDialog.value = true;
+  } else {
+    // For other platforms, push directly
+    performPush(platform, "");
+  }
+}
+
+async function performPush(platform: string, username: string) {
+  let repoName: string;
+  
+  if (username) {
+    if (pushDomain.value) {
+      // For self-hosted instances: username/repo@domain.com
+      repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}@${pushDomain.value}`;
+    } else {
+      // For standard platforms: username/repo
+      repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}`;
+    }
+  } else {
+    repoName = git.repoInfo.value?.name || multiPlatformPushRepoName.value;
+  }
+  
+  await git.pushToMultiplePlatforms(platform, repoName);
+  if (!git.error.value) {
+    showMultiPlatformPushDialog.value = false;
+    showPushUsernameDialog.value = false;
   }
 }
 
@@ -473,6 +611,7 @@ const openReposList = computed(() =>
         @browse="browseAndOpen"
         @clone="showCloneDialog = true"
         @init="showInitDialog = true"
+        @settings="showSettings = true"
         @remove-recent="removeRecent"
         @clear-recent="clearRecent"
       />
@@ -482,7 +621,7 @@ const openReposList = computed(() =>
       <AppHeader
         :loading="git.loading.value"
         @pull="git.pull()"
-        @push="git.push()"
+        @push="handlePush"
         @fetch="git.fetchAll()"
         @branch="handleCreateBranch"
         @stash="handleStash"
@@ -727,12 +866,20 @@ const openReposList = computed(() =>
       @init="handleInit"
       @save-provider-token="(provider: string, token: string) => git.saveProviderToken(provider, token)"
     />
+    <MultiPlatformPushDialog
+      :visible="showMultiPlatformPushDialog"
+      :repo-name="multiPlatformPushRepoName"
+      :available-platforms="git.providerTokens.value"
+      :pushing="git.loading.value"
+      @close="showMultiPlatformPushDialog = false"
+      @pushTo="handleMultiPlatformPush"
+    />
     <SettingsDialog
       v-if="showSettings"
       :token="git.githubToken.value"
       :git-path="git.gitPath.value"
-      @save="git.saveToken($event); showSettings = false"
-      @delete="git.deleteToken()"
+      @save="git.saveProviderToken('github', $event); showSettings = false"
+      @delete="git.deleteProviderToken('github')"
       @close="showSettings = false"
     />
     <ConflictResolver
@@ -742,6 +889,40 @@ const openReposList = computed(() =>
       @close="closeConflictResolver"
       @resolved="onConflictResolved"
     />
+    
+    <div v-if="showPushUsernameDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showPushUsernameDialog = false">
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Git {{ pushPlatform === 'gitlab-self-hosted' ? 'GitLab' : pushPlatform === 'github-enterprise' ? 'GitHub Enterprise' : pushPlatform }} Credentials</h3>
+        
+        <!-- Domain input for self-hosted instances -->
+        <div v-if="pushPlatform === 'gitlab-self-hosted' || pushPlatform === 'github-enterprise'" class="mb-4">
+          <label class="text-xs text-[var(--muted-foreground)] block mb-2">Domain (e.g., gitlab.company.com)</label>
+          <input
+            v-model="pushDomain"
+            placeholder="gitlab.company.com"
+            class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
+          />
+        </div>
+        
+        <!-- Username input -->
+        <div class="mb-4">
+          <label class="text-xs text-[var(--muted-foreground)] block mb-2">Username</label>
+          <input
+            v-model="pushUsername"
+            :placeholder="`Your ${pushPlatform} username...`"
+            class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+            @keyup.enter="performPush(pushPlatform, pushUsername)"
+            :autofocus="!(pushPlatform === 'gitlab-self-hosted' || pushPlatform === 'github-enterprise')"
+          />
+        </div>
+        
+        <div class="flex justify-end gap-2">
+          <button @click="showPushUsernameDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button @click="performPush(pushPlatform, pushUsername)" :disabled="!pushUsername.trim() || (pushPlatform === 'gitlab-self-hosted' || pushPlatform === 'github-enterprise') && !pushDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Push</button>
+        </div>
+      </div>
+    </div>
+
     <ToastContainer />
   </div>
 </template>

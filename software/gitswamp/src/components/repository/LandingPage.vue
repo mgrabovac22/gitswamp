@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Plus,
+  Settings,
 } from "lucide-vue-next";
 
 const props = defineProps<{
@@ -22,6 +23,7 @@ const emit = defineEmits<{
   browse: [];
   clone: [];
   init: [];
+  settings: [];
   removeRecent: [path: string];
   clearRecent: [];
 }>();
@@ -52,18 +54,24 @@ const filteredRecent = computed(() => {
         <h1 class="text-xl font-bold text-[var(--foreground)]">Repository Management</h1>
       </div>
 
-      <div class="flex items-center gap-2 mb-6">
-        <button @click="emit('browse')" class="px-4 py-2 bg-[var(--secondary)] hover:opacity-80 text-[var(--foreground)] text-xs font-medium rounded-md border border-[var(--border)] transition-colors flex items-center gap-2">
-          <FolderOpen class="w-3.5 h-3.5" />
-          Browse
-        </button>
-        <button @click="emit('clone')" class="px-4 py-2 bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium rounded-md transition-colors flex items-center gap-2">
-          <GitBranch class="w-3.5 h-3.5" />
-          Clone
-        </button>
-        <button @click="emit('init')" class="px-4 py-2 bg-[var(--secondary)] hover:opacity-80 text-[var(--foreground)] text-xs font-medium rounded-md border border-[var(--border)] transition-colors flex items-center gap-2">
-          <Plus class="w-3.5 h-3.5" />
-          Init
+      <div class="flex items-center justify-between gap-2 mb-6">
+        <div class="flex items-center gap-2">
+          <button @click="emit('browse')" class="px-4 py-2 bg-[var(--secondary)] hover:opacity-80 text-[var(--foreground)] text-xs font-medium rounded-md border border-[var(--border)] transition-colors flex items-center gap-2">
+            <FolderOpen class="w-3.5 h-3.5" />
+            Browse
+          </button>
+          <button @click="emit('clone')" class="px-4 py-2 bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium rounded-md transition-colors flex items-center gap-2">
+            <GitBranch class="w-3.5 h-3.5" />
+            Clone
+          </button>
+          <button @click="emit('init')" class="px-4 py-2 bg-[var(--secondary)] hover:opacity-80 text-[var(--foreground)] text-xs font-medium rounded-md border border-[var(--border)] transition-colors flex items-center gap-2">
+            <Plus class="w-3.5 h-3.5" />
+            Init
+          </button>
+        </div>
+        <button @click="emit('settings')" class="px-4 py-2 bg-[var(--secondary)] hover:opacity-80 text-[var(--foreground)] text-xs font-medium rounded-md border border-[var(--border)] transition-colors flex items-center gap-2">
+          <Settings class="w-3.5 h-3.5" />
+          Settings
         </button>
       </div>
 

@@ -806,17 +806,51 @@ impl GitService {
         let mut remote = repo.find_remote("origin")
             .map_err(|e| format!("No remote 'origin': {}", e.message()))?;
 
-        let mut callbacks = git2::RemoteCallbacks::new();
+        // For HTTPS remotes with token auth, embed credentials in a temporary remote URL.
+        // This avoids provider-specific auth negotiation issues on Windows/libgit2.
+        let remote_url = remote.url().unwrap_or_default().to_string();
         if let Some(t) = token {
-            let tok = t.to_string();
-            callbacks.credentials(move |_url, _username, _allowed| {
-                git2::Cred::userpass_plaintext("x-access-token", &tok)
-            });
+            if remote_url.starts_with("https://") && !remote_url.contains('@') {
+                let host_and_path = &remote_url[8..];
+                let enc_token = urlencoded(t);
+
+                let authed_url = if host_and_path.contains("gitlab.") || host_and_path.contains("/gitlab") {
+                    format!("https://oauth2:{}@{}", enc_token, host_and_path)
+                } else if host_and_path.contains("bitbucket.org") {
+                    format!("https://x-token-auth:{}@{}", enc_token, host_and_path)
+                } else if host_and_path.contains("dev.azure.com") || host_and_path.contains("visualstudio.com") {
+                    format!("https://:{}@{}", enc_token, host_and_path)
+                } else {
+                    // GitHub and GitHub Enterprise
+                    format!("https://x-access-token:{}@{}", enc_token, host_and_path)
+                };
+
+                if repo.find_remote("temp_push_origin_auth").is_ok() {
+                    let _ = repo.remote_delete("temp_push_origin_auth");
+                }
+
+                let mut temp_remote = repo
+                    .remote("temp_push_origin_auth", &authed_url)
+                    .map_err(|e| format!("Failed to create temporary authenticated remote: {}", e.message()))?;
+
+                let callbacks = git2::RemoteCallbacks::new();
+                let mut push_opts = git2::PushOptions::new();
+                push_opts.remote_callbacks(callbacks);
+
+                let result = temp_remote.push(&[&refspec], Some(&mut push_opts));
+                let _ = repo.remote_delete("temp_push_origin_auth");
+
+                result.map_err(|e| e.message().to_string())?;
+                return Ok("Push complete.".to_string());
+            }
         }
+
+        let callbacks = git2::RemoteCallbacks::new();
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
-        remote.push(&[&refspec], Some(&mut push_opts))
+        remote
+            .push(&[&refspec], Some(&mut push_opts))
             .map_err(|e| e.message().to_string())?;
         Ok("Push complete.".to_string())
     }
@@ -1096,6 +1130,9 @@ impl GitService {
             &[],
         ).map_err(|e| e.message().to_string())?;
         
+        // Drop tree to release borrow
+        drop(tree);
+        
         // Set HEAD to point to the new branch
         repo.set_head(&format!("refs/heads/{}", branch))
             .map_err(|e| e.message().to_string())?;
@@ -1250,29 +1287,92 @@ impl GitService {
 
     pub fn stash_push(path: &str, message: Option<&str>) -> Result<String, String> {
         let mut repo = Self::open(path)?;
-        let sig = repo.signature().map_err(|e| e.message().to_string())?;
+        
+        // Get the working directory path first
+        let repo_path = repo.path().parent().ok_or("Invalid repository path")?.to_path_buf();
+        
+        // Get current status to calculate size
+        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+        
+        // Calculate total size of changed files
+        let mut total_size: u64 = 0;
+        let mut large_files = Vec::new();
+        
+        for entry in statuses.iter() {
+            if let Some(path_val) = entry.path() {
+                let full_path = repo_path.join(path_val);
+                if let Ok(metadata) = std::fs::metadata(&full_path) {
+                    let size = metadata.len();
+                    total_size += size;
+                    
+                    // Flag files larger than 50MB
+                    if size > 50_000_000 {
+                        large_files.push((path_val.to_string(), size));
+                    }
+                }
+            }
+        }
+        
+        // Drop statuses to release borrow
+        drop(statuses);
+        
+        // Log optimization info - this helps with debugging performance
+        if !large_files.is_empty() {
+            eprintln!("Stashing with {} large files, total size: {} MB", 
+                large_files.len(), 
+                total_size / 1_000_000
+            );
+        }
+        
+        let sig = repo.signature()
+            .or_else(|_| git2::Signature::now("GitSwamp", "gitswamp@local"))
+            .map_err(|e| e.message().to_string())?;
+        
         let msg = message.unwrap_or("WIP");
         let oid = repo
             .stash_save(&sig, msg, Some(StashFlags::INCLUDE_UNTRACKED))
             .map_err(|e| e.message().to_string())?;
+        
         Ok(format!("Saved stash {}", oid))
     }
 
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {
         let mut repo = Self::open(path)?;
         let mut opts = StashApplyOptions::new();
+        
         repo
             .stash_pop(index, Some(&mut opts))
-            .map_err(|e| e.message().to_string())?;
+            .map_err(|e| {
+                // Provide more detailed error messages for common issues
+                let msg = e.message();
+                if msg.contains("conflict") {
+                    format!("Stash pop failed due to conflicts: {}. Use stash_apply instead to inspect changes.", msg)
+                } else if msg.contains("not found") {
+                    format!("Stash at index {} not found", index)
+                } else {
+                    format!("Failed to pop stash: {}", msg)
+                }
+            })?;
         Ok(format!("Dropped and applied stash@{{{}}}", index))
     }
 
     pub fn stash_apply(path: &str, index: usize) -> Result<String, String> {
         let mut repo = Self::open(path)?;
         let mut opts = StashApplyOptions::new();
+        
         repo
             .stash_apply(index, Some(&mut opts))
-            .map_err(|e| e.message().to_string())?;
+            .map_err(|e| {
+                // Provide more detailed error messages for common issues
+                let msg = e.message();
+                if msg.contains("conflict") {
+                    format!("Stash apply created conflicts. Resolve them and use ConflictResolver. Error: {}", msg)
+                } else if msg.contains("not found") {
+                    format!("Stash at index {} not found", index)
+                } else {
+                    format!("Failed to apply stash: {}", msg)
+                }
+            })?;
         Ok(format!("Applied stash@{{{}}}", index))
     }
 
@@ -1415,33 +1515,69 @@ impl GitService {
 
     pub fn resolve_conflict_file(path: &str, file_path: &str, strategy: &str) -> Result<(), String> {
         let repo = Self::open(path)?;
+        let full_path = Path::new(path).join(file_path);
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
-        let mut checkout = git2::build::CheckoutBuilder::new();
-        checkout.path(file_path).force();
+
         match strategy {
-            "ours" => {
-                checkout.use_ours(true);
-                repo.checkout_index(Some(&mut index), Some(&mut checkout))
-                    .map_err(|e| e.message().to_string())?;
-            }
-            "theirs" => {
-                checkout.use_theirs(true);
-                repo.checkout_index(Some(&mut index), Some(&mut checkout))
-                    .map_err(|e| e.message().to_string())?;
+            "ours" | "theirs" => {
+                // Read the current file content with conflict markers
+                let content = std::fs::read_to_string(&full_path)
+                    .map_err(|e| format!("Failed to read file: {}", e))?;
+                
+                let lines: Vec<&str> = content.lines().collect();
+                let mut resolved_content = Vec::new();
+                let mut i = 0;
+
+                while i < lines.len() {
+                    if lines[i].starts_with("<<<<<<<") {
+                        let mut our_lines = Vec::new();
+                        let mut their_lines = Vec::new();
+                        
+                        i += 1; // skip <<<<<<<
+                        while i < lines.len() {
+                            if lines[i].starts_with("=======") {
+                                i += 1;
+                                break;
+                            }
+                            our_lines.push(lines[i]);
+                            i += 1;
+                        }
+
+                        while i < lines.len() && !lines[i].starts_with(">>>>>>>") {
+                            their_lines.push(lines[i]);
+                            i += 1;
+                        }
+
+                        if i < lines.len() && lines[i].starts_with(">>>>>>>") {
+                            i += 1; // skip >>>>>>>
+                        }
+
+                        // Choose which version to keep
+                        if strategy == "ours" {
+                            resolved_content.extend(our_lines);
+                        } else {
+                            resolved_content.extend(their_lines);
+                        }
+                    } else {
+                        resolved_content.push(lines[i]);
+                        i += 1;
+                    }
+                }
+
+                let resolved = resolved_content.join("\n");
+                std::fs::write(&full_path, resolved).map_err(|e| e.to_string())?;
+                index.add_path(Path::new(file_path)).map_err(|e| e.message().to_string())?;
             }
             "delete" => {
-                let full = Path::new(path).join(file_path);
-                if full.exists() {
-                    std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+                // Remove the file
+                if full_path.exists() {
+                    std::fs::remove_file(&full_path).map_err(|e| e.to_string())?;
                 }
+                index.remove_path(Path::new(file_path)).map_err(|e| e.message().to_string())?;
             }
             _ => return Err("Invalid resolve strategy".to_string()),
         }
-        if strategy == "delete" {
-            index.remove_path(Path::new(file_path)).map_err(|e| e.message().to_string())?;
-        } else {
-            index.add_path(Path::new(file_path)).map_err(|e| e.message().to_string())?;
-        }
+
         index.write().map_err(|e| e.message().to_string())?;
         Ok(())
     }
@@ -1763,6 +1899,15 @@ impl GitService {
         }
     }
 
+    pub fn has_conflict_markers(path: &str, file_path: &str) -> Result<bool, String> {
+        let full_path = Path::new(path).join(file_path);
+        let content = std::fs::read_to_string(&full_path)
+            .map_err(|e| e.to_string())?;
+        
+        // Check for standard conflict markers  
+        Ok(content.contains("<<<<<<<") && content.contains("=======") && content.contains(">>>>>>>"))
+    }
+
     fn extract_file_diff(diff: &git2::Diff, target_path: &str) -> Result<FileDiff, String> {
         let mut result: Option<FileDiff> = None;
         let num_deltas = diff.deltas().len();
@@ -1911,6 +2056,95 @@ impl GitService {
         std::fs::write(&full_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
         
         Ok(())
+    }
+
+    pub fn push_to_platform(path: &str, platform: &str, token: &str, repo_name: &str) -> Result<String, String> {
+        let repo = Self::open(path)?;
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let branch_name = head.shorthand().unwrap_or("main").to_string();
+        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+
+        // Extract owner, domain, and repo from repo_name
+        // Format can be: "username/repo", "username/repo@domain.com", or "domain.com/username/repo"
+        let (owner, actual_repo_name, domain) = if repo_name.contains('@') {
+            // Format: "username/repo@domain.com"
+            let parts: Vec<&str> = repo_name.split('@').collect();
+            if parts.len() == 2 {
+                let name_parts: Vec<&str> = parts[0].split('/').collect();
+                if name_parts.len() == 2 {
+                    (name_parts[0].to_string(), name_parts[1].to_string(), Some(parts[1].to_string()))
+                } else {
+                    return Err("Invalid repo_name format. Use username/repo or username/repo@domain.com".to_string());
+                }
+            } else {
+                return Err("Invalid repo_name format with @".to_string());
+            }
+        } else if repo_name.contains('/') {
+            let parts: Vec<&str> = repo_name.split('/').collect();
+            if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].to_string(), None)
+            } else {
+                return Err("Invalid repo_name format".to_string());
+            }
+        } else {
+            // If no owner specified, use current repo name from working directory
+            let repo_dir = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("repository")
+                .to_string();
+            ("user".to_string(), repo_dir, None)
+        };
+
+        let enc_token = urlencoded(token);
+
+        // Build the remote URL based on platform with embedded credentials
+        // This avoids WinHTTP header parsing bugs in libgit2 on Windows (failed to parse supported auth schemes)
+        let remote_url = match platform {
+            "github" => format!("https://{}:{}@github.com/{}/{}.git", owner, enc_token, owner, actual_repo_name),
+            "github-enterprise" => {
+                let domain = domain.ok_or("GitHub Enterprise requires domain in format: username/repo@domain.com")?;
+                format!("https://{}:{}@{}/{}/{}.git", owner, enc_token, domain, owner, actual_repo_name)
+            }
+            "gitlab" => format!("https://oauth2:{}@gitlab.com/{}/{}.git", enc_token, owner, actual_repo_name),
+            "gitlab-self-hosted" => {
+                let domain = domain.ok_or("GitLab self-hosted requires domain in format: username/repo@domain.com")?;
+                format!("https://oauth2:{}@{}/{}/{}.git", enc_token, domain, owner, actual_repo_name)
+            }
+            "bitbucket" => format!("https://x-token-auth:{}@bitbucket.org/{}/{}.git", enc_token, owner, actual_repo_name),
+            "azure" => format!("https://:{}@dev.azure.com/{}/project/_git/{}", enc_token, owner, actual_repo_name),
+            _ => return Err(format!("Unknown platform: {platform}")),
+        };
+
+        // Remove temp_push_remote if it already exists
+        if repo.find_remote("temp_push_remote").is_ok() {
+            let _ = repo.remote_delete("temp_push_remote");
+        }
+
+        let mut remote = repo.remote("temp_push_remote", &remote_url)
+            .map_err(|e| format!("Failed to create temporary remote: {}", e.message()))?;
+
+        // We don't use credentials callback anymore because we embedded credentials in the URL
+        // This solves "failed to parse supported auth schemes" on Windows
+        let callbacks = git2::RemoteCallbacks::new();
+
+        let mut push_opts = git2::PushOptions::new();
+        push_opts.remote_callbacks(callbacks);
+
+        remote.push(&[&refspec], Some(&mut push_opts)).map_err(|e| {
+            let msg = e.message().to_string();
+            if msg.contains("status code: 404") {
+                return "Push failed with 404: repository not found or no access. For GitHub, create the repository first on GitHub (same username/repo) and verify token permissions (repo scope).".to_string();
+            }
+            msg
+        })?;
+        Ok(format!("Push to {platform} completed."))
+    }
+
+    pub fn check_origin(path: &str) -> Result<bool, String> {
+        let repo = Self::open(path)?;
+        let has_origin = repo.find_remote("origin").is_ok();
+        Ok(has_origin)
     }
 }
 
