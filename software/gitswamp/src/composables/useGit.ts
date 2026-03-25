@@ -225,6 +225,13 @@ function isRemoteBehindPushError(message: string): boolean {
   const m = message.toLowerCase();
   return (
     m.includes("non-fast-forward") ||
+    m.includes("non fast-forward") ||
+    m.includes("non-fastforward") ||
+    m.includes("non fastforward") ||
+    m.includes("non-fastforwardable") ||
+    m.includes("non fastforwardable") ||
+    m.includes("cannot push non-fastforwardable reference") ||
+    m.includes("cannot push non-fast-forwardable reference") ||
     m.includes("failed to push some refs") ||
     m.includes("fetch first") ||
     m.includes("tip of your current branch is behind") ||
@@ -596,6 +603,39 @@ async function pull() {
   }
 }
 
+async function autoFetchAfterPush() {
+  if (!repoPath.value) return;
+  const fetchResult = await invoke<string>("fetch_all", {
+    path: repoPath.value,
+    token: getTokenForUrl(getOriginUrl()),
+  });
+  terminalOutput.value.push("$ git fetch --all\n" + fetchResult);
+  await Promise.all([refreshCommits(), refreshStatus(), refreshBranches(), refreshTags()]);
+  repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
+}
+
+async function forcePushCurrentBranch() {
+  if (!repoPath.value) return;
+  try {
+    loading.value = true;
+    const forceResult = await invoke<string>("push_force", {
+      path: repoPath.value,
+      token: getTokenForUrl(getOriginUrl()),
+    });
+    terminalOutput.value.push("$ git push --force-with-lease\n" + forceResult);
+    await autoFetchAfterPush();
+    toast.success("Force push completed successfully");
+    error.value = null;
+  } catch (e) {
+    const errMsg = String(e);
+    error.value = isAuthenticationError(errMsg) ? `AUTH_REQUIRED:${errMsg}` : errMsg;
+    terminalOutput.value.push("$ git push --force-with-lease\nError: " + errMsg);
+    toast.error("Force push failed: " + errMsg);
+  } finally {
+    loading.value = false;
+  }
+}
+
 async function push() {
   if (!repoPath.value) return;
   try {
@@ -606,39 +646,35 @@ async function push() {
       token,
     });
     terminalOutput.value.push("$ git push\n" + result);
-    await Promise.all([refreshCommits(), refreshBranches()]);
+    await autoFetchAfterPush();
     toast.success("Push completed successfully");
     error.value = null;
   } catch (e) {
     const errorMsg = String(e);
 
     if (isRemoteBehindPushError(errorMsg)) {
-      try {
-        terminalOutput.value.push("$ git push\nPush rejected (remote has new changes). Running pull and retry...");
-
-        const pullResult = await invoke<string>("pull", {
-          path: repoPath.value,
-          token: getTokenForUrl(getOriginUrl()),
-        });
-        terminalOutput.value.push("$ git pull\n" + pullResult);
-
-        const retryResult = await invoke<string>("push", {
-          path: repoPath.value,
-          token: getTokenForUrl(getOriginUrl()),
-        });
-        terminalOutput.value.push("$ git push\n" + retryResult);
-
-        await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
-        toast.success("Push completed successfully after pull");
-        error.value = null;
-        return;
-      } catch (retryError) {
-        const retryMsg = String(retryError);
-        error.value = isAuthenticationError(retryMsg) ? `AUTH_REQUIRED:${retryMsg}` : retryMsg;
-        terminalOutput.value.push("$ git push\nError after pull+retry: " + retryMsg);
-        toast.error("Push failed after pull: " + retryMsg);
-        return;
-      }
+      terminalOutput.value.push("$ git push\nPush rejected (non-fast-forward).");
+      error.value = errorMsg;
+      toast.action(
+        "warning",
+        "Push rejected (non-fast-forward). Force push this branch?",
+        [
+          {
+            label: "Force Push",
+            style: "danger",
+            onClick: async () => {
+              await forcePushCurrentBranch();
+            },
+          },
+          {
+            label: "Cancel",
+            style: "neutral",
+            onClick: () => {},
+          },
+        ],
+        18000
+      );
+      return;
     }
 
     // Check if error is because no origin exists
@@ -685,7 +721,7 @@ async function pushToMultiplePlatforms(platform: string, repoName: string) {
       repoName: repoName,
     });
     terminalOutput.value.push(`$ git push ${platform}\n` + result);
-    await Promise.all([refreshCommits(), refreshBranches()]);
+    await autoFetchAfterPush();
     toast.success(`Push to ${platform} completed successfully`);
     error.value = null;
   } catch (e) {

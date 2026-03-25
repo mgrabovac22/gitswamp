@@ -11,6 +11,11 @@ pub fn push(path: String, token: Option<String>) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn push_force(path: String, token: Option<String>) -> Result<String, String> {
+    GitService::push_force(&path, token.as_deref())
+}
+
+#[tauri::command]
 pub fn fetch_all(path: String, token: Option<String>) -> Result<String, String> {
     GitService::fetch_all(&path, token.as_deref())
 }
