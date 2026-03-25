@@ -92,8 +92,8 @@ pub fn rename_branch(path: String, old_name: String, new_name: String) -> Result
 }
 
 #[tauri::command]
-pub fn delete_remote_branch(path: String, remote: String, branch: String) -> Result<String, String> {
-    GitService::delete_remote_branch(&path, &remote, &branch)
+pub fn delete_remote_branch(path: String, remote: String, branch: String, token: Option<String>) -> Result<String, String> {
+    GitService::delete_remote_branch(&path, &remote, &branch, token.as_deref())
 }
 
 #[tauri::command]

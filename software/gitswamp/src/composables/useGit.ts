@@ -512,11 +512,17 @@ async function deleteRemoteBranch(branch: string) {
   if (!repoPath.value) return;
   try {
     loading.value = true;
-    const result = await invoke<string>("delete_remote_branch", { path: repoPath.value, remote: "origin", branch });
+    const result = await invoke<string>("delete_remote_branch", {
+      path: repoPath.value,
+      remote: "origin",
+      branch,
+      token: getTokenForUrl(getOriginUrl()),
+    });
     terminalOutput.value.push("$ git push origin --delete " + branch + "\n" + (result || "(done)"));
     await Promise.all([refreshBranches(), refreshCommits()]);
   } catch (e) {
-    error.value = String(e);
+    const errorMsg = String(e);
+    error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
     terminalOutput.value.push("$ git push origin --delete\nError: " + e);
   } finally {
     loading.value = false;

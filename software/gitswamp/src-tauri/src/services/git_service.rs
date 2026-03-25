@@ -1653,8 +1653,66 @@ impl GitService {
         Self::git_cli(path, &["branch", "-m", old_name, new_name])
     }
 
-    pub fn delete_remote_branch(path: &str, remote: &str, branch: &str) -> Result<String, String> {
-        Self::git_cli(path, &["push", remote, "--delete", branch])
+    pub fn delete_remote_branch(path: &str, remote: &str, branch: &str, token: Option<&str>) -> Result<String, String> {
+        let repo = Self::open(path)?;
+        let mut remote_ref = repo
+            .find_remote(remote)
+            .map_err(|e| format!("No remote '{}': {}", remote, e.message()))?;
+
+        // Delete remote branch by pushing an empty source to destination ref.
+        let refspec = format!(":refs/heads/{}", branch);
+
+        let remote_url = remote_ref.url().unwrap_or_default().to_string();
+        if let Some(t) = token {
+            if remote_url.starts_with("https://") && !remote_url.contains('@') {
+                let host_and_path = &remote_url[8..];
+                let enc_token = urlencoded(t);
+
+                let authed_url = if host_and_path.contains("gitlab.") || host_and_path.contains("/gitlab") {
+                    format!("https://oauth2:{}@{}", enc_token, host_and_path)
+                } else if host_and_path.contains("bitbucket.org") {
+                    format!("https://x-token-auth:{}@{}", enc_token, host_and_path)
+                } else if host_and_path.contains("dev.azure.com") || host_and_path.contains("visualstudio.com") {
+                    format!("https://:{}@{}", enc_token, host_and_path)
+                } else {
+                    format!("https://x-access-token:{}@{}", enc_token, host_and_path)
+                };
+
+                if repo.find_remote("temp_push_origin_auth").is_ok() {
+                    let _ = repo.remote_delete("temp_push_origin_auth");
+                }
+
+                let mut temp_remote = repo
+                    .remote("temp_push_origin_auth", &authed_url)
+                    .map_err(|e| format!("Failed to create temporary authenticated remote: {}", e.message()))?;
+
+                let callbacks = git2::RemoteCallbacks::new();
+                let mut push_opts = git2::PushOptions::new();
+                push_opts.remote_callbacks(callbacks);
+
+                let result = temp_remote.push(&[&refspec], Some(&mut push_opts));
+                let _ = repo.remote_delete("temp_push_origin_auth");
+                result.map_err(|e| e.message().to_string())?;
+
+                return Ok(format!("Deleted remote branch {}/{}", remote, branch));
+            }
+        }
+
+        let callbacks = git2::RemoteCallbacks::new();
+        let mut push_opts = git2::PushOptions::new();
+        push_opts.remote_callbacks(callbacks);
+
+        remote_ref
+            .push(&[&refspec], Some(&mut push_opts))
+            .map_err(|e| e.message().to_string())?;
+
+        // Remove stale local remote-tracking ref so UI updates immediately.
+        let tracking_ref = format!("refs/remotes/{}/{}", remote, branch);
+        if let Ok(mut local_tracking) = repo.find_reference(&tracking_ref) {
+            let _ = local_tracking.delete();
+        }
+
+        Ok(format!("Deleted remote branch {}/{}", remote, branch))
     }
 
     pub fn set_upstream(path: &str, branch: &str, remote_branch: &str) -> Result<String, String> {
