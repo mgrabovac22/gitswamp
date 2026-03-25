@@ -110,6 +110,11 @@ function isProviderConnected(provider: string): boolean {
   return !!getProviderToken(provider);
 }
 
+function isProviderFullySupported(provider: string): boolean {
+  // Clone supports URL, GitHub, and GitLab (all variants)
+  return provider === "url" || provider === "github" || provider === "github-enterprise" || provider === "gitlab" || provider === "gitlab-self";
+}
+
 const needsConnection = computed(() => {
   if (!activeSource.value || activeSource.value === "url") return false;
   return !isProviderConnected(activeSource.value);
@@ -342,14 +347,21 @@ const isUnimplemented = computed(() => activeSource.value && unimplementedProvid
             v-for="src in sources"
             :key="src.id"
             @click="selectSource(src.id)"
-            class="flex flex-col items-center gap-2.5 px-3 py-4 rounded-xl border border-[var(--border)] hover:border-[var(--primary)]/40 hover:bg-[var(--primary)]/5 transition-all group"
+            :disabled="!isProviderFullySupported(src.id)"
+            :class="[
+              'flex flex-col items-center gap-2.5 px-3 py-4 rounded-xl border transition-all group',
+              isProviderFullySupported(src.id)
+                ? 'border-[var(--border)] hover:border-[var(--primary)]/40 hover:bg-[var(--primary)]/5 cursor-pointer'
+                : 'border-[var(--border)]/50 opacity-50 cursor-not-allowed'
+            ]"
           >
-            <div class="w-10 h-10 rounded-xl flex items-center justify-center transition-all group-hover:scale-110" :style="{ backgroundColor: src.color + '15' }">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center transition-all" :class="isProviderFullySupported(src.id) ? 'group-hover:scale-110' : ''" :style="{ backgroundColor: src.color + '15' }">
               <component :is="src.icon" class="w-5 h-5" :style="{ color: src.color }" />
             </div>
             <div class="text-center">
               <span class="text-[11px] font-semibold text-[var(--foreground)] block">{{ src.label }}</span>
-              <span class="text-[9px] text-[var(--muted-foreground)] mt-0.5 block">{{ src.desc }}</span>
+              <span v-if="isProviderFullySupported(src.id)" class="text-[9px] text-[var(--muted-foreground)] mt-0.5 block">{{ src.desc }}</span>
+              <span v-else class="text-[9px] text-[#f59e0b] mt-0.5 block font-medium">To be continued</span>
             </div>
           </button>
         </div>

@@ -206,6 +206,32 @@ function getOriginUrl(): string | undefined {
   return repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url;
 }
 
+function isAuthenticationError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("authentication") ||
+    m.includes("auth") ||
+    m.includes("permission denied") ||
+    m.includes("access denied") ||
+    m.includes("http 401") ||
+    m.includes("http 403") ||
+    m.includes("could not read username") ||
+    m.includes("requires authentication") ||
+    m.includes("invalid credentials")
+  );
+}
+
+function isRemoteBehindPushError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("non-fast-forward") ||
+    m.includes("failed to push some refs") ||
+    m.includes("fetch first") ||
+    m.includes("tip of your current branch is behind") ||
+    (m.includes("rejected") && m.includes("push"))
+  );
+}
+
 async function openRepository(path: string) {
   try {
     loading.value = true;
@@ -559,8 +585,10 @@ async function pull() {
     await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
     repoInfo.value = await invoke<RepoInfo>("get_repo_info", { path: repoPath.value });
     toast.success("Pull completed successfully");
+    error.value = null;
   } catch (e) {
-    error.value = String(e);
+    const errorMsg = String(e);
+    error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
     terminalOutput.value.push("$ git pull\nError: " + e);
     toast.error("Pull failed: " + String(e));
   } finally {
@@ -572,16 +600,48 @@ async function push() {
   if (!repoPath.value) return;
   try {
     loading.value = true;
+    const token = getTokenForUrl(getOriginUrl());
     const result = await invoke<string>("push", {
       path: repoPath.value,
-      token: getTokenForUrl(getOriginUrl()),
+      token,
     });
     terminalOutput.value.push("$ git push\n" + result);
     await Promise.all([refreshCommits(), refreshBranches()]);
     toast.success("Push completed successfully");
+    error.value = null;
   } catch (e) {
-    // Check if error is because no origin exists
     const errorMsg = String(e);
+
+    if (isRemoteBehindPushError(errorMsg)) {
+      try {
+        terminalOutput.value.push("$ git push\nPush rejected (remote has new changes). Running pull and retry...");
+
+        const pullResult = await invoke<string>("pull", {
+          path: repoPath.value,
+          token: getTokenForUrl(getOriginUrl()),
+        });
+        terminalOutput.value.push("$ git pull\n" + pullResult);
+
+        const retryResult = await invoke<string>("push", {
+          path: repoPath.value,
+          token: getTokenForUrl(getOriginUrl()),
+        });
+        terminalOutput.value.push("$ git push\n" + retryResult);
+
+        await Promise.all([refreshCommits(), refreshStatus(), refreshBranches()]);
+        toast.success("Push completed successfully after pull");
+        error.value = null;
+        return;
+      } catch (retryError) {
+        const retryMsg = String(retryError);
+        error.value = isAuthenticationError(retryMsg) ? `AUTH_REQUIRED:${retryMsg}` : retryMsg;
+        terminalOutput.value.push("$ git push\nError after pull+retry: " + retryMsg);
+        toast.error("Push failed after pull: " + retryMsg);
+        return;
+      }
+    }
+
+    // Check if error is because no origin exists
     if (errorMsg.includes("No remote 'origin'") || errorMsg.includes("not found")) {
       // Emit event to show platform selection dialog
       // This will be handled by the parent component
@@ -589,7 +649,7 @@ async function push() {
       terminalOutput.value.push("$ git push\nError: No origin remote configured");
       toast.error("No origin remote. Select a platform to push to.");
     } else {
-      error.value = String(e);
+      error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
       terminalOutput.value.push("$ git push\nError: " + e);
       toast.error("Push failed: " + String(e));
     }
@@ -629,7 +689,8 @@ async function pushToMultiplePlatforms(platform: string, repoName: string) {
     toast.success(`Push to ${platform} completed successfully`);
     error.value = null;
   } catch (e) {
-    error.value = String(e);
+    const errorMsg = String(e);
+    error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
     terminalOutput.value.push(`$ git push ${platform}\nError: ` + e);
     toast.error(`Push to ${platform} failed: ` + String(e));
   } finally {
@@ -648,8 +709,10 @@ async function fetchAll() {
     terminalOutput.value.push("$ git fetch --all\n" + result);
     await Promise.all([refreshBranches(), refreshCommits(), refreshTags()]);
     toast.success("Fetch completed successfully");
+    error.value = null;
   } catch (e) {
-    error.value = String(e);
+    const errorMsg = String(e);
+    error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
     terminalOutput.value.push("$ git fetch --all\nError: " + e);
     toast.error("Fetch failed: " + String(e));
   } finally {

@@ -10,9 +10,10 @@ import {
   ArrowDown,
   Copy,
   Plus,
-  Minus,
+  Trash2,
   Archive,
   Eye,
+  X,
 } from "lucide-vue-next";
 import AppButton from "@/components/ui/AppButton.vue";
 import GitCommitIcon from "@/components/ui/GitCommitIcon.vue";
@@ -51,9 +52,31 @@ const emit = defineEmits<{
 
 const commitSummary = ref("");
 const commitDescription = ref("");
+const showDiscardConfirm = ref(false);
+const discardPath = ref<string | null>(null);
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
   emit("viewDiff", { path: filePath, sha: commitSha, staged });
+}
+
+function confirmDiscard(path: string | null) {
+  discardPath.value = path;
+  showDiscardConfirm.value = true;
+}
+
+function handleDiscardConfirm() {
+  if (discardPath.value === null) {
+    emit("discardAll");
+  } else {
+    emit("discard", discardPath.value);
+  }
+  showDiscardConfirm.value = false;
+  discardPath.value = null;
+}
+
+function cancelDiscard() {
+  showDiscardConfirm.value = false;
+  discardPath.value = null;
 }
 
 const activeTab = ref<"changes" | "info">("changes");
@@ -78,6 +101,18 @@ watch(() => props.isWorkingChanges, (val) => {
 
 const expandedStaged = ref(true);
 const expandedUnstaged = ref(true);
+
+const descriptionRef = ref<HTMLTextAreaElement | null>(null);
+
+function autoExpandTextarea(textarea: HTMLTextAreaElement) {
+  textarea.style.height = "auto";
+  textarea.style.height = Math.min(textarea.scrollHeight, 150) + "px";
+}
+
+function onDescriptionInput(event: Event) {
+  const textarea = event.target as HTMLTextAreaElement;
+  autoExpandTextarea(textarea);
+}
 
 function formatDate(timestamp: number) {
   const d = new Date(timestamp * 1000);
@@ -148,20 +183,9 @@ function copyToClipboard(text: string) {
 </script>
 
 <template>
-  <div class="w-80 bg-[var(--card)] border-l border-[var(--border)] flex flex-col h-full overflow-hidden">
-    <div class="border-b border-[var(--border)] flex-shrink-0">
+  <div class="w-80 bg-[var(--card)] border-l border-[var(--border)] flex flex-col h-full overflow-visible relative z-[120]">
+    <div class="border-b border-[var(--border)] flex-shrink-0 relative">
       <div class="h-9 flex">
-        <button
-          @click="activeTab = 'changes'"
-          :class="[
-            'flex-1 text-xs font-medium tracking-wide transition-colors',
-            activeTab === 'changes'
-              ? 'text-[var(--primary)] border-b-2 border-[var(--primary)] bg-[var(--card)]'
-              : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]',
-          ]"
-        >
-          Changes
-        </button>
         <button
           v-if="(commit && !isWorkingChanges) || (isStash && selectedStash)"
           @click="activeTab = 'info'"
@@ -173,6 +197,17 @@ function copyToClipboard(text: string) {
           ]"
         >
           Info
+        </button>
+        <button
+          @click="activeTab = 'changes'"
+          :class="[
+            'flex-1 text-xs font-medium tracking-wide transition-colors',
+            activeTab === 'changes'
+              ? 'text-[var(--primary)] border-b-2 border-[var(--primary)] bg-[var(--card)]'
+              : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]',
+          ]"
+        >
+          Changes
         </button>
       </div>
     </div>
@@ -242,7 +277,7 @@ function copyToClipboard(text: string) {
             </button>
             <div class="flex items-center gap-1">
               <button
-                @click="emit('discardAll')"
+                @click="confirmDiscard(null)"
                 class="text-[10px] text-[#ef4444]/70 hover:text-[#ef4444] transition-colors px-1.5 py-0.5 rounded hover:bg-[#ef4444]/10"
                 title="Discard all changes"
               >
@@ -266,20 +301,19 @@ function copyToClipboard(text: string) {
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
               <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
               <button
-                @click.stop="openDiff(f.path, null, false)"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--primary)]/20 transition-all"
-                title="View diff"
-              >
-                <Eye class="w-3 h-3 text-[var(--muted-foreground)] hover:text-[var(--primary)]" />
-              </button>
-              <button
-                @click.stop="emit('discard', f.path)"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all"
+                @click.stop="confirmDiscard(f.path)"
+                class="p-0.5 rounded hover:bg-[#ef4444]/20 transition-all flex-shrink-0"
                 title="Discard changes"
               >
-                <Trash2 class="w-3 h-3 text-[var(--muted-foreground)] hover:text-[#ef4444]" />
+                <Trash2 class="w-3 h-3 text-[#ef4444] hover:text-[#dc2626]" />
               </button>
-              <Plus class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" @click.stop="emit('stage', f.path)" />
+              <button
+                @click.stop="emit('stage', f.path)"
+                class="p-0.5 rounded hover:bg-[var(--primary)]/20 transition-all flex-shrink-0"
+                title="Stage changes"
+              >
+                <Plus class="w-3 h-3 text-[var(--primary)] hover:text-[var(--primary)]/80" />
+              </button>
             </div>
           </div>
         </div>
@@ -334,18 +368,37 @@ function copyToClipboard(text: string) {
       </div>
 
       <div class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0">
-        <input
-          v-model="commitSummary"
-          type="text"
-          placeholder="Commit message..."
-          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-2"
-          @keyup.enter="onCommit"
-        />
+        <div class="mb-2">
+          <div class="flex items-center justify-between mb-1">
+            <label class="text-[10px] font-medium text-[var(--muted-foreground)]">Subject</label>
+            <span :class="[
+              'text-[10px] font-medium',
+              commitSummary.length > 72 ? 'text-[#ef4444]' : 'text-[var(--muted-foreground)]'
+            ]">
+              {{ commitSummary.length > 72 ? '-' + (commitSummary.length - 72) : (72 - commitSummary.length) }}
+            </span>
+          </div>
+          <input
+            v-model="commitSummary"
+            type="text"
+            placeholder="Commit message..."
+            class="w-full px-3 py-2 bg-[var(--input-background)] border rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 transition-colors"
+            :class="[
+              'border ',
+              commitSummary.length > 72 
+                ? 'border-[#ef4444] bg-[#ef4444]/5' 
+                : 'border-[var(--border)]'
+            ]"
+            @keyup.enter="onCommit"
+          />
+        </div>
         <textarea
+          ref="descriptionRef"
           v-model="commitDescription"
           placeholder="Description (optional)..."
-          rows="2"
-          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-2"
+          rows="3"
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-2 overflow-y-auto"
+          @input="onDescriptionInput"
         />
         <AppButton
           class="w-full bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium h-8"
@@ -604,5 +657,38 @@ function copyToClipboard(text: string) {
         <p class="text-xs text-[var(--muted-foreground)]">Select a commit to view details</p>
       </div>
     </div>
+
+    <!-- Discard Confirmation Toast -->
+    <Teleport to="body" v-if="showDiscardConfirm">
+      <div class="fixed bottom-4 right-4 z-[200] w-80 pointer-events-auto">
+        <div class="flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl backdrop-blur-md bg-[#2a1316]/96 border-[#ef4444]/75">
+          <Trash2 class="w-5 h-5 flex-shrink-0 mt-0.5" style="color: #f87171" />
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-[var(--foreground)] font-semibold">Discard changes?</p>
+            <p class="text-xs text-[#f87171] mt-1">This action cannot be undone.</p>
+            <div class="mt-3 flex gap-2 justify-start">
+              <button
+                @click="handleDiscardConfirm"
+                class="px-3 py-1.5 text-xs font-medium rounded bg-[#ef4444] text-white hover:bg-[#dc2626] transition-colors"
+              >
+                Yes, Discard
+              </button>
+              <button
+                @click="cancelDiscard"
+                class="px-3 py-1.5 text-xs font-medium rounded bg-[#374151] text-white hover:bg-[#4b5563] transition-colors"
+              >
+                No
+              </button>
+            </div>
+          </div>
+          <button
+            @click="cancelDiscard"
+            class="p-0.5 rounded hover:bg-white/10 transition-colors flex-shrink-0"
+          >
+            <X class="w-4 h-4 text-[var(--muted-foreground)]" />
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

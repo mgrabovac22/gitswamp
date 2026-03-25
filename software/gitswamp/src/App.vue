@@ -18,6 +18,7 @@ import { useGit } from "@/composables/useGit";
 import { useToast } from "@/composables/useToast";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+
 import { ref, watch, onMounted, computed } from "vue";
 import type { RepoInfo, CommitInfo, StashInfo } from "@/types";
 
@@ -90,6 +91,15 @@ const showPushUsernameDialog = ref(false);
 const pushPlatform = ref("");
 const pushUsername = ref("");
 const pushDomain = ref("");
+const detailsPanelCollapsed = ref(true);
+
+const showAuthRequiredDialog = ref(false);
+const authProvider = ref<"github" | "gitlab" | "gitlab-self">("github");
+const authTokenInput = ref("");
+const authDomainInput = ref("");
+const authEmailInput = ref("");
+const authKeyNameInput = ref("gitswamp");
+const authSubmitting = ref(false);
 
 function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
   diffFilePath.value = filePath;
@@ -195,6 +205,44 @@ const showDetailsPanel = computed(() =>
   viewingWorkingChanges.value || viewingStash.value || git.selectedCommit.value !== null
 );
 
+function detectAuthProviderFromOrigin(): "github" | "gitlab" | "gitlab-self" {
+  const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url?.toLowerCase() || "";
+  if (origin.includes("gitlab.com")) return "gitlab";
+  if (origin.includes("gitlab.")) return "gitlab-self";
+  return "github";
+}
+
+function parseAuthDomainFromOrigin(): string {
+  const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url || "";
+  const noProto = origin.replace(/^https?:\/\//i, "");
+  const noCreds = noProto.includes("@") ? noProto.split("@")[1] : noProto;
+  return noCreds.split("/")[0] || "";
+}
+
+function isAuthenticationRequiredError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return m.includes("auth_required:") || m.includes("authentication") || m.includes("requires authentication") || m.includes("permission denied") || m.includes("http 401") || m.includes("status code: 401") || m.includes("401") || m.includes("http 403") || m.includes("status code: 403") || m.includes("forbidden") || m.includes("unauthorized");
+}
+
+function maybeShowAuthDialogFromGitError() {
+  if (!isAuthenticationRequiredError(git.error.value)) return;
+  authProvider.value = detectAuthProviderFromOrigin();
+  authDomainInput.value = authProvider.value === "gitlab-self" ? parseAuthDomainFromOrigin() : "";
+  authTokenInput.value = "";
+  showAuthRequiredDialog.value = true;
+}
+
+async function handlePull() {
+  await git.pull();
+  maybeShowAuthDialogFromGitError();
+}
+
+async function handleFetch() {
+  await git.fetchAll();
+  maybeShowAuthDialogFromGitError();
+}
+
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
 
 const hasWorkingChanges = computed(() => git.stagedFiles.value.length > 0 || git.unstagedFiles.value.length > 0);
@@ -229,6 +277,12 @@ watch([tabs, activeTabId], () => {
     );
   } catch {}
 }, { deep: true });
+
+// Collapse side panel and close diff when switching tabs
+watch(activeTabId, () => {
+  detailsPanelCollapsed.value = true;
+  showDiffViewer.value = false;
+});
 
 watch(recentRepos, () => {
   try {
@@ -286,9 +340,9 @@ async function openRepo(path: string) {
       if (git.stagedFiles.value.length > 0 || git.unstagedFiles.value.length > 0) {
         viewingWorkingChanges.value = true;
         git.selectedCommit.value = null;
-      } else if (git.displayedCommits.value.length > 0) {
+      } else {
         viewingWorkingChanges.value = false;
-        git.selectedCommit.value = git.displayedCommits.value[0];
+        git.selectedCommit.value = null;
       }
     }
   } catch (e) {
@@ -343,14 +397,15 @@ async function handleInit(path: string, branchName: string) {
 async function handlePush() {
   // First, check if origin exists
   const hasOrigin = await git.checkOriginExists();
-  if (!hasOrigin) {
+  if (hasOrigin) {
+    // Origin exists, push normally
+    await git.push();
+    maybeShowAuthDialogFromGitError();
+  } else {
     // No origin, show dialog to select platform
     const repoName = git.repoInfo.value?.name || "repository";
     multiPlatformPushRepoName.value = repoName;
     showMultiPlatformPushDialog.value = true;
-  } else {
-    // Origin exists, push normally
-    await git.push();
   }
 }
 
@@ -383,9 +438,69 @@ async function performPush(platform: string, username: string) {
   }
   
   await git.pushToMultiplePlatforms(platform, repoName);
+  maybeShowAuthDialogFromGitError();
   if (!git.error.value) {
     showMultiPlatformPushDialog.value = false;
     showPushUsernameDialog.value = false;
+  }
+}
+
+async function saveAuthToken() {
+  if (!authTokenInput.value.trim()) return;
+  try {
+    authSubmitting.value = true;
+    const token = authTokenInput.value.trim();
+
+    if (authProvider.value === "github") {
+      await git.saveProviderToken("github", token);
+      await git.saveToken(token);
+    } else if (authProvider.value === "gitlab") {
+      await git.saveProviderToken("gitlab", token);
+    } else {
+      if (!authDomainInput.value.trim()) {
+        toast.error("Domain is required for self-hosted GitLab");
+        return;
+      }
+      await git.saveProviderToken("gitlab-self", `${authDomainInput.value.trim()}|${token}`);
+    }
+
+    showAuthRequiredDialog.value = false;
+    toast.success("Authentication token saved. Retry the remote action.");
+  } catch (e) {
+    toast.error("Failed to save token: " + String(e));
+  } finally {
+    authSubmitting.value = false;
+  }
+}
+
+async function generateAndPushGitlabKey() {
+  if (authProvider.value !== "gitlab-self") return;
+  if (!authTokenInput.value.trim() || !authDomainInput.value.trim() || !authEmailInput.value.trim()) {
+    toast.error("Domain, token and email are required to generate and push SSH key");
+    return;
+  }
+  try {
+    authSubmitting.value = true;
+    const keyName = authKeyNameInput.value.trim() || "gitswamp";
+    const generated = await invoke<[string, string]>("generate_ssh_key", {
+      email: authEmailInput.value.trim(),
+      keyName,
+    });
+    const publicKey = generated[1];
+    await invoke("add_gitlab_ssh_key", {
+      domain: authDomainInput.value.trim(),
+      token: authTokenInput.value.trim(),
+      title: `gitswamp-${Date.now()}`,
+      key: publicKey,
+    });
+
+    await git.saveProviderToken("gitlab-self", `${authDomainInput.value.trim()}|${authTokenInput.value.trim()}`);
+    showAuthRequiredDialog.value = false;
+    toast.success("SSH key generated and pushed to self-hosted GitLab");
+  } catch (e) {
+    toast.error("Failed to generate/push SSH key: " + String(e));
+  } finally {
+    authSubmitting.value = false;
   }
 }
 
@@ -413,6 +528,7 @@ function onSelectCommit(commit: CommitInfo | null) {
   viewingStash.value = false;
   git.selectedCommit.value = commit;
   git.clearStashSelection();
+  detailsPanelCollapsed.value = false;
 }
 
 function onSelectWorkingChanges() {
@@ -420,6 +536,7 @@ function onSelectWorkingChanges() {
   viewingStash.value = false;
   git.selectedCommit.value = null;
   git.clearStashSelection();
+  detailsPanelCollapsed.value = false;
 }
 
 function onSelectConflicts() {
@@ -427,6 +544,7 @@ function onSelectConflicts() {
   viewingStash.value = false;
   git.selectedCommit.value = null;
   git.clearStashSelection();
+  detailsPanelCollapsed.value = false;
 }
 
 function onSelectStash(stash: StashInfo) {
@@ -434,6 +552,7 @@ function onSelectStash(stash: StashInfo) {
   viewingStash.value = true;
   git.selectedCommit.value = null;
   git.selectStash(stash);
+  detailsPanelCollapsed.value = false;
 }
 
 function handleRequestMerge(payload: { source: string; sourceRemote: boolean; target: string }) {
@@ -620,9 +739,9 @@ const openReposList = computed(() =>
     <template v-else-if="git.repoInfo.value">
       <AppHeader
         :loading="git.loading.value"
-        @pull="git.pull()"
+        @pull="handlePull"
         @push="handlePush"
-        @fetch="git.fetchAll()"
+        @fetch="handleFetch"
         @branch="handleCreateBranch"
         @stash="handleStash"
         @terminal="showTerminal = !showTerminal"
@@ -686,8 +805,8 @@ const openReposList = computed(() =>
               @create-annotated-tag-at="handleCreateAnnotatedTag($event)"
               @checkout-branch="git.checkoutBranch($event)"
               @checkout-remote-branch="handleCheckoutRemoteBranch($event)"
-              @pull="git.pull()"
-              @push="git.push()"
+              @pull="handlePull"
+              @push="handlePush"
               @set-upstream="(branch: string, remoteBranch: string) => git.setUpstream(branch, remoteBranch)"
               @edit-commit-message="handleEditCommitMessage($event)"
               @rename-branch="handleRenameBranch($event)"
@@ -703,34 +822,54 @@ const openReposList = computed(() =>
               @select-stash="onSelectStash($event)"
               @request-merge="handleRequestMerge($event)"
             />
-            <CommitDetails
-              v-if="showDetailsPanel"
-              :commit="git.selectedCommit.value"
-              :staged-files="git.stagedFiles.value"
-              :unstaged-files="git.unstagedFiles.value"
-              :conflict-files="git.conflictFiles.value"
-              :has-conflicts="git.hasConflicts.value"
-              :commit-files="git.selectedCommitFiles.value"
-              :is-working-changes="viewingWorkingChanges"
-              :is-stash="viewingStash"
-              :selected-stash="git.selectedStash.value"
-              :stash-files="git.selectedStashFiles.value"
-              :repo-path="git.repoPath.value"
-              @stage="git.stageFile($event)"
-              @unstage="git.unstageFile($event)"
-              @stage-all="git.stageAll()"
-              @unstage-all="git.unstageAll()"
-              @commit="git.commitChanges($event)"
-              @discard="git.discardFile($event)"
-              @discard-all="git.discardAll()"
-              @resolve-all-conflicts="git.resolveAllConflicts()"
-              @resolve-conflict="git.promptResolveConflict($event)"
-              @manual-resolve="openConflictResolver($event)"
-              @stash-pop="git.stashPop($event)"
-              @stash-apply="git.stashApply($event)"
-              @stash-drop="git.stashDrop($event)"
-              @view-diff="openDiffViewer($event.path, $event.sha, $event.staged)"
-            />
+            <div v-if="showDetailsPanel" class="relative flex h-full">
+              <button
+                @click="detailsPanelCollapsed = !detailsPanelCollapsed"
+                :class="[
+                  'absolute z-[400] w-5 h-7 rounded-l-lg flex items-center justify-center hover:bg-[var(--primary)]/15 transition-colors text-[var(--primary)] bg-[var(--card)] border border-r-0 border-[var(--primary)]/30 hover:border-[var(--primary)]/60',
+                  detailsPanelCollapsed ? '-left-5' : '-left-5',
+                ]"
+                :title="detailsPanelCollapsed ? 'Expand panel' : 'Collapse panel'"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  class="w-3.5 h-3.5 transition-transform duration-200"
+                  :class="detailsPanelCollapsed ? 'rotate-180' : ''"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <CommitDetails
+                v-show="!detailsPanelCollapsed"
+                :commit="git.selectedCommit.value"
+                :staged-files="git.stagedFiles.value"
+                :unstaged-files="git.unstagedFiles.value"
+                :conflict-files="git.conflictFiles.value"
+                :has-conflicts="git.hasConflicts.value"
+                :commit-files="git.selectedCommitFiles.value"
+                :is-working-changes="viewingWorkingChanges"
+                :is-stash="viewingStash"
+                :selected-stash="git.selectedStash.value"
+                :stash-files="git.selectedStashFiles.value"
+                :repo-path="git.repoPath.value"
+                @stage="git.stageFile($event)"
+                @unstage="git.unstageFile($event)"
+                @stage-all="git.stageAll()"
+                @unstage-all="git.unstageAll()"
+                @commit="git.commitChanges($event)"
+                @discard="git.discardFile($event)"
+                @discard-all="git.discardAll()"
+                @resolve-all-conflicts="git.resolveAllConflicts()"
+                @resolve-conflict="git.promptResolveConflict($event)"
+                @manual-resolve="openConflictResolver($event)"
+                @stash-pop="git.stashPop($event)"
+                @stash-apply="git.stashApply($event)"
+                @stash-drop="git.stashDrop($event)"
+                @view-diff="openDiffViewer($event.path, $event.sha, $event.staged)"
+              />
+            </div>
           </div>
           <TerminalPanel
             v-if="showTerminal"
@@ -896,8 +1035,9 @@ const openReposList = computed(() =>
         
         <!-- Domain input for self-hosted instances -->
         <div v-if="pushPlatform === 'gitlab-self-hosted' || pushPlatform === 'github-enterprise'" class="mb-4">
-          <label class="text-xs text-[var(--muted-foreground)] block mb-2">Domain (e.g., gitlab.company.com)</label>
+          <label for="push-domain" class="text-xs text-[var(--muted-foreground)] block mb-2">Domain (e.g., gitlab.company.com)</label>
           <input
+            id="push-domain"
             v-model="pushDomain"
             placeholder="gitlab.company.com"
             class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
@@ -906,8 +1046,9 @@ const openReposList = computed(() =>
         
         <!-- Username input -->
         <div class="mb-4">
-          <label class="text-xs text-[var(--muted-foreground)] block mb-2">Username</label>
+          <label for="push-username" class="text-xs text-[var(--muted-foreground)] block mb-2">Username</label>
           <input
+            id="push-username"
             v-model="pushUsername"
             :placeholder="`Your ${pushPlatform} username...`"
             class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
@@ -919,6 +1060,78 @@ const openReposList = computed(() =>
         <div class="flex justify-end gap-2">
           <button @click="showPushUsernameDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
           <button @click="performPush(pushPlatform, pushUsername)" :disabled="!pushUsername.trim() || (pushPlatform === 'gitlab-self-hosted' || pushPlatform === 'github-enterprise') && !pushDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Push</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showAuthRequiredDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showAuthRequiredDialog = false">
+      <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-[460px] shadow-2xl">
+        <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Authentication Required</h3>
+
+        <div class="mb-3">
+          <label for="auth-provider" class="text-xs text-[var(--muted-foreground)] block mb-2">Provider</label>
+          <select
+            id="auth-provider"
+            v-model="authProvider"
+            class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+          >
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab.com</option>
+            <option value="gitlab-self">GitLab self-hosted</option>
+          </select>
+        </div>
+
+        <div v-if="authProvider === 'gitlab-self'" class="mb-3">
+          <label for="auth-domain" class="text-xs text-[var(--muted-foreground)] block mb-2">GitLab domain</label>
+          <input
+            id="auth-domain"
+            v-model="authDomainInput"
+            placeholder="gitlab.company.com"
+            class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+          />
+        </div>
+
+        <div class="mb-3">
+          <label for="auth-token" class="text-xs text-[var(--muted-foreground)] block mb-2">Personal access token</label>
+          <input
+            id="auth-token"
+            v-model="authTokenInput"
+            type="password"
+            placeholder="Paste token"
+            class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+          />
+        </div>
+
+        <div v-if="authProvider === 'gitlab-self'" class="space-y-3 mb-4 border border-[var(--border)] rounded p-3 bg-[var(--card)]/30">
+          <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wide">Generate and push SSH key (optional)</div>
+          <input
+            v-model="authEmailInput"
+            placeholder="Email for SSH key"
+            class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+          />
+          <input
+            v-model="authKeyNameInput"
+            placeholder="Key name (default: gitswamp)"
+            class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+          />
+          <button
+            class="w-full px-3 py-2 text-xs text-white bg-[#f59e0b] hover:opacity-90 rounded disabled:opacity-50 transition-colors"
+            :disabled="authSubmitting || !authDomainInput.trim() || !authTokenInput.trim() || !authEmailInput.trim()"
+            @click="generateAndPushGitlabKey"
+          >
+            Generate & Push SSH Key
+          </button>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <button @click="showAuthRequiredDialog = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+          <button
+            @click="saveAuthToken"
+            :disabled="authSubmitting || !authTokenInput.trim() || (authProvider === 'gitlab-self' && !authDomainInput.trim())"
+            class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors"
+          >
+            Save Token
+          </button>
         </div>
       </div>
     </div>

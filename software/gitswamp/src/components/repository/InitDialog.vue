@@ -67,7 +67,15 @@ function isProviderConnected(provider: string): boolean {
   return !!props.providerTokens?.[provider];
 }
 
+function isProviderSupported(provider: string): boolean {
+  // Only local and GitHub are supported for init
+  return provider === "local" || provider === "github";
+}
+
 function selectSource(id: string) {
+  if (!isProviderSupported(id)) {
+    return; // Don't allow unsupported providers
+  }
   activeSource.value = id;
 }
 
@@ -123,14 +131,21 @@ function onInit() {
             v-for="src in sources"
             :key="src.id"
             @click="selectSource(src.id)"
-            class="flex flex-col items-center gap-2.5 px-3 py-4 rounded-xl border border-[var(--border)] hover:border-[var(--primary)]/40 hover:bg-[var(--primary)]/5 transition-all group"
+            :disabled="!isProviderSupported(src.id)"
+            :class="[
+              'flex flex-col items-center gap-2.5 px-3 py-4 rounded-xl border transition-all group',
+              isProviderSupported(src.id)
+                ? 'border-[var(--border)] hover:border-[var(--primary)]/40 hover:bg-[var(--primary)]/5 cursor-pointer'
+                : 'border-[var(--border)]/50 opacity-50 cursor-not-allowed'
+            ]"
           >
-            <div class="w-10 h-10 rounded-xl flex items-center justify-center transition-all group-hover:scale-110" :style="{ backgroundColor: src.color + '15' }">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center transition-all" :class="isProviderSupported(src.id) ? 'group-hover:scale-110' : ''" :style="{ backgroundColor: src.color + '15' }">
               <component :is="src.icon" class="w-5 h-5" :style="{ color: src.color }" />
             </div>
             <div class="text-center">
               <span class="text-[11px] font-semibold text-[var(--foreground)] block">{{ src.label }}</span>
-              <span class="text-[9px] text-[var(--muted-foreground)] mt-0.5 block">{{ src.desc }}</span>
+              <span v-if="isProviderSupported(src.id)" class="text-[9px] text-[var(--muted-foreground)] mt-0.5 block">{{ src.desc }}</span>
+              <span v-else class="text-[9px] text-[#f59e0b] mt-0.5 block font-medium">To be continued</span>
             </div>
           </button>
         </div>
@@ -142,16 +157,20 @@ function onInit() {
             v-for="src in sources"
             :key="src.id"
             @click="selectSource(src.id)"
+            :disabled="!isProviderSupported(src.id)"
             :class="[
               'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors text-[11px]',
-              activeSource === src.id
+              !isProviderSupported(src.id)
+                ? 'opacity-50 cursor-not-allowed'
+                : activeSource === src.id
                 ? 'bg-[var(--primary)]/15 text-[var(--primary)] font-semibold'
                 : 'text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]'
             ]"
           >
             <component :is="src.icon" class="w-3.5 h-3.5 flex-shrink-0" :style="{ color: src.color }" />
             <span class="truncate">{{ src.label }}</span>
-            <div v-if="src.id !== 'local' && isProviderConnected(src.id)" class="w-1.5 h-1.5 rounded-full bg-[#10b981] flex-shrink-0 ml-auto"></div>
+            <div v-if="isProviderSupported(src.id) && src.id !== 'local' && isProviderConnected(src.id)" class="w-1.5 h-1.5 rounded-full bg-[#10b981] flex-shrink-0 ml-auto"></div>
+            <span v-if="!isProviderSupported(src.id)" class="text-[9px] text-[#f59e0b] font-medium ml-auto flex-shrink-0">TBC</span>
           </button>
         </div>
 
