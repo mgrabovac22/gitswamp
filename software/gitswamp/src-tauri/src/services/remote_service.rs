@@ -1,5 +1,11 @@
 use std::path::Path;
 
+use crate::constants::{
+    AUTH_USER_BITBUCKET, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST, AZURE_LEGACY_HOST,
+    BITBUCKET_HOST, GITHUB_HOST, GITLAB_HOST, HTTPS_SCHEME, PLATFORM_AZURE, PLATFORM_BITBUCKET,
+    PLATFORM_GITHUB, PLATFORM_GITHUB_ENTERPRISE, PLATFORM_GITLAB, PLATFORM_GITLAB_SELF_HOSTED,
+    TEMP_PUSH_REMOTE_AUTH, TEMP_PUSH_REMOTE_PLATFORM,
+};
 use crate::repositories::git_repository::GitRepository;
 use crate::services::helpers::urlencoded;
 
@@ -130,28 +136,28 @@ impl RemoteService {
 
         let remote_url = remote.url().unwrap_or_default().to_string();
         if let Some(t) = token {
-            if remote_url.starts_with("https://") && !remote_url.contains('@') {
-                let host_and_path = &remote_url[8..];
+            if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
+                let host_and_path = &remote_url[HTTPS_SCHEME.len()..];
                 let enc_token = urlencoded(t);
 
                 let authed_url = if host_and_path.contains("gitlab.") || host_and_path.contains("/gitlab") {
-                    format!("https://oauth2:{}@{}", enc_token, host_and_path)
-                } else if host_and_path.contains("bitbucket.org") {
-                    format!("https://x-token-auth:{}@{}", enc_token, host_and_path)
-                } else if host_and_path.contains("dev.azure.com")
-                    || host_and_path.contains("visualstudio.com")
+                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITLAB, enc_token, host_and_path)
+                } else if host_and_path.contains(BITBUCKET_HOST) {
+                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_BITBUCKET, enc_token, host_and_path)
+                } else if host_and_path.contains(AZURE_HOST)
+                    || host_and_path.contains(AZURE_LEGACY_HOST)
                 {
-                    format!("https://:{}@{}", enc_token, host_and_path)
+                    format!("{}:{}@{}", HTTPS_SCHEME, enc_token, host_and_path)
                 } else {
-                    format!("https://x-access-token:{}@{}", enc_token, host_and_path)
+                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITHUB, enc_token, host_and_path)
                 };
 
-                if repo.find_remote("temp_push_origin_auth").is_ok() {
-                    let _ = repo.remote_delete("temp_push_origin_auth");
+                if repo.find_remote(TEMP_PUSH_REMOTE_AUTH).is_ok() {
+                    let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                 }
 
                 let mut temp_remote = repo
-                    .remote("temp_push_origin_auth", &authed_url)
+                    .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
                     .map_err(|e| {
                         format!("Failed to create temporary authenticated remote: {}", e.message())
                     })?;
@@ -161,7 +167,7 @@ impl RemoteService {
                 push_opts.remote_callbacks(callbacks);
 
                 let result = temp_remote.push(&[&refspec], Some(&mut push_opts));
-                let _ = repo.remote_delete("temp_push_origin_auth");
+                let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
 
                 result.map_err(|e| e.message().to_string())?;
                 return Ok(if force {
@@ -210,28 +216,28 @@ impl RemoteService {
 
         let remote_url = remote_ref.url().unwrap_or_default().to_string();
         if let Some(t) = token {
-            if remote_url.starts_with("https://") && !remote_url.contains('@') {
-                let host_and_path = &remote_url[8..];
+            if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
+                let host_and_path = &remote_url[HTTPS_SCHEME.len()..];
                 let enc_token = urlencoded(t);
 
                 let authed_url = if host_and_path.contains("gitlab.") || host_and_path.contains("/gitlab") {
-                    format!("https://oauth2:{}@{}", enc_token, host_and_path)
-                } else if host_and_path.contains("bitbucket.org") {
-                    format!("https://x-token-auth:{}@{}", enc_token, host_and_path)
-                } else if host_and_path.contains("dev.azure.com")
-                    || host_and_path.contains("visualstudio.com")
+                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITLAB, enc_token, host_and_path)
+                } else if host_and_path.contains(BITBUCKET_HOST) {
+                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_BITBUCKET, enc_token, host_and_path)
+                } else if host_and_path.contains(AZURE_HOST)
+                    || host_and_path.contains(AZURE_LEGACY_HOST)
                 {
-                    format!("https://:{}@{}", enc_token, host_and_path)
+                    format!("{}:{}@{}", HTTPS_SCHEME, enc_token, host_and_path)
                 } else {
-                    format!("https://x-access-token:{}@{}", enc_token, host_and_path)
+                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITHUB, enc_token, host_and_path)
                 };
 
-                if repo.find_remote("temp_push_origin_auth").is_ok() {
-                    let _ = repo.remote_delete("temp_push_origin_auth");
+                if repo.find_remote(TEMP_PUSH_REMOTE_AUTH).is_ok() {
+                    let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                 }
 
                 let mut temp_remote = repo
-                    .remote("temp_push_origin_auth", &authed_url)
+                    .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
                     .map_err(|e| {
                         format!("Failed to create temporary authenticated remote: {}", e.message())
                     })?;
@@ -241,7 +247,7 @@ impl RemoteService {
                 push_opts.remote_callbacks(callbacks);
 
                 let result = temp_remote.push(&[&refspec], Some(&mut push_opts));
-                let _ = repo.remote_delete("temp_push_origin_auth");
+                let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                 result.map_err(|e| e.message().to_string())?;
 
                 return Ok(format!("Deleted remote branch {}/{}", remote, branch));
@@ -352,47 +358,69 @@ impl RemoteService {
         let enc_token = urlencoded(token);
 
         let remote_url = match platform {
-            "github" => format!(
-                "https://{}:{}@github.com/{}/{}.git",
-                owner, enc_token, owner, actual_repo_name
+            PLATFORM_GITHUB => format!(
+                "{}{}:{}@{}/{}/{}.git",
+                HTTPS_SCHEME,
+                owner,
+                enc_token,
+                GITHUB_HOST,
+                owner,
+                actual_repo_name
             ),
-            "github-enterprise" => {
+            PLATFORM_GITHUB_ENTERPRISE => {
                 let domain =
                     domain.ok_or("GitHub Enterprise requires domain in format: username/repo@domain.com")?;
                 format!(
-                    "https://{}:{}@{}/{}/{}.git",
+                    "{}{}:{}@{}/{}/{}.git",
+                    HTTPS_SCHEME,
                     owner, enc_token, domain, owner, actual_repo_name
                 )
             }
-            "gitlab" => format!(
-                "https://oauth2:{}@gitlab.com/{}/{}.git",
-                enc_token, owner, actual_repo_name
+            PLATFORM_GITLAB => format!(
+                "{}{}:{}@{}/{}/{}.git",
+                HTTPS_SCHEME,
+                AUTH_USER_GITLAB,
+                enc_token,
+                GITLAB_HOST,
+                owner,
+                actual_repo_name
             ),
-            "gitlab-self-hosted" => {
+            PLATFORM_GITLAB_SELF_HOSTED => {
                 let domain =
                     domain.ok_or("GitLab self-hosted requires domain in format: username/repo@domain.com")?;
                 format!(
-                    "https://oauth2:{}@{}/{}/{}.git",
+                    "{}{}:{}@{}/{}/{}.git",
+                    HTTPS_SCHEME,
+                    AUTH_USER_GITLAB,
                     enc_token, domain, owner, actual_repo_name
                 )
             }
-            "bitbucket" => format!(
-                "https://x-token-auth:{}@bitbucket.org/{}/{}.git",
-                enc_token, owner, actual_repo_name
+            PLATFORM_BITBUCKET => format!(
+                "{}{}:{}@{}/{}/{}.git",
+                HTTPS_SCHEME,
+                AUTH_USER_BITBUCKET,
+                enc_token,
+                BITBUCKET_HOST,
+                owner,
+                actual_repo_name
             ),
-            "azure" => format!(
-                "https://:{}@dev.azure.com/{}/project/_git/{}",
-                enc_token, owner, actual_repo_name
+            PLATFORM_AZURE => format!(
+                "{}:{}@{}/{}/project/_git/{}",
+                HTTPS_SCHEME,
+                enc_token,
+                AZURE_HOST,
+                owner,
+                actual_repo_name
             ),
             _ => return Err(format!("Unknown platform: {platform}")),
         };
 
-        if repo.find_remote("temp_push_remote").is_ok() {
-            let _ = repo.remote_delete("temp_push_remote");
+        if repo.find_remote(TEMP_PUSH_REMOTE_PLATFORM).is_ok() {
+            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_PLATFORM);
         }
 
         let mut remote = repo
-            .remote("temp_push_remote", &remote_url)
+            .remote(TEMP_PUSH_REMOTE_PLATFORM, &remote_url)
             .map_err(|e| format!("Failed to create temporary remote: {}", e.message()))?;
 
         let callbacks = git2::RemoteCallbacks::new();

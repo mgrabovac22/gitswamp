@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use crate::constants::{APP_USER_AGENT, CREATE_NO_WINDOW};
+use crate::constants::{
+    API_GITHUB_LIST_REPOS, API_GITHUB_SEARCH_REPOS, API_GITLAB_BASE_PATH,
+    API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT, CREATE_NO_WINDOW,
+    GITHUB_ACCEPT_HEADER, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
+};
 use crate::models::{GithubRepo, GitlabRepo};
 use crate::services::helpers::urlencoded;
 
@@ -12,16 +16,13 @@ pub struct IntegrationService;
 impl IntegrationService {
     pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
         let url = if query.is_empty() {
-            "https://api.github.com/user/repos?per_page=50&sort=updated&affiliation=owner,collaborator,organization_member".to_string()
+            API_GITHUB_LIST_REPOS.to_string()
         } else {
-            format!(
-                "https://api.github.com/search/repositories?q={}&per_page=30",
-                urlencoded(query)
-            )
+            API_GITHUB_SEARCH_REPOS.replace("{}", &urlencoded(query))
         };
         let resp = ureq::get(&url)
             .set("Authorization", &format!("Bearer {}", token))
-            .set("Accept", "application/vnd.github.v3+json")
+            .set("Accept", GITHUB_ACCEPT_HEADER)
             .set("User-Agent", APP_USER_AGENT)
             .call()
             .map_err(|e| format!("GitHub API error: {}", e))?;
@@ -53,7 +54,7 @@ impl IntegrationService {
         token: &str,
         query: &str,
     ) -> Result<Vec<GitlabRepo>, String> {
-        let base_url = format!("https://{}/api/v4", domain);
+        let base_url = format!("{}{}{}", HTTPS_SCHEME, domain, API_GITLAB_BASE_PATH);
         let url = if query.is_empty() {
             format!(
                 "{}/projects?membership=true&per_page=50&order_by=last_activity_at",
@@ -69,7 +70,7 @@ impl IntegrationService {
 
         let resp = ureq::get(&url)
             .set("PRIVATE-TOKEN", token)
-            .set("Accept", "application/json")
+            .set("Accept", JSON_ACCEPT_HEADER)
             .set("User-Agent", APP_USER_AGENT)
             .call()
             .map_err(|e| format!("GitLab API error: {}", e))?;
@@ -181,7 +182,7 @@ impl IntegrationService {
     }
 
     pub fn add_gitlab_ssh_key(domain: &str, token: &str, title: &str, key: &str) -> Result<(), String> {
-        let url = format!("https://{}/api/v4/user/keys", domain);
+        let url = format!("{}{}{}", HTTPS_SCHEME, domain, API_GITLAB_USER_KEYS_PATH);
 
         let body = serde_json::json!({
             "title": title,
@@ -222,11 +223,11 @@ impl IntegrationService {
     }
 
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
-        let url = format!("https://{}/api/v4/user", domain);
+        let url = format!("{}{}{}", HTTPS_SCHEME, domain, API_GITLAB_USER_PATH);
 
         let resp = ureq::get(&url)
             .set("PRIVATE-TOKEN", token)
-            .set("Accept", "application/json")
+            .set("Accept", JSON_ACCEPT_HEADER)
             .set("User-Agent", APP_USER_AGENT)
             .call()
             .map_err(|e| format!("GitLab API error: {}", e))?;

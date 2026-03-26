@@ -2,17 +2,18 @@ use std::collections::HashMap;
 
 use git2::{Branch, Delta, Diff, Repository, Status};
 
+use crate::constants::{AZURE_HOST, AZURE_LEGACY_HOST, BITBUCKET_HOST, GITHUB_HOST, GITLAB_HOST};
 use crate::models::{DiffHunk, DiffLine, FileDiff, RemoteInfo};
 
 pub fn detect_provider(url: &str) -> String {
     let url_lower = url.to_lowercase();
-    if url_lower.contains("github.com") || url_lower.contains("github.") {
+    if url_lower.contains(GITHUB_HOST) || url_lower.contains("github.") {
         "github".to_string()
-    } else if url_lower.contains("gitlab.com") || url_lower.contains("gitlab.") {
+    } else if url_lower.contains(GITLAB_HOST) || url_lower.contains("gitlab.") {
         "gitlab".to_string()
-    } else if url_lower.contains("bitbucket.org") || url_lower.contains("bitbucket.") {
+    } else if url_lower.contains(BITBUCKET_HOST) || url_lower.contains("bitbucket.") {
         "bitbucket".to_string()
-    } else if url_lower.contains("dev.azure.com") || url_lower.contains("visualstudio.com") {
+    } else if url_lower.contains(AZURE_HOST) || url_lower.contains(AZURE_LEGACY_HOST) {
         "azure".to_string()
     } else {
         "unknown".to_string()

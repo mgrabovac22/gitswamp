@@ -4,7 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
-use crate::constants::{CONFLICT_END, CONFLICT_MID, CONFLICT_START, DEFAULT_BRANCH, DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL};
+use crate::constants::{
+    AUTH_USER_GITHUB, AUTH_USER_GITLAB, CONFLICT_END, CONFLICT_MID, CONFLICT_START,
+    DEFAULT_BRANCH, DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL, GITHUB_HOST,
+};
 use crate::models::{
     BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, GithubRepo, GitlabRepo, RepoInfo,
     StashInfo, TagInfo,
@@ -396,18 +399,18 @@ impl GitService {
             let tok = t.to_string();
             callbacks.credentials(move |remote_url, username_from_url, allowed| {
                 if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-                    let user = if remote_url.contains("github.com") {
-                        "x-access-token"
+                    let user = if remote_url.contains(GITHUB_HOST) {
+                        AUTH_USER_GITHUB
                     } else {
-                        username_from_url.unwrap_or("oauth2")
+                        username_from_url.unwrap_or(AUTH_USER_GITLAB)
                     };
                     return git2::Cred::userpass_plaintext(user, &tok);
                 }
                 if allowed.contains(git2::CredentialType::USERNAME) {
-                    let user = if remote_url.contains("github.com") {
-                        "x-access-token"
+                    let user = if remote_url.contains(GITHUB_HOST) {
+                        AUTH_USER_GITHUB
                     } else {
-                        username_from_url.unwrap_or("oauth2")
+                        username_from_url.unwrap_or(AUTH_USER_GITLAB)
                     };
                     return git2::Cred::username(user);
                 }
