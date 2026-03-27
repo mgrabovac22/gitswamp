@@ -10,6 +10,7 @@ import type { CommitInfo, StashInfo } from "@/types";
 const props = defineProps<{
   git: any;
   showTerminal: boolean;
+  terminalAllowAll: boolean;
   showDiffViewer: boolean;
   diffFilePath: string;
   diffCommitSha: string | null;
@@ -21,6 +22,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:showTerminal": [value: boolean];
+  "update:terminalAllowAll": [value: boolean];
   "update:detailsPanelCollapsed": [value: boolean];
   closeDiffViewer: [];
   openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean }];
@@ -266,8 +268,10 @@ function toggleDetailsPanel() {
         v-if="props.showTerminal"
         :output="props.git.terminalOutput.value"
         :repo-path="props.git.repoPath.value"
+        :allow-all-commands="props.terminalAllowAll"
         style="height: 25%"
-        @run="props.git.runTerminalCommand($event)"
+        @run="props.git.runTerminalCommand($event.command, $event.allowAll)"
+        @update:allow-all-commands="emit('update:terminalAllowAll', $event)"
         @close="emit('update:showTerminal', false)"
       />
     </div>

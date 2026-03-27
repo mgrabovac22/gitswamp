@@ -32,6 +32,70 @@ impl GitRepository {
         Self::run_git_cmd(Some(path), args)
     }
 
+    pub fn run_shell_command(path: &str, command: &str) -> Result<String, String> {
+        if command.trim().is_empty() {
+            return Ok(String::new());
+        }
+
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/d", "/s", "/c", command])
+                .current_dir(path)
+                .env("PATH", Self::full_path())
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| e.to_string())?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+            if output.status.success() {
+                return Ok([stdout, stderr]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"));
+            }
+
+            let message = if !stderr.is_empty() { stderr } else { stdout };
+            return Err(if message.is_empty() {
+                format!("Command failed with exit code {:?}", output.status.code())
+            } else {
+                message
+            });
+        }
+
+        #[cfg(not(windows))]
+        {
+            let output = std::process::Command::new("sh")
+                .args(["-lc", command])
+                .current_dir(path)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .map_err(|e| e.to_string())?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+            if output.status.success() {
+                return Ok([stdout, stderr]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"));
+            }
+
+            let message = if !stderr.is_empty() { stderr } else { stdout };
+            Err(if message.is_empty() {
+                format!("Command failed with exit code {:?}", output.status.code())
+            } else {
+                message
+            })
+        }
+    }
+
     fn path_separator() -> char {
         if cfg!(windows) {
             ';'

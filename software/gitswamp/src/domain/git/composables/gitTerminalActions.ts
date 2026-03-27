@@ -2,9 +2,26 @@ import { callTauri } from "./gitCall";
 import type { GitState } from "./gitState";
 
 export function createTerminalActions(state: GitState) {
-  async function runTerminalCommand(command: string) {
+  async function runTerminalCommand(command: string, allowAll = false) {
     if (!state.repoPath.value) return;
-    const args = command.trim().split(/\s+/);
+
+    const trimmed = command.trim();
+    if (!trimmed) return;
+
+    if (allowAll) {
+      try {
+        const result = await callTauri<string>("run_shell_command", {
+          path: state.repoPath.value,
+          command: trimmed,
+        });
+        state.terminalOutput.value.push(`$ ${trimmed}\n${result || "(done)"}`);
+      } catch (e) {
+        state.terminalOutput.value.push(`$ ${trimmed}\nError: ${e}`);
+      }
+      return;
+    }
+
+    const args = trimmed.split(/\s+/);
     if (args[0] === "git") args.shift();
 
     try {

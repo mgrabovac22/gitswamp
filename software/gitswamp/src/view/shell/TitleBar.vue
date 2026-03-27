@@ -1,13 +1,30 @@
 <script setup lang="ts">
 import { Minimize2, Maximize2, X } from "lucide-vue-next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { onMounted, onUnmounted, ref } from "vue";
 import titleLogo from "@/assets/logo_croc.png";
 
 const appWindow = getCurrentWindow();
 
+const isLight = ref(document.documentElement.classList.contains("light"));
+const themeObserver = new MutationObserver(() => {
+  isLight.value = document.documentElement.classList.contains("light");
+});
+
 function minimize() { appWindow.minimize(); }
 function toggleMaximize() { appWindow.toggleMaximize(); }
 function close() { appWindow.close(); }
+
+onMounted(() => {
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+});
+
+onUnmounted(() => {
+  themeObserver.disconnect();
+});
 </script>
 
 <template>

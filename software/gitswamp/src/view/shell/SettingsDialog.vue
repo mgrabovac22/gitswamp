@@ -3,12 +3,14 @@ import { ref, onMounted, watch } from "vue";
 import { Shield, Eye, EyeOff, Check, Trash2, X, Layout, Monitor, Sun, Moon } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 import {
+  APP_THEME_OPTIONS,
   applyAppPalettePreference,
   applyThemeModePreference,
   getStoredAppPalettePreference,
   getStoredThemeModePreference,
   storeAppPalettePreference,
   storeThemeModePreference,
+  type AppThemeOption,
   type AppPalettePreference,
   type ThemeModePreference,
 } from "@/shared/themePreferences";
@@ -33,13 +35,9 @@ const fontSize = ref<"small" | "medium" | "large">("medium");
 const compactMode = ref(false);
 const showAvatars = ref(true);
 
-const appPaletteOptions: { value: AppPalettePreference; label: string }[] = [
-  { value: "swamp", label: "Swamp" },
-  { value: "default", label: "Default" },
-  { value: "github", label: "GitHub" },
-  { value: "dark-red", label: "Dark Red" },
-  { value: "emerald", label: "Emerald" },
-];
+const appThemeOptions = APP_THEME_OPTIONS;
+const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
+const lightThemeOptions = appThemeOptions.filter((theme) => theme.group === "light");
 
 const fontSizes = {
   small: "14px",
@@ -92,6 +90,21 @@ watch(appPalette, (value) => {
   applyAppPalettePreference(value);
   storeAppPalettePreference(value);
 });
+
+function onThemePresetChange(event: Event) {
+  const selected = (event.target as HTMLSelectElement).value as AppPalettePreference;
+  const selectedTheme = appThemeOptions.find((theme) => theme.id === selected);
+  if (!selectedTheme) return;
+
+  appPalette.value = selectedTheme.id;
+  if (themeMode.value !== selectedTheme.mode) {
+    themeMode.value = selectedTheme.mode;
+  }
+}
+
+function themeLabel(theme: AppThemeOption): string {
+  return theme.mode === "dark" ? `${theme.label} (Dark)` : `${theme.label} (Light)`;
+}
 
 function toggleThemeMode() {
   themeMode.value = themeMode.value === "dark" ? "light" : "dark";
@@ -153,21 +166,24 @@ function handleDelete() {
           <div class="flex items-center justify-between py-2">
             <div>
               <div class="text-xs font-medium text-[var(--foreground)] block">Theme Preset</div>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Colors for app UI and code diff</p>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Grouped dark/light themes, auto-switches mode</p>
             </div>
-            <div class="flex gap-1.5 flex-wrap justify-end max-w-[250px]">
-              <button
-                v-for="option in appPaletteOptions"
-                :key="option.value"
-                @click="appPalette = option.value"
-                class="px-2.5 py-1.5 text-[10px] rounded transition-colors"
-                :class="appPalette === option.value
-                  ? 'bg-[var(--primary)] text-white'
-                  : 'bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
-              >
-                {{ option.label }}
-              </button>
-            </div>
+            <select
+              :value="appPalette"
+              @change="onThemePresetChange"
+              class="w-[220px] px-2.5 py-1.5 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+            >
+              <optgroup label="Dark Themes">
+                <option v-for="theme in darkThemeOptions" :key="theme.id" :value="theme.id">
+                  {{ themeLabel(theme) }}
+                </option>
+              </optgroup>
+              <optgroup label="Light Themes">
+                <option v-for="theme in lightThemeOptions" :key="theme.id" :value="theme.id">
+                  {{ themeLabel(theme) }}
+                </option>
+              </optgroup>
+            </select>
           </div>
 
           <div class="flex items-center justify-between py-2">

@@ -5,10 +5,12 @@ import { Terminal, X } from "lucide-vue-next";
 const props = defineProps<{
   output: string[];
   repoPath: string;
+  allowAllCommands: boolean;
 }>();
 
 const emit = defineEmits<{
-  run: [command: string];
+  run: [payload: { command: string; allowAll: boolean }];
+  "update:allowAllCommands": [value: boolean];
   close: [];
 }>();
 
@@ -31,7 +33,7 @@ function submit() {
   if (!cmd) return;
   history.value.push(cmd);
   historyIndex.value = -1;
-  emit("run", cmd);
+  emit("run", { command: cmd, allowAll: props.allowAllCommands });
   command.value = "";
 }
 
@@ -66,8 +68,17 @@ function focusInput() {
       <div class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
         <Terminal class="w-3.5 h-3.5 text-[var(--primary)]" />
         <span class="font-medium text-[var(--foreground)]">Terminal</span>
-        <span class="text-[10px] text-[var(--muted-foreground)]">git commands only</span>
+        <span class="text-[10px] text-[var(--muted-foreground)]">{{ props.allowAllCommands ? 'all commands' : 'git commands only' }}</span>
       </div>
+      <label class="flex items-center gap-1.5 text-[10px] text-[var(--foreground)] mr-2 cursor-pointer">
+        <input
+          type="checkbox"
+          :checked="props.allowAllCommands"
+          @change="emit('update:allowAllCommands', ($event.target as HTMLInputElement).checked)"
+          class="w-3.5 h-3.5 accent-[var(--primary)]"
+        />
+        Allow all commands
+      </label>
       <button
         @click="emit('close')"
         class="p-1 rounded hover:bg-[var(--secondary)] transition-colors"
@@ -78,7 +89,7 @@ function focusInput() {
 
     <div ref="outputRef" class="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs min-h-0">
       <div v-if="output.length === 0" class="text-[var(--muted-foreground)] py-2">
-        Type a git command (e.g., "git status", "git log --oneline -5")
+        {{ props.allowAllCommands ? 'Type any shell command (e.g., dir, npm run build, git status)' : 'Type a git command (e.g., git status, git log --oneline -5)' }}
       </div>
       <div
         v-for="(line, i) in output"
@@ -100,7 +111,7 @@ function focusInput() {
         v-model="command"
         @keyup.enter="submit"
         @keydown="onKeyDown"
-        placeholder="git ..."
+        :placeholder="props.allowAllCommands ? 'command...' : 'git ...'"
         class="flex-1 bg-transparent text-xs text-[var(--foreground)] font-mono placeholder:text-[var(--muted-foreground)] focus:outline-none"
       />
     </div>

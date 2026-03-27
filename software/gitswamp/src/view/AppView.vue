@@ -60,6 +60,7 @@ const activeTabId = ref("landing");
 const showCloneDialog = ref(false);
 const showInitDialog = ref(false);
 const showTerminal = ref(false);
+const terminalAllowAll = ref(localStorage.getItem("gitswamp-terminal-allow-all") === "true");
 const showBranchDialog = ref(false);
 const showStashDialog = ref(false);
 const showSettings = ref(false);
@@ -666,6 +667,32 @@ const tagAtSha = ref("");
 const showTagDialog = ref(false);
 const tagName = ref("");
 
+const isAnyDialogOpen = computed(() =>
+  showCloneDialog.value ||
+  showInitDialog.value ||
+  showBranchDialog.value ||
+  showStashDialog.value ||
+  showSettings.value ||
+  showEditMessageDialog.value ||
+  showRenameDialog.value ||
+  showAnnotatedTagDialog.value ||
+  showTagDialog.value ||
+  showMultiPlatformPushDialog.value ||
+  showPushUsernameDialog.value ||
+  showAuthRequiredDialog.value ||
+  showConflictResolver.value,
+);
+
+watch(isAnyDialogOpen, (opened) => {
+  if (opened) {
+    detailsPanelCollapsed.value = true;
+  }
+});
+
+watch(terminalAllowAll, (value) => {
+  localStorage.setItem("gitswamp-terminal-allow-all", String(value));
+});
+
 function handleCreateBranchAtCommit(sha: string) {
   branchAtSha.value = sha;
   showBranchDialog.value = true;
@@ -747,6 +774,7 @@ const openReposList = computed(() =>
       <RepositoryWorkspace
         :git="git"
         :show-terminal="showTerminal"
+        :terminal-allow-all="terminalAllowAll"
         :show-diff-viewer="showDiffViewer"
         :diff-file-path="diffFilePath"
         :diff-commit-sha="diffCommitSha"
@@ -755,6 +783,7 @@ const openReposList = computed(() =>
         :viewing-working-changes="viewingWorkingChanges"
         :viewing-stash="viewingStash"
         @update:show-terminal="showTerminal = $event"
+        @update:terminal-allow-all="terminalAllowAll = $event"
         @update:details-panel-collapsed="detailsPanelCollapsed = $event"
         @close-diff-viewer="closeDiffViewer"
         @open-diff-viewer="openDiffViewer($event.path, $event.sha, $event.staged)"

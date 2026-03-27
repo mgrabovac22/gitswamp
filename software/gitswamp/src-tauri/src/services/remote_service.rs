@@ -197,6 +197,10 @@ impl RemoteService {
         GitRepository::git_cli(path, args)
     }
 
+    pub fn run_shell_command(path: &str, command: &str) -> Result<String, String> {
+        GitRepository::run_shell_command(path, command)
+    }
+
     pub fn rename_branch(path: &str, old_name: &str, new_name: &str) -> Result<String, String> {
         GitRepository::git_cli(path, &["branch", "-m", old_name, new_name])
     }

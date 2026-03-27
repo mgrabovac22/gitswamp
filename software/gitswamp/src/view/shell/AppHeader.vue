@@ -9,9 +9,11 @@ import {
   Loader2,
   Download,
 } from "lucide-vue-next";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
 import headerIcon from "@/assets/logo_git_croc.gif";
-import headerTextLogo from "@/assets/logo_dark.png";
+import headerTextLogoDark from "@/assets/logo_dark.png";
+import headerTextLogoLight from "@/assets/logo_light.png";
 
 defineProps<{
   loading: boolean;
@@ -26,6 +28,24 @@ const emit = defineEmits<{
   terminal: [];
   settings: [];
 }>();
+
+const isLight = ref(document.documentElement.classList.contains("light"));
+const textLogo = computed(() => (isLight.value ? headerTextLogoLight : headerTextLogoDark));
+
+const themeObserver = new MutationObserver(() => {
+  isLight.value = document.documentElement.classList.contains("light");
+});
+
+onMounted(() => {
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+});
+
+onUnmounted(() => {
+  themeObserver.disconnect();
+});
 </script>
 
 <template>
@@ -37,7 +57,7 @@ const emit = defineEmits<{
         </div>
         <h1 class="text-[var(--foreground)] font-bold text-sm tracking-tight overflow-hidden whitespace-nowrap">
           <div class="h-6 inline-flex items-center">
-            <img :src="headerTextLogo" alt="GitSwamp" class="h-6 w-auto object-contain" style="transform: translateY(4px);" />
+            <img :src="textLogo" alt="GitSwamp" class="h-6 w-auto object-contain" style="transform: translateY(4px);" />
           </div>
           <span class="sr-only">GitSwamp</span>
         </h1>

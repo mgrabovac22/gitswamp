@@ -298,6 +298,10 @@ impl GitService {
         RemoteService::run_git_command(path, args)
     }
 
+    pub fn run_shell_command(path: &str, command: &str) -> Result<String, String> {
+        RemoteService::run_shell_command(path, command)
+    }
+
     pub fn cherry_pick(path: &str, sha: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
