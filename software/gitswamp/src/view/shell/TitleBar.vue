@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Minimize2, Maximize2, X } from "lucide-vue-next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import titleLogo from "@/assets/logo.gif";
 
 const appWindow = getCurrentWindow();
 
@@ -10,10 +11,13 @@ function close() { appWindow.close(); }
 </script>
 
 <template>
-  <div class="h-8 bg-[var(--header-bg)] flex items-center justify-between px-3 border-b border-[var(--border)] select-none [app-region:drag]" data-tauri-drag-region>
+  <div class="h-8 bg-[var(--header-bg)] flex items-center justify-between px-2 border-b border-[var(--border)] select-none [app-region:drag]" data-tauri-drag-region>
     <div class="flex items-center gap-2">
-      <div class="text-sm font-semibold text-[var(--header-fg)] tracking-wide">
-        🐊 GitSwamp
+      <div class="text-sm font-semibold text-[var(--header-fg)] tracking-wide flex items-center gap-1.5">
+        <div class="w-6 h-6 flex items-center justify-center">
+          <img :src="titleLogo" alt="GitSwamp" class="w-full h-full object-contain" />
+        </div>
+        <span>GitSwamp</span>
       </div>
     </div>
 
