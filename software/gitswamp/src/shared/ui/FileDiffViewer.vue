@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw } from "lucide-vue-next";
 import type { FileDiff, DiffLine } from "@/types";
+import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 
 const props = defineProps<{
   repoPath: string;
@@ -29,7 +30,7 @@ const error = ref<string | null>(null);
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
-const inlineDiffCache = ref(new Map<string, { text: string; highlight: boolean }[]>());
+const highlightedLineCache = ref(new Map<string, string>());
 
 // Virtualization state
 const scrollTop = ref(0);
@@ -42,7 +43,7 @@ let lastFileHash = "";
 
 const isWorkingChanges = computed(() => !props.commitSha);
 const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
-const LARGE_DIFF_LINE_THRESHOLD = 1500;
+const fileNameParts = computed(() => splitFilePath(props.filePath));
 
 watch(
   () => [props.filePath, props.staged, props.commitSha],
@@ -83,7 +84,7 @@ async function reload() {
       });
     }
 
-    inlineDiffCache.value.clear();
+    highlightedLineCache.value.clear();
     
     // Don't load file content synchronously - do it lazily
     if (viewMode.value === "file-diff") {
@@ -348,98 +349,16 @@ const visibleFileLines = computed(() => {
 
 const totalFileHeight = computed(() => fullFileLines.value.length * LINE_HEIGHT);
 
-const totalDiffLines = computed(() => {
-  if (!diff.value) return 0;
-  return diff.value.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
-});
-
-const useInlineWordDiff = computed(() => totalDiffLines.value <= LARGE_DIFF_LINE_THRESHOLD);
-
-const wordDiffPairsByHunk = computed(() => {
-  if (!diff.value || !useInlineWordDiff.value) {
-    return [] as Map<number, { del: DiffLine; add: DiffLine }[]>[];
-  }
-  return diff.value.hunks.map((hunk) => getWordDiffPairs(hunk.lines));
-});
-
 function onFileDiffScroll(e: Event) {
   const el = e.target as HTMLElement;
   scrollTop.value = el.scrollTop;
   containerHeight.value = el.clientHeight;
 }
 
-function getWordDiffPairs(lines: DiffLine[]): Map<number, { del: DiffLine; add: DiffLine }[]> {
-  const pairs = new Map<number, { del: DiffLine; add: DiffLine }[]>();
-  let i = 0;
-  while (i < lines.length) {
-    if (lines[i].line_type === 'deletion') {
-      const delStart = i;
-      while (i < lines.length && lines[i].line_type === 'deletion') i++;
-      const addStart = i;
-      while (i < lines.length && lines[i].line_type === 'addition') i++;
-      const addEnd = i;
-      
-      const numDels = addStart - delStart;
-      const numAdds = addEnd - addStart;
-      const numPairs = Math.min(numDels, numAdds);
-      
-      for (let j = 0; j < numPairs; j++) {
-        const delIdx = delStart + j;
-        const addIdx = addStart + j;
-        const pair = { del: lines[delIdx], add: lines[addIdx] };
-        if (!pairs.has(delIdx)) pairs.set(delIdx, []);
-        pairs.get(delIdx)!.push(pair);
-        if (!pairs.has(addIdx)) pairs.set(addIdx, []);
-        pairs.get(addIdx)!.push(pair);
-      }
-    } else {
-      i++;
-    }
-  }
-  return pairs;
-}
-
-function computeInlineDiff(oldStr: string, newStr: string): { old: { text: string; highlight: boolean }[]; new: { text: string; highlight: boolean }[] } {
-  const oldChars = oldStr.split('');
-  const newChars = newStr.split('');
-  
-  let prefixLen = 0;
-  while (prefixLen < oldChars.length && prefixLen < newChars.length && oldChars[prefixLen] === newChars[prefixLen]) {
-    prefixLen++;
-  }
-  
-  let suffixLen = 0;
-  while (
-    suffixLen < oldChars.length - prefixLen && 
-    suffixLen < newChars.length - prefixLen && 
-    oldChars[oldChars.length - 1 - suffixLen] === newChars[newChars.length - 1 - suffixLen]
-  ) {
-    suffixLen++;
-  }
-  
-  const oldMiddle = oldStr.substring(prefixLen, oldStr.length - suffixLen);
-  const newMiddle = newStr.substring(prefixLen, newStr.length - suffixLen);
-  const prefix = oldStr.substring(0, prefixLen);
-  const suffix = oldStr.substring(oldStr.length - suffixLen);
-  
-  const oldParts: { text: string; highlight: boolean }[] = [];
-  const newParts: { text: string; highlight: boolean }[] = [];
-  
-  if (prefix) { oldParts.push({ text: prefix, highlight: false }); newParts.push({ text: prefix, highlight: false }); }
-  if (oldMiddle) oldParts.push({ text: oldMiddle, highlight: true });
-  if (newMiddle) newParts.push({ text: newMiddle, highlight: true });
-  if (suffix) { oldParts.push({ text: suffix, highlight: false }); newParts.push({ text: suffix, highlight: false }); }
-  
-  return { 
-    old: oldParts.length ? oldParts : [{ text: oldStr, highlight: false }], 
-    new: newParts.length ? newParts : [{ text: newStr, highlight: false }] 
-  };
-}
-
 function lineClass(type: string): string {
   switch (type) {
-    case "addition": return "bg-[#1a4d2e]/50";
-    case "deletion": return "bg-[#4d1a1a]/50";
+    case "addition": return "bg-[var(--diff-add-bg)]";
+    case "deletion": return "bg-[var(--diff-del-bg)]";
     default: return "";
   }
 }
@@ -452,37 +371,29 @@ function linePrefix(type: string): string {
   }
 }
 
-function onEditInput() {
-  hasUnsavedChanges.value = editContent.value !== fileContent.value;
+function getHighlightedLine(lineText: string, key: string): string {
+  const cached = highlightedLineCache.value.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const highlighted = highlightCodeLine(lineText, props.filePath);
+  highlightedLineCache.value.set(key, highlighted);
+  return highlighted;
 }
 
-function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { text: string; highlight: boolean }[] {
+function getHighlightedDiffLine(hunkIdx: number, lineIdx: number, line: DiffLine): string {
   const lineText = line.content.replace(/\n$/, "");
-  if (!useInlineWordDiff.value) {
-    return [{ text: lineText, highlight: false }];
-  }
+  const key = `${hunkIdx}:${lineIdx}:${line.line_type}:${lineText}`;
+  return getHighlightedLine(lineText, key);
+}
 
-  const cacheKey = `${hunkIdx}:${lineIdx}:${line.line_type}:${lineText}`;
-  const cached = inlineDiffCache.value.get(cacheKey);
-  if (cached) return cached;
+function getHighlightedFileLine(rowIdx: number, lineText: string): string {
+  return getHighlightedLine(lineText, `file:${rowIdx}:${lineText}`);
+}
 
-  const pairs = wordDiffPairsByHunk.value[hunkIdx];
-  const pairData = pairs?.get(lineIdx);
-  if (!pairData || pairData.length === 0) {
-    const plain = [{ text: lineText, highlight: false }];
-    inlineDiffCache.value.set(cacheKey, plain);
-    return plain;
-  }
-
-  const pair = pairData[0];
-  const inlineDiff = computeInlineDiff(
-    pair.del.content.replace(/\n$/, ""),
-    pair.add.content.replace(/\n$/, "")
-  );
-
-  const parts = line.line_type === "deletion" ? inlineDiff.old : inlineDiff.new;
-  inlineDiffCache.value.set(cacheKey, parts);
-  return parts;
+function onEditInput() {
+  hasUnsavedChanges.value = editContent.value !== fileContent.value;
 }
 </script>
 
@@ -492,11 +403,14 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
       <div class="flex items-center gap-3 min-w-0">
         <Pencil v-if="isWorkingChanges" class="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
         <FileText v-else class="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
-        <span class="text-sm font-medium text-[var(--foreground)] truncate">{{ filePath }}</span>
+        <div class="min-w-0" :title="filePath">
+          <div class="text-sm font-semibold text-[var(--foreground)] truncate">{{ fileNameParts.fileName }}</div>
+          <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileNameParts.directory || '.' }}</div>
+        </div>
         <span v-if="diff?.old_path" class="text-xs text-[var(--muted-foreground)] flex-shrink-0">
           (from {{ diff.old_path }})
         </span>
-        <span v-if="hasUnsavedChanges" class="text-xs text-[#f59e0b] flex-shrink-0">● Unsaved</span>
+        <span v-if="hasUnsavedChanges" class="text-xs text-[var(--destructive)] flex-shrink-0">● Unsaved</span>
       </div>
       
       <div class="flex items-center gap-2 flex-shrink-0">
@@ -546,7 +460,7 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
           <button
             @click="saveFile"
             :disabled="!hasUnsavedChanges || saving"
-            class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-[#238636] hover:bg-[#2ea043] text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-[var(--primary)] hover:opacity-90 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             <Save class="w-3.5 h-3.5" />
             Save
@@ -554,7 +468,7 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
           <button
             @click="discardEditChanges"
             :disabled="!hasUnsavedChanges"
-            class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-[#30363d] bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             <RotateCcw class="w-3.5 h-3.5" />
             Discard
@@ -590,14 +504,14 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
       </div>
     </div>
 
-    <div class="flex-1 overflow-auto bg-[#0d1117] font-mono text-[13px] leading-[1.5]">
+    <div class="flex-1 overflow-auto bg-[var(--diff-bg)] font-mono text-[13px] leading-[1.5]">
       <div v-if="loading" class="flex items-center justify-center h-full">
         <div class="text-[var(--muted-foreground)]">Loading...</div>
       </div>
 
       <div v-else-if="error" class="flex flex-col items-center justify-center h-full gap-2">
         <div class="text-red-400">{{ error }}</div>
-        <button @click="reload" class="text-xs text-[#58a6ff] hover:underline">Retry</button>
+        <button @click="reload" class="text-xs text-[var(--diff-link)] hover:underline">Retry</button>
       </div>
 
       <div v-else-if="diff?.is_binary" class="flex items-center justify-center h-full">
@@ -605,18 +519,15 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
       </div>
 
       <div v-else-if="viewMode === 'diff' && diff" class="min-w-fit">
-        <div v-if="!useInlineWordDiff" class="mx-3 mt-2 rounded border border-[#30363d] bg-[#161b22] px-3 py-2 text-[11px] text-[#8b949e]">
-          Large diff detected. Inline word-highlighting is temporarily disabled for faster rendering.
-        </div>
         <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
-          <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[#161b22] px-3 py-1.5 sticky top-0 z-10 border-y border-[#30363d]">
-            <span class="text-xs text-[#58a6ff]">
+          <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[var(--diff-hunk-bg)] px-3 py-1.5 sticky top-0 z-10 border-y border-[var(--diff-border)]">
+            <span class="text-xs text-[var(--diff-link)]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
             </span>
             <button
               v-if="isWorkingChanges"
               @click="revertHunk(hunkIdx)"
-              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[#30363d] bg-[#21262d] hover:bg-[#30363d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
             >
               <Undo2 class="w-3 h-3" />
               Revert Hunk
@@ -626,25 +537,22 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
           <div>
             <template v-for="(line, lineIdx) in hunk.lines" :key="lineIdx">
               <div :class="['flex', lineClass(line.line_type)]">
-                <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
+                <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
                   {{ line.old_line_no ?? '' }}
                 </div>
-                <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px]">
+                <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
                   {{ line.new_line_no ?? '' }}
                 </div>
                 <div 
                   class="w-5 flex-shrink-0 text-center select-none font-bold"
-                  :class="line.line_type === 'addition' ? 'text-[#3fb950]' : line.line_type === 'deletion' ? 'text-[#f85149]' : 'text-[#484f58]'"
+                  :class="line.line_type === 'addition' ? 'text-[var(--diff-sign-add)]' : line.line_type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
                 >
                   {{ linePrefix(line.line_type) }}
                 </div>
                 <pre 
                   class="flex-1 px-1.5 whitespace-pre overflow-x-auto"
-                  :class="line.line_type === 'addition' ? 'text-[#aff5b4]' : line.line_type === 'deletion' ? 'text-[#ffa198]' : 'text-[#c9d1d9]'"
-                ><template v-if="line.line_type === 'deletion' || line.line_type === 'addition'"><template v-for="(part, pIdx) in getInlineParts(hunkIdx, lineIdx, line)" :key="pIdx"><span 
-                      v-if="part.highlight" 
-                      :class="line.line_type === 'addition' ? 'bg-[#2ea043]/60 rounded-sm' : 'bg-[#b62324]/60 rounded-sm'"
-                    >{{ part.text }}</span><template v-else>{{ part.text }}</template></template></template><template v-else>{{ line.content.replace(/\n$/, '') }}</template></pre>
+                  :class="line.line_type === 'addition' ? 'text-[var(--diff-add-fg)]' : line.line_type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
+                ><code class="hljs bg-transparent" v-html="getHighlightedDiffLine(hunkIdx, lineIdx, line)"></code></pre>
               </div>
             </template>
           </div>
@@ -666,22 +574,22 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
             :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
             :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
           >
-            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px] leading-[20px]">
+            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
               {{ item.line.oldLineNo ?? '' }}
             </div>
-            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[#484f58] select-none border-r border-[#21262d] text-[11px] leading-[20px]">
+            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
               {{ item.line.lineNo || '' }}
             </div>
             <div 
               class="w-5 flex-shrink-0 text-center select-none font-bold leading-[20px]"
-              :class="item.line.type === 'addition' ? 'text-[#3fb950]' : item.line.type === 'deletion' ? 'text-[#f85149]' : 'text-[#484f58]'"
+              :class="item.line.type === 'addition' ? 'text-[var(--diff-sign-add)]' : item.line.type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
             >
               {{ linePrefix(item.line.type) }}
             </div>
             <pre 
               class="flex-1 px-1.5 whitespace-pre overflow-x-auto leading-[20px] m-0"
-              :class="item.line.type === 'addition' ? 'text-[#aff5b4]' : item.line.type === 'deletion' ? 'text-[#ffa198]' : 'text-[#c9d1d9]'"
-            >{{ item.line.content }}</pre>
+              :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
+            ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line.content)"></code></pre>
           </div>
         </div>
         <div v-else-if="!loading && !loadingFileContent" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
@@ -693,7 +601,7 @@ function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { tex
         <textarea
           v-model="editContent"
           @input="onEditInput"
-          class="w-full h-full bg-[#0d1117] text-[#c9d1d9] p-3 resize-none outline-none font-mono text-[13px] leading-[1.5]"
+          class="w-full h-full bg-[var(--diff-bg)] text-[var(--diff-text)] p-3 resize-none outline-none font-mono text-[13px] leading-[1.5]"
           spellcheck="false"
         ></textarea>
       </div>

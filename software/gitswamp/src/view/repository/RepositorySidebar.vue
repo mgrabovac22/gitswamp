@@ -82,7 +82,7 @@ const remoteIcon = computed(() => {
 </script>
 
 <template>
-  <div class="w-56 bg-[var(--sidebar)] border-r border-[var(--sidebar-border)] flex flex-col h-full flex-shrink-0">
+  <div class="w-full bg-[var(--sidebar)] border-r border-[var(--sidebar-border)] flex flex-col h-full flex-shrink-0">
     <div class="p-3 border-b border-[var(--sidebar-border)]">
       <div class="flex items-center gap-2.5 mb-2.5 px-2 py-2 rounded-lg bg-[var(--sidebar-primary)]/20 border-2 border-[var(--sidebar-primary)]/50 shadow-md shadow-[var(--sidebar-primary)]/10">
         <GitBranch class="w-5 h-5 text-[var(--sidebar-primary)] flex-shrink-0 drop-shadow-[0_0_6px_var(--sidebar-primary)]" />

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import FileDiffViewer from "@/shared/ui/FileDiffViewer.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
 import CommitDetails from "@/view/commit/CommitDetails.vue";
@@ -51,6 +51,63 @@ const showDetailsPanel = computed(
   () => props.viewingWorkingChanges || props.viewingStash || props.git.selectedCommit.value !== null,
 );
 
+const SIDEBAR_WIDTH_KEY = "gitswamp-sidebar-width";
+const DETAILS_WIDTH_KEY = "gitswamp-details-width";
+const sidebarWidth = ref(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 224);
+const detailsWidth = ref(Number(localStorage.getItem(DETAILS_WIDTH_KEY)) || 320);
+const resizeTarget = ref<"sidebar" | "details" | null>(null);
+const resizeStartX = ref(0);
+const resizeStartWidth = ref(0);
+
+function clampWidth(target: "sidebar" | "details", width: number): number {
+  if (target === "sidebar") {
+    return Math.min(Math.max(width, 180), 420);
+  }
+
+  return Math.min(Math.max(width, 260), 700);
+}
+
+function beginResize(target: "sidebar" | "details", event: MouseEvent) {
+  resizeTarget.value = target;
+  resizeStartX.value = event.clientX;
+  resizeStartWidth.value = target === "sidebar" ? sidebarWidth.value : detailsWidth.value;
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+}
+
+function onPointerMove(event: MouseEvent) {
+  if (!resizeTarget.value) return;
+
+  const deltaX = event.clientX - resizeStartX.value;
+  if (resizeTarget.value === "sidebar") {
+    sidebarWidth.value = clampWidth("sidebar", resizeStartWidth.value + deltaX);
+  } else {
+    detailsWidth.value = clampWidth("details", resizeStartWidth.value - deltaX);
+  }
+}
+
+function endResize() {
+  if (!resizeTarget.value) return;
+
+  localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
+  localStorage.setItem(DETAILS_WIDTH_KEY, String(detailsWidth.value));
+  resizeTarget.value = null;
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+}
+
+onMounted(() => {
+  globalThis.addEventListener("mousemove", onPointerMove);
+  globalThis.addEventListener("mouseup", endResize);
+});
+
+onUnmounted(() => {
+  globalThis.removeEventListener("mousemove", onPointerMove);
+  globalThis.removeEventListener("mouseup", endResize);
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+});
+
 function toggleDetailsPanel() {
   emit("update:detailsPanelCollapsed", !props.detailsPanelCollapsed);
 }
@@ -58,19 +115,27 @@ function toggleDetailsPanel() {
 
 <template>
   <div class="flex-1 flex overflow-hidden">
-    <RepositorySidebar
-      :branches="props.git.localBranches.value"
-      :remote-branches="props.git.remoteBranches.value"
-      :current-branch="props.git.currentBranch.value"
-      :stashes="props.git.stashes.value"
-      :tags="props.git.tags.value"
-      :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
-      @checkout="props.git.checkoutBranch($event)"
-      @create-branch="props.git.createBranch($event)"
-      @delete-branch="props.git.deleteBranch($event)"
-      @stash-pop="props.git.stashPop($event)"
-      @stash-apply="props.git.stashApply($event)"
-      @stash-drop="props.git.stashDrop($event)"
+    <div class="h-full flex-shrink-0" :style="{ width: `${sidebarWidth}px` }">
+      <RepositorySidebar
+        :branches="props.git.localBranches.value"
+        :remote-branches="props.git.remoteBranches.value"
+        :current-branch="props.git.currentBranch.value"
+        :stashes="props.git.stashes.value"
+        :tags="props.git.tags.value"
+        :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
+        @checkout="props.git.checkoutBranch($event)"
+        @create-branch="props.git.createBranch($event)"
+        @delete-branch="props.git.deleteBranch($event)"
+        @stash-pop="props.git.stashPop($event)"
+        @stash-apply="props.git.stashApply($event)"
+        @stash-drop="props.git.stashDrop($event)"
+      />
+    </div>
+
+    <div
+      class="w-1.5 h-full flex-shrink-0 cursor-col-resize bg-[var(--border)]/40 hover:bg-[var(--primary)]/40 transition-colors"
+      title="Resize sidebar"
+      @mousedown.prevent="beginResize('sidebar', $event)"
     />
 
     <div class="flex-1 flex flex-col overflow-hidden">
@@ -135,7 +200,18 @@ function toggleDetailsPanel() {
           @request-merge="emit('requestMerge', $event)"
         />
 
-        <div v-if="showDetailsPanel" class="relative flex h-full">
+        <div
+          v-if="showDetailsPanel && !props.detailsPanelCollapsed"
+          class="w-1.5 h-full flex-shrink-0 cursor-col-resize bg-[var(--border)]/40 hover:bg-[var(--primary)]/40 transition-colors"
+          title="Resize details panel"
+          @mousedown.prevent="beginResize('details', $event)"
+        />
+
+        <div
+          v-if="showDetailsPanel"
+          class="relative flex h-full"
+          :style="{ width: props.detailsPanelCollapsed ? '0px' : `${detailsWidth}px` }"
+        >
           <button
             @click="toggleDetailsPanel"
             :class="[

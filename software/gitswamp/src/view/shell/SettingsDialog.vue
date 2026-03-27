@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
-import { Shield, Eye, EyeOff, Check, Trash2, X, Sun, Moon, Layout, Monitor } from "lucide-vue-next";
+import { Shield, Eye, EyeOff, Check, Trash2, X, Layout, Monitor, Sun, Moon } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
+import {
+  applyAppPalettePreference,
+  applyThemeModePreference,
+  getStoredAppPalettePreference,
+  getStoredThemeModePreference,
+  storeAppPalettePreference,
+  storeThemeModePreference,
+  type AppPalettePreference,
+  type ThemeModePreference,
+} from "@/shared/themePreferences";
 
 const props = defineProps<{
   token: string | null;
@@ -17,10 +27,19 @@ const emit = defineEmits<{
 const tokenInput = ref("");
 const showToken = ref(false);
 const saved = ref(false);
-const isDark = ref(true);
+const themeMode = ref<ThemeModePreference>("dark");
+const appPalette = ref<AppPalettePreference>("default");
 const fontSize = ref<"small" | "medium" | "large">("medium");
 const compactMode = ref(false);
 const showAvatars = ref(true);
+
+const appPaletteOptions: { value: AppPalettePreference; label: string }[] = [
+  { value: "swamp", label: "Swamp" },
+  { value: "default", label: "Default" },
+  { value: "github", label: "GitHub" },
+  { value: "dark-red", label: "Dark Red" },
+  { value: "emerald", label: "Emerald" },
+];
 
 const fontSizes = {
   small: "14px",
@@ -32,7 +51,8 @@ onMounted(() => {
   if (props.token) {
     tokenInput.value = props.token;
   }
-  isDark.value = !document.documentElement.classList.contains("light");
+  themeMode.value = getStoredThemeModePreference();
+  appPalette.value = getStoredAppPalettePreference();
   
   const savedFontSize = localStorage.getItem("gitswamp-font-size");
   if (savedFontSize && (savedFontSize === "small" || savedFontSize === "medium" || savedFontSize === "large")) {
@@ -63,15 +83,18 @@ watch([fontSize, compactMode, showAvatars], () => {
   localStorage.setItem("gitswamp-show-avatars", String(showAvatars.value));
 });
 
-function toggleTheme() {
-  isDark.value = !isDark.value;
-  if (isDark.value) {
-    document.documentElement.classList.remove("light");
-    localStorage.setItem("gitswamp-theme", "dark");
-  } else {
-    document.documentElement.classList.add("light");
-    localStorage.setItem("gitswamp-theme", "light");
-  }
+watch(themeMode, (value) => {
+  applyThemeModePreference(value);
+  storeThemeModePreference(value);
+});
+
+watch(appPalette, (value) => {
+  applyAppPalettePreference(value);
+  storeAppPalettePreference(value);
+});
+
+function toggleThemeMode() {
+  themeMode.value = themeMode.value === "dark" ? "light" : "dark";
 }
 
 function handleSave() {
@@ -109,19 +132,19 @@ function handleDelete() {
           
           <div class="flex items-center justify-between py-2">
             <div>
-              <label class="text-xs font-medium text-[var(--foreground)] block">Theme</label>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Theme</div>
               <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Dark or light mode</p>
             </div>
             <button
-              @click="toggleTheme"
+              @click="toggleThemeMode"
               class="relative w-14 h-7 rounded-full transition-colors duration-300 flex-shrink-0"
-              :class="isDark ? 'bg-[var(--accent)]' : 'bg-[var(--primary)]'"
+              :class="themeMode === 'dark' ? 'bg-[var(--accent)]' : 'bg-[var(--primary)]'"
             >
               <div
                 class="absolute top-0.5 w-6 h-6 rounded-full bg-white shadow-md flex items-center justify-center transition-all duration-300"
-                :class="isDark ? 'left-0.5' : 'left-[calc(100%-1.625rem)]'"
+                :class="themeMode === 'dark' ? 'left-0.5' : 'left-[calc(100%-1.625rem)]'"
               >
-                <Moon v-if="isDark" class="w-3.5 h-3.5 text-[var(--accent)]" />
+                <Moon v-if="themeMode === 'dark'" class="w-3.5 h-3.5 text-[var(--accent)]" />
                 <Sun v-else class="w-3.5 h-3.5 text-[var(--primary)]" />
               </div>
             </button>
@@ -129,7 +152,27 @@ function handleDelete() {
 
           <div class="flex items-center justify-between py-2">
             <div>
-              <label class="text-xs font-medium text-[var(--foreground)] block">Font Size</label>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Theme Preset</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Colors for app UI and code diff</p>
+            </div>
+            <div class="flex gap-1.5 flex-wrap justify-end max-w-[250px]">
+              <button
+                v-for="option in appPaletteOptions"
+                :key="option.value"
+                @click="appPalette = option.value"
+                class="px-2.5 py-1.5 text-[10px] rounded transition-colors"
+                :class="appPalette === option.value
+                  ? 'bg-[var(--primary)] text-white'
+                  : 'bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Font Size</div>
               <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Adjust text size</p>
             </div>
             <div class="flex gap-1">
@@ -149,7 +192,7 @@ function handleDelete() {
 
           <div class="flex items-center justify-between py-2">
             <div>
-              <label class="text-xs font-medium text-[var(--foreground)] block">Compact Mode</label>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Compact Mode</div>
               <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Reduce spacing in commit list</p>
             </div>
             <button
@@ -166,7 +209,7 @@ function handleDelete() {
 
           <div class="flex items-center justify-between py-2">
             <div>
-              <label class="text-xs font-medium text-[var(--foreground)] block">Show Avatars</label>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Show Avatars</div>
               <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Display author avatars in graph</p>
             </div>
             <button
@@ -189,7 +232,7 @@ function handleDelete() {
           </div>
           
           <div>
-            <label class="text-xs font-medium text-[var(--foreground)] mb-1.5 block">GitHub Personal Access Token</label>
+            <div class="text-xs font-medium text-[var(--foreground)] mb-1.5 block">GitHub Personal Access Token</div>
             <p class="text-[10px] text-[var(--muted-foreground)] mb-3">
               Used for push, pull, and fetch over HTTPS. Generate one at
               <span class="text-[var(--primary)]">GitHub → Settings → Developer settings → Personal access tokens</span>.
@@ -248,7 +291,7 @@ function handleDelete() {
           </div>
           
           <div>
-            <label class="text-xs font-medium text-[var(--foreground)] mb-1.5 block">Git Executable</label>
+            <div class="text-xs font-medium text-[var(--foreground)] mb-1.5 block">Git Executable</div>
             <div class="flex items-center gap-2 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs font-mono text-[var(--primary)]">
               {{ gitPath || 'Detecting...' }}
             </div>

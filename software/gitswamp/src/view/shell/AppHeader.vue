@@ -10,8 +10,8 @@ import {
   Download,
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
-import headerIcon from "@/assets/logo_git.gif";
-import headerTextLogo from "@/assets/logo.png";
+import headerIcon from "@/assets/logo_git_croc.gif";
+import headerTextLogo from "@/assets/logo_dark.png";
 
 defineProps<{
   loading: boolean;
@@ -37,7 +37,7 @@ const emit = defineEmits<{
         </div>
         <h1 class="text-[var(--foreground)] font-bold text-sm tracking-tight overflow-hidden whitespace-nowrap">
           <div class="h-6 inline-flex items-center">
-            <img :src="headerTextLogo" alt="GitSwamp" class="h-6 w-auto object-contain" style="transform: translateY(2px);" />
+            <img :src="headerTextLogo" alt="GitSwamp" class="h-6 w-auto object-contain" style="transform: translateY(4px);" />
           </div>
           <span class="sr-only">GitSwamp</span>
         </h1>

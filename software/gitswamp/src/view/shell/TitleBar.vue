@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Minimize2, Maximize2, X } from "lucide-vue-next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import titleLogo from "@/assets/logo.gif";
+import titleLogo from "@/assets/logo_croc.png";
 
 const appWindow = getCurrentWindow();
 

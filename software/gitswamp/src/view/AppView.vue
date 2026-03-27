@@ -12,6 +12,12 @@ import InitDialog from "@/view/repository/InitDialog.vue";
 import MultiPlatformPushDialog from "@/view/repository/MultiPlatformPushDialog.vue";
 import SettingsDialog from "@/view/shell/SettingsDialog.vue";
 import ToastContainer from "@/shared/ui/ToastContainer.vue";
+import {
+  applyAppPalettePreference,
+  applyThemeModePreference,
+  getStoredAppPalettePreference,
+  getStoredThemeModePreference,
+} from "@/shared/themePreferences";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -23,10 +29,8 @@ import type { RepoInfo, CommitInfo, StashInfo } from "@/types";
 const git = useGit();
 const toast = useToast();
 
-const savedTheme = localStorage.getItem("gitswamp-theme");
-if (savedTheme === "light") {
-  document.documentElement.classList.add("light");
-}
+applyThemeModePreference(getStoredThemeModePreference());
+applyAppPalettePreference(getStoredAppPalettePreference());
 
 const savedFontSize = localStorage.getItem("gitswamp-font-size");
 if (savedFontSize) {

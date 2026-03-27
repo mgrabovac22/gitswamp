@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { X, Check, ChevronLeft, ChevronRight, Save, RotateCcw, AlertTriangle } from "lucide-vue-next";
+import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 
 const props = defineProps<{
   repoPath: string;
@@ -42,6 +43,8 @@ const selections = ref<LineSelection[]>([]);
 const hasMarkers = ref(false);
 const simpleResolution = ref<'keep-modified' | 'keep-base' | 'delete' | null>(null);
 const CONTEXT_LINES = 5;
+const highlightedLineCache = ref(new Map<string, string>());
+const fileNameParts = computed(() => splitFilePath(props.filePath));
 
 // Parse conflict markers from file content
 function parseConflicts(content: string): ConflictHunk[] {
@@ -143,6 +146,7 @@ async function loadFile() {
   simpleResolution.value = null;
   
   try {
+    highlightedLineCache.value.clear();
     fileContent.value = await invoke<string>("get_file_content", {
       path: props.repoPath,
       filePath: props.filePath,
@@ -351,6 +355,18 @@ function reset() {
   selections.value = initSelections(hunks.value);
 }
 
+function getHighlightedConflictLine(section: string, hunkIdx: number, lineIdx: number, lineText: string): string {
+  const key = `${section}:${hunkIdx}:${lineIdx}:${lineText}`;
+  const cached = highlightedLineCache.value.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const highlighted = highlightCodeLine(lineText, props.filePath);
+  highlightedLineCache.value.set(key, highlighted);
+  return highlighted;
+}
+
 onMounted(() => {
   loadFile();
 });
@@ -369,7 +385,8 @@ watch(() => props.filePath, () => {
           <AlertTriangle class="w-5 h-5 text-[#f59e0b]" />
           <div>
             <span class="text-sm font-semibold text-[var(--foreground)]">{{ hasMarkers ? 'Resolve Conflicts - Line by Line' : 'Resolve Conflicts - Choose Method' }}</span>
-            <span class="text-xs text-[var(--muted-foreground)] ml-2">{{ filePath }}</span>
+            <div class="text-xs text-[var(--foreground)] font-semibold truncate max-w-[60vw]" :title="filePath">{{ fileNameParts.fileName }}</div>
+            <div class="text-[10px] text-[var(--muted-foreground)] truncate max-w-[60vw]">{{ fileNameParts.directory || '.' }}</div>
           </div>
         </div>
         <div class="flex items-center gap-2">
@@ -558,7 +575,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextBeforeStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours-context-before', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -584,7 +601,7 @@ watch(() => props.filePath, () => {
                       <pre 
                         class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto"
                         :class="selections[hunkIdx].oursSelected[lineIdx] ? 'text-[#aff5b4] bg-[#238636]/20' : 'text-[#8b949e]'"
-                      >{{ line }}</pre>
+                      ><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
 
                     <!-- Context after -->
@@ -594,7 +611,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextAfterStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours-context-after', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -618,7 +635,7 @@ watch(() => props.filePath, () => {
                       <div class="w-6 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/30">
                         {{ lineIdx + 1 }}
                       </div>
-                      <pre class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto text-[#999]">{{ line }}</pre>
+                      <pre class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto text-[#999]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('base', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
                     <div v-if="hunk.baseLines.length === 0" class="px-4 py-4 text-xs text-[var(--muted-foreground)] italic">
                       (no content)
@@ -639,7 +656,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextBeforeStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs-context-before', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -665,7 +682,7 @@ watch(() => props.filePath, () => {
                       <pre 
                         class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto"
                         :class="selections[hunkIdx].theirsSelected[lineIdx] ? 'text-[#a5d6ff] bg-[#1f6feb]/20' : 'text-[#8b949e]'"
-                      >{{ line }}</pre>
+                      ><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
 
                     <!-- Context after -->
@@ -675,7 +692,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextAfterStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]">{{ line }}</pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs-context-after', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -697,7 +714,7 @@ watch(() => props.filePath, () => {
                     class="p-2"
                   >
                     <div v-for="(line, lineIdx) in [...hunk.oursLines.filter((_, i) => selections[hunkIdx].oursSelected[i]), ...hunk.theirsLines.filter((_, i) => selections[hunkIdx].theirsSelected[i])]" :key="'res-' + lineIdx" class="px-2 py-0.5 border-l-2 border-[#3fb950] text-[#aff5b4]">
-                      <pre class="whitespace-pre-wrap">{{ line }}</pre>
+                      <pre class="whitespace-pre-wrap"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('result', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
                   </div>
                   <div v-else class="px-3 py-3 text-xs text-[#f59e0b]">

@@ -10,6 +10,7 @@ import {
   ArrowDown,
   Copy,
   Plus,
+  Minus,
   Trash2,
   Archive,
   Eye,
@@ -17,6 +18,7 @@ import {
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
+import { splitFilePath } from "@/shared/codeView";
 import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo } from "@/types";
 
 const props = defineProps<{
@@ -180,10 +182,14 @@ function onCommit() {
 function copyToClipboard(text: string) {
   navigator.clipboard.writeText(text);
 }
+
+function fileParts(path: string) {
+  return splitFilePath(path);
+}
 </script>
 
 <template>
-  <div class="w-80 bg-[var(--card)] border-l border-[var(--border)] flex flex-col h-full overflow-visible relative z-[120]">
+  <div class="w-full bg-[var(--card)] border-l border-[var(--border)] flex flex-col h-full overflow-visible relative z-[120]">
     <div class="border-b border-[var(--border)] flex-shrink-0 relative">
       <div class="h-9 flex">
         <button
@@ -252,7 +258,10 @@ function copyToClipboard(text: string) {
             @click="emit('manualResolve', f.path)"
           >
             <span class="text-[10px] font-bold w-4 text-center text-[#ef4444]">!</span>
-            <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
+              <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+            </div>
             <button
               @click.stop="emit('manualResolve', f.path)"
               class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all"
@@ -299,7 +308,10 @@ function copyToClipboard(text: string) {
               @click="openDiff(f.path, null, false)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+              </div>
               <button
                 @click.stop="confirmDiscard(f.path)"
                 class="p-0.5 rounded hover:bg-[#ef4444]/20 transition-all flex-shrink-0"
@@ -345,7 +357,10 @@ function copyToClipboard(text: string) {
               @click="openDiff(f.path, null, true)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+              </div>
               <button
                 @click.stop="openDiff(f.path, null, true)"
                 class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--primary)]/20 transition-all"
@@ -370,7 +385,7 @@ function copyToClipboard(text: string) {
       <div class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0">
         <div class="mb-2">
           <div class="flex items-center justify-between mb-1">
-            <label class="text-[10px] font-medium text-[var(--muted-foreground)]">Subject</label>
+            <div class="text-[10px] font-medium text-[var(--muted-foreground)]">Subject</div>
             <span :class="[
               'text-[10px] font-medium',
               commitSummary.length > 72 ? 'text-[#ef4444]' : 'text-[var(--muted-foreground)]'
@@ -424,7 +439,10 @@ function copyToClipboard(text: string) {
             @click="openDiff(f.path, commit!.sha, false)"
           >
             <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-            <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
+              <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+            </div>
             <Eye class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity" />
             <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
             <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
@@ -559,7 +577,10 @@ function copyToClipboard(text: string) {
             class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
           >
             <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-            <span class="text-xs text-[var(--foreground)] truncate flex-1 opacity-90">{{ f.path }}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
+              <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+            </div>
             <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
             <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
           </div>
