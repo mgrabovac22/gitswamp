@@ -2,36 +2,88 @@ use crate::models::FileStatusInfo;
 use crate::services::git_service::GitService;
 
 #[tauri::command]
-pub fn get_status(path: String) -> Result<Vec<FileStatusInfo>, String> {
-    GitService::status(&path)
+pub async fn get_status(path: String) -> Result<Vec<FileStatusInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::status(&path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn stage_file(path: String, file_path: String) -> Result<(), String> {
-    GitService::stage_file(&path, &file_path)
+pub async fn stage_file(path: String, file_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::stage_file(&path, &file_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn unstage_file(path: String, file_path: String) -> Result<(), String> {
-    GitService::unstage_file(&path, &file_path)
+pub async fn stage_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        for file_path in file_paths {
+            GitService::stage_file(&path, &file_path)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn create_commit(path: String, message: String) -> Result<String, String> {
-    GitService::create_commit(&path, &message)
+pub async fn unstage_file(path: String, file_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::unstage_file(&path, &file_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn discard_file(path: String, file_path: String) -> Result<(), String> {
-    GitService::discard_file(&path, &file_path)
+pub async fn unstage_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        for file_path in file_paths {
+            GitService::unstage_file(&path, &file_path)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn resolve_conflict_file(path: String, file_path: String, strategy: String) -> Result<(), String> {
-    GitService::resolve_conflict_file(&path, &file_path, &strategy)
+pub async fn create_commit(path: String, message: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::create_commit(&path, &message))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn resolve_all_conflicts(path: String, strategy: String) -> Result<(), String> {
-    GitService::resolve_all_conflicts(&path, &strategy)
+pub async fn discard_file(path: String, file_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::discard_file(&path, &file_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn discard_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        for file_path in file_paths {
+            GitService::discard_file(&path, &file_path)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn resolve_conflict_file(path: String, file_path: String, strategy: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::resolve_conflict_file(&path, &file_path, &strategy)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn resolve_all_conflicts(path: String, strategy: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::resolve_all_conflicts(&path, &strategy))
+        .await
+        .map_err(|e| e.to_string())?
 }

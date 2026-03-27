@@ -2,31 +2,43 @@ use crate::models::FileDiff;
 use crate::services::git_service::GitService;
 
 #[tauri::command]
-pub fn get_working_diff(path: String, file_path: String, staged: bool) -> Result<FileDiff, String> {
-    GitService::get_working_diff(&path, &file_path, staged)
+pub async fn get_working_diff(path: String, file_path: String, staged: bool) -> Result<FileDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::get_working_diff(&path, &file_path, staged))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn get_commit_diff(path: String, sha: String, file_path: String) -> Result<FileDiff, String> {
-    GitService::get_commit_diff(&path, &sha, &file_path)
+pub async fn get_commit_diff(path: String, sha: String, file_path: String) -> Result<FileDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::get_commit_diff(&path, &sha, &file_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn get_file_content(path: String, file_path: String, sha: Option<String>) -> Result<String, String> {
-    GitService::get_file_content(&path, &file_path, sha.as_deref())
+pub async fn get_file_content(path: String, file_path: String, sha: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::get_file_content(&path, &file_path, sha.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn has_conflict_markers(path: String, file_path: String) -> Result<bool, String> {
-    GitService::has_conflict_markers(&path, &file_path)
+pub async fn has_conflict_markers(path: String, file_path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::has_conflict_markers(&path, &file_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn save_file_content(path: String, file_path: String, content: String) -> Result<(), String> {
-    GitService::save_file_content(&path, &file_path, &content)
+pub async fn save_file_content(path: String, file_path: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::save_file_content(&path, &file_path, &content))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn revert_hunk(path: String, file_path: String, hunk_index: usize, staged: bool) -> Result<(), String> {
-    GitService::revert_hunk(&path, &file_path, hunk_index, staged)
+pub async fn revert_hunk(path: String, file_path: String, hunk_index: usize, staged: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::revert_hunk(&path, &file_path, hunk_index, staged))
+        .await
+        .map_err(|e| e.to_string())?
 }

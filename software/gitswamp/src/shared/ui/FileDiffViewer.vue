@@ -29,6 +29,7 @@ const error = ref<string | null>(null);
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
+const inlineDiffCache = ref(new Map<string, { text: string; highlight: boolean }[]>());
 
 // Virtualization state
 const scrollTop = ref(0);
@@ -41,6 +42,7 @@ let lastFileHash = "";
 
 const isWorkingChanges = computed(() => !props.commitSha);
 const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
+const LARGE_DIFF_LINE_THRESHOLD = 1500;
 
 watch(
   () => [props.filePath, props.staged, props.commitSha],
@@ -80,6 +82,8 @@ async function reload() {
         staged: props.staged ?? false,
       });
     }
+
+    inlineDiffCache.value.clear();
     
     // Don't load file content synchronously - do it lazily
     if (viewMode.value === "file-diff") {
@@ -344,6 +348,20 @@ const visibleFileLines = computed(() => {
 
 const totalFileHeight = computed(() => fullFileLines.value.length * LINE_HEIGHT);
 
+const totalDiffLines = computed(() => {
+  if (!diff.value) return 0;
+  return diff.value.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
+});
+
+const useInlineWordDiff = computed(() => totalDiffLines.value <= LARGE_DIFF_LINE_THRESHOLD);
+
+const wordDiffPairsByHunk = computed(() => {
+  if (!diff.value || !useInlineWordDiff.value) {
+    return [] as Map<number, { del: DiffLine; add: DiffLine }[]>[];
+  }
+  return diff.value.hunks.map((hunk) => getWordDiffPairs(hunk.lines));
+});
+
 function onFileDiffScroll(e: Event) {
   const el = e.target as HTMLElement;
   scrollTop.value = el.scrollTop;
@@ -436,6 +454,35 @@ function linePrefix(type: string): string {
 
 function onEditInput() {
   hasUnsavedChanges.value = editContent.value !== fileContent.value;
+}
+
+function getInlineParts(hunkIdx: number, lineIdx: number, line: DiffLine): { text: string; highlight: boolean }[] {
+  const lineText = line.content.replace(/\n$/, "");
+  if (!useInlineWordDiff.value) {
+    return [{ text: lineText, highlight: false }];
+  }
+
+  const cacheKey = `${hunkIdx}:${lineIdx}:${line.line_type}:${lineText}`;
+  const cached = inlineDiffCache.value.get(cacheKey);
+  if (cached) return cached;
+
+  const pairs = wordDiffPairsByHunk.value[hunkIdx];
+  const pairData = pairs?.get(lineIdx);
+  if (!pairData || pairData.length === 0) {
+    const plain = [{ text: lineText, highlight: false }];
+    inlineDiffCache.value.set(cacheKey, plain);
+    return plain;
+  }
+
+  const pair = pairData[0];
+  const inlineDiff = computeInlineDiff(
+    pair.del.content.replace(/\n$/, ""),
+    pair.add.content.replace(/\n$/, "")
+  );
+
+  const parts = line.line_type === "deletion" ? inlineDiff.old : inlineDiff.new;
+  inlineDiffCache.value.set(cacheKey, parts);
+  return parts;
 }
 </script>
 
@@ -558,6 +605,9 @@ function onEditInput() {
       </div>
 
       <div v-else-if="viewMode === 'diff' && diff" class="min-w-fit">
+        <div v-if="!useInlineWordDiff" class="mx-3 mt-2 rounded border border-[#30363d] bg-[#161b22] px-3 py-2 text-[11px] text-[#8b949e]">
+          Large diff detected. Inline word-highlighting is temporarily disabled for faster rendering.
+        </div>
         <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
           <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[#161b22] px-3 py-1.5 sticky top-0 z-10 border-y border-[#30363d]">
             <span class="text-xs text-[#58a6ff]">
@@ -591,19 +641,7 @@ function onEditInput() {
                 <pre 
                   class="flex-1 px-1.5 whitespace-pre overflow-x-auto"
                   :class="line.line_type === 'addition' ? 'text-[#aff5b4]' : line.line_type === 'deletion' ? 'text-[#ffa198]' : 'text-[#c9d1d9]'"
-                ><template v-if="line.line_type === 'deletion' || line.line_type === 'addition'"><template v-for="(part, pIdx) in (() => {
-                    const pairs = getWordDiffPairs(hunk.lines);
-                    const pairData = pairs.get(lineIdx);
-                    if (pairData && pairData.length > 0) {
-                      const pair = pairData[0];
-                      const inlineDiff = computeInlineDiff(
-                        pair.del.content.replace(/\n$/, ''),
-                        pair.add.content.replace(/\n$/, '')
-                      );
-                      return line.line_type === 'deletion' ? inlineDiff.old : inlineDiff.new;
-                    }
-                    return [{ text: line.content.replace(/\n$/, ''), highlight: false }];
-                  })()" :key="pIdx"><span 
+                ><template v-if="line.line_type === 'deletion' || line.line_type === 'addition'"><template v-for="(part, pIdx) in getInlineParts(hunkIdx, lineIdx, line)" :key="pIdx"><span 
                       v-if="part.highlight" 
                       :class="line.line_type === 'addition' ? 'bg-[#2ea043]/60 rounded-sm' : 'bg-[#b62324]/60 rounded-sm'"
                     >{{ part.text }}</span><template v-else>{{ part.text }}</template></template></template><template v-else>{{ line.content.replace(/\n$/, '') }}</template></pre>
