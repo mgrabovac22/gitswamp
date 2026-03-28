@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue";
+import { computed, ref, onMounted, onUnmounted, watch } from "vue";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -25,12 +25,14 @@ const props = defineProps<{
   commits: CommitInfo[];
   selected: CommitInfo | null;
   searchQuery?: string;
+  searchResults?: CommitInfo[] | null;
   hasWorkingChanges: boolean;
   hasConflicts?: boolean;
   currentBranch: string;
   hasMore?: boolean;
   stashes?: StashInfo[];
   tags?: TagInfo[];
+  openPullRequestBranches?: string[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
 }>();
 
@@ -69,6 +71,7 @@ const emit = defineEmits<{
   stashDrop: [index: number];
   selectStash: [stash: StashInfo];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
+  jumpToSearchResult: [sha: string];
 }>();
 
 const searchInput = ref("");
@@ -93,6 +96,263 @@ const stashCtxY = ref(0);
 const stashCtxItem = ref<(StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) | null>(null);
 const stashCtxItems = ref<(StashInfo & { parentIdx: number; lane: number; offsetIdx: number })[]>([]);
 const dragBranch = ref<{ name: string; remote: boolean } | null>(null);
+const dropTargetBranch = ref<string | null>(null);
+const showGraphSettings = ref(false);
+const isolateCurrentBranch = ref(false);
+const isolatedBranchName = ref("");
+const pendingSearchSha = ref<string | null>(null);
+const searchNavIndex = ref(0);
+const searchInputEl = ref<HTMLInputElement | null>(null);
+
+type GraphOptionalColumn = "author" | "authorEmail" | "sha" | "timeAgo" | "date" | "parents" | "refs";
+
+const GRAPH_COLUMN_STORAGE_KEY = "gitswamp-graph-columns";
+const GRAPH_ISOLATE_STORAGE_KEY = "gitswamp-graph-isolate-current";
+const GRAPH_ISOLATE_BRANCH_STORAGE_KEY = "gitswamp-graph-isolate-branch";
+const TIME_AGO_COL = 88;
+const DATE_COL = 136;
+const EMAIL_COL = 180;
+const PARENTS_COL = 72;
+const REFS_COL = 64;
+const fixedGraphColumns = ["Branch / Tag", "Graph", "Commit Message"] as const;
+const optionalGraphColumns: readonly {
+  key: GraphOptionalColumn;
+  label: string;
+  description: string;
+}[] = [
+  { key: "author", label: "Author", description: "Author name with avatar marker" },
+  { key: "authorEmail", label: "Author Email", description: "Commit author email" },
+  { key: "sha", label: "SHA", description: "Short commit hash" },
+  { key: "timeAgo", label: "Time", description: "Relative commit time" },
+  { key: "date", label: "Date", description: "Absolute local timestamp" },
+  { key: "parents", label: "Parents", description: "Parent commit count" },
+  { key: "refs", label: "Refs", description: "Branch/tag refs count" },
+];
+const defaultGraphColumnVisibility: Record<GraphOptionalColumn, boolean> = {
+  author: true,
+  authorEmail: false,
+  sha: true,
+  timeAgo: false,
+  date: false,
+  parents: false,
+  refs: false,
+};
+const graphColumnVisibility = ref<Record<GraphOptionalColumn, boolean>>({ ...defaultGraphColumnVisibility });
+
+const showAuthorColumn = computed(() => graphColumnVisibility.value.author);
+const showAuthorEmailColumn = computed(() => graphColumnVisibility.value.authorEmail);
+const showShaColumn = computed(() => graphColumnVisibility.value.sha);
+const showTimeAgoColumn = computed(() => graphColumnVisibility.value.timeAgo);
+const showDateColumn = computed(() => graphColumnVisibility.value.date);
+const showParentsColumn = computed(() => graphColumnVisibility.value.parents);
+const showRefsColumn = computed(() => graphColumnVisibility.value.refs);
+const isSearchActive = computed(() => searchInput.value.trim().length > 0);
+const searchResultList = computed(() => props.searchResults ?? []);
+const searchResultShas = computed(() => searchResultList.value.map((commit) => commit.sha));
+const searchResultCount = computed(() => searchResultShas.value.length);
+const searchMatchSet = computed(() => new Set(searchResultShas.value));
+
+function normalizeBranchName(name: string): string {
+  return name.replace(/^origin\//i, "").replace(/^remotes\/[a-z0-9_-]+\//i, "").trim();
+}
+
+function hasBranchRef(commit: CommitInfo, branchName: string): boolean {
+  const normalized = normalizeBranchName(branchName);
+  if (!normalized) return false;
+
+  const remoteRef = "origin/" + normalized;
+  return commit.refs.some((ref) => {
+    const normalizedRef = normalizeBranchName(ref);
+    return ref === normalized || ref === remoteRef || normalizedRef === normalized;
+  });
+}
+
+function buildChildrenByParent(commits: CommitInfo[]): Map<string, string[]> {
+  const childrenByParent = new Map<string, string[]>();
+  for (const commit of commits) {
+    for (const parentSha of commit.parent_shas) {
+      const existing = childrenByParent.get(parentSha);
+      if (existing) {
+        existing.push(commit.sha);
+      } else {
+        childrenByParent.set(parentSha, [commit.sha]);
+      }
+    }
+  }
+  return childrenByParent;
+}
+
+function collectIsolationStarts(commits: CommitInfo[], branchName: string): string[] {
+  const starts = commits
+    .filter((commit) => hasBranchRef(commit, branchName))
+    .map((commit) => commit.sha);
+  if (starts.length === 0 && commits.length > 0) {
+    starts.push(commits[0].sha);
+  }
+  return starts;
+}
+
+function enqueueIfMissing(sha: string, included: Set<string>, queue: string[]) {
+  if (included.has(sha)) return;
+  included.add(sha);
+  queue.push(sha);
+}
+
+function enqueueParents(
+  commit: CommitInfo | undefined,
+  bySha: Map<string, CommitInfo>,
+  included: Set<string>,
+  queue: string[],
+) {
+  if (!commit) return;
+  for (const parentSha of commit.parent_shas) {
+    if (bySha.has(parentSha)) {
+      enqueueIfMissing(parentSha, included, queue);
+    }
+  }
+}
+
+function enqueueChildren(
+  sha: string,
+  childrenByParent: Map<string, string[]>,
+  included: Set<string>,
+  queue: string[],
+) {
+  for (const childSha of childrenByParent.get(sha) ?? []) {
+    enqueueIfMissing(childSha, included, queue);
+  }
+}
+
+function expandConnectedCommits(
+  starts: string[],
+  bySha: Map<string, CommitInfo>,
+  childrenByParent: Map<string, string[]>,
+): Set<string> {
+  const included = new Set(starts);
+  const queue = [...starts];
+
+  while (queue.length > 0) {
+    const currentSha = queue.shift();
+    if (!currentSha) continue;
+
+    enqueueParents(bySha.get(currentSha), bySha, included, queue);
+    enqueueChildren(currentSha, childrenByParent, included, queue);
+  }
+
+  return included;
+}
+
+function collectIsolatedCommitShas(commits: CommitInfo[], branchName: string): Set<string> {
+  const bySha = new Map(commits.map((commit) => [commit.sha, commit]));
+  const childrenByParent = buildChildrenByParent(commits);
+  const starts = collectIsolationStarts(commits, branchName);
+  return expandConnectedCommits(starts, bySha, childrenByParent);
+}
+
+const isolationBranchName = computed(() => {
+  const selected = normalizeBranchName(isolatedBranchName.value);
+  if (selected) return selected;
+  return normalizeBranchName(props.currentBranch);
+});
+
+const isolatedCommitShas = computed(() => {
+  if (!isolateCurrentBranch.value || !isolationBranchName.value) return null;
+  return collectIsolatedCommitShas(props.commits, isolationBranchName.value);
+});
+
+const activeCommits = computed(() => {
+  const isolated = isolatedCommitShas.value;
+  if (!isolated) return props.commits;
+  return props.commits.filter((commit) => isolated.has(commit.sha));
+});
+
+const commitDateCache = new Map<number, string>();
+
+function commitDateLabel(timestamp: number): string {
+  const cached = commitDateCache.get(timestamp);
+  if (cached) {
+    return cached;
+  }
+
+  const value = Math.abs(timestamp) < 1000000000000 ? timestamp * 1000 : timestamp;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  const formatted = date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  commitDateCache.set(timestamp, formatted);
+  return formatted;
+}
+
+function isOptionalColumnEnabled(column: GraphOptionalColumn): boolean {
+  return graphColumnVisibility.value[column];
+}
+
+function toggleOptionalColumn(column: GraphOptionalColumn) {
+  graphColumnVisibility.value[column] = !graphColumnVisibility.value[column];
+}
+
+function resetGraphSettings() {
+  graphColumnVisibility.value = { ...defaultGraphColumnVisibility };
+  isolateCurrentBranch.value = false;
+  isolatedBranchName.value = "";
+}
+
+function isolateSpecificBranch(branchName: string) {
+  const normalized = normalizeBranchName(branchName);
+  if (!normalized) return;
+  isolatedBranchName.value = normalized;
+  isolateCurrentBranch.value = true;
+}
+
+function isSearchMatch(sha: string): boolean {
+  return searchMatchSet.value.has(sha);
+}
+
+function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "smooth"): boolean {
+  const idx = activeCommits.value.findIndex((commit) => commit.sha === sha);
+  if (idx < 0 || !scrollContainer.value) return false;
+  const top = Math.max(0, idx * rowHeight.value + wcOffset.value - rowHeight.value * 2);
+  scrollContainer.value.scrollTo({ top, behavior });
+  return true;
+}
+
+function selectSearchCommit(sha: string, behavior: ScrollBehavior = "smooth"): boolean {
+  const commit = activeCommits.value.find((item) => item.sha === sha);
+  if (!commit) return false;
+  emit("select", commit);
+  scrollToCommitSha(sha, behavior);
+  return true;
+}
+
+function focusSearchResultAt(index: number, behavior: ScrollBehavior = "smooth") {
+  const total = searchResultCount.value;
+  if (total === 0) return;
+  const normalized = ((index % total) + total) % total;
+  searchNavIndex.value = normalized;
+  const targetSha = searchResultShas.value[normalized];
+  if (!targetSha) return;
+
+  if (selectSearchCommit(targetSha, behavior)) {
+    pendingSearchSha.value = null;
+    return;
+  }
+
+  pendingSearchSha.value = targetSha;
+  emit("jumpToSearchResult", targetSha);
+}
+
+function navigateSearch(direction: -1 | 1) {
+  if (searchResultCount.value === 0) return;
+  focusSearchResultAt(searchNavIndex.value + direction);
+}
 
 function avatarSvg(name: string, cx: number, cy: number, r: number, branchColor: string): string {
   return buildAvatarSvg(
@@ -101,15 +361,38 @@ function avatarSvg(name: string, cx: number, cy: number, r: number, branchColor:
     cy,
     r,
     branchColor,
-    svgBgOuter.value,
-    svgBgInner.value,
-    GRAPH_COLORS,
+    {
+      svgBgOuter: svgBgOuter.value,
+      svgBgInner: svgBgInner.value,
+      colors: GRAPH_COLORS,
+    },
   );
 }
 
 function mergeDotSvg(cx: number, cy: number, color: string): string {
   return buildMergeDotSvg(cx, cy, color, svgBgOuter.value);
 }
+
+const layoutProps = {
+  get commits() {
+    return activeCommits.value;
+  },
+  get currentBranch() {
+    return props.currentBranch;
+  },
+  get hasWorkingChanges() {
+    return props.hasWorkingChanges;
+  },
+  get hasConflicts() {
+    return props.hasConflicts;
+  },
+  get stashes() {
+    return props.stashes;
+  },
+  get tags() {
+    return props.tags;
+  },
+};
 
 const {
   graph,
@@ -130,7 +413,7 @@ const {
   displayRefs,
   topDisplayRef,
   extraDisplayRefCount,
-} = useCommitGraphLayout(props, rowHeight, scrollTop, viewportHeight);
+} = useCommitGraphLayout(layoutProps, rowHeight, scrollTop, viewportHeight);
 
 let st: ReturnType<typeof setTimeout> | null = null;
 function onSearch() {
@@ -140,7 +423,12 @@ function onSearch() {
     else emit("clearSearch");
   }, 300);
 }
-function clearSearch() { searchInput.value = ""; emit("clearSearch"); }
+function clearSearch() {
+  searchInput.value = "";
+  searchNavIndex.value = 0;
+  pendingSearchSha.value = null;
+  emit("clearSearch");
+}
 
 function onScroll(e: Event) {
   const el = e.target as HTMLElement;
@@ -255,6 +543,19 @@ function closeRefCtx() {
   refCtxRef.value = null;
 }
 
+function checkoutAndIsolateRef(ref: DisplayRef) {
+  if (ref.kind !== "branch") return;
+  const normalized = normalizeBranchName(ref.name);
+  if (!normalized) return;
+
+  if (ref.local) {
+    emit("checkoutBranch", normalized);
+  } else {
+    emit("checkoutRemoteBranch", normalized);
+  }
+  isolateSpecificBranch(normalized);
+}
+
 function refAction(action: string) {
   if (!refCtxRef.value) return;
   const r = refCtxRef.value;
@@ -278,6 +579,9 @@ function refAction(action: string) {
     case "merge-into-current":
       emit("requestMerge", { source: r.name, sourceRemote: !!r.remote && !r.local, target: props.currentBranch });
       break;
+    case "checkout-and-isolate":
+      checkoutAndIsolateRef(r);
+      break;
     case "delete-tag":
       emit("deleteTag", r.name);
       break;
@@ -287,24 +591,99 @@ function refAction(action: string) {
 function onBranchDragStart(event: DragEvent, ref: DisplayRef) {
   if (ref.kind !== "branch") return;
   dragBranch.value = { name: ref.name, remote: !!ref.remote && !ref.local };
+  dropTargetBranch.value = null;
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", ref.name);
   }
 }
 
+function onBranchDragEnd() {
+  dragBranch.value = null;
+  dropTargetBranch.value = null;
+}
+
 function onBranchDragOver(event: DragEvent, ref: DisplayRef) {
   if (ref.kind !== "branch") return;
   event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+  dropTargetBranch.value = ref.name;
 }
 
 function onBranchDrop(event: DragEvent, ref: DisplayRef) {
   if (ref.kind !== "branch") return;
   event.preventDefault();
   const dragged = dragBranch.value;
-  dragBranch.value = null;
+  dropTargetBranch.value = null;
+  onBranchDragEnd();
   if (!dragged || dragged.name === ref.name) return;
   emit("requestMerge", { source: dragged.name, sourceRemote: dragged.remote, target: ref.name });
+}
+
+function preferredDropTarget(commit: CommitInfo): DisplayRef | null {
+  const branches = displayRefs(commit).filter((ref) => ref.kind === "branch");
+  if (branches.length === 0) return null;
+  const localCandidate = branches.find((ref) => ref.local);
+  return localCandidate ?? branches[0];
+}
+
+function onBranchColumnDragOver(event: DragEvent, commit: CommitInfo) {
+  const target = preferredDropTarget(commit);
+  if (!target) return;
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+  dropTargetBranch.value = target.name;
+}
+
+function onBranchColumnDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement | null;
+  const related = event.relatedTarget as Node | null;
+  if (current && related && current.contains(related)) {
+    return;
+  }
+  dropTargetBranch.value = null;
+}
+
+function onBranchColumnDrop(event: DragEvent, commit: CommitInfo) {
+  const target = preferredDropTarget(commit);
+  if (!target) return;
+  event.preventDefault();
+  const dragged = dragBranch.value;
+  onBranchDragEnd();
+  if (!dragged || dragged.name === target.name) return;
+  emit("requestMerge", { source: dragged.name, sourceRemote: dragged.remote, target: target.name });
+}
+
+function onCommitRowDragOver(event: DragEvent, commit: CommitInfo) {
+  if (!dragBranch.value) return;
+  onBranchColumnDragOver(event, commit);
+}
+
+function onCommitRowDrop(event: DragEvent, commit: CommitInfo) {
+  if (!dragBranch.value) return;
+  onBranchColumnDrop(event, commit);
+}
+
+function onGraphDragOver(event: DragEvent) {
+  if (!dragBranch.value) return;
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+}
+
+function onGraphDrop(event: DragEvent) {
+  if (!dragBranch.value) return;
+  event.preventDefault();
+  const dragged = dragBranch.value;
+  const targetBranch = dropTargetBranch.value;
+  onBranchDragEnd();
+  if (!dragged || !targetBranch || dragged.name === targetBranch) return;
+  emit("requestMerge", { source: dragged.name, sourceRemote: dragged.remote, target: targetBranch });
 }
 
 function ctxHasBranch(): boolean {
@@ -356,55 +735,68 @@ function closeCtx() {
   closeStashCtx();
 }
 
+function applyShaContextAction(action: string, sha: string): boolean {
+  switch (action) {
+    case "checkout": emit("checkout", sha); return true;
+    case "branch": emit("createBranchAt", sha); return true;
+    case "cherry-pick": emit("cherryPick", sha); return true;
+    case "revert": emit("revert", sha); return true;
+    case "reset-soft": emit("resetSoft", sha); return true;
+    case "reset-mixed": emit("resetMixed", sha); return true;
+    case "reset-hard": emit("resetHard", sha); return true;
+    case "tag": emit("createTagAt", sha); return true;
+    case "annotated-tag": emit("createAnnotatedTagAt", sha); return true;
+    case "pull": emit("pull"); return true;
+    case "push": emit("push"); return true;
+    case "edit-message": emit("editCommitMessage", sha); return true;
+    case "copy-sha":
+      navigator.clipboard.writeText(sha).catch(() => {});
+      emit("copySha", sha);
+      return true;
+    default:
+      return false;
+  }
+}
+
+function applyBranchContextAction(action: string, branch: string): boolean {
+  switch (action) {
+    case "set-upstream": emit("setUpstream", branch, "origin/" + branch); return true;
+    case "checkout-branch": emit("checkoutBranch", branch); return true;
+    case "rename-branch": emit("renameBranch", branch); return true;
+    case "delete-branch": emit("deleteBranch", branch); return true;
+    case "delete-remote-branch": emit("deleteRemoteBranch", branch); return true;
+    case "delete-both": emit("deleteBranchAndRemote", branch); return true;
+    case "reset-to-remote": emit("resetBranchToRemote", branch); return true;
+    case "copy-branch-name":
+      navigator.clipboard.writeText(branch).catch(() => {});
+      emit("copyBranchName", branch);
+      return true;
+    default:
+      return false;
+  }
+}
+
 function ctxAction(action: string) {
   if (!ctxCommit.value) return;
   const sha = ctxCommit.value.sha;
   const branch = ctxBranchName();
+  const branchRef = ctxBranchRef();
   closeCtx();
-  switch (action) {
-    case "checkout": emit("checkout", sha); break;
-    case "branch": emit("createBranchAt", sha); break;
-    case "cherry-pick": emit("cherryPick", sha); break;
-    case "revert": emit("revert", sha); break;
-    case "reset-soft": emit("resetSoft", sha); break;
-    case "reset-mixed": emit("resetMixed", sha); break;
-    case "reset-hard": emit("resetHard", sha); break;
-    case "copy-sha":
-      navigator.clipboard.writeText(sha).catch(() => {});
-      emit("copySha", sha);
-      break;
-    case "tag": emit("createTagAt", sha); break;
-    case "annotated-tag": emit("createAnnotatedTagAt", sha); break;
-    case "pull": emit("pull"); break;
-    case "push": emit("push"); break;
-    case "set-upstream":
-      if (branch) emit("setUpstream", branch, "origin/" + branch);
-      break;
-    case "checkout-branch":
-      if (branch) emit("checkoutBranch", branch);
-      break;
-    case "edit-message": emit("editCommitMessage", sha); break;
-    case "rename-branch":
-      if (branch) emit("renameBranch", branch);
-      break;
-    case "delete-branch":
-      if (branch) emit("deleteBranch", branch);
-      break;
-    case "delete-remote-branch":
-      if (branch) emit("deleteRemoteBranch", branch);
-      break;
-    case "delete-both":
-      if (branch) emit("deleteBranchAndRemote", branch);
-      break;
-    case "copy-branch-name":
-      if (branch) {
-        navigator.clipboard.writeText(branch).catch(() => {});
-        emit("copyBranchName", branch);
-      }
-      break;
-    case "reset-to-remote":
-      if (branch) emit("resetBranchToRemote", branch);
-      break;
+
+  if (action === "checkout-isolate-branch" && branchRef) {
+    checkoutAndIsolateRef({
+      kind: "branch",
+      key: branchRef.name,
+      name: branchRef.name,
+      local: branchRef.local,
+      remote: branchRef.remote,
+    });
+    return;
+  }
+
+  if (applyShaContextAction(action, sha)) return;
+  if (branch) {
+    applyBranchContextAction(action, branch);
   }
 }
 
@@ -421,40 +813,202 @@ function topRefStyle(commit: CommitInfo, color: string): Record<string, string> 
 }
 
 const providerIconMarkup = computed(() => providerIconSvg(props.remoteProvider));
+const openPullRequestBranchSet = computed(() => {
+  const branches = props.openPullRequestBranches || [];
+  return new Set(
+    branches
+      .map((name) => normalizeBranchName(name).toLowerCase())
+      .filter((name) => name.length > 0),
+  );
+});
+
+function showPullRequestRefBadge(ref: DisplayRef | null): boolean {
+  if (!ref || ref.kind !== "branch") return false;
+  if (props.remoteProvider !== "github" && props.remoteProvider !== "gitlab") return false;
+
+  const normalized = normalizeBranchName(ref.name).toLowerCase();
+  if (!normalized) return false;
+
+  return openPullRequestBranchSet.value.has(normalized);
+}
+
+function onFocusSearchShortcut() {
+  searchInputEl.value?.focus();
+  searchInputEl.value?.select();
+}
+
+watch(() => props.searchQuery ?? "", (query) => {
+  if (searchInput.value !== query) {
+    searchInput.value = query;
+  }
+
+  if (!query) {
+    searchNavIndex.value = 0;
+    pendingSearchSha.value = null;
+  }
+}, { immediate: true });
+
+watch(() => props.searchResults, (results) => {
+  if (!props.searchQuery?.trim() || !results || results.length === 0) {
+    searchNavIndex.value = 0;
+    return;
+  }
+  focusSearchResultAt(0, "auto");
+});
+
+watch(() => activeCommits.value.length, () => {
+  if (!pendingSearchSha.value) return;
+  if (selectSearchCommit(pendingSearchSha.value)) {
+    pendingSearchSha.value = null;
+  }
+});
+
+watch(graphColumnVisibility, (value) => {
+  try {
+    localStorage.setItem(GRAPH_COLUMN_STORAGE_KEY, JSON.stringify(value));
+  } catch {}
+}, { deep: true });
+
+watch(isolateCurrentBranch, (value) => {
+  localStorage.setItem(GRAPH_ISOLATE_STORAGE_KEY, String(value));
+});
+
+watch(isolatedBranchName, (value) => {
+  localStorage.setItem(GRAPH_ISOLATE_BRANCH_STORAGE_KEY, value);
+});
 
 function onDocClick() { closeCtx(); }
 onMounted(() => {
+  try {
+    const savedColumns = localStorage.getItem(GRAPH_COLUMN_STORAGE_KEY);
+    if (savedColumns) {
+      const parsed = JSON.parse(savedColumns) as Partial<Record<GraphOptionalColumn, boolean>>;
+      graphColumnVisibility.value = {
+        author: parsed.author ?? defaultGraphColumnVisibility.author,
+        authorEmail: parsed.authorEmail ?? defaultGraphColumnVisibility.authorEmail,
+        sha: parsed.sha ?? defaultGraphColumnVisibility.sha,
+        timeAgo: parsed.timeAgo ?? defaultGraphColumnVisibility.timeAgo,
+        date: parsed.date ?? defaultGraphColumnVisibility.date,
+        parents: parsed.parents ?? defaultGraphColumnVisibility.parents,
+        refs: parsed.refs ?? defaultGraphColumnVisibility.refs,
+      };
+    }
+  } catch {}
+
+  const savedIsolate = localStorage.getItem(GRAPH_ISOLATE_STORAGE_KEY);
+  if (savedIsolate !== null) {
+    isolateCurrentBranch.value = savedIsolate === "true";
+  }
+
+  const savedIsolateBranch = localStorage.getItem(GRAPH_ISOLATE_BRANCH_STORAGE_KEY);
+  if (savedIsolateBranch) {
+    isolatedBranchName.value = normalizeBranchName(savedIsolateBranch);
+  }
+
   document.addEventListener("click", onDocClick);
+  globalThis.addEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
   if (scrollContainer.value) {
     viewportHeight.value = scrollContainer.value.clientHeight;
   }
 });
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
+  globalThis.removeEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
 });
 </script>
 
 <template>
-  <div class="flex-1 bg-[var(--background)] flex flex-col overflow-hidden min-w-0">
+  <div
+    class="flex-1 bg-[var(--background)] flex flex-col overflow-hidden min-w-0 select-none"
+    @dragover.prevent="onGraphDragOver"
+    @drop.prevent="onGraphDrop"
+  >
     <div class="flex-shrink-0 border-b border-[var(--border)] bg-[var(--background)]/95 backdrop-blur-sm z-10">
       <div class="px-3 py-1.5 flex items-center gap-2">
         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-[var(--muted-foreground)] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input v-model="searchInput" @input="onSearch" placeholder="Search commits, messages, authors, SHA..." class="flex-1 bg-transparent text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none" />
+        <input
+          ref="searchInputEl"
+          v-model="searchInput"
+          @input="onSearch"
+          placeholder="Search commits, messages, authors, SHA..."
+          class="flex-1 bg-transparent text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none select-text"
+        />
         <button v-if="searchInput" @click="clearSearch" class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
-        <span v-if="searchQuery" class="text-[10px] text-[var(--muted-foreground)]">{{ commits.length }} results</span>
+        <button
+          v-if="!isSearchActive"
+          class="ml-1 mr-2 p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          title="Graph columns settings"
+          @click="showGraphSettings = true"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2v2" />
+            <path d="M12 20v2" />
+            <path d="m4.93 4.93 1.41 1.41" />
+            <path d="m17.66 17.66 1.41 1.41" />
+            <path d="M2 12h2" />
+            <path d="M20 12h2" />
+            <path d="m6.34 17.66-1.41 1.41" />
+            <path d="m19.07 4.93-1.41 1.41" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+        <div v-if="searchQuery" class="flex items-center gap-1">
+          <button
+            class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="searchResultCount === 0"
+            title="Previous match"
+            @click="navigateSearch(-1)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+          </button>
+          <button
+            class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="searchResultCount === 0"
+            title="Next match"
+            @click="navigateSearch(1)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <span class="text-[10px] text-[var(--muted-foreground)] min-w-[4.25rem] text-right">
+            {{ searchResultCount === 0 ? '0 results' : (searchNavIndex + 1) + '/' + searchResultCount }}
+          </span>
+        </div>
+        <button
+          v-if="isSearchActive"
+          class="ml-auto mr-2 p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          title="Graph columns settings"
+          @click="showGraphSettings = true"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2v2" />
+            <path d="M12 20v2" />
+            <path d="m4.93 4.93 1.41 1.41" />
+            <path d="m17.66 17.66 1.41 1.41" />
+            <path d="M2 12h2" />
+            <path d="M20 12h2" />
+            <path d="m6.34 17.66-1.41 1.41" />
+            <path d="m19.07 4.93-1.41 1.41" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
       </div>
       <div class="flex items-center py-0.5 text-[9px] text-[var(--muted-foreground)] uppercase tracking-wider font-medium border-t border-[var(--border)]">
         <div class="flex-shrink-0 px-2 text-right" :style="{ width: BRANCH_COL + 'px' }">Branch / Tag</div>
         <div class="flex-shrink-0 text-center" :style="{ width: graphWidth + 'px' }">Graph</div>
         <div class="flex-1 px-3">Commit Message</div>
-        <div class="flex-shrink-0 px-1" :style="{ width: AUTHOR_COL + 'px' }">Author</div>
-        <div class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">SHA</div>
+        <div v-if="showAuthorColumn" class="flex-shrink-0 px-1" :style="{ width: AUTHOR_COL + 'px' }">Author</div>
+        <div v-if="showAuthorEmailColumn" class="flex-shrink-0 px-1" :style="{ width: EMAIL_COL + 'px' }">Email</div>
+        <div v-if="showShaColumn" class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">SHA</div>
+        <div v-if="showTimeAgoColumn" class="flex-shrink-0 px-1" :style="{ width: TIME_AGO_COL + 'px' }">Time</div>
+        <div v-if="showDateColumn" class="flex-shrink-0 px-1" :style="{ width: DATE_COL + 'px' }">Date</div>
+        <div v-if="showParentsColumn" class="flex-shrink-0 px-1" :style="{ width: PARENTS_COL + 'px' }">Parents</div>
+        <div v-if="showRefsColumn" class="flex-shrink-0 px-1" :style="{ width: REFS_COL + 'px' }">Refs</div>
       </div>
     </div>
 
-    <div v-if="!commits.length && !hasWorkingChanges" class="flex-1 flex items-center justify-center text-sm text-[var(--muted-foreground)]">
+    <div v-if="!activeCommits.length && !hasWorkingChanges" class="flex-1 flex items-center justify-center text-sm text-[var(--muted-foreground)]">
       No commits to display
     </div>
 
@@ -534,8 +1088,13 @@ onUnmounted(() => {
               ● Working Changes
             </span>
           </div>
-          <div class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: AUTHOR_COL + 'px' }">—</div>
-          <div class="flex-shrink-0 text-[9px] font-mono text-[var(--muted-foreground)] px-1" :style="{ width: SHA_COL + 'px' }">—</div>
+          <div v-if="showAuthorColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: AUTHOR_COL + 'px' }">—</div>
+          <div v-if="showAuthorEmailColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: EMAIL_COL + 'px' }">—</div>
+          <div v-if="showShaColumn" class="flex-shrink-0 text-[9px] font-mono text-[var(--muted-foreground)] px-1" :style="{ width: SHA_COL + 'px' }">—</div>
+          <div v-if="showTimeAgoColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: TIME_AGO_COL + 'px' }">—</div>
+          <div v-if="showDateColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: DATE_COL + 'px' }">—</div>
+          <div v-if="showParentsColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: PARENTS_COL + 'px' }">—</div>
+          <div v-if="showRefsColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: REFS_COL + 'px' }">—</div>
         </div>
 
         <div
@@ -552,21 +1111,42 @@ onUnmounted(() => {
               ● Conflicts
             </span>
           </div>
-          <div class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: AUTHOR_COL + 'px' }">—</div>
-          <div class="flex-shrink-0 text-[9px] font-mono text-[var(--muted-foreground)] px-1" :style="{ width: SHA_COL + 'px' }">—</div>
+          <div v-if="showAuthorColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: AUTHOR_COL + 'px' }">—</div>
+          <div v-if="showAuthorEmailColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: EMAIL_COL + 'px' }">—</div>
+          <div v-if="showShaColumn" class="flex-shrink-0 text-[9px] font-mono text-[var(--muted-foreground)] px-1" :style="{ width: SHA_COL + 'px' }">—</div>
+          <div v-if="showTimeAgoColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: TIME_AGO_COL + 'px' }">—</div>
+          <div v-if="showDateColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: DATE_COL + 'px' }">—</div>
+          <div v-if="showParentsColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: PARENTS_COL + 'px' }">—</div>
+          <div v-if="showRefsColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: REFS_COL + 'px' }">—</div>
         </div>
 
         <div
           v-for="item in visibleNodes"
           :key="item.node.commit.sha"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
-          :class="selected?.sha === item.node.commit.sha ? 'bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]'"
+          :class="selected?.sha === item.node.commit.sha
+            ? 'bg-[var(--primary)]/10'
+            : isSearchMatch(item.node.commit.sha)
+              ? 'search-hit-row hover:bg-[var(--primary)]/10'
+              : 'hover:bg-[var(--secondary)]'"
           :style="{ top: (item.idx * rowHeight + wcOffset) + 'px', height: rowHeight + 'px' }"
           @click="emit('select', item.node.commit)"
           @contextmenu="onCtx($event, item.node.commit)"
+          @dragover.prevent="onCommitRowDragOver($event, item.node.commit)"
+          @drop.prevent="onCommitRowDrop($event, item.node.commit)"
         >
-          <div class="flex-shrink-0 flex items-center justify-start gap-0.5 px-1 relative" :style="{ width: BRANCH_COL + 'px' }"
-            @mouseenter="hoveredRefRow = item.idx" @mouseleave="hoveredRefRow = null; hoveredStashRow = null"
+          <div
+            class="flex-shrink-0 flex items-center justify-start gap-0.5 px-1 relative"
+            :class="{
+              'branch-drop-zone': !!preferredDropTarget(item.node.commit),
+              'branch-drop-target': dropTargetBranch === preferredDropTarget(item.node.commit)?.name,
+            }"
+            :style="{ width: BRANCH_COL + 'px' }"
+            @mouseenter="hoveredRefRow = item.idx"
+            @mouseleave="hoveredRefRow = null; hoveredStashRow = null"
+            @dragover.stop.prevent="onBranchColumnDragOver($event, item.node.commit)"
+            @dragleave.stop="onBranchColumnDragLeave($event)"
+            @drop.stop.prevent="onBranchColumnDrop($event, item.node.commit)"
           >
             <template v-if="topDisplayRef(item.node.commit)">
               <span
@@ -581,12 +1161,29 @@ onUnmounted(() => {
                 :draggable="topDisplayRef(item.node.commit)?.kind === 'branch'"
                 @dblclick.stop="onRefDblClick(topDisplayRef(item.node.commit)!, item.node.commit)"
                 @dragstart.stop="onBranchDragStart($event, topDisplayRef(item.node.commit)!)"
+                @dragend.stop="onBranchDragEnd"
                 @dragover.stop.prevent="onBranchDragOver($event, topDisplayRef(item.node.commit)!)"
                 @drop.stop.prevent="onBranchDrop($event, topDisplayRef(item.node.commit)!)"
                 @contextmenu.stop.prevent="onRefContextMenu($event, topDisplayRef(item.node.commit)!)"
               >
                 <svg v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5" /><rect x="4" y="12" width="8" height="1.5" rx="0.5" opacity="0.6"/><rect x="6" y="13.5" width="4" height="1" rx="0.5" opacity="0.4"/></svg>
                 <span v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.remote" v-html="providerIconMarkup" />
+                <svg
+                  v-if="showPullRequestRefBadge(topDisplayRef(item.node.commit))"
+                  class="w-2.5 h-2.5 flex-shrink-0 opacity-85"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="4" cy="3" r="1.5" />
+                  <circle cx="12" cy="13" r="1.5" />
+                  <circle cx="12" cy="3" r="1.5" />
+                  <path d="M4 4.5v6a3 3 0 0 0 3 3h3.5" />
+                  <path d="M10.5 3H6.5" />
+                </svg>
                 <svg v-if="topDisplayRef(item.node.commit)?.kind === 'tag'" class="w-2.5 h-2.5 flex-shrink-0 opacity-80" viewBox="0 0 16 16" fill="currentColor"><path d="M2 8.2V3.5C2 2.7 2.7 2 3.5 2h4.7c.4 0 .8.2 1.1.4l4.3 4.3c.6.6.6 1.6 0 2.1l-4.9 4.9c-.6.6-1.6.6-2.1 0L2.4 9.3C2.1 9 2 8.6 2 8.2zm4.2-3.5a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4z"/></svg>
                 <span class="truncate">{{ topDisplayRef(item.node.commit)?.name }}</span>
               </span>
@@ -637,12 +1234,29 @@ onUnmounted(() => {
                 :draggable="mr.kind === 'branch'"
                 @dblclick.stop="onRefDblClick(mr, item.node.commit)"
                 @dragstart.stop="onBranchDragStart($event, mr)"
+                @dragend.stop="onBranchDragEnd"
                 @dragover.stop.prevent="onBranchDragOver($event, mr)"
                 @drop.stop.prevent="onBranchDrop($event, mr)"
                 @contextmenu.stop.prevent="onRefContextMenu($event, mr)"
               >
                 <svg v-if="mr.kind === 'branch' && mr.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5"/></svg>
                 <span v-if="mr.kind === 'branch' && mr.remote" v-html="providerIconMarkup" />
+                <svg
+                  v-if="showPullRequestRefBadge(mr)"
+                  class="w-2.5 h-2.5 flex-shrink-0 opacity-80"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="4" cy="3" r="1.5" />
+                  <circle cx="12" cy="13" r="1.5" />
+                  <circle cx="12" cy="3" r="1.5" />
+                  <path d="M4 4.5v6a3 3 0 0 0 3 3h3.5" />
+                  <path d="M10.5 3H6.5" />
+                </svg>
                 <svg v-if="mr.kind === 'tag'" class="w-2.5 h-2.5 flex-shrink-0 opacity-80" viewBox="0 0 16 16" fill="currentColor"><path d="M2 8.2V3.5C2 2.7 2.7 2 3.5 2h4.7c.4 0 .8.2 1.1.4l4.3 4.3c.6.6.6 1.6 0 2.1l-4.9 4.9c-.6.6-1.6.6-2.1 0L2.4 9.3C2.1 9 2 8.6 2 8.2zm4.2-3.5a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4z"/></svg>
                 <span class="truncate flex-1">{{ mr.name }}</span>
                 <span
@@ -668,16 +1282,39 @@ onUnmounted(() => {
           </div>
 
           <div class="flex-1 flex items-center px-3 min-w-0">
-            <span class="text-[11px] text-[var(--foreground)] truncate opacity-85">{{ item.node.commit.message.split('\n')[0] }}</span>
+            <span
+              class="text-[11px] text-[var(--foreground)] truncate"
+              :style="{ opacity: 'var(--graph-message-opacity, 0.85)' }"
+            >{{ item.node.commit.message.split('\n')[0] }}</span>
           </div>
 
-          <div class="flex-shrink-0 flex items-center gap-1 px-1" :style="{ width: AUTHOR_COL + 'px' }">
+          <div v-if="showAuthorColumn" class="flex-shrink-0 flex items-center gap-1 px-1" :style="{ width: AUTHOR_COL + 'px' }">
             <svg class="flex-shrink-0" :width="14" :height="14" viewBox="0 0 14 14" v-html="avatarSvg(item.node.commit.author_name, 7, 7, 6, item.node.color)" />
             <span class="text-[10px] text-[var(--muted-foreground)] truncate">{{ item.node.commit.author_name }}</span>
           </div>
 
-          <div class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">
+          <div v-if="showAuthorEmailColumn" class="flex-shrink-0 px-1" :style="{ width: EMAIL_COL + 'px' }">
+            <span class="text-[10px] text-[var(--muted-foreground)] truncate">{{ item.node.commit.author_email }}</span>
+          </div>
+
+          <div v-if="showShaColumn" class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">
             <span class="text-[9px] font-mono" :style="{ color: item.node.color + 'cc' }">{{ item.node.commit.short_sha }}</span>
+          </div>
+
+          <div v-if="showTimeAgoColumn" class="flex-shrink-0 px-1" :style="{ width: TIME_AGO_COL + 'px' }">
+            <span class="text-[10px] text-[var(--muted-foreground)] truncate">{{ item.node.commit.time_ago }}</span>
+          </div>
+
+          <div v-if="showDateColumn" class="flex-shrink-0 px-1" :style="{ width: DATE_COL + 'px' }">
+            <span class="text-[10px] text-[var(--muted-foreground)] truncate">{{ commitDateLabel(item.node.commit.timestamp) }}</span>
+          </div>
+
+          <div v-if="showParentsColumn" class="flex-shrink-0 px-1" :style="{ width: PARENTS_COL + 'px' }">
+            <span class="text-[10px] text-[var(--muted-foreground)]">{{ item.node.commit.parent_shas.length }}</span>
+          </div>
+
+          <div v-if="showRefsColumn" class="flex-shrink-0 px-1" :style="{ width: REFS_COL + 'px' }">
+            <span class="text-[10px] text-[var(--muted-foreground)]">{{ item.node.commit.refs.length }}</span>
           </div>
         </div>
 
@@ -693,6 +1330,108 @@ onUnmounted(() => {
 
     <Teleport to="body">
       <div
+        v-if="showGraphSettings"
+        class="fixed inset-0 z-[140] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+        @click.self="showGraphSettings = false"
+      >
+        <div class="w-[420px] max-w-[92vw] bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden">
+          <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+            <div>
+              <h3 class="text-xs font-semibold text-[var(--foreground)]">Graph Columns</h3>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Default columns stay fixed, optional columns can be toggled.</p>
+            </div>
+            <button
+              class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              @click="showGraphSettings = false"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="p-4 space-y-4">
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Fixed</div>
+              <div class="flex flex-wrap gap-1.5">
+                <span
+                  v-for="label in fixedGraphColumns"
+                  :key="label"
+                  class="inline-flex items-center gap-1 px-2 py-1 rounded bg-[var(--secondary)] text-[10px] text-[var(--foreground)]"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  {{ label }}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Optional</div>
+              <div class="space-y-2">
+                <button
+                  v-for="column in optionalGraphColumns"
+                  :key="column.key"
+                  class="w-full flex items-center justify-between px-3 py-2 rounded border transition-colors text-left"
+                  :class="isOptionalColumnEnabled(column.key)
+                    ? 'border-[var(--primary)]/50 bg-[var(--primary)]/10'
+                    : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--secondary)]'"
+                  @click="toggleOptionalColumn(column.key)"
+                >
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">{{ column.label }}</div>
+                    <div class="text-[10px] text-[var(--muted-foreground)]">{{ column.description }}</div>
+                  </div>
+                  <div
+                    class="w-8 h-4 rounded-full relative transition-colors"
+                    :class="isOptionalColumnEnabled(column.key) ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+                  >
+                    <span
+                      class="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all"
+                      :class="isOptionalColumnEnabled(column.key) ? 'left-[calc(100%-0.875rem)]' : 'left-0.5'"
+                    />
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div class="border-t border-[var(--border)] pt-3 space-y-2">
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Behavior</div>
+              <button
+                class="w-full flex items-center justify-between px-3 py-2 rounded border transition-colors text-left"
+                :class="isolateCurrentBranch
+                  ? 'border-[var(--primary)]/50 bg-[var(--primary)]/10'
+                  : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--secondary)]'"
+                @click="isolateCurrentBranch = !isolateCurrentBranch"
+              >
+                <div>
+                  <div class="text-xs font-medium text-[var(--foreground)]">Isolate Branch History</div>
+                  <div class="text-[10px] text-[var(--muted-foreground)]">Show {{ isolationBranchName || currentBranch }} and its connected child/parent commits.</div>
+                </div>
+                <div
+                  class="w-8 h-4 rounded-full relative transition-colors"
+                  :class="isolateCurrentBranch ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+                >
+                  <span
+                    class="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all"
+                    :class="isolateCurrentBranch ? 'left-[calc(100%-0.875rem)]' : 'left-0.5'"
+                  />
+                </div>
+              </button>
+            </div>
+
+            <div class="border-t border-[var(--border)] pt-3 flex justify-end">
+              <button
+                class="px-3 py-1.5 text-[11px] rounded border border-[var(--border)] bg-[var(--secondary)] hover:bg-[var(--secondary)]/80 text-[var(--foreground)] transition-colors"
+                @click="resetGraphSettings"
+              >
+                Reset to Default
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
         v-if="refCtxVisible && refCtxRef"
         class="fixed z-[120] w-[280px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)]"
         :style="{ left: refCtxX + 'px', top: refCtxY + 'px' }"
@@ -702,6 +1441,7 @@ onUnmounted(() => {
           <div class="space-y-1">
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('checkout-local')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout branch</span><span class="ctx-sub">Switch to local branch {{ refCtxRef.name }}</span></button>
             <button v-if="!refCtxRef.local" class="ctx-item" @click="refAction('checkout-remote')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout remote branch</span><span class="ctx-sub">Create/switch to origin/{{ refCtxRef.name }}</span></button>
+            <button class="ctx-item" @click="refAction('checkout-and-isolate')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to this branch and isolate its connected commits</span></button>
             <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('delete-local')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local branch</span><span class="ctx-sub">Delete {{ refCtxRef.name }} from local repository</span></button>
             <button v-if="refCtxRef.remote" class="ctx-item" @click="refAction('delete-remote')"><span class="ctx-icon">🛰</span><span class="ctx-main">Delete remote branch</span><span class="ctx-sub">Delete origin/{{ refCtxRef.name }} on remote</span></button>
@@ -772,6 +1512,7 @@ onUnmounted(() => {
             <button class="ctx-item" @click="ctxAction('push')"><span class="ctx-icon">⬆</span><span class="ctx-main">Push changes</span><span class="ctx-sub">Push current branch commits to remote</span></button>
             <button class="ctx-item" @click="ctxAction('set-upstream')"><span class="ctx-icon">🔗</span><span class="ctx-main">Set upstream</span><span class="ctx-sub">Link local branch to origin/{{ ctxBranchName() }}</span></button>
             <button class="ctx-item" @click="ctxAction('checkout-branch')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout branch</span><span class="ctx-sub">Switch working tree to {{ ctxBranchName() }}</span></button>
+            <button class="ctx-item" @click="ctxAction('checkout-isolate-branch')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to {{ ctxBranchName() }} and isolate related commits</span></button>
           </div>
           <div class="border-t border-[var(--border)] my-1" />
         </template>
@@ -863,6 +1604,10 @@ onUnmounted(() => {
   to { opacity: 1; transform: translateY(0); }
 }
 
+.search-hit-row {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+
 .stash-badge {
   background: linear-gradient(135deg, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0.08) 100%);
   border: 1px solid rgba(245,158,11,0.45);
@@ -873,6 +1618,16 @@ onUnmounted(() => {
 .stash-badge:hover {
   border-color: rgba(245,158,11,0.7);
   box-shadow: 0 1px 6px rgba(245,158,11,0.25);
+}
+
+.branch-drop-zone {
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.branch-drop-target {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 55%, transparent);
+  border-radius: 0.4rem;
 }
 
 .working-node {
@@ -936,21 +1691,18 @@ onUnmounted(() => {
   border-radius: 0.4rem;
   transition: background-color 0.15s ease;
   display: grid;
-  grid-template-columns: 1rem 1fr;
+  grid-template-columns: 1fr;
   grid-template-areas:
-    "icon main"
-    "icon sub";
-  column-gap: 0.45rem;
+    "main"
+    "sub";
+  column-gap: 0;
   row-gap: 0.05rem;
 }
 .ctx-item:hover {
   background: color-mix(in srgb, var(--primary) 15%, transparent);
 }
 .ctx-icon {
-  grid-area: icon;
-  width: 1rem;
-  text-align: center;
-  line-height: 1rem;
+  display: none;
 }
 .ctx-main {
   grid-area: main;
@@ -964,9 +1716,9 @@ onUnmounted(() => {
   color: var(--muted-foreground);
 }
 .ctx-item-reset {
-  grid-template-columns: 1rem 1fr auto;
+  grid-template-columns: 1fr auto;
   grid-template-areas:
-    "icon main arrow"
+    "main arrow"
     "sub sub";
 }
 .ctx-arrow {

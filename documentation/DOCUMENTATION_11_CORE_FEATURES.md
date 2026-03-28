@@ -2,7 +2,7 @@
 
 ## 1. Feature Overview
 
-GitSwamp provides comprehensive Git repository management through integrated features designed for both simple and advanced workflows.
+GitSwamp provides comprehensive Git repository management through 69 integrated Tauri commands and a user-friendly interface designed for both simple and advanced workflows.
 
 ## 2. Repository Management
 
@@ -646,6 +646,44 @@ async function checkoutCommit(commitId: string) {
 ```
 
 **Backend:** `invoke("checkout_commit", { repo_path, commit_id })`
+
+## 10. Productivity UI and Help
+
+### 10.1 Quick Menu (File/Edit/View/Help)
+
+**Purpose:** Provide fast access to high-frequency actions from a single menu.
+
+**Features:**
+- File section: tab management and repository open actions
+- Edit section: copy path, refresh repository, open in VS Code
+- View section: toggle terminal, open folder explorer, open settings
+- Help section: in-app help panel, online guide, issue reporting
+
+### 10.2 In-App Help and Shortcuts
+
+**Purpose:** Keep keyboard shortcuts and usage instructions available inside the app.
+
+**Access:**
+- F1 shortcut
+- Hamburger menu -> Help -> Help and Shortcuts
+
+**Contents:**
+- Core feature overview
+- Keyboard shortcuts table
+- Quick navigation tips for repository workflows
+
+### 10.3 Open Repository with External Tools
+
+**Purpose:** Open the active repository in external tools directly from UI and terminal.
+
+**Supported Tools:**
+- VS Code
+- Visual Studio
+- Android Studio
+- IntelliJ
+- System folder explorer
+
+**Backend Command:** `invoke("open_path_with_tool", { path, tool })`
 
 ---
 

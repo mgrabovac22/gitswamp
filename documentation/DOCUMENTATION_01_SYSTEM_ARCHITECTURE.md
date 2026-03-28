@@ -337,9 +337,101 @@ User selects file + clicks "Stage"
                                                             └─> UI reflects change
 ```
 
-## 8. Communication Protocols
+## 9. Menu and Shortcut Architecture
 
-### 8.1 Tauri IPC Protocol
+### 9.1 Hamburger Menu System
+
+```
+User clicks Hamburger Button (☰)
+    │
+    └──> RepositoryTabs.vue toggleMenu()
+            │
+            ├──> menuOpen state toggles
+            │
+            └──> Menu dropdown displays 4 sections:
+                    - File
+                    - Edit
+                    - View
+                    - Help
+                    
+User hovers section
+    │
+    └──> activeSection updates
+            │
+            └──> Right panel shows actions for section
+
+User clicks action
+    │
+    └──> executeAction(action)
+            │
+            └──> action.run() executes
+                    │
+                    ├──> emit('event') to parent
+                    │   OR
+                    ├──> openHelpPanel() directly
+                    │   OR
+                    └──> invoke("command") to backend
+```
+
+### 9.2 Alt+O Folder Explorer Pipeline
+
+```
+User presses Alt+O
+    │
+    └──> AppView global keydown handler
+            │
+            └──> handleGlobalShortcuts()
+                    │
+                    └──> if (event.altKey && key === "o")
+                            │
+                            └──> openRepoInExplorer()
+                                    │
+                                    ├──> hasActiveRepositoryPath() check
+                                    │
+                                    └──> invoke("open_path_with_tool", {
+                                            path: repoPath,
+                                            tool: "explorer"
+                                        })
+                                            │
+                                            └──> Backend:
+                                                    operations::open_path_with_tool()
+                                                    │
+                                                    └──> IntegrationService::open_path_with_tool()
+                                                            │
+                                                            └──> Detect OS:
+                                                                    - Windows: explorer.exe
+                                                                    - macOS: open
+                                                                    - Linux: xdg-open
+                                                            │
+                                                            └──> Execute system command
+                                                                    │
+                                                                    └──> System file browser opens with path
+                                                            │
+                                                            └──> Return success/error to Frontend
+                                                                    │
+                                                                    └──> toast notification shows result
+```
+
+### 9.3 Help Panel (F1) Flow
+
+```
+User presses F1 or clicks Help > Features and Shortcuts
+    │
+    └──> RepositoryTabs.showHelpPanel = true
+            │
+            └──> Teleport renders help dialog to body
+                    │
+                    ├──> Features section with bullet points
+                    │
+                    ├──> Shortcuts table sorted by menu:
+                    │   - All 12+ shortcuts with icons
+                    │   - Menu location indicator
+                    │   - Description text
+                    │
+                    └──> Close with X, Esc, or click outside
+                            │
+                            └──> showHelpPanel = false
+```
 
 **Request Format:**
 ```json

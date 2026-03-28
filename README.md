@@ -2,6 +2,16 @@
 
 Complete software documentation for the GitSwamp Git client application built with Tauri, Vue 3, and Rust.
 
+## Latest Updates
+
+- **Hamburger menu (☰)** exposes File, Edit, View, and Help sections with actionable items
+- **Help panel (F1)** shows keyboard shortcuts and quick start guide in-app
+- **Open folder explorer** now uses backend tool integration (Alt+O) for reliable path opening
+- **System explorer integration** works across Windows (explorer), macOS (open), Linux (xdg-open)
+- **69 Tauri commands** provide comprehensive Git operations and system integration
+- **Multi-tab support** with quick actions for repository management
+- **GitHub/GitLab search** and authentication flows built in
+
 ## Documentation Overview
 
 This comprehensive documentation package contains **11 main document files** organized into logical sections covering all aspects of the GitSwamp project from user guide to developer documentation.
@@ -10,7 +20,7 @@ This comprehensive documentation package contains **11 main document files** org
 
 ### Start Here
 - **[INDEX](./documentation/DOCUMENTATION_00_INDEX.md)** - Complete navigation and documentation structure
-- **[Project Overview](./DOCUMENTATION_00_PROJECT_OVERVIEW.md)** - Project vision, scope, and goals
+- **[Project Overview](./documentation/DOCUMENTATION_00_PROJECT_OVERVIEW.md)** - Project vision, scope, and goals
 
 ### Architecture & Design
 - **[System Architecture](./documentation/DOCUMENTATION_01_SYSTEM_ARCHITECTURE.md)** - Complete system design and interactions
@@ -19,7 +29,7 @@ This comprehensive documentation package contains **11 main document files** org
 ### Implementation Guides
 - **[Frontend Overview](./documentation/DOCUMENTATION_04_FRONTEND_OVERVIEW.md)** - Vue 3 frontend architecture and components
 - **[Backend Overview](./documentation/DOCUMENTATION_08_BACKEND_OVERVIEW.md)** - Rust backend and Tauri integration
-- **[Commands Reference](./documentation/DOCUMENTATION_09_COMMANDS_REFERENCE.md)** - All 47 Tauri commands with examples
+- **[Commands Reference](./documentation/DOCUMENTATION_09_COMMANDS_REFERENCE.md)** - All 69 Tauri commands with examples
 
 ### Features & Operations
 - **[Core Features](./documentation/DOCUMENTATION_11_CORE_FEATURES.md)** - Main application functionality
@@ -96,7 +106,7 @@ This comprehensive documentation package contains **11 main document files** org
 **Size:** ~15 KB | **Sections:** 12
 
 ### 6. Commands Reference (DOCUMENTATION_09_COMMANDS_REFERENCE.md)
-- Complete command listing (47 commands)
+- Complete command listing (69 commands)
 - Repository commands
 - Commit commands
 - Branch commands

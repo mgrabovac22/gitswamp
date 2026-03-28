@@ -29,7 +29,7 @@
 ┃  ┌─────────────────────────────────────────────────────┐  ┃
 ┃  │      Rust Backend (Command Handlers)                │  ┃
 ┃  │  ┌──────────────────────────────────────────────┐   │  ┃
-┃  │  │  12 Command Modules (47 commands)           │   │  ┃
+┃  │  │  12 Command Modules (69 commands)           │   │  ┃
 ┃  │  │  ├─ Repository, Commits, Branches           │   │  ┃
 ┃  │  │  ├─ Status, Diff, Stash, Tags               │   │  ┃
 ┃  │  │  ├─ Clone/Init, Operations                  │   │  ┃
@@ -37,11 +37,14 @@
 ┃  │  │  └─ More...                                 │   │  ┃
 ┃  │  └──────────────────────────────────────────────┘   │  ┃
 ┃  │  ┌──────────────────────────────────────────────┐   │  ┃
-┃  │  │  Services Layer                             │   │  ┃
-┃  │  │  └─ GitService (git2-rs wrapper)            │   │  ┃
+┃  │  │  Services Layer (7 modules)                 │   │  ┃
+┃  │  │  ├─ GitService (git2-rs wrapper)            │   │  ┃
+┃  │  │  ├─ DiffService, StashService               │   │  ┃
+┃  │  │  ├─ IntegrationService, RemoteService       │   │  ┃
+┃  │  │  └─ Helpers                                 │   │  ┃
 ┃  │  └──────────────────────────────────────────────┘   │  ┃
 ┃  │  ┌──────────────────────────────────────────────┐   │  ┃
-┃  │  │  Data Models (10+)                          │   │  ┃
+┃  │  │  Data Models (11)                           │   │  ┃
 ┃  │  │  ├─ CommitInfo, BranchInfo                  │   │  ┃
 ┃  │  │  ├─ FileStatusInfo, FileDiff                │   │  ┃
 ┃  │  │  └─ More...                                 │   │  ┃

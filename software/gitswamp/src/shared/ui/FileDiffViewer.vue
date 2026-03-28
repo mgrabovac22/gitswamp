@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw } from "lucide-vue-next";
 import type { FileDiff, DiffLine } from "@/types";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
+import logoCrocGif from "@/assets/logo_croc.gif";
 
 const props = defineProps<{
   repoPath: string;
@@ -19,10 +20,12 @@ const emit = defineEmits<{
 
 type ViewMode = "diff" | "file-diff" | "edit";
 const viewMode = ref<ViewMode>("diff");
+const loadingLetters = ["L", "o", "a", "d", "i", "n", "g"];
+const MAX_HIGHLIGHT_LINES = 6000;
+const MAX_HIGHLIGHT_CHARS = 450000;
 
 const diff = ref<FileDiff | null>(null);
 const fileContent = ref<string>("");
-const originalContent = ref<string>(""); // Content before changes (for full file view)
 const editContent = ref<string>("");
 const loading = ref(true);
 const loadingFileContent = ref(false);
@@ -114,16 +117,6 @@ async function loadFileContentAsync() {
     // Allow UI to update
     await nextTick();
     await new Promise(resolve => requestAnimationFrame(resolve));
-    
-    try {
-      originalContent.value = await invoke<string>("get_file_content", {
-        path: props.repoPath,
-        filePath: props.filePath,
-        sha: "HEAD",
-      });
-    } catch {
-      originalContent.value = "";
-    }
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -332,6 +325,39 @@ const fullFileLines = computed((): FullFileLine[] => {
   return result;
 });
 
+const diffPayload = computed(() => {
+  if (!diff.value) {
+    return { lines: 0, chars: 0 };
+  }
+
+  let lines = 0;
+  let chars = 0;
+
+  for (const hunk of diff.value.hunks) {
+    lines += hunk.lines.length;
+    for (const line of hunk.lines) {
+      chars += line.content.length;
+    }
+  }
+
+  return { lines, chars };
+});
+
+const usePlainTextHighlighting = computed(() => {
+  if (viewMode.value === "file-diff") {
+    return fullFileLines.value.length > MAX_HIGHLIGHT_LINES || fileContent.value.length > MAX_HIGHLIGHT_CHARS;
+  }
+
+  return diffPayload.value.lines > MAX_HIGHLIGHT_LINES || diffPayload.value.chars > MAX_HIGHLIGHT_CHARS;
+});
+
+const loadingLabel = computed(() => {
+  if (loadingFileContent.value) {
+    return "Preparing full file view";
+  }
+  return "Parsing diff hunks";
+});
+
 // Virtualization for file-diff view
 const visibleFileLines = computed(() => {
   const all = fullFileLines.value;
@@ -371,13 +397,22 @@ function linePrefix(type: string): string {
   }
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .split("&").join("&amp;")
+    .split("<").join("&lt;")
+    .split(">").join("&gt;");
+}
+
 function getHighlightedLine(lineText: string, key: string): string {
   const cached = highlightedLineCache.value.get(key);
   if (cached !== undefined) {
     return cached;
   }
 
-  const highlighted = highlightCodeLine(lineText, props.filePath);
+  const highlighted = usePlainTextHighlighting.value
+    ? escapeHtml(lineText)
+    : highlightCodeLine(lineText, props.filePath);
   highlightedLineCache.value.set(key, highlighted);
   return highlighted;
 }
@@ -395,6 +430,10 @@ function getHighlightedFileLine(rowIdx: number, lineText: string): string {
 function onEditInput() {
   hasUnsavedChanges.value = editContent.value !== fileContent.value;
 }
+
+watch(usePlainTextHighlighting, () => {
+  highlightedLineCache.value.clear();
+});
 </script>
 
 <template>
@@ -506,7 +545,19 @@ function onEditInput() {
 
     <div class="flex-1 overflow-auto bg-[var(--diff-bg)] font-mono text-[13px] leading-[1.5]">
       <div v-if="loading" class="flex items-center justify-center h-full">
-        <div class="text-[var(--muted-foreground)]">Loading...</div>
+        <div class="diff-loader-shell">
+          <img :src="logoCrocGif" alt="Loading" class="diff-loader-logo" />
+          <div class="diff-loader-wave" aria-label="Loading">
+            <span
+              v-for="(letter, idx) in loadingLetters"
+              :key="letter + idx"
+              :style="{ animationDelay: `${idx * 0.08}s` }"
+            >
+              {{ letter }}
+            </span>
+          </div>
+          <p class="diff-loader-caption">{{ loadingLabel }}...</p>
+        </div>
       </div>
 
       <div v-else-if="error" class="flex flex-col items-center justify-center h-full gap-2">
@@ -519,6 +570,13 @@ function onEditInput() {
       </div>
 
       <div v-else-if="viewMode === 'diff' && diff" class="min-w-fit">
+        <div
+          v-if="usePlainTextHighlighting"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+        >
+          Large diff mode: syntax coloring is simplified to keep scrolling smooth.
+        </div>
+
         <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
           <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[var(--diff-hunk-bg)] px-3 py-1.5 sticky top-0 z-10 border-y border-[var(--diff-border)]">
             <span class="text-xs text-[var(--diff-link)]">
@@ -537,10 +595,10 @@ function onEditInput() {
           <div>
             <template v-for="(line, lineIdx) in hunk.lines" :key="lineIdx">
               <div :class="['flex', lineClass(line.line_type)]">
-                <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
+                <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
                   {{ line.old_line_no ?? '' }}
                 </div>
-                <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
+                <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
                   {{ line.new_line_no ?? '' }}
                 </div>
                 <div 
@@ -550,7 +608,7 @@ function onEditInput() {
                   {{ linePrefix(line.line_type) }}
                 </div>
                 <pre 
-                  class="flex-1 px-1.5 whitespace-pre overflow-x-auto"
+                  class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-x-auto"
                   :class="line.line_type === 'addition' ? 'text-[var(--diff-add-fg)]' : line.line_type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
                 ><code class="hljs bg-transparent" v-html="getHighlightedDiffLine(hunkIdx, lineIdx, line)"></code></pre>
               </div>
@@ -565,19 +623,38 @@ function onEditInput() {
 
       <div v-else-if="viewMode === 'file-diff'" class="min-w-fit h-full overflow-auto" @scroll="onFileDiffScroll">
         <div v-if="loadingFileContent" class="flex items-center justify-center h-full">
-          <div class="text-[var(--muted-foreground)]">Loading file content...</div>
+          <div class="diff-loader-shell">
+            <img :src="logoCrocGif" alt="Loading file content" class="diff-loader-logo" />
+            <div class="diff-loader-wave" aria-label="Loading">
+              <span
+                v-for="(letter, idx) in loadingLetters"
+                :key="'file-' + letter + idx"
+                :style="{ animationDelay: `${idx * 0.08}s` }"
+              >
+                {{ letter }}
+              </span>
+            </div>
+            <p class="diff-loader-caption">{{ loadingLabel }}...</p>
+          </div>
         </div>
-        <div v-else-if="fullFileLines.length > 0" class="relative" :style="{ height: totalFileHeight + 'px' }">
+        <div v-else-if="fullFileLines.length > 0" class="h-full">
+          <div
+            v-if="usePlainTextHighlighting"
+            class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+          >
+            Large file mode: syntax coloring is simplified to reduce loading time.
+          </div>
+          <div class="relative" :style="{ height: totalFileHeight + 'px' }">
           <div
             v-for="item in visibleFileLines"
             :key="item.idx"
             :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
             :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
           >
-            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
               {{ item.line.oldLineNo ?? '' }}
             </div>
-            <div class="w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
               {{ item.line.lineNo || '' }}
             </div>
             <div 
@@ -587,9 +664,10 @@ function onEditInput() {
               {{ linePrefix(item.line.type) }}
             </div>
             <pre 
-              class="flex-1 px-1.5 whitespace-pre overflow-x-auto leading-[20px] m-0"
+              class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-x-auto leading-[20px] m-0"
               :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
             ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line.content)"></code></pre>
+          </div>
           </div>
         </div>
         <div v-else-if="!loading && !loadingFileContent" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
@@ -608,4 +686,76 @@ function onEditInput() {
     </div>
   </div>
 </template>
+
+<style scoped>
+.diff-loader-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--diff-border);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--card) 85%, transparent);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+.diff-loader-logo {
+  width: 68px;
+  height: 68px;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 12px color-mix(in srgb, var(--foreground) 18%, transparent));
+  animation: loaderFloat 1.35s ease-in-out infinite;
+}
+
+.diff-loader-wave {
+  display: flex;
+  align-items: baseline;
+  gap: 0.04rem;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--foreground);
+}
+
+.diff-loader-wave span {
+  display: inline-block;
+  animation: loaderWave 1s ease-in-out infinite;
+}
+
+.diff-loader-caption {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+@keyframes loaderFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes loaderWave {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.55;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+:global(body.gitswamp-reduced-motion) .diff-loader-logo,
+:global(body.gitswamp-reduced-motion) .diff-loader-wave span {
+  animation: none;
+}
+</style>
 

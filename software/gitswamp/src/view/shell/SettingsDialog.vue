@@ -33,7 +33,12 @@ const themeMode = ref<ThemeModePreference>("dark");
 const appPalette = ref<AppPalettePreference>("default");
 const fontSize = ref<"small" | "medium" | "large">("medium");
 const compactMode = ref(false);
+const fullScreenOnStart = ref(true);
 const showAvatars = ref(true);
+const restoreSession = ref(true);
+const reducedMotion = ref(false);
+const wrapDiffLines = ref(false);
+const showDiffLineNumbers = ref(true);
 
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
@@ -60,9 +65,29 @@ onMounted(() => {
   if (savedCompact) {
     compactMode.value = savedCompact === "true";
   }
+  const savedFullscreenOnStart = localStorage.getItem("gitswamp-fullscreen-on-start");
+  if (savedFullscreenOnStart !== null) {
+    fullScreenOnStart.value = savedFullscreenOnStart === "true";
+  }
   const savedAvatars = localStorage.getItem("gitswamp-show-avatars");
   if (savedAvatars !== null) {
     showAvatars.value = savedAvatars !== "false";
+  }
+  const savedRestoreSession = localStorage.getItem("gitswamp-restore-session");
+  if (savedRestoreSession !== null) {
+    restoreSession.value = savedRestoreSession !== "false";
+  }
+  const savedReducedMotion = localStorage.getItem("gitswamp-reduced-motion");
+  if (savedReducedMotion !== null) {
+    reducedMotion.value = savedReducedMotion === "true";
+  }
+  const savedWrapDiffLines = localStorage.getItem("gitswamp-wrap-diff-lines");
+  if (savedWrapDiffLines !== null) {
+    wrapDiffLines.value = savedWrapDiffLines === "true";
+  }
+  const savedShowDiffLineNumbers = localStorage.getItem("gitswamp-show-diff-line-numbers");
+  if (savedShowDiffLineNumbers !== null) {
+    showDiffLineNumbers.value = savedShowDiffLineNumbers !== "false";
   }
   
   applySettings();
@@ -72,13 +97,21 @@ function applySettings() {
   document.documentElement.style.setProperty("--font-size", fontSizes[fontSize.value]);
   document.documentElement.classList.toggle("compact", compactMode.value);
   document.documentElement.classList.toggle("hide-avatars", !showAvatars.value);
+  document.documentElement.classList.toggle("reduced-motion", reducedMotion.value);
+  document.documentElement.classList.toggle("diff-wrap-lines", wrapDiffLines.value);
+  document.documentElement.classList.toggle("hide-diff-line-numbers", !showDiffLineNumbers.value);
 }
 
-watch([fontSize, compactMode, showAvatars], () => {
+watch([fontSize, compactMode, fullScreenOnStart, showAvatars, restoreSession, reducedMotion, wrapDiffLines, showDiffLineNumbers], () => {
   applySettings();
   localStorage.setItem("gitswamp-font-size", fontSize.value);
   localStorage.setItem("gitswamp-compact-mode", String(compactMode.value));
+  localStorage.setItem("gitswamp-fullscreen-on-start", String(fullScreenOnStart.value));
   localStorage.setItem("gitswamp-show-avatars", String(showAvatars.value));
+  localStorage.setItem("gitswamp-restore-session", String(restoreSession.value));
+  localStorage.setItem("gitswamp-reduced-motion", String(reducedMotion.value));
+  localStorage.setItem("gitswamp-wrap-diff-lines", String(wrapDiffLines.value));
+  localStorage.setItem("gitswamp-show-diff-line-numbers", String(showDiffLineNumbers.value));
 });
 
 watch(themeMode, (value) => {
@@ -225,8 +258,25 @@ function handleDelete() {
 
           <div class="flex items-center justify-between py-2">
             <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Full Screen on Start</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Starts maximized and keeps taskbar visible</p>
+            </div>
+            <button
+              @click="fullScreenOnStart = !fullScreenOnStart"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="fullScreenOnStart ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="fullScreenOnStart ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
               <div class="text-xs font-medium text-[var(--foreground)] block">Show Avatars</div>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Display author avatars in graph</p>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Show detailed avatars, or colored circles when off</p>
             </div>
             <button
               @click="showAvatars = !showAvatars"
@@ -236,6 +286,74 @@ function handleDelete() {
               <div
                 class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
                 :class="showAvatars ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Restore Session on Start</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Reopen last active tabs and repository</p>
+            </div>
+            <button
+              @click="restoreSession = !restoreSession"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="restoreSession ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="restoreSession ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Reduced Motion</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disable graph and UI animations</p>
+            </div>
+            <button
+              @click="reducedMotion = !reducedMotion"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="reducedMotion ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="reducedMotion ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Wrap Long Diff Lines</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Wrap long lines instead of horizontal scrolling</p>
+            </div>
+            <button
+              @click="wrapDiffLines = !wrapDiffLines"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="wrapDiffLines ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="wrapDiffLines ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Show Diff Line Numbers</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Display old/new line numbers in diff view</p>
+            </div>
+            <button
+              @click="showDiffLineNumbers = !showDiffLineNumbers"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="showDiffLineNumbers ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="showDiffLineNumbers ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
               />
             </button>
           </div>

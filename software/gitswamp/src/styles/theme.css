@@ -82,6 +82,8 @@
   --code-variable: #ffa198;
   --code-title: #7ee787;
   --code-regexp: #7ee787;
+
+  --graph-message-opacity: 0.85;
 }
 html.light {
   --swamp-deep: #f4f6f9;
@@ -183,15 +185,15 @@ html[data-app-theme="swamp"] {
 
 html[data-app-theme="github-dark"] {
   --background: #161b22;
-  --foreground: #c9d1d9;
+  --foreground: #e6edf3;
   --card: #0d1117;
-  --card-foreground: #c9d1d9;
+  --card-foreground: #e6edf3;
   --popover: #0d1117;
-  --popover-foreground: #c9d1d9;
+  --popover-foreground: #e6edf3;
   --secondary: #21262d;
-  --secondary-foreground: #c9d1d9;
+  --secondary-foreground: #e6edf3;
   --muted: #21262d;
-  --muted-foreground: #8b949e;
+  --muted-foreground: #b5bec8;
   --primary: #1f6feb;
   --accent: #0a66d8;
   --ring: #1f6feb;
@@ -206,17 +208,19 @@ html[data-app-theme="github-dark"] {
   --diff-del-bg: rgba(130, 40, 40, 0.38);
   --diff-link: #79c0ff;
 
-  --code-fg: #24292f;
-  --code-muted: #57606a;
-  --code-keyword: #cf222e;
-  --code-string: #0a3069;
-  --code-number: #0550ae;
-  --code-function: #8250df;
-  --code-type: #953800;
-  --code-comment: #6e7781;
-  --code-variable: #953800;
-  --code-title: #116329;
-  --code-regexp: #0a3069;
+  --code-fg: #c9d1d9;
+  --code-muted: #8b949e;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-function: #d2a8ff;
+  --code-type: #ffa657;
+  --code-comment: #7d8590;
+  --code-variable: #ffa198;
+  --code-title: #7ee787;
+  --code-regexp: #7ee787;
+
+  --graph-message-opacity: 1;
 }
 
 html[data-app-theme="dark-red"] {
@@ -249,6 +253,16 @@ html[data-app-theme="emerald-night"] {
   --sidebar-primary: #10b981;
   --sidebar-ring: #10b981;
   --sidebar-border: rgba(16, 185, 129, 0.22);
+  --background: #f6f8fa;
+  --foreground: #1f2328;
+  --card: #ffffff;
+  --card-foreground: #1f2328;
+  --popover: #ffffff;
+  --popover-foreground: #1f2328;
+  --secondary: #eaeef2;
+  --secondary-foreground: #1f2328;
+  --muted: #d8dee4;
+  --muted-foreground: #434c5a;
 
   --diff-add-bg: rgba(6, 95, 70, 0.42);
   --diff-del-bg: rgba(107, 33, 33, 0.4);
@@ -289,6 +303,8 @@ html[data-app-theme="github-light"] {
   --sidebar-primary: #0969da;
   --sidebar-ring: #0969da;
   --sidebar-border: rgba(9, 105, 218, 0.18);
+
+  --graph-message-opacity: 1;
 }
 
 html[data-app-theme="mint-light"] {
@@ -496,7 +512,38 @@ html.light .shadow-2xl {
     --row-height: 22px;
   }
 
-  html.hide-avatars .commit-avatar {
+  html.hide-avatars .commit-avatar-pattern {
+    display: none !important;
+  }
+
+  html.hide-avatars .commit-avatar-ring {
+    display: none !important;
+  }
+
+  html.hide-avatars .commit-avatar-outer {
+    display: none !important;
+  }
+
+  html.hide-avatars .commit-avatar-inner {
+    fill: var(--avatar-color) !important;
+    opacity: 0.95;
+  }
+
+  html.reduced-motion .node-pop,
+  html.reduced-motion .graph-row,
+  html.reduced-motion .working-node,
+  html.reduced-motion .current-branch-badge::after {
+    animation: none !important;
+  }
+
+  html.diff-wrap-lines .diff-code-line {
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    overflow-x: visible !important;
+  }
+
+  html.hide-diff-line-numbers .diff-line-no {
     display: none !important;
   }
 

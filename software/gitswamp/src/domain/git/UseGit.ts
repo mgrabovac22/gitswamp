@@ -133,6 +133,7 @@ export function useGit() {
     refreshTags: refresh.refreshTags,
     refreshAll: refresh.refreshAll,
     loadMoreCommits: refresh.loadMoreCommits,
+    ensureCommitLoaded: refresh.ensureCommitLoaded,
     getCommitFiles: refresh.getCommitFiles,
 
     stageFile: status.stageFile,

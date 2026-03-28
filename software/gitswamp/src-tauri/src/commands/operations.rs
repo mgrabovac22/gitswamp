@@ -92,6 +92,26 @@ pub fn verify_gitlab_token(domain: String, token: String) -> Result<String, Stri
 }
 
 #[tauri::command]
+pub fn get_available_external_editors() -> Vec<String> {
+    GitService::get_available_external_editors()
+}
+
+#[tauri::command]
+pub fn get_available_external_tools() -> Vec<String> {
+    GitService::get_available_external_tools()
+}
+
+#[tauri::command]
+pub fn open_file_with_editor(path: String, file_path: String, editor: String) -> Result<(), String> {
+    GitService::open_file_with_editor(&path, &file_path, &editor)
+}
+
+#[tauri::command]
+pub fn open_path_with_tool(path: String, tool: String) -> Result<(), String> {
+    GitService::open_path_with_tool(&path, &tool)
+}
+
+#[tauri::command]
 pub fn rename_branch(path: String, old_name: String, new_name: String) -> Result<String, String> {
     GitService::rename_branch(&path, &old_name, &new_name)
 }

@@ -74,36 +74,18 @@ The project focuses on delivering a comprehensive Git management solution that:
 
 ```
 gitswamp/
-├── src/                          # Vue 3 Frontend
-│   ├── components/               # Vue components (19 total)
-│   │   ├── layout/              # Layout components
-│   │   ├── repository/          # Repository management
-│   │   ├── commits/             # Commit visualization
-│   │   └── ui/                  # Reusable UI components
-│   ├── composables/             # Vue composables
-│   │   ├── useGit.ts           # Core Git operations
-│   │   └── useToast.ts         # Toast notifications
-│   ├── types/                   # TypeScript type definitions
-│   ├── styles/                  # CSS stylesheets
-│   ├── assets/                  # Static assets
-│   ├── App.vue                  # Root component
-│   └── main.ts                  # Entry point
-│
-├── src-tauri/                   # Rust Backend
-│   ├── src/
-│   │   ├── commands/            # Tauri commands (12 modules, 47 commands)
-│   │   ├── models/              # Data models (10 structs)
-│   │   ├── services/            # Service layer
-│   │   └── lib.rs               # Main entry point
-│   ├── Cargo.toml              # Rust dependencies
-│   └── tauri.conf.json         # Tauri configuration
-│
-├── public/                      # Static assets
-├── dist/                        # Built output
-├── package.json                 # Node.js configuration
-├── vite.config.ts              # Vite configuration
-├── tsconfig.json               # TypeScript configuration
-└── README.md                    # Project README
+├── README.md                     # Documentation root readme
+├── documentation/                # Project documentation set
+└── software/
+      ├── package.json              # Workspace-level npm dependencies
+      └── gitswamp/
+            ├── src/                  # Vue frontend (app/domain/shared/view)
+            ├── src-tauri/            # Rust backend, commands, services
+            ├── public/               # Static assets
+            ├── package.json          # Frontend app package
+            ├── vite.config.ts        # Vite configuration
+            ├── tsconfig.json         # TypeScript configuration
+            └── README.md             # App-specific readme
 ```
 
 ## 6. Key Features
@@ -183,12 +165,19 @@ gitswamp/
 
 ### 6.10 User Interface Features
 
-- **Multi-Tab Support** - Switch between open repositories
+- **Multi-Tab Support** - Switch between open repositories with ease
+- **Hamburger Menu (☰)** - Quick access to File, Edit, View, and Help sections
+  - File: New Tab, Open Repository, Close Tab, Create Gist
+  - Edit: Copy Repository Path, Refresh Repository, Open in VS Code
+  - View: Toggle Terminal, Open in Folder Explorer, Open Settings
+  - Help: In-app Shortcuts, Online Guide, Report Issue
+- **In-App Help Panel (F1)** - Shortcut guide and quick start guide
+- **Folder Explorer Shortcut (Alt+O)** - Open active repository in system explorer
 - **Real-Time Status** - Live file status updates
 - **Dark/Light Theme** - Switchable color themes
 - **Compact Mode** - Minimize UI for larger editor view
 - **Custom Font Size** - Adjustable interface font
-- **Toast Notifications** - System-wide notifications
+- **Toast Notifications** - System-wide notifications for all operations
 - **Settings Dialog** - Configure application preferences
 
 ## 7. Architecture Overview

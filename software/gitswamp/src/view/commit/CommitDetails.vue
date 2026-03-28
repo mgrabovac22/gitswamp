@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, watch, onMounted, onUnmounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Calendar,
   Hash,
@@ -19,10 +20,12 @@ import {
 import AppButton from "@/shared/ui/AppButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
 import { splitFilePath } from "@/shared/codeView";
+import { useToast } from "@/shared/notifications/useToast";
 import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo } from "@/types";
 
 const props = defineProps<{
   commit: CommitInfo | null;
+  canAmendSelectedCommit?: boolean;
   stagedFiles: FileStatusInfo[];
   unstagedFiles: FileStatusInfo[];
   conflictFiles?: FileStatusInfo[];
@@ -50,6 +53,7 @@ const emit = defineEmits<{
   stashApply: [index: number];
   stashDrop: [index: number];
   viewDiff: [{ path: string; sha: string | null; staged: boolean }];
+  amendCommitMessage: [newMessage: string];
 }>();
 
 const commitSummary = ref("");
@@ -58,6 +62,7 @@ const showDiscardConfirm = ref(false);
 const discardPath = ref<string | null>(null);
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
+  closeFileContextMenu();
   emit("viewDiff", { path: filePath, sha: commitSha, staged });
 }
 
@@ -103,8 +108,129 @@ watch(() => props.isWorkingChanges, (val) => {
 
 const expandedStaged = ref(true);
 const expandedUnstaged = ref(true);
+const toast = useToast();
 
-const descriptionRef = ref<HTMLTextAreaElement | null>(null);
+type ExternalEditorId = "notepad" | "vscode" | "visualstudio" | "androidstudio" | "intellij";
+
+interface ExternalEditorOption {
+  id: ExternalEditorId;
+  label: string;
+  hint: string;
+}
+
+const editorOptionMap: Record<ExternalEditorId, ExternalEditorOption> = {
+  notepad: {
+    id: "notepad",
+    label: "Notepad",
+    hint: "Quick plain text editor",
+  },
+  vscode: {
+    id: "vscode",
+    label: "VS Code",
+    hint: "Open in Visual Studio Code",
+  },
+  visualstudio: {
+    id: "visualstudio",
+    label: "Visual Studio",
+    hint: "Open in Visual Studio",
+  },
+  androidstudio: {
+    id: "androidstudio",
+    label: "Android Studio",
+    hint: "Open in Android Studio",
+  },
+  intellij: {
+    id: "intellij",
+    label: "IntelliJ IDEA",
+    hint: "Open in IntelliJ if installed",
+  },
+};
+
+const availableEditors = ref<ExternalEditorOption[]>([]);
+const fileCtxVisible = ref(false);
+const fileCtxX = ref(0);
+const fileCtxY = ref(0);
+const fileCtxPath = ref<string | null>(null);
+const editingSubject = ref(false);
+const editingDescription = ref(false);
+const subjectDraft = ref("");
+const descriptionDraft = ref("");
+
+function syncAmendDraftsFromCommit() {
+  const commitMessage = props.commit?.message ?? "";
+  subjectDraft.value = commitSubject(commitMessage);
+  descriptionDraft.value = commitBody(commitMessage);
+  editingSubject.value = false;
+  editingDescription.value = false;
+}
+
+watch(() => props.commit?.sha, () => {
+  syncAmendDraftsFromCommit();
+}, { immediate: true });
+
+watch(() => props.commit?.message, (newMessage) => {
+  if (!newMessage) return;
+  if (!editingSubject.value && !editingDescription.value) {
+    syncAmendDraftsFromCommit();
+  }
+});
+
+function canAmendSelectedCommit(): boolean {
+  return !!props.commit && !!props.canAmendSelectedCommit;
+}
+
+function beginSubjectEdit() {
+  if (!canAmendSelectedCommit()) return;
+  subjectDraft.value = commitSubject(props.commit?.message ?? "");
+  editingSubject.value = true;
+}
+
+function beginDescriptionEdit() {
+  if (!canAmendSelectedCommit()) return;
+  descriptionDraft.value = commitBody(props.commit?.message ?? "");
+  editingDescription.value = true;
+}
+
+function cancelSubjectEdit() {
+  subjectDraft.value = commitSubject(props.commit?.message ?? "");
+  editingSubject.value = false;
+}
+
+function cancelDescriptionEdit() {
+  descriptionDraft.value = commitBody(props.commit?.message ?? "");
+  editingDescription.value = false;
+}
+
+function buildAmendMessage(nextSubject: string, nextBody: string): string | null {
+  const cleanSubject = nextSubject.trim();
+  if (!cleanSubject) {
+    toast.error("Commit message subject cannot be empty.");
+    return null;
+  }
+
+  const cleanBody = nextBody.trim();
+  if (!cleanBody) {
+    return cleanSubject;
+  }
+
+  return `${cleanSubject}\n\n${cleanBody}`;
+}
+
+function submitSubjectEdit() {
+  if (!props.commit || !canAmendSelectedCommit()) return;
+  const amended = buildAmendMessage(subjectDraft.value, descriptionDraft.value);
+  if (!amended) return;
+  editingSubject.value = false;
+  emit("amendCommitMessage", amended);
+}
+
+function submitDescriptionEdit() {
+  if (!props.commit || !canAmendSelectedCommit()) return;
+  const amended = buildAmendMessage(subjectDraft.value, descriptionDraft.value);
+  if (!amended) return;
+  editingDescription.value = false;
+  emit("amendCommitMessage", amended);
+}
 
 function autoExpandTextarea(textarea: HTMLTextAreaElement) {
   textarea.style.height = "auto";
@@ -186,6 +312,111 @@ function copyToClipboard(text: string) {
 function fileParts(path: string) {
   return splitFilePath(path);
 }
+
+function mapEditorIds(ids: string[]): ExternalEditorOption[] {
+  const normalized = ids
+    .map((id) => id.trim().toLowerCase())
+    .filter((id): id is ExternalEditorId => id === "notepad" || id === "vscode" || id === "visualstudio" || id === "androidstudio" || id === "intellij");
+
+  return Array.from(new Set(normalized)).map((id) => editorOptionMap[id]);
+}
+
+async function loadAvailableEditors() {
+  try {
+    const editorIds = await invoke<string[]>("get_available_external_editors");
+    const mapped = mapEditorIds(editorIds);
+    availableEditors.value = mapped.length > 0 ? mapped : [editorOptionMap.notepad];
+  } catch {
+    availableEditors.value = [editorOptionMap.notepad];
+  }
+}
+
+function openFileContextMenu(event: MouseEvent, path: string) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (availableEditors.value.length === 0) {
+    availableEditors.value = [editorOptionMap.notepad];
+  }
+
+  fileCtxPath.value = path;
+
+  const menuWidth = 250;
+  const menuHeight = 80 + Math.max(availableEditors.value.length, 1) * 42;
+  let x = event.clientX;
+  let y = event.clientY;
+
+  if (x + menuWidth > window.innerWidth) {
+    x = window.innerWidth - menuWidth - 8;
+  }
+  if (y + menuHeight > window.innerHeight) {
+    y = window.innerHeight - menuHeight - 8;
+  }
+
+  fileCtxX.value = Math.max(8, x);
+  fileCtxY.value = Math.max(8, y);
+  fileCtxVisible.value = true;
+}
+
+function closeFileContextMenu() {
+  fileCtxVisible.value = false;
+  fileCtxPath.value = null;
+}
+
+function editorButtonClass(option: ExternalEditorOption): string {
+  if (option.id === "notepad") {
+    return "hover:border-[#94a3b8]/40 hover:bg-[#94a3b8]/10";
+  }
+  if (option.id === "vscode") {
+    return "hover:border-[#3b82f6]/40 hover:bg-[#3b82f6]/10";
+  }
+  if (option.id === "visualstudio") {
+    return "hover:border-[#8b5cf6]/40 hover:bg-[#8b5cf6]/10";
+  }
+  if (option.id === "androidstudio") {
+    return "hover:border-[#22c55e]/40 hover:bg-[#22c55e]/10";
+  }
+  return "hover:border-[#f97316]/40 hover:bg-[#f97316]/10";
+}
+
+async function openSelectedFileWithEditor(editorId: ExternalEditorId) {
+  if (!fileCtxPath.value) return;
+  const selectedPath = fileCtxPath.value;
+
+  try {
+    await invoke("open_file_with_editor", {
+      path: props.repoPath,
+      filePath: selectedPath,
+      editor: editorId,
+    });
+    toast.success(`Opened ${fileParts(selectedPath).fileName} in ${editorOptionMap[editorId].label}.`, 3500);
+  } catch (error) {
+    toast.error(`Could not open ${fileParts(selectedPath).fileName}: ${String(error)}`);
+  } finally {
+    closeFileContextMenu();
+  }
+}
+
+function handleGlobalKeyDown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    closeFileContextMenu();
+  }
+}
+
+function handleGlobalPointerDown() {
+  closeFileContextMenu();
+}
+
+onMounted(() => {
+  void loadAvailableEditors();
+  globalThis.addEventListener("pointerdown", handleGlobalPointerDown);
+  globalThis.addEventListener("keydown", handleGlobalKeyDown);
+});
+
+onUnmounted(() => {
+  globalThis.removeEventListener("pointerdown", handleGlobalPointerDown);
+  globalThis.removeEventListener("keydown", handleGlobalKeyDown);
+});
 </script>
 
 <template>
@@ -256,6 +487,7 @@ function fileParts(path: string) {
             :key="'c-' + f.path"
             class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#ef4444]/8 transition-all group cursor-pointer"
             @click="emit('manualResolve', f.path)"
+            @contextmenu="openFileContextMenu($event, f.path)"
           >
             <span class="text-[10px] font-bold w-4 text-center text-[#ef4444]">!</span>
             <div class="flex-1 min-w-0">
@@ -306,6 +538,7 @@ function fileParts(path: string) {
               :key="'u-' + f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
               @click="openDiff(f.path, null, false)"
+              @contextmenu="openFileContextMenu($event, f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
               <div class="flex-1 min-w-0">
@@ -355,6 +588,7 @@ function fileParts(path: string) {
               :key="'s-' + f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
               @click="openDiff(f.path, null, true)"
+              @contextmenu="openFileContextMenu($event, f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
               <div class="flex-1 min-w-0">
@@ -408,7 +642,6 @@ function fileParts(path: string) {
           />
         </div>
         <textarea
-          ref="descriptionRef"
           v-model="commitDescription"
           placeholder="Description (optional)..."
           rows="3"
@@ -437,6 +670,7 @@ function fileParts(path: string) {
             :key="f.path"
             class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
             @click="openDiff(f.path, commit!.sha, false)"
+            @contextmenu="openFileContextMenu($event, f.path)"
           >
             <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
             <div class="flex-1 min-w-0">
@@ -460,16 +694,82 @@ function fileParts(path: string) {
     <div v-show="activeTab === 'info' && commit && !isWorkingChanges" class="flex-1 overflow-y-auto">
       <div v-if="commit" class="p-4 space-y-4">
         <div>
-          <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Commit Message</div>
-          <div class="text-sm text-[var(--foreground)] leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)]">
-            {{ commitSubject(commit.message) }}
+          <div class="flex items-center justify-between gap-2 mb-1.5">
+            <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider">Commit Message</div>
+            <span
+              v-if="!canAmendSelectedCommit()"
+              class="text-[9px] text-[var(--muted-foreground)]"
+            >
+              Amend is available only for current HEAD commit
+            </span>
+          </div>
+
+          <div
+            v-if="!editingSubject"
+            class="text-sm text-[var(--foreground)] leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)]"
+            :class="canAmendSelectedCommit() ? 'cursor-text hover:border-[var(--primary)]/45 transition-colors' : ''"
+            @click="beginSubjectEdit"
+          >
+            {{ subjectDraft || commitSubject(commit.message) }}
+          </div>
+
+          <div v-else class="space-y-2">
+            <textarea
+              v-model="subjectDraft"
+              rows="2"
+              class="w-full px-3 py-2 text-sm text-[var(--foreground)] bg-[var(--input-background)] rounded border border-[var(--primary)]/55 focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-y"
+              @keydown.enter.ctrl.prevent="submitSubjectEdit"
+            />
+            <div class="flex items-center gap-2">
+              <button
+                class="px-3 py-1.5 rounded text-[11px] font-medium bg-[var(--primary)] text-white hover:opacity-90 transition-colors"
+                @click="submitSubjectEdit"
+              >
+                Update Message
+              </button>
+              <button
+                class="px-3 py-1.5 rounded text-[11px] font-medium border border-[var(--border)] bg-[var(--secondary)] text-[var(--foreground)] hover:opacity-85 transition-colors"
+                @click="cancelSubjectEdit"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
 
-        <div v-if="commitBody(commit.message)">
+        <div>
           <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider mb-1.5">Description</div>
-          <div class="text-xs text-[var(--foreground)] opacity-80 leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)] whitespace-pre-wrap">
-            {{ commitBody(commit.message) }}
+
+          <div
+            v-if="!editingDescription"
+            class="text-xs text-[var(--foreground)] opacity-80 leading-relaxed bg-[var(--input-background)] p-3 rounded border border-[var(--border)] whitespace-pre-wrap"
+            :class="canAmendSelectedCommit() ? 'cursor-text hover:border-[var(--primary)]/45 transition-colors' : ''"
+            @click="beginDescriptionEdit"
+          >
+            {{ descriptionDraft || "Click to add a description" }}
+          </div>
+
+          <div v-else class="space-y-2">
+            <textarea
+              v-model="descriptionDraft"
+              rows="4"
+              class="w-full px-3 py-2 text-xs text-[var(--foreground)] bg-[var(--input-background)] rounded border border-[var(--primary)]/55 focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-y"
+              @keydown.enter.ctrl.prevent="submitDescriptionEdit"
+            />
+            <div class="flex items-center gap-2">
+              <button
+                class="px-3 py-1.5 rounded text-[11px] font-medium bg-[var(--primary)] text-white hover:opacity-90 transition-colors"
+                @click="submitDescriptionEdit"
+              >
+                Update Message
+              </button>
+              <button
+                class="px-3 py-1.5 rounded text-[11px] font-medium border border-[var(--border)] bg-[var(--secondary)] text-[var(--foreground)] hover:opacity-85 transition-colors"
+                @click="cancelDescriptionEdit"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
 
@@ -575,6 +875,7 @@ function fileParts(path: string) {
             v-for="f in stashFiles"
             :key="f.path"
             class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
+            @contextmenu="openFileContextMenu($event, f.path)"
           >
             <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
             <div class="flex-1 min-w-0">
@@ -678,6 +979,33 @@ function fileParts(path: string) {
         <p class="text-xs text-[var(--muted-foreground)]">Select a commit to view details</p>
       </div>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="fileCtxVisible && fileCtxPath"
+        class="fixed z-[210] w-[250px] rounded-lg border border-[var(--border)] bg-[var(--popover)] shadow-2xl p-2"
+        :style="{ left: fileCtxX + 'px', top: fileCtxY + 'px' }"
+        @pointerdown.stop
+      >
+        <div class="px-1 pb-2 border-b border-[var(--border)]">
+          <p class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Open With</p>
+          <p class="text-[11px] text-[var(--foreground)] truncate mt-0.5" :title="fileCtxPath">{{ fileCtxPath }}</p>
+        </div>
+
+        <div class="pt-2 space-y-1">
+          <button
+            v-for="option in availableEditors"
+            :key="option.id"
+            class="w-full text-left px-2 py-1.5 rounded-md border border-transparent transition-colors"
+            :class="editorButtonClass(option)"
+            @click="openSelectedFileWithEditor(option.id)"
+          >
+            <div class="text-xs font-medium text-[var(--foreground)]">{{ option.label }}</div>
+            <div class="text-[10px] text-[var(--muted-foreground)]">{{ option.hint }}</div>
+          </button>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Discard Confirmation Toast -->
     <Teleport to="body" v-if="showDiscardConfirm">

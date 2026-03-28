@@ -7,6 +7,33 @@ import { statusHash } from "./gitHelpers";
 export function createRefreshActions(state: GitState) {
   let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null;
 
+  async function loadCommitsToCount(targetCount: number): Promise<boolean> {
+    if (!state.repoPath.value || state.loadingMore.value) return false;
+
+    state.loadingMore.value = true;
+    try {
+      const currentCount = state.commits.value.length;
+      const result = await callTauri<CommitInfo[]>("get_commits", {
+        path: state.repoPath.value,
+        maxCount: targetCount,
+      });
+
+      if (result.length <= currentCount) {
+        state.hasMoreCommits.value = false;
+        return false;
+      }
+
+      state.commits.value = result;
+      state.hasMoreCommits.value = result.length >= targetCount;
+      return true;
+    } catch (e) {
+      state.error.value = String(e);
+      return false;
+    } finally {
+      state.loadingMore.value = false;
+    }
+  }
+
   async function refreshCommits() {
     if (!state.repoPath.value) return;
     try {
@@ -29,28 +56,33 @@ export function createRefreshActions(state: GitState) {
   }
 
   async function doLoadMoreCommits() {
-    if (state.searchQuery.value && state.searchResults.value !== null) return;
     if (!state.repoPath.value || !state.hasMoreCommits.value || state.loadingMore.value) return;
 
-    state.loadingMore.value = true;
-    try {
-      const currentCount = state.commits.value.length;
-      const nextCount = currentCount + PAGE_SIZE;
-      const result = await callTauri<CommitInfo[]>("get_commits", {
-        path: state.repoPath.value,
-        maxCount: nextCount,
-      });
-      if (result.length <= currentCount) {
-        state.hasMoreCommits.value = false;
-      } else {
-        state.commits.value = result;
-        state.hasMoreCommits.value = result.length >= nextCount;
-      }
-    } catch (e) {
-      state.error.value = String(e);
-    } finally {
-      state.loadingMore.value = false;
+    const currentCount = state.commits.value.length;
+    const nextCount = currentCount + PAGE_SIZE;
+    await loadCommitsToCount(nextCount);
+  }
+
+  async function ensureCommitLoaded(sha: string): Promise<boolean> {
+    if (!sha || !state.repoPath.value) return false;
+
+    const hasCommit = () => state.commits.value.some((commit) => commit.sha === sha);
+    if (hasCommit()) {
+      return true;
     }
+
+    while (state.hasMoreCommits.value && !state.loadingMore.value) {
+      const currentCount = state.commits.value.length;
+      const changed = await loadCommitsToCount(currentCount + PAGE_SIZE * 3);
+      if (!changed) {
+        break;
+      }
+      if (hasCommit()) {
+        return true;
+      }
+    }
+
+    return hasCommit();
   }
 
   async function refreshBranches() {
@@ -151,12 +183,17 @@ export function createRefreshActions(state: GitState) {
 
     try {
       state.searchQuery.value = query;
-      state.searchResults.value = await callTauri<CommitInfo[]>("search_commits", {
+      const results = await callTauri<CommitInfo[]>("search_commits", {
         path: state.repoPath.value,
         query,
-        maxCount: 2000,
+        maxCount: 50000,
       });
+      state.searchResults.value = results;
       state.hasMoreSearchResults.value = false;
+
+      if (results.length > 0) {
+        await ensureCommitLoaded(results[0].sha);
+      }
     } catch (e) {
       state.error.value = String(e);
     }
@@ -181,5 +218,6 @@ export function createRefreshActions(state: GitState) {
     clearStashSelection,
     searchCommits,
     clearSearch,
+    ensureCommitLoaded,
   };
 }

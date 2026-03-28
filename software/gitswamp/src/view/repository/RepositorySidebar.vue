@@ -9,6 +9,10 @@ import {
   Plus,
   Trash2,
   Github,
+  HardDrive,
+  Cloud,
+  GitPullRequest,
+  FileCode2,
 } from "lucide-vue-next";
 import RepositorySidebarSection from "./RepositorySidebarSection.vue";
 import type { BranchInfo, StashInfo, TagInfo } from "@/types";
@@ -19,6 +23,7 @@ const props = defineProps<{
   currentBranch: string;
   stashes: StashInfo[];
   tags: TagInfo[];
+  openPullRequestBranches?: string[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
 }>();
 
@@ -29,6 +34,7 @@ const emit = defineEmits<{
   stashPop: [index: number];
   stashApply: [index: number];
   stashDrop: [index: number];
+  createGist: [];
 }>();
 
 interface RepositorySidebarSections {
@@ -79,6 +85,33 @@ const remoteLabel = computed(() => {
 const remoteIcon = computed(() => {
   return props.remoteProvider === 'github' ? Github : Globe;
 });
+
+const openPullRequestBranchSet = computed(() => {
+  const branches = props.openPullRequestBranches || [];
+  return new Set(
+    branches
+      .map((name) => normalizeBranchName(name).toLowerCase())
+      .filter((name) => name.length > 0),
+  );
+});
+
+function normalizeBranchName(name: string): string {
+  const withoutRemote = name.replace(/^origin\//i, "");
+  return withoutRemote.replace(/^remotes\/[a-z0-9_-]+\//i, "");
+}
+
+function showPullRequestBadge(branch: BranchInfo): boolean {
+  if (props.remoteProvider !== "github" && props.remoteProvider !== "gitlab") {
+    return false;
+  }
+
+  const normalized = normalizeBranchName(branch.name).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return openPullRequestBranchSet.value.has(normalized);
+}
 </script>
 
 <template>
@@ -145,6 +178,21 @@ const remoteIcon = computed(() => {
           ]"
         >
           <span class="truncate flex-1 text-left">{{ branch.name }}</span>
+
+          <span class="flex items-center gap-1 flex-shrink-0">
+            <HardDrive class="w-3 h-3 text-[var(--muted-foreground)]" title="Local branch" />
+            <Cloud
+              v-if="branch.upstream"
+              class="w-3 h-3 text-[var(--muted-foreground)]"
+              :title="'Tracks ' + branch.upstream"
+            />
+            <GitPullRequest
+              v-if="showPullRequestBadge(branch)"
+              class="w-3 h-3 text-[var(--sidebar-primary)]"
+              title="Pull request branch"
+            />
+          </span>
+
           <span v-if="branch.upstream" class="flex items-center gap-0.5 flex-shrink-0">
             <span v-if="branch.ahead > 0" class="text-[9px] text-[#10b981]">↑{{ branch.ahead }}</span>
             <span v-if="branch.behind > 0" class="text-[9px] text-[#f59e0b]">↓{{ branch.behind }}</span>
@@ -175,7 +223,15 @@ const remoteIcon = computed(() => {
           @click="emit('checkout', branch.name)"
           class="w-full flex items-center gap-2 px-4 py-1 pl-10 text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
         >
-          <span class="truncate">{{ branch.name }}</span>
+          <span class="truncate flex-1">{{ branch.name }}</span>
+          <span class="flex items-center gap-1 flex-shrink-0">
+            <Cloud class="w-3 h-3 text-[var(--muted-foreground)]" title="Remote branch" />
+            <GitPullRequest
+              v-if="showPullRequestBadge(branch)"
+              class="w-3 h-3 text-[var(--sidebar-primary)]"
+              title="Pull request branch"
+            />
+          </span>
         </button>
       </RepositorySidebarSection>
 
@@ -231,6 +287,16 @@ const remoteIcon = computed(() => {
           <span class="truncate">{{ tag.name }}</span>
         </div>
       </RepositorySidebarSection>
+
+      <div class="px-4 py-2 border-b border-[var(--sidebar-border)]">
+        <button
+          @click="emit('createGist')"
+          class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
+        >
+          <FileCode2 class="w-3 h-3" />
+          Create a gist
+        </button>
+      </div>
     </div>
   </div>
 </template>

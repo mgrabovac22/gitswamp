@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -237,5 +238,582 @@ impl IntegrationService {
             .map_err(|e| format!("JSON parse error: {}", e))?;
 
         Ok(body["username"].as_str().unwrap_or("Unknown").to_string())
+    }
+
+    pub fn available_external_editors() -> Vec<String> {
+        let mut editors = Vec::new();
+
+        #[cfg(windows)]
+        {
+            editors.push("notepad".to_string());
+        }
+
+        if Self::detect_vscode_path().is_some() {
+            editors.push("vscode".to_string());
+        }
+
+        if Self::detect_visual_studio_path().is_some() {
+            editors.push("visualstudio".to_string());
+        }
+
+        if Self::detect_android_studio_path().is_some() {
+            editors.push("androidstudio".to_string());
+        }
+
+        if Self::detect_intellij_path().is_some() {
+            editors.push("intellij".to_string());
+        }
+
+        editors
+    }
+
+    pub fn available_external_tools() -> Vec<String> {
+        let mut tools = Vec::new();
+
+        if Self::detect_vscode_path().is_some() {
+            tools.push("vscode".to_string());
+        }
+
+        if Self::detect_visual_studio_path().is_some() {
+            tools.push("visualstudio".to_string());
+        }
+
+        if Self::detect_android_studio_path().is_some() {
+            tools.push("androidstudio".to_string());
+        }
+
+        if Self::detect_intellij_path().is_some() {
+            tools.push("intellij".to_string());
+        }
+
+        tools.push("explorer".to_string());
+
+        tools
+    }
+
+    pub fn open_file_with_editor(
+        repo_path: &str,
+        file_path: &str,
+        editor: &str,
+    ) -> Result<(), String> {
+        let resolved_file_path = Self::resolve_repo_file_path(repo_path, file_path)?;
+
+        if !resolved_file_path.exists() {
+            return Err(format!(
+                "File does not exist on disk: {}",
+                resolved_file_path.display()
+            ));
+        }
+
+        match editor {
+            "notepad" => Self::open_with_notepad(&resolved_file_path),
+            "vscode" => Self::open_with_vscode(&resolved_file_path),
+            "visualstudio" | "vs" => Self::open_with_visual_studio(&resolved_file_path),
+            "androidstudio" => Self::open_with_android_studio(&resolved_file_path),
+            "intellij" => Self::open_with_intellij(&resolved_file_path),
+            _ => Err(format!("Unsupported editor '{}'.", editor)),
+        }
+    }
+
+    pub fn open_path_with_tool(target_path: &str, tool: &str) -> Result<(), String> {
+        let resolved_path = PathBuf::from(target_path);
+        if !resolved_path.exists() {
+            return Err(format!(
+                "Path does not exist on disk: {}",
+                resolved_path.display()
+            ));
+        }
+
+        match tool {
+            "vscode" => Self::open_with_vscode(&resolved_path),
+            "visualstudio" | "vs" => Self::open_with_visual_studio(&resolved_path),
+            "androidstudio" | "android-studio" => Self::open_with_android_studio(&resolved_path),
+            "intellij" | "idea" => Self::open_with_intellij(&resolved_path),
+            "explorer" | "file-explorer" | "folder" | "finder" => {
+                Self::open_with_system_explorer(&resolved_path)
+            }
+            _ => Err(format!("Unsupported tool '{}'.", tool)),
+        }
+    }
+
+    fn resolve_repo_file_path(repo_path: &str, file_path: &str) -> Result<PathBuf, String> {
+        let candidate = PathBuf::from(file_path);
+        if candidate.is_absolute() {
+            return Ok(candidate);
+        }
+
+        let base = Path::new(repo_path);
+        if !base.exists() {
+            return Err(format!("Repository path not found: {}", repo_path));
+        }
+
+        Ok(base.join(candidate))
+    }
+
+    #[cfg(windows)]
+    fn open_with_notepad(file_path: &Path) -> Result<(), String> {
+        let binary = Self::detect_notepad_path().unwrap_or_else(|| PathBuf::from("notepad.exe"));
+        let mut command = std::process::Command::new(binary);
+        command.arg(file_path);
+        Self::spawn_editor(command)
+    }
+
+    #[cfg(not(windows))]
+    fn open_with_notepad(_file_path: &Path) -> Result<(), String> {
+        Err("Notepad is only available on Windows.".to_string())
+    }
+
+    fn open_with_vscode(file_path: &Path) -> Result<(), String> {
+        let binary = Self::detect_vscode_path()
+            .ok_or_else(|| "VS Code executable not found on this machine.".to_string())?;
+
+        let mut command = std::process::Command::new(binary);
+        command.arg("--reuse-window").arg(file_path);
+        Self::spawn_editor(command)
+    }
+
+    fn open_with_visual_studio(file_path: &Path) -> Result<(), String> {
+        let binary = Self::detect_visual_studio_path().ok_or_else(|| {
+            "Visual Studio executable (devenv.exe) not found on this machine.".to_string()
+        })?;
+
+        let mut command = std::process::Command::new(binary);
+        command.arg(file_path);
+        Self::spawn_editor(command)
+    }
+
+    fn open_with_android_studio(file_path: &Path) -> Result<(), String> {
+        let binary = Self::detect_android_studio_path().ok_or_else(|| {
+            "Android Studio executable not found on this machine.".to_string()
+        })?;
+
+        let mut command = std::process::Command::new(binary);
+        command.arg(file_path);
+        Self::spawn_editor(command)
+    }
+
+    fn open_with_intellij(file_path: &Path) -> Result<(), String> {
+        let binary = Self::detect_intellij_path().ok_or_else(|| {
+            "IntelliJ IDEA executable not found. Install IntelliJ or add it to PATH.".to_string()
+        })?;
+
+        let mut command = std::process::Command::new(binary);
+        command.arg(file_path);
+        Self::spawn_editor(command)
+    }
+
+    fn open_with_system_explorer(target_path: &Path) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            let mut command = std::process::Command::new("explorer.exe");
+            command.arg(target_path);
+            return Self::spawn_editor(command);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let mut command = std::process::Command::new("open");
+            command.arg(target_path);
+            return Self::spawn_editor(command);
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let mut command = std::process::Command::new("xdg-open");
+            command.arg(target_path);
+            return Self::spawn_editor(command);
+        }
+
+        #[allow(unreachable_code)]
+        Err("System explorer is not supported on this platform.".to_string())
+    }
+
+    fn spawn_editor(mut command: std::process::Command) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to launch editor: {}", e))
+    }
+
+    #[cfg(windows)]
+    fn detect_notepad_path() -> Option<PathBuf> {
+        if let Ok(win_dir) = std::env::var("WINDIR") {
+            let p = Path::new(&win_dir).join("System32").join("notepad.exe");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+
+        Self::find_command_in_path(&["notepad.exe", "notepad"])
+    }
+
+    fn detect_vscode_path() -> Option<PathBuf> {
+        if let Some(path) = Self::find_command_in_path(&[
+            "code.cmd",
+            "code.exe",
+            "code",
+            "Code.exe",
+            "code-insiders.cmd",
+            "code-insiders.exe",
+        ]) {
+            return Some(path);
+        }
+
+        let mut candidates: Vec<PathBuf> = vec![
+            PathBuf::from(r"C:\Program Files\Microsoft VS Code\Code.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Microsoft VS Code\Code.exe"),
+            PathBuf::from(r"C:\Program Files\Microsoft VS Code Insiders\Code - Insiders.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Microsoft VS Code Insiders\Code - Insiders.exe"),
+        ];
+
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            candidates.push(
+                Path::new(&local_app_data)
+                    .join("Programs")
+                    .join("Microsoft VS Code")
+                    .join("Code.exe"),
+            );
+            candidates.push(
+                Path::new(&local_app_data)
+                    .join("Programs")
+                    .join("Microsoft VS Code Insiders")
+                    .join("Code - Insiders.exe"),
+            );
+        }
+
+        candidates.into_iter().find(|p| p.exists())
+    }
+
+    fn detect_visual_studio_path() -> Option<PathBuf> {
+        if let Some(path) = Self::find_command_in_path(&["devenv.exe", "devenv"]) {
+            return Some(path);
+        }
+
+        let direct_candidates = vec![
+            PathBuf::from(
+                r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\devenv.exe",
+            ),
+            PathBuf::from(
+                r"C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\IDE\devenv.exe",
+            ),
+            PathBuf::from(
+                r"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe",
+            ),
+            PathBuf::from(
+                r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\IDE\devenv.exe",
+            ),
+            PathBuf::from(
+                r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\Common7\IDE\devenv.exe",
+            ),
+            PathBuf::from(
+                r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\Common7\IDE\devenv.exe",
+            ),
+        ];
+
+        if let Some(path) = direct_candidates.into_iter().find(|p| p.exists()) {
+            return Some(path);
+        }
+
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            if let Some(path) =
+                Self::find_visual_studio_installation(&Path::new(&program_files).join("Microsoft Visual Studio"))
+            {
+                return Some(path);
+            }
+        }
+
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            if let Some(path) = Self::find_visual_studio_installation(
+                &Path::new(&program_files_x86).join("Microsoft Visual Studio"),
+            ) {
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
+    fn detect_android_studio_path() -> Option<PathBuf> {
+        if let Some(path) = Self::find_command_in_path(&[
+            "studio64.exe",
+            "studio.exe",
+            "studio.bat",
+            "studio",
+        ]) {
+            return Some(path);
+        }
+
+        let direct_candidates = vec![
+            PathBuf::from(r"C:\Program Files\Android\Android Studio\bin\studio64.exe"),
+            PathBuf::from(r"C:\Program Files\Android\Android Studio\bin\studio.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Android\Android Studio\bin\studio64.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Android\Android Studio\bin\studio.exe"),
+        ];
+
+        if let Some(path) = direct_candidates.into_iter().find(|p| p.exists()) {
+            return Some(path);
+        }
+
+        if let Some(path) = Self::detect_android_studio_from_toolbox() {
+            return Some(path);
+        }
+
+        None
+    }
+
+    fn detect_android_studio_from_toolbox() -> Option<PathBuf> {
+        let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
+        let toolbox_apps = Path::new(&local_app_data)
+            .join("JetBrains")
+            .join("Toolbox")
+            .join("apps")
+            .join("AndroidStudio");
+
+        Self::find_latest_toolbox_studio_binary(&toolbox_apps)
+    }
+
+    fn find_latest_toolbox_studio_binary(studio_dir: &Path) -> Option<PathBuf> {
+        if !studio_dir.exists() {
+            return None;
+        }
+
+        let mut candidates = Vec::new();
+
+        let channels = fs::read_dir(studio_dir).ok()?;
+        for channel_entry in channels.flatten() {
+            let channel_path = channel_entry.path();
+            if !channel_path.is_dir() {
+                continue;
+            }
+
+            let builds = match fs::read_dir(&channel_path) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            for build_entry in builds.flatten() {
+                let build_path = build_entry.path();
+                if !build_path.is_dir() {
+                    continue;
+                }
+
+                let bin_dir = build_path.join("bin");
+                for name in ["studio64.exe", "studio.exe", "studio.bat", "studio.sh"] {
+                    let candidate = bin_dir.join(name);
+                    if candidate.exists() {
+                        candidates.push(candidate);
+                        break;
+                    }
+                }
+            }
+        }
+
+        candidates.sort();
+        candidates.pop()
+    }
+
+    fn find_visual_studio_installation(base: &Path) -> Option<PathBuf> {
+        if !base.exists() {
+            return None;
+        }
+
+        let mut candidates = Vec::new();
+        let years = fs::read_dir(base).ok()?;
+
+        for year_entry in years.flatten() {
+            let year_path = year_entry.path();
+            if !year_path.is_dir() {
+                continue;
+            }
+
+            let editions = match fs::read_dir(&year_path) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            for edition_entry in editions.flatten() {
+                let install_root = edition_entry.path();
+                if !install_root.is_dir() {
+                    continue;
+                }
+
+                let devenv = install_root.join("Common7").join("IDE").join("devenv.exe");
+                if devenv.exists() {
+                    candidates.push(devenv);
+                }
+            }
+        }
+
+        candidates.sort();
+        candidates.pop()
+    }
+
+    fn detect_intellij_path() -> Option<PathBuf> {
+        if let Some(path) = Self::find_command_in_path(&["idea64.exe", "idea.exe", "idea.bat", "idea"]) {
+            return Some(path);
+        }
+
+        let direct_candidates = vec![
+            PathBuf::from(r"C:\Program Files\JetBrains\IntelliJ IDEA\bin\idea64.exe"),
+            PathBuf::from(r"C:\Program Files\JetBrains\IntelliJ IDEA Community Edition\bin\idea64.exe"),
+            PathBuf::from(r"C:\Program Files\JetBrains\IntelliJ IDEA Ultimate\bin\idea64.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\JetBrains\IntelliJ IDEA\bin\idea.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\JetBrains\IntelliJ IDEA Community Edition\bin\idea.exe"),
+        ];
+
+        if let Some(path) = direct_candidates.into_iter().find(|p| p.exists()) {
+            return Some(path);
+        }
+
+        if let Some(path) = Self::detect_intellij_from_toolbox() {
+            return Some(path);
+        }
+
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            if let Some(path) = Self::find_intellij_installation(&Path::new(&program_files).join("JetBrains")) {
+                return Some(path);
+            }
+        }
+
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            if let Some(path) =
+                Self::find_intellij_installation(&Path::new(&program_files_x86).join("JetBrains"))
+            {
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
+    fn detect_intellij_from_toolbox() -> Option<PathBuf> {
+        let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
+        let toolbox_apps = Path::new(&local_app_data)
+            .join("JetBrains")
+            .join("Toolbox")
+            .join("apps");
+
+        let families = ["IDEA-U", "IDEA-C", "IntelliJIdea"];
+        for family in families {
+            if let Some(path) = Self::find_latest_toolbox_idea_binary(&toolbox_apps.join(family)) {
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
+    fn find_latest_toolbox_idea_binary(family_dir: &Path) -> Option<PathBuf> {
+        if !family_dir.exists() {
+            return None;
+        }
+
+        let mut candidates = Vec::new();
+
+        let channels = fs::read_dir(family_dir).ok()?;
+        for channel_entry in channels.flatten() {
+            let channel_path = channel_entry.path();
+            if !channel_path.is_dir() {
+                continue;
+            }
+
+            let builds = match fs::read_dir(&channel_path) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            for build_entry in builds.flatten() {
+                let build_path = build_entry.path();
+                if !build_path.is_dir() {
+                    continue;
+                }
+                if let Some(binary) = Self::idea_binary_from_install_root(&build_path) {
+                    candidates.push(binary);
+                }
+            }
+        }
+
+        candidates.sort();
+        candidates.pop()
+    }
+
+    fn find_intellij_installation(base: &Path) -> Option<PathBuf> {
+        if !base.exists() {
+            return None;
+        }
+
+        let mut candidates = Vec::new();
+
+        let entries = fs::read_dir(base).ok()?;
+        for entry in entries.flatten() {
+            let install_root = entry.path();
+            if !install_root.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if !name.contains("intellij") && !name.contains("idea") {
+                continue;
+            }
+
+            if let Some(binary) = Self::idea_binary_from_install_root(&install_root) {
+                candidates.push(binary);
+            }
+        }
+
+        candidates.sort();
+        candidates.pop()
+    }
+
+    fn idea_binary_from_install_root(install_root: &Path) -> Option<PathBuf> {
+        let bin_dir = install_root.join("bin");
+        if !bin_dir.exists() {
+            return None;
+        }
+
+        ["idea64.exe", "idea.exe", "idea.bat", "idea.sh"]
+            .iter()
+            .map(|name| bin_dir.join(name))
+            .find(|path| path.exists())
+    }
+
+    fn find_command_in_path(candidates: &[&str]) -> Option<PathBuf> {
+        for candidate in candidates {
+            #[cfg(windows)]
+            let mut command = {
+                let mut c = std::process::Command::new("where");
+                c.creation_flags(CREATE_NO_WINDOW);
+                c
+            };
+
+            #[cfg(not(windows))]
+            let mut command = std::process::Command::new("which");
+
+            let output = match command.arg(candidate).output() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if !output.status.success() {
+                continue;
+            }
+
+            let stdout = match String::from_utf8(output.stdout) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            for line in stdout.lines() {
+                let path = PathBuf::from(line.trim());
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+
+        None
     }
 }

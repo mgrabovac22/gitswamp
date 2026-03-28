@@ -11,6 +11,7 @@ const props = defineProps<{
   git: any;
   showTerminal: boolean;
   terminalAllowAll: boolean;
+  openPullRequestBranches?: string[];
   showDiffViewer: boolean;
   diffFilePath: string;
   diffCommitSha: string | null;
@@ -41,6 +42,7 @@ const emit = defineEmits<{
   editCommitMessage: [sha: string];
   renameBranch: [name: string];
   deleteBranchAndRemote: [name: string];
+  createGist: [];
 }>();
 
 const hasWorkingChanges = computed(
@@ -53,13 +55,37 @@ const showDetailsPanel = computed(
   () => props.viewingWorkingChanges || props.viewingStash || props.git.selectedCommit.value !== null,
 );
 
+const canAmendSelectedCommit = computed(() => {
+  const selected = props.git.selectedCommit.value;
+  const branch = props.git.currentBranch.value;
+  if (!selected || !branch) return false;
+
+  const remoteBranch = `origin/${branch}`;
+  const headRef = `HEAD -> ${branch}`;
+  return selected.refs.some((ref: string) => ref === branch || ref === remoteBranch || ref.includes(headRef));
+});
+
 const SIDEBAR_WIDTH_KEY = "gitswamp-sidebar-width";
 const DETAILS_WIDTH_KEY = "gitswamp-details-width";
+const TERMINAL_HEIGHT_KEY = "gitswamp-terminal-height";
 const sidebarWidth = ref(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 224);
 const detailsWidth = ref(Number(localStorage.getItem(DETAILS_WIDTH_KEY)) || 320);
-const resizeTarget = ref<"sidebar" | "details" | null>(null);
+const terminalHeight = ref(Number(localStorage.getItem(TERMINAL_HEIGHT_KEY)) || 240);
+const resizeTarget = ref<"sidebar" | "details" | "terminal" | null>(null);
 const resizeStartX = ref(0);
 const resizeStartWidth = ref(0);
+const resizeStartY = ref(0);
+const resizeStartHeight = ref(0);
+const workspaceColumnRef = ref<HTMLElement | null>(null);
+
+const contentAreaStyle = computed(() => {
+  if (!props.showTerminal) return undefined;
+  return { height: `calc(100% - ${terminalHeight.value}px)` };
+});
+
+const terminalPanelStyle = computed(() => ({
+  height: `${terminalHeight.value}px`,
+}));
 
 function clampWidth(target: "sidebar" | "details", width: number): number {
   if (target === "sidebar") {
@@ -69,16 +95,40 @@ function clampWidth(target: "sidebar" | "details", width: number): number {
   return Math.min(Math.max(width, 260), 700);
 }
 
-function beginResize(target: "sidebar" | "details", event: MouseEvent) {
+function clampTerminalHeight(height: number): number {
+  const containerHeight = workspaceColumnRef.value?.clientHeight ?? globalThis.innerHeight;
+  const maxHeight = Math.max(180, Math.floor(containerHeight * 0.7));
+  return Math.min(Math.max(height, 140), maxHeight);
+}
+
+function onWindowResize() {
+  terminalHeight.value = clampTerminalHeight(terminalHeight.value);
+}
+
+function beginResize(target: "sidebar" | "details" | "terminal", event: MouseEvent) {
   resizeTarget.value = target;
-  resizeStartX.value = event.clientX;
-  resizeStartWidth.value = target === "sidebar" ? sidebarWidth.value : detailsWidth.value;
-  document.body.style.cursor = "col-resize";
+
+  if (target === "terminal") {
+    resizeStartY.value = event.clientY;
+    resizeStartHeight.value = terminalHeight.value;
+    document.body.style.cursor = "row-resize";
+  } else {
+    resizeStartX.value = event.clientX;
+    resizeStartWidth.value = target === "sidebar" ? sidebarWidth.value : detailsWidth.value;
+    document.body.style.cursor = "col-resize";
+  }
+
   document.body.style.userSelect = "none";
 }
 
 function onPointerMove(event: MouseEvent) {
   if (!resizeTarget.value) return;
+
+  if (resizeTarget.value === "terminal") {
+    const deltaY = event.clientY - resizeStartY.value;
+    terminalHeight.value = clampTerminalHeight(resizeStartHeight.value - deltaY);
+    return;
+  }
 
   const deltaX = event.clientX - resizeStartX.value;
   if (resizeTarget.value === "sidebar") {
@@ -91,27 +141,64 @@ function onPointerMove(event: MouseEvent) {
 function endResize() {
   if (!resizeTarget.value) return;
 
-  localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
-  localStorage.setItem(DETAILS_WIDTH_KEY, String(detailsWidth.value));
+  if (resizeTarget.value === "terminal") {
+    localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight.value));
+  } else {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
+    localStorage.setItem(DETAILS_WIDTH_KEY, String(detailsWidth.value));
+  }
+
   resizeTarget.value = null;
   document.body.style.cursor = "";
   document.body.style.userSelect = "";
 }
 
 onMounted(() => {
+  terminalHeight.value = clampTerminalHeight(terminalHeight.value);
   globalThis.addEventListener("mousemove", onPointerMove);
   globalThis.addEventListener("mouseup", endResize);
+  globalThis.addEventListener("resize", onWindowResize);
 });
 
 onUnmounted(() => {
   globalThis.removeEventListener("mousemove", onPointerMove);
   globalThis.removeEventListener("mouseup", endResize);
+  globalThis.removeEventListener("resize", onWindowResize);
   document.body.style.cursor = "";
   document.body.style.userSelect = "";
 });
 
 function toggleDetailsPanel() {
   emit("update:detailsPanelCollapsed", !props.detailsPanelCollapsed);
+}
+
+async function handleJumpToSearchResult(sha: string) {
+  const loaded = await props.git.ensureCommitLoaded(sha);
+  if (!loaded) return;
+
+  const target = props.git.commits.value.find((commit: CommitInfo) => commit.sha === sha) ?? null;
+  if (target) {
+    emit("selectCommit", target);
+  }
+}
+
+async function handleAmendCommitMessage(newMessage: string) {
+  const selected = props.git.selectedCommit.value;
+  if (!selected) return;
+
+  await props.git.editCommitMessage(selected.sha, newMessage);
+  if (props.git.error.value) return;
+
+  const branch = props.git.currentBranch.value;
+  const remoteBranch = branch ? `origin/${branch}` : "";
+  const headRef = branch ? `HEAD -> ${branch}` : "";
+  const nextSelected = props.git.commits.value.find((commit: CommitInfo) =>
+    branch && commit.refs.some((ref: string) => ref === branch || ref === remoteBranch || ref.includes(headRef)),
+  ) ?? props.git.commits.value[0] ?? null;
+
+  if (nextSelected) {
+    emit("selectCommit", nextSelected);
+  }
 }
 </script>
 
@@ -124,6 +211,7 @@ function toggleDetailsPanel() {
         :current-branch="props.git.currentBranch.value"
         :stashes="props.git.stashes.value"
         :tags="props.git.tags.value"
+        :open-pull-request-branches="props.openPullRequestBranches || []"
         :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
         @checkout="props.git.checkoutBranch($event)"
         @create-branch="props.git.createBranch($event)"
@@ -131,6 +219,7 @@ function toggleDetailsPanel() {
         @stash-pop="props.git.stashPop($event)"
         @stash-apply="props.git.stashApply($event)"
         @stash-drop="props.git.stashDrop($event)"
+        @create-gist="emit('createGist')"
       />
     </div>
 
@@ -140,8 +229,8 @@ function toggleDetailsPanel() {
       @mousedown.prevent="beginResize('sidebar', $event)"
     />
 
-    <div class="flex-1 flex flex-col overflow-hidden">
-      <div class="flex-1 flex overflow-hidden" :style="props.showTerminal ? 'height: 75%' : ''">
+    <div ref="workspaceColumnRef" class="flex-1 flex flex-col overflow-hidden">
+      <div class="flex-1 flex overflow-hidden" :style="contentAreaStyle">
         <FileDiffViewer
           v-if="props.showDiffViewer"
           class="flex-1"
@@ -159,12 +248,14 @@ function toggleDetailsPanel() {
           :commits="props.git.displayedCommits.value"
           :selected="props.git.selectedCommit.value"
           :search-query="props.git.searchQuery.value"
+          :search-results="props.git.searchResults.value"
           :has-working-changes="hasWorkingChanges"
           :has-conflicts="hasConflicts"
           :current-branch="props.git.currentBranch.value"
-          :has-more="props.git.searchQuery.value ? props.git.hasMoreSearchResults.value : props.git.hasMoreCommits.value"
+          :has-more="props.git.hasMoreCommits.value"
           :stashes="props.git.stashes.value"
           :tags="props.git.tags.value"
+          :open-pull-request-branches="props.openPullRequestBranches || []"
           :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
           @select="emit('selectCommit', $event)"
           @search="props.git.searchCommits($event)"
@@ -200,6 +291,7 @@ function toggleDetailsPanel() {
           @stash-drop="props.git.stashDrop($event)"
           @select-stash="emit('selectStash', $event)"
           @request-merge="emit('requestMerge', $event)"
+          @jump-to-search-result="handleJumpToSearchResult($event)"
         />
 
         <div
@@ -236,6 +328,7 @@ function toggleDetailsPanel() {
           <CommitDetails
             v-show="!props.detailsPanelCollapsed"
             :commit="props.git.selectedCommit.value"
+            :can-amend-selected-commit="canAmendSelectedCommit"
             :staged-files="props.git.stagedFiles.value"
             :unstaged-files="props.git.unstagedFiles.value"
             :conflict-files="props.git.conflictFiles.value"
@@ -259,17 +352,25 @@ function toggleDetailsPanel() {
             @stash-pop="props.git.stashPop($event)"
             @stash-apply="props.git.stashApply($event)"
             @stash-drop="props.git.stashDrop($event)"
+            @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
           />
         </div>
       </div>
+
+      <div
+        v-if="props.showTerminal"
+        class="h-1.5 flex-shrink-0 cursor-row-resize bg-[var(--border)]/40 hover:bg-[var(--primary)]/40 transition-colors"
+        title="Resize terminal"
+        @mousedown.prevent="beginResize('terminal', $event)"
+      />
 
       <TerminalPanel
         v-if="props.showTerminal"
         :output="props.git.terminalOutput.value"
         :repo-path="props.git.repoPath.value"
         :allow-all-commands="props.terminalAllowAll"
-        style="height: 25%"
+        :style="terminalPanelStyle"
         @run="props.git.runTerminalCommand($event.command, $event.allowAll)"
         @update:allow-all-commands="emit('update:terminalAllowAll', $event)"
         @close="emit('update:showTerminal', false)"

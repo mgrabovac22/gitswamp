@@ -21,54 +21,40 @@ GitSwamp's frontend is built with Vue 3, TypeScript, and Tailwind CSS. It provid
 
 ```
 src/
-├── components/                    # Vue components (19 total)
-│   ├── layout/                   # Layout components
-│   │   ├── TitleBar.vue
-│   │   ├── AppHeader.vue
-│   │   ├── SettingsDialog.vue
-│   │   └── TerminalPanel.vue
-│   ├── repository/               # Repository management
-│   │   ├── LandingPage.vue
-│   │   ├── RepositoryTabs.vue
-│   │   ├── Sidebar.vue
-│   │   ├── SidebarSection.vue
-│   │   ├── CloneDialog.vue
-│   │   └── InitDialog.vue
-│   ├── commits/                  # Commit visualization
-│   │   ├── CommitGraph.vue
-│   │   ├── CommitDetails.vue
-│   │   └── FileItem.vue
-│   └── ui/                       # Reusable UI components
-│       ├── AppButton.vue
-│       ├── AppInput.vue
-│       ├── FileDiffViewer.vue
-│       ├── ConflictResolver.vue
-│       ├── GitCommitIcon.vue
-│       ├── ToastContainer.vue
-│       └── utils.ts
-├── composables/                   # Vue composables
-│   ├── useGit.ts                 # Core Git operations
-│   └── useToast.ts               # Toast notifications
-├── types/                         # TypeScript type definitions
-│   └── index.ts
-├── styles/                        # CSS stylesheets
+├── app/                           # Bootstrap and app startup
+│   └── bootstrap.ts
+├── domain/                        # Domain logic and composables
+│   └── git/
+│       ├── UseGit.ts
+│       └── composables/
+├── shared/                        # Shared UI, notifications, config
+│   ├── config/
+│   ├── notifications/
+│   ├── ui/
+│   ├── codeView.ts
+│   └── themePreferences.ts
+├── styles/                        # Global styling and theme tokens
 │   ├── index.css
 │   ├── tailwind.css
 │   └── theme.css
-├── assets/                        # Static assets
-│   └── vue.svg
+├── types/                         # TypeScript data models
+│   └── models/
+├── view/                          # Main feature views and screens
+│   ├── repository/
+│   ├── commit/
+│   └── shell/
 ├── App.vue                        # Root component
 ├── main.ts                        # Entry point
-└── vite-env.d.ts                 # Vite type definitions
+└── vite-env.d.ts                  # Vite type definitions
 ```
 
 ## 3. Vue Components
 
 ### 3.1 Component Overview
 
-**Total Components:** 19
+**Total Components:** 19 (across src/view, src/shared/ui, src/shell)
 
-#### Layout Components (4)
+#### Layout Components (4) - src/shell/
 
 1. **TitleBar.vue**
    - Custom window title bar (Tauri)
@@ -95,7 +81,7 @@ src/
    - Error messages
    - Collapsible panel
 
-#### Repository Components (6)
+#### Repository Components (6) - src/view/repository/
 
 5. **LandingPage.vue**
    - Welcome screen
@@ -106,9 +92,15 @@ src/
 
 6. **RepositoryTabs.vue**
    - Multi-tab interface
-   - Tab switching
-   - Tab close functionality
+   - Tab switching and close functionality
    - Active tab indication
+   - **Hamburger menu (File, Edit, View, Help sections):**
+     - File: New Tab, Open Repository, Close Tab, Create Gist
+     - Edit: Copy Path, Refresh, Open in VS Code
+     - View: Toggle Terminal, Open in Folder Explorer, Settings
+     - Help: In-app Shortcuts (F1), Online Guide, Report Issue
+   - **Quick actions for each menu section**
+   - **Alt+O opens repository in system folder explorer**
 
 7. **Sidebar.vue**
    - Main navigation sidebar
@@ -137,7 +129,7 @@ src/
     - Initial configuration
     - Success confirmation
 
-#### Commit Visualization (3)
+#### Commit Visualization (3) - src/view/commit/
 
 11. **CommitGraph.vue** (Core Feature)
     - Visual commit history rendering
@@ -165,7 +157,7 @@ src/
     - Clickable for diff viewing
     - Staged/unstaged indication
 
-#### UI Components (6)
+#### UI Components (6) - src/shared/ui/
 
 14. **AppButton.vue**
     - Styled button component
@@ -249,7 +241,7 @@ App.vue (Root)
 
 ### 4.1 useGit Composable
 
-**File:** `src/composables/useGit.ts`
+**File:** `src/domain/git/UseGit.ts`
 
 **Purpose:** Core Git operations wrapper providing all Git functionality to Vue components.
 
@@ -290,7 +282,7 @@ const isLoading = ref<boolean>(false);
 
 ### 4.2 useToast Composable
 
-**File:** `src/composables/useToast.ts`
+**File:** `src/shared/notifications/useToast.ts`
 
 **Purpose:** Toast notification system management.
 

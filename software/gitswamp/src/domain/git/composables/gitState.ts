@@ -51,9 +51,7 @@ export function createGitState() {
   });
   const hasConflicts = computed(() => conflictFiles.value.length > 0);
   const currentBranch = computed(() => repoInfo.value?.current_branch ?? "");
-  const displayedCommits = computed(() =>
-    searchResults.value !== null ? searchResults.value : commits.value,
-  );
+  const displayedCommits = computed(() => commits.value);
 
   return {
     repoPath,

@@ -66,14 +66,18 @@
 ### 3.1 Main Areas
 
 **Top Bar (Title Bar):**
-- Repository name and path
-- Settings button (gear icon)
-- Theme toggle
+- App title and window controls (minimize, maximize, close)
 
 **Header:**
 - Current branch name
 - Commit count
 - Remote status
+
+**Repository Tabs + Quick Menu:**
+- Multi-tab repository strip
+- Hamburger menu with 4 sections: File, Edit, View, Help
+- New tab button
+- Close current tab button
 
 **Left Sidebar:**
 - Branches section (expand/collapse)
@@ -87,6 +91,33 @@
 **Bottom:**
 - Status bar
 - Terminal output (if visible)
+
+### 3.2 Quick Menu (Hamburger ☰)
+
+Click the top-left hamburger icon to open the quick menu with 4 sections:
+
+**File:**
+- **New Tab** (Ctrl+T) - Open fresh repository tab
+- **Open Repository** (Ctrl+O) - Browse and open a Git repository
+- **Close Current Tab** (Ctrl+W) - Close currently selected tab
+- **Create a Gist** (Ctrl+Shift+G) - Launch GitHub Gist creator
+
+**Edit:**
+- **Copy Repository Path** (Ctrl+Shift+C) - Copy active folder path to clipboard
+- **Refresh Repository** (Ctrl+Shift+R) - Reload commits, branches, status, and tags
+- **Open in VS Code** (Ctrl+Shift+O) - Launch active repository in VS Code
+
+**View:**
+- **Toggle Terminal** (Ctrl+`) - Show or hide integrated git terminal
+- **Open Folder Explorer** (Alt+O) - Open repository folder in system explorer
+- **Open Settings** (Ctrl+,) - Open app settings dialog
+
+**Help:**
+- **Features and Shortcuts** (F1) - View in-app help panel with all shortcuts
+- **Online Guide** - Open full documentation in browser
+- **Report Issue** - Navigate to GitHub issue tracker
+
+Hover over any menu section to see available actions; click to execute.
 
 ## 4. Viewing Commits
 
@@ -343,26 +374,55 @@ If conflicts occur during pull/merge:
 
 ## 13. Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+O` | Open repository |
-| `Ctrl+N` | New repository |
-| `Ctrl+K` | Clone repository |
-| `Ctrl+B` | Show branches |
-| `Ctrl+S` | Stage changes |
-| `Ctrl+D` | View diff |
-| `Ctrl+M` | Create commit |
-| `Ctrl+P` | Push commits |
-| `Ctrl+U` | Pull changes |
-| `Ctrl+F` | Search commits |
-| `Ctrl+,` | Open settings |
-| `F11` | Toggle fullscreen |
+| Shortcut | Action | Menu Location |
+|----------|--------|---------------|
+| `F1` | Open in-app help and shortcuts panel | Help → Features and Shortcuts |
+| `Ctrl+T` | New repository tab | File → New Tab |
+| `Ctrl+O` | Open repository | File → Open Repository |
+| `Ctrl+W` | Close current tab | File → Close Current Tab |
+| `Ctrl+,` | Open settings | View → Open Settings |
+| `Ctrl+`` | Toggle terminal panel | View → Toggle Terminal |
+| `Ctrl+Shift+C` | Copy repository path | Edit → Copy Repository Path |
+| `Ctrl+Shift+R` | Refresh repository | Edit → Refresh Repository |
+| `Ctrl+Shift+O` | Open in VS Code | Edit → Open in VS Code |
+| `Ctrl+Shift+G` | Open Gist creator | File → Create a Gist |
+| `Alt+O` | Open in folder explorer | View → Open Folder Explorer |
+| `Ctrl+R` | Focus commit search | (Global) |
+
+**Note:** `Ctrl+`` means Ctrl + Backtick (key below Esc on most layouts).
 
 ## 14. Tips and Tricks
 
-### 14.1 Efficient Workflows
+### 14.1 Hamburger Menu Navigation
 
-**Quick Commit:**
+- Hover over menu section tabs (File, Edit, View, Help) to explore all actions
+- Each section highlights on hover with contextual actions on the right
+- Click any action or press keyboard shortcut shown in-menu
+- Press `Esc` to close menu at any time
+
+### 14.2 Opening Repositories
+
+**Quick access:**
+- **Alt+O** - Open current repository in system folder explorer (Windows Explorer, Finder, Nautilus, etc.)
+- **Ctrl+Shift+O** - Open current repository in VS Code
+- **Ctrl+T** - Open new repository tab
+- **Ctrl+O** - Browse and open different repository
+
+### 14.3 Keyboard-First Workflow
+
+- Most menu actions have keyboard shortcuts displayed in-menu
+- Combine with global shortcuts for efficient workflow:
+  - **Ctrl+T** → (work in new tab) → **Ctrl+W** (close when done)
+  - **Ctrl+Shift+R** → Refresh → **Alt+O** → Browse files in explorer
+
+### 14.4 In-App Help
+
+- Press **F1** anytime to open help panel
+- View:
+  - Complete feature list
+  - All keyboard shortcuts with descriptions
+  - Quick start tips
+- Panel closes with `Esc` or by clicking the X button
 1. Make changes
 2. Stage files
 3. Type message
@@ -422,6 +482,17 @@ If conflicts occur during pull/merge:
 - Verify path contains `.git`
 - Check file permissions
 - Run `git fsck` to check integrity
+
+### 15.5 Folder Explorer Does Not Open
+
+**Symptoms:**
+- Clicking "Open in Folder Explorer" does nothing
+- Alt+O fails with a path permission error
+
+**Solutions:**
+- Ensure a repository is open in the active tab
+- Retry from the hamburger menu: View -> Open in Folder Explorer
+- Update to the latest GitSwamp build where explorer opening uses backend tool integration
 
 ### 15.3 Can't Push/Pull
 

@@ -188,7 +188,7 @@ cargo build --verbose
 ### 4.1 Development Build
 
 ```bash
-# Build frontend without optimization
+# Build frontend only (no optimization)
 npm run build
 
 # Output:
@@ -200,30 +200,30 @@ npm run build
 # └── (other assets)
 ```
 
-### 4.2 Production Build
+### 4.2 Production Build (Full Application)
 
 ```bash
-# Complete build with all optimizations
+# Complete build with all optimizations (frontend + Rust backend)
 npm run build && npm run tauri build
 
-# Output:
+# Output directory:
 # src-tauri/target/release/
 # ├── gitswamp.exe (Windows)
 # ├── gitswamp (Linux)
 # └── GitSwamp.app (macOS)
 ```
 
-### 4.3 Build Options
+### 4.3 Development with Hot Reload
 
 ```bash
-# Type check before build
-npm run build  # Includes vue-tsc
+# Terminal 1: Start Vite frontend dev server
+npm run dev
 
-# Build for specific target
-npm run tauri build -- --target x86_64-unknown-linux-gnu
+# Terminal 2: Launch Tauri with live reload
+npm run tauri dev
 
-# Create debug build (faster, larger)
-npm run tauri build -- --debug
+# Changes to .vue, .ts files auto-reload in Tauri window
+# Changes to Rust files require Tauri window refresh
 ```
 
 ## 5. Code Structure for Developers
@@ -308,20 +308,14 @@ export interface MyNewType {
 
 ## 6. Testing
 
-### 6.1 Frontend Testing (When Implemented)
+### 6.1 Frontend Type Checking
 
 ```bash
-# Install test framework (if not already)
-npm install --save-dev vitest @vue/test-utils
+# Run TypeScript type checker (part of npm run build)
+VUE_OPTIONS_API=false npx vue-tsc --noEmit
 
-# Run tests
-npm run test
-
-# Watch mode
-npm run test:watch
-
-# Coverage
-npm run test:coverage
+# Automatically run before production build
+npm run build  # Includes type check
 ```
 
 ### 6.2 Rust Testing
@@ -333,21 +327,23 @@ cargo test
 # Run specific test module
 cargo test commands::git::
 
-# Run with output
+# Run with output visible
 cargo test -- --nocapture
 
-# Run ignored tests
-cargo test -- --ignored
+# Check code without running
+cargo check
 ```
 
 ### 6.3 Integration Testing
 
 ```bash
-# Build app
-npm run build
+# Manual testing workflow:
+# 1. Run development server
+npm run tauri dev
 
-# Run end-to-end tests (if Cypress/Playwright configured)
-npm run test:e2e
+# 2. Test features in Tauri window
+# 3. Use DevTools (Ctrl+Shift+I) to debug frontend
+# 4. Check console for errors
 ```
 
 ## 7. Linting & Formatting

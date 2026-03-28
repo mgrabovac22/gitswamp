@@ -21,13 +21,16 @@ import {
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { ref, watch, onMounted, computed } from "vue";
-import type { RepoInfo, CommitInfo, StashInfo } from "@/types";
+import { ref, watch, onMounted, onUnmounted, computed } from "vue";
+import type { RepoInfo, CommitInfo, StashInfo, RemoteInfo } from "@/types";
 
 const git = useGit();
 const toast = useToast();
+const appWindow = getCurrentWindow();
 
 applyThemeModePreference(getStoredThemeModePreference());
 applyAppPalettePreference(getStoredAppPalettePreference());
@@ -45,6 +48,36 @@ const savedAvatars = localStorage.getItem("gitswamp-show-avatars");
 if (savedAvatars === "false") {
   document.documentElement.classList.add("hide-avatars");
 }
+const savedReducedMotion = localStorage.getItem("gitswamp-reduced-motion");
+if (savedReducedMotion === "true") {
+  document.documentElement.classList.add("reduced-motion");
+}
+const savedWrapDiffLines = localStorage.getItem("gitswamp-wrap-diff-lines");
+if (savedWrapDiffLines === "true") {
+  document.documentElement.classList.add("diff-wrap-lines");
+}
+const savedShowDiffLineNumbers = localStorage.getItem("gitswamp-show-diff-line-numbers");
+if (savedShowDiffLineNumbers === "false") {
+  document.documentElement.classList.add("hide-diff-line-numbers");
+}
+
+const STARTUP_FULLSCREEN_KEY = "gitswamp-fullscreen-on-start";
+const RESTORE_SESSION_KEY = "gitswamp-restore-session";
+
+function shouldStartMaximized(): boolean {
+  const saved = localStorage.getItem(STARTUP_FULLSCREEN_KEY);
+  if (saved === null) return true;
+  return saved !== "false";
+}
+
+function shouldRestoreSession(): boolean {
+  const saved = localStorage.getItem(RESTORE_SESSION_KEY);
+  if (saved === null) {
+    localStorage.setItem(RESTORE_SESSION_KEY, "true");
+    return true;
+  }
+  return saved === "true";
+}
 
 interface Tab {
   id: string;
@@ -61,6 +94,7 @@ const showCloneDialog = ref(false);
 const showInitDialog = ref(false);
 const showTerminal = ref(false);
 const terminalAllowAll = ref(localStorage.getItem("gitswamp-terminal-allow-all") === "true");
+const activeRemoteAction = ref<"pull" | "push" | "fetch" | null>(null);
 const showBranchDialog = ref(false);
 const showStashDialog = ref(false);
 const showSettings = ref(false);
@@ -95,6 +129,9 @@ const pushPlatform = ref("");
 const pushUsername = ref("");
 const pushDomain = ref("");
 const detailsPanelCollapsed = ref(true);
+const openPullRequestBranches = ref<string[]>([]);
+let pullRequestFetchSequence = 0;
+let pullRequestFetchTimer: ReturnType<typeof setTimeout> | null = null;
 
 const showAuthRequiredDialog = ref(false);
 const authProvider = ref<"github" | "gitlab" | "gitlab-self">("github");
@@ -220,6 +257,218 @@ function parseAuthDomainFromOrigin(): string {
   return noCreds.split("/")[0] || "";
 }
 
+function normalizeBranchName(name: string): string {
+  return name
+    .replace(/^origin\//i, "")
+    .replace(/^remotes\/[a-z0-9_-]+\//i, "")
+    .trim();
+}
+
+function uniqueNormalizedBranches(branches: string[]): string[] {
+  const values = new Set<string>();
+  for (const branch of branches) {
+    const normalized = normalizeBranchName(branch).toLowerCase();
+    if (normalized) {
+      values.add(normalized);
+    }
+  }
+  return Array.from(values);
+}
+
+function stripGitSuffix(path: string): string {
+  return path.replace(/\.git$/i, "");
+}
+
+function parseRemoteHostAndPath(remoteUrl: string): { host: string; path: string } | null {
+  const value = remoteUrl.trim();
+  if (!value) return null;
+
+  const scpLikeMatch = value.match(/^[^@]+@([^:]+):(.+)$/);
+  if (scpLikeMatch) {
+    return {
+      host: scpLikeMatch[1].toLowerCase(),
+      path: stripGitSuffix(scpLikeMatch[2].replace(/^\/+/, "")),
+    };
+  }
+
+  try {
+    const parsed = new URL(value);
+    return {
+      host: parsed.hostname.toLowerCase(),
+      path: stripGitSuffix(parsed.pathname.replace(/^\/+/, "")),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseGithubRemote(remoteUrl: string): { host: string; owner: string; repo: string } | null {
+  const parsed = parseRemoteHostAndPath(remoteUrl);
+  if (!parsed) return null;
+
+  const segments = parsed.path.split("/").filter(Boolean);
+  if (segments.length < 2) return null;
+
+  return {
+    host: parsed.host,
+    owner: segments[segments.length - 2],
+    repo: segments[segments.length - 1],
+  };
+}
+
+function parseGitlabRemote(remoteUrl: string): { host: string; projectPath: string } | null {
+  const parsed = parseRemoteHostAndPath(remoteUrl);
+  if (!parsed) return null;
+
+  const segments = parsed.path.split("/").filter(Boolean);
+  if (segments.length < 2) return null;
+
+  return {
+    host: parsed.host,
+    projectPath: segments.join("/"),
+  };
+}
+
+function getPrimaryRemote(remotes: RemoteInfo[]): RemoteInfo | null {
+  return remotes.find((remote) => remote.name === "origin") || remotes[0] || null;
+}
+
+function getGitlabTokenForHost(host: string): string | null {
+  if (host === "gitlab.com") {
+    return git.providerTokens.value.gitlab || null;
+  }
+
+  const selfHosted = git.providerTokens.value["gitlab-self"];
+  if (selfHosted) {
+    const separatorIndex = selfHosted.indexOf("|");
+    if (separatorIndex > 0) {
+      const domain = selfHosted.slice(0, separatorIndex).toLowerCase();
+      const token = selfHosted.slice(separatorIndex + 1);
+      if (domain === host && token) {
+        return token;
+      }
+    } else {
+      return selfHosted;
+    }
+  }
+
+  return git.providerTokens.value.gitlab || null;
+}
+
+async function fetchJsonWithTimeout(url: string, headers: Record<string, string>): Promise<unknown> {
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch(url, {
+      headers,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return await response.json();
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+async function fetchOpenGithubPullRequestBranches(remoteUrl: string): Promise<string[]> {
+  const parsed = parseGithubRemote(remoteUrl);
+  if (!parsed) return [];
+
+  const apiBase = parsed.host === "github.com"
+    ? "https://api.github.com"
+    : `https://${parsed.host}/api/v3`;
+
+  const token = git.providerTokens.value.github || git.githubToken.value || "";
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const payload = await fetchJsonWithTimeout(
+    `${apiBase}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/pulls?state=open&per_page=100`,
+    headers,
+  );
+
+  if (!Array.isArray(payload)) return [];
+  return payload
+    .map((item) => {
+      if (!item || typeof item !== "object") return "";
+      const candidate = (item as { head?: { ref?: unknown } }).head?.ref;
+      return typeof candidate === "string" ? candidate : "";
+    })
+    .filter((name) => name.length > 0);
+}
+
+async function fetchOpenGitlabMergeRequestBranches(remoteUrl: string): Promise<string[]> {
+  const parsed = parseGitlabRemote(remoteUrl);
+  if (!parsed) return [];
+
+  const token = getGitlabTokenForHost(parsed.host) || "";
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+  };
+
+  if (token) {
+    headers["PRIVATE-TOKEN"] = token;
+  }
+
+  const payload = await fetchJsonWithTimeout(
+    `https://${parsed.host}/api/v4/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests?state=opened&per_page=100`,
+    headers,
+  );
+
+  if (!Array.isArray(payload)) return [];
+  return payload
+    .map((item) => {
+      if (!item || typeof item !== "object") return "";
+      const candidate = (item as { source_branch?: unknown }).source_branch;
+      return typeof candidate === "string" ? candidate : "";
+    })
+    .filter((name) => name.length > 0);
+}
+
+async function refreshOpenPullRequestBranches() {
+  const remotes = git.repoInfo.value?.remotes || [];
+  const primaryRemote = getPrimaryRemote(remotes);
+
+  if (!primaryRemote || (primaryRemote.provider !== "github" && primaryRemote.provider !== "gitlab")) {
+    openPullRequestBranches.value = [];
+    return;
+  }
+
+  const sequence = ++pullRequestFetchSequence;
+
+  try {
+    const branches = primaryRemote.provider === "github"
+      ? await fetchOpenGithubPullRequestBranches(primaryRemote.url)
+      : await fetchOpenGitlabMergeRequestBranches(primaryRemote.url);
+
+    if (sequence !== pullRequestFetchSequence) return;
+    openPullRequestBranches.value = uniqueNormalizedBranches(branches);
+  } catch {
+    if (sequence !== pullRequestFetchSequence) return;
+    openPullRequestBranches.value = [];
+  }
+}
+
+function scheduleOpenPullRequestRefresh() {
+  if (pullRequestFetchTimer) {
+    clearTimeout(pullRequestFetchTimer);
+  }
+
+  pullRequestFetchTimer = setTimeout(() => {
+    void refreshOpenPullRequestBranches();
+  }, 250);
+}
+
 function isAuthenticationRequiredError(message: string | null | undefined): boolean {
   if (!message) return false;
   const m = message.toLowerCase();
@@ -235,35 +484,195 @@ function maybeShowAuthDialogFromGitError() {
 }
 
 async function handlePull() {
-  await git.pull();
-  maybeShowAuthDialogFromGitError();
+  activeRemoteAction.value = "pull";
+  try {
+    await git.pull();
+    maybeShowAuthDialogFromGitError();
+  } finally {
+    activeRemoteAction.value = null;
+  }
 }
 
 async function handleFetch() {
-  await git.fetchAll();
-  maybeShowAuthDialogFromGitError();
+  activeRemoteAction.value = "fetch";
+  try {
+    await git.fetchAll();
+    maybeShowAuthDialogFromGitError();
+  } finally {
+    activeRemoteAction.value = null;
+  }
+}
+
+function toggleTerminalPanel() {
+  showTerminal.value = !showTerminal.value;
+}
+
+function dispatchFocusCommitSearch() {
+  globalThis.dispatchEvent(new Event("gitswamp-focus-commit-search"));
+}
+
+function hasActiveRepositoryPath(): boolean {
+  return !!git.repoPath.value;
+}
+
+async function openRepoInVsCode() {
+  if (!hasActiveRepositoryPath()) {
+    toast.warning("Open a repository first.");
+    return;
+  }
+
+  try {
+    await invoke("open_path_with_tool", {
+      path: git.repoPath.value,
+      tool: "vscode",
+    });
+    toast.success("Opened repository in VS Code");
+  } catch (e) {
+    toast.error("Failed to open in VS Code: " + String(e));
+  }
+}
+
+async function openRepoInExplorer() {
+  if (!hasActiveRepositoryPath()) {
+    toast.warning("Open a repository first.");
+    return;
+  }
+
+  try {
+    await invoke("open_path_with_tool", {
+      path: git.repoPath.value,
+      tool: "explorer",
+    });
+    toast.success("Opened repository in folder explorer");
+  } catch (e) {
+    toast.error("Failed to open folder explorer: " + String(e));
+  }
+}
+
+async function createGistFromRepo() {
+  if (!hasActiveRepositoryPath()) {
+    toast.warning("Open a repository first.");
+    return;
+  }
+
+  try {
+    await openUrl("https://gist.github.com/");
+    toast.info("Opened GitHub Gist creator in browser");
+  } catch (e) {
+    toast.error("Failed to open Gist page: " + String(e));
+  }
+}
+
+async function refreshCurrentRepo() {
+  if (!hasActiveRepositoryPath()) {
+    return;
+  }
+
+  await git.refreshAll();
+  if (git.error.value) {
+    toast.error(git.error.value);
+    return;
+  }
+
+  toast.success("Repository refreshed");
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  const tag = element.tagName.toLowerCase();
+  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select" || tag === "option";
+}
+
+function handleGlobalShortcuts(event: KeyboardEvent) {
+  if (isEditableTarget(event.target)) {
+    return;
+  }
+
+  const key = event.key.toLowerCase();
+
+  if (event.ctrlKey && event.code === "Backquote") {
+    event.preventDefault();
+    toggleTerminalPanel();
+    return;
+  }
+
+  if (event.ctrlKey && event.shiftKey && key === "o") {
+    event.preventDefault();
+    void openRepoInVsCode();
+    return;
+  }
+
+  if (event.altKey && !event.ctrlKey && !event.shiftKey && key === "o") {
+    event.preventDefault();
+    void openRepoInExplorer();
+    return;
+  }
+
+  if (event.ctrlKey && !event.shiftKey && key === "r") {
+    event.preventDefault();
+    dispatchFocusCommitSearch();
+    return;
+  }
+
+  if (event.ctrlKey && event.shiftKey && key === "g") {
+    event.preventDefault();
+    void createGistFromRepo();
+    return;
+  }
+
+  if (event.ctrlKey && !event.shiftKey && key === ",") {
+    event.preventDefault();
+    showSettings.value = true;
+  }
 }
 
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
 
 onMounted(() => {
+  globalThis.addEventListener("keydown", handleGlobalShortcuts);
+
+  const restoreSession = shouldRestoreSession();
+
   try {
-    const saved = localStorage.getItem("gitswamp-tabs");
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.tabs?.length) {
-        tabs.value = parsed.tabs;
-        activeTabId.value = parsed.activeTabId || tabs.value[0].id;
+    if (restoreSession) {
+      const saved = localStorage.getItem("gitswamp-tabs");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.tabs?.length) {
+          tabs.value = parsed.tabs;
+          activeTabId.value = parsed.activeTabId || tabs.value[0].id;
+        }
       }
     }
+
     const savedRecent = localStorage.getItem("gitswamp-recent");
     if (savedRecent) {
       recentRepos.value = JSON.parse(savedRecent);
     }
   } catch {}
-  const active = tabs.value.find((t) => t.id === activeTabId.value);
-  if (active?.path) {
-    git.openRepository(active.path);
+
+  if (restoreSession) {
+    const active = tabs.value.find((t) => t.id === activeTabId.value);
+    if (active?.path) {
+      git.openRepository(active.path);
+    }
+  }
+
+  if (shouldStartMaximized()) {
+    appWindow.maximize().catch(() => {});
+    setTimeout(() => {
+      appWindow.maximize().catch(() => {});
+    }, 120);
+  }
+});
+
+onUnmounted(() => {
+  globalThis.removeEventListener("keydown", handleGlobalShortcuts);
+  pullRequestFetchSequence++;
+  if (pullRequestFetchTimer) {
+    clearTimeout(pullRequestFetchTimer);
+    pullRequestFetchTimer = null;
   }
 });
 
@@ -287,6 +696,22 @@ watch(recentRepos, () => {
     localStorage.setItem("gitswamp-recent", JSON.stringify(recentRepos.value));
   } catch {}
 }, { deep: true });
+
+watch(
+  () => [
+    git.repoInfo.value?.path || "",
+    (git.repoInfo.value?.remotes || [])
+      .map((remote) => `${remote.name}:${remote.provider}:${remote.url}`)
+      .join("|"),
+    git.providerTokens.value.github || git.githubToken.value || "",
+    git.providerTokens.value.gitlab || "",
+    git.providerTokens.value["gitlab-self"] || "",
+  ],
+  () => {
+    scheduleOpenPullRequestRefresh();
+  },
+  { immediate: true },
+);
 
 watch(() => git.selectedCommit.value, (commit) => {
   if (commit) {
@@ -397,8 +822,13 @@ async function handlePush() {
   const hasOrigin = await git.checkOriginExists();
   if (hasOrigin) {
     // Origin exists, push normally
-    await git.push();
-    maybeShowAuthDialogFromGitError();
+    activeRemoteAction.value = "push";
+    try {
+      await git.push();
+      maybeShowAuthDialogFromGitError();
+    } finally {
+      activeRemoteAction.value = null;
+    }
   } else {
     // No origin, show dialog to select platform
     const repoName = git.repoInfo.value?.name || "repository";
@@ -744,6 +1174,13 @@ const openReposList = computed(() =>
       @select-tab="selectTab"
       @close-tab="closeTab"
       @new-tab="newTab"
+      @open-repository="browseAndOpen"
+      @toggle-terminal="toggleTerminalPanel"
+      @open-settings="showSettings = true"
+      @refresh-repository="refreshCurrentRepo()"
+      @open-in-vs-code="openRepoInVsCode()"
+      @open-in-explorer="openRepoInExplorer()"
+      @create-gist="createGistFromRepo()"
     />
 
     <template v-if="isLanding">
@@ -763,18 +1200,20 @@ const openReposList = computed(() =>
     <template v-else-if="git.repoInfo.value">
       <AppHeader
         :loading="git.loading.value"
+        :active-action="activeRemoteAction"
         @pull="handlePull"
         @push="handlePush"
         @fetch="handleFetch"
         @branch="handleCreateBranch"
         @stash="handleStash"
-        @terminal="showTerminal = !showTerminal"
+        @terminal="toggleTerminalPanel"
         @settings="showSettings = true"
       />
       <RepositoryWorkspace
         :git="git"
         :show-terminal="showTerminal"
         :terminal-allow-all="terminalAllowAll"
+        :open-pull-request-branches="openPullRequestBranches"
         :show-diff-viewer="showDiffViewer"
         :diff-file-path="diffFilePath"
         :diff-commit-sha="diffCommitSha"
@@ -802,6 +1241,7 @@ const openReposList = computed(() =>
         @edit-commit-message="handleEditCommitMessage($event)"
         @rename-branch="handleRenameBranch($event)"
         @delete-branch-and-remote="handleDeleteBranchAndRemote($event)"
+        @create-gist="createGistFromRepo()"
       />
     </template>
 

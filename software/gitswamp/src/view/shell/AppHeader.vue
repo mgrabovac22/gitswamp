@@ -17,6 +17,7 @@ import headerTextLogoLight from "@/assets/logo_light.png";
 
 defineProps<{
   loading: boolean;
+  activeAction?: "pull" | "push" | "fetch" | null;
 }>();
 
 const emit = defineEmits<{
@@ -73,7 +74,7 @@ onUnmounted(() => {
           :disabled="loading"
           @click="emit('pull')"
         >
-          <Loader2 v-if="loading" class="w-3.5 h-3.5 animate-spin" />
+          <Loader2 v-if="loading && activeAction === 'pull'" class="w-3.5 h-3.5 animate-spin" />
           <Download v-else class="w-3.5 h-3.5" />
           Pull
         </AppButton>
@@ -84,7 +85,8 @@ onUnmounted(() => {
           :disabled="loading"
           @click="emit('push')"
         >
-          <Upload class="w-3.5 h-3.5" />
+          <Loader2 v-if="loading && activeAction === 'push'" class="w-3.5 h-3.5 animate-spin" />
+          <Upload v-else class="w-3.5 h-3.5" />
           Push
         </AppButton>
         <AppButton
@@ -94,7 +96,8 @@ onUnmounted(() => {
           :disabled="loading"
           @click="emit('fetch')"
         >
-          <RefreshCw class="w-3.5 h-3.5" />
+          <Loader2 v-if="loading && activeAction === 'fetch'" class="w-3.5 h-3.5 animate-spin" />
+          <RefreshCw v-else class="w-3.5 h-3.5" />
           Fetch
         </AppButton>
       </div>

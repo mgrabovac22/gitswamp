@@ -152,7 +152,7 @@ pub fn run() {
 }
 ```
 
-## 5. Command Modules
+## 5. Command Modules (12 Total)
 
 ### 5.1 Repository Commands (repository.rs)
 
@@ -294,7 +294,18 @@ RepoInfo {
 
 ## 6. Services Layer
 
-### 6.1 GitService
+### 6.1 Service Layer Architecture
+
+**7 Service Modules:**
+1. `git_service.rs` - Core Git2-rs wrapper
+2. `diff_service.rs` - Diff generation and hunk operations
+3. `stash_service.rs` - Stash management operations
+4. `remote_service.rs` - Remote operations (push, pull, fetch)
+5. `integration_service.rs` - External tool integration (VS Code, explorer, etc.)
+6. `helpers.rs` - Utility functions
+7. `mod.rs` - Module exports
+
+### 6.2 GitService
 
 **File:** `src/services/git_service.rs`
 
@@ -326,18 +337,19 @@ fn handle_git_error(error: git2::Error) -> String {
 
 ### 7.1 Model Count
 
-**Total Models:** 10+
+**Total Models:** 11 (across 11 Rust files in models/)
 
-1. **CommitInfo** - Commit metadata
-2. **BranchInfo** - Branch information
-3. **FileStatusInfo** - File status
-4. **RepoInfo** - Repository metadata
-5. **CommitFileInfo** - Files in commit
-6. **StashInfo** - Stash metadata
-7. **TagInfo** - Tag information
-8. **FileDiff** - Diff data
-9. **GithubRepo** - GitHub API model
-10. **GitlabRepo** - GitLab API model
+1. **CommitInfo** - Commit metadata (commit.rs)
+2. **BranchInfo** - Branch information (branch.rs)
+3. **FileStatusInfo** - File status (file_status.rs)
+4. **RepoInfo** - Repository metadata (repository.rs)
+5. **CommitFileInfo** - Files in commit (commit_file.rs)
+6. **StashInfo** - Stash metadata (stash.rs)
+7. **TagInfo** - Tag information (tag.rs)
+8. **FileDiff** - Diff data (diff.rs)
+9. **GithubRepo** - GitHub API model (github.rs)
+10. **GitlabRepo** - GitLab API model (gitlab.rs)
+11. **mod.rs** - Model module exports
 
 ### 7.2 Model Serialization
 

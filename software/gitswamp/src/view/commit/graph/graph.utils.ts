@@ -1,8 +1,14 @@
 import type { CommitInfo } from "@/types";
 
+interface AvatarSvgOptions {
+  svgBgOuter: string;
+  svgBgInner: string;
+  colors: readonly string[];
+}
+
 export function nameHash(name: string): number {
   let h = 0;
-  for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
+  for (let i = 0; i < name.length; i++) h = (name.codePointAt(i) ?? 0) + ((h << 5) - h);
   return Math.abs(h);
 }
 
@@ -16,10 +22,9 @@ export function avatarSvg(
   cy: number,
   r: number,
   branchColor: string,
-  svgBgOuter: string,
-  svgBgInner: string,
-  colors: readonly string[],
+  options: AvatarSvgOptions,
 ): string {
+  const { svgBgOuter, svgBgInner, colors } = options;
   const h = nameHash(name);
   const c = avatarColor(name, colors);
   const s = r * 0.48;
@@ -34,20 +39,20 @@ export function avatarSvg(
         const x1 = ox + col * s;
         const y1 = oy + row * s;
         const x2 = ox + (2 - col) * s;
-        cells += '<rect x="' + x1 + '" y="' + y1 + '" width="' + s + '" height="' + s + '" rx="1" fill="' + c + '" opacity="0.85"/>';
-        cells += '<rect x="' + x2 + '" y="' + y1 + '" width="' + s + '" height="' + s + '" rx="1" fill="' + c + '" opacity="0.85"/>';
+        cells += '<rect class="commit-avatar-pattern-cell" x="' + x1 + '" y="' + y1 + '" width="' + s + '" height="' + s + '" rx="1" fill="' + c + '" opacity="0.85"/>';
+        cells += '<rect class="commit-avatar-pattern-cell" x="' + x2 + '" y="' + y1 + '" width="' + s + '" height="' + s + '" rx="1" fill="' + c + '" opacity="0.85"/>';
       }
     }
     const centerBit = (h >> (row + 6)) & 1;
     if (centerBit) {
-      cells += '<rect x="' + (ox + s) + '" y="' + (oy + row * s) + '" width="' + s + '" height="' + s + '" rx="1" fill="' + c + '" opacity="0.9"/>';
+      cells += '<rect class="commit-avatar-pattern-cell" x="' + (ox + s) + '" y="' + (oy + row * s) + '" width="' + s + '" height="' + s + '" rx="1" fill="' + c + '" opacity="0.9"/>';
     }
   }
 
-  return '<g class="commit-avatar"><circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 1.5) + '" fill="' + svgBgOuter + '"/>'
-    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + svgBgInner + '"/>'
-    + cells
-    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + branchColor + '" stroke-width="1.5" opacity="0.8"/></g>';
+  return '<g class="commit-avatar" style="--avatar-color:' + c + '"><circle class="commit-avatar-outer" cx="' + cx + '" cy="' + cy + '" r="' + (r + 1.5) + '" fill="' + svgBgOuter + '"/>'
+    + '<circle class="commit-avatar-inner" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + svgBgInner + '"/>'
+    + '<g class="commit-avatar-pattern">' + cells + '</g>'
+    + '<circle class="commit-avatar-ring" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + branchColor + '" stroke-width="1.5" opacity="0.8"/></g>';
 }
 
 export function mergeDotSvg(cx: number, cy: number, color: string, svgBgOuter: string): string {

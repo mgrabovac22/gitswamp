@@ -2,7 +2,7 @@
 
 ## 1. Command Overview
 
-GitSwamp exposes 47 Tauri commands across 12 modules. All commands are asynchronous and use type-safe serialization.
+GitSwamp exposes 69 Tauri commands across 12 modules. All commands are asynchronous and use type-safe serialization.
 
 ## 2. Repository Commands
 
@@ -698,6 +698,44 @@ invoke("run_git_command", {
 
 // Execute raw git command
 ```
+
+#### run_shell_command
+
+```typescript
+invoke("run_shell_command", {
+  path: string;
+  command: string;
+}): Promise<string>
+
+// Execute shell command in repository context
+```
+
+#### get_available_external_tools
+
+```typescript
+invoke("get_available_external_tools"): Promise<string[]>
+
+// Example response
+["vscode", "visualstudio", "androidstudio", "intellij", "explorer"]
+```
+
+#### open_path_with_tool
+
+```typescript
+invoke("open_path_with_tool", {
+  path: string;
+  tool: string;
+}): Promise<void>
+
+// Supported tool ids
+// vscode, visualstudio, androidstudio, intellij, explorer
+
+// Examples
+await invoke("open_path_with_tool", { path: repoPath, tool: "vscode" });
+await invoke("open_path_with_tool", { path: repoPath, tool: "explorer" });
+```
+
+`open_path_with_tool` is the command used by the View -> Open in Folder Explorer action and Alt+O shortcut.
 
 ## 11. Credentials Commands
 

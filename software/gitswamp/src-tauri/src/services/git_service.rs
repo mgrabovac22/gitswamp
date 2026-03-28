@@ -472,18 +472,88 @@ impl GitService {
     }
 
     pub fn search_commits(path: &str, query: &str, max_count: usize) -> Result<Vec<CommitInfo>, String> {
-        let all = Self::commits(path, max_count)?;
-        let q = query.to_lowercase();
-        Ok(all
-            .into_iter()
-            .filter(|c| {
-                c.message.to_lowercase().contains(&q)
-                    || c.author_name.to_lowercase().contains(&q)
-                    || c.author_email.to_lowercase().contains(&q)
-                    || c.sha.starts_with(&q)
-                    || c.short_sha.starts_with(&q)
-            })
-            .collect())
+        let repo = GitRepository::open(path)?;
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
+        if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+            for item in branches.flatten() {
+                if let Some(oid) = item.0.get().target() {
+                    let _ = revwalk.push(oid);
+                }
+            }
+        }
+        if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
+            for item in branches.flatten() {
+                if let Some(oid) = item.0.get().target() {
+                    let _ = revwalk.push(oid);
+                }
+            }
+        }
+        let _ = revwalk.push_head();
+        revwalk
+            .set_sorting(Sort::TIME | Sort::TOPOLOGICAL)
+            .map_err(|e| e.message().to_string())?;
+
+        let ref_map = build_ref_map(&repo);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mut result = Vec::new();
+        let mut seen = HashSet::new();
+
+        for oid in revwalk.flatten() {
+            if !seen.insert(oid) {
+                continue;
+            }
+
+            let commit = match repo.find_commit(oid) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let sha = oid.to_string();
+            let short_sha = sha[..7.min(sha.len())].to_string();
+            let message = commit.message().unwrap_or("").trim().to_string();
+            let author_name = commit.author().name().unwrap_or("Unknown").to_string();
+            let author_email = commit.author().email().unwrap_or("").to_string();
+
+            if !message.to_lowercase().contains(&q)
+                && !author_name.to_lowercase().contains(&q)
+                && !author_email.to_lowercase().contains(&q)
+                && !sha.starts_with(&q)
+                && !short_sha.starts_with(&q)
+            {
+                continue;
+            }
+
+            let timestamp = commit.time().seconds();
+            let parent_shas: Vec<String> = commit.parent_ids().map(|id| id.to_string()).collect();
+            let refs = ref_map.get(&sha).cloned().unwrap_or_default();
+
+            result.push(CommitInfo {
+                sha,
+                short_sha,
+                message,
+                author_name,
+                author_email,
+                timestamp,
+                time_ago: time_ago(now, timestamp),
+                parent_shas,
+                refs,
+            });
+
+            if result.len() >= max_count {
+                break;
+            }
+        }
+
+        Ok(result)
     }
 
     pub fn commit_files(path: &str, sha: &str) -> Result<Vec<CommitFileInfo>, String> {
@@ -791,6 +861,22 @@ impl GitService {
 
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
         IntegrationService::verify_gitlab_token(domain, token)
+    }
+
+    pub fn get_available_external_editors() -> Vec<String> {
+        IntegrationService::available_external_editors()
+    }
+
+    pub fn get_available_external_tools() -> Vec<String> {
+        IntegrationService::available_external_tools()
+    }
+
+    pub fn open_file_with_editor(path: &str, file_path: &str, editor: &str) -> Result<(), String> {
+        IntegrationService::open_file_with_editor(path, file_path, editor)
+    }
+
+    pub fn open_path_with_tool(path: &str, tool: &str) -> Result<(), String> {
+        IntegrationService::open_path_with_tool(path, tool)
     }
 
     pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<crate::models::FileDiff, String> {
