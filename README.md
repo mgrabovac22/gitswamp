@@ -2,6 +2,8 @@
 
 Complete software documentation for the GitSwamp Git client application built with Tauri, Vue 3, and Rust.
 
+![ezgif com-crop](https://github.com/user-attachments/assets/112574b3-0546-47ae-807b-809de74ca31b)
+
 ## Latest Updates
 
 - **Hamburger menu (☰)** exposes File, Edit, View, and Help sections with actionable items
