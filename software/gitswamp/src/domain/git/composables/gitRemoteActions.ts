@@ -26,7 +26,9 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
 
   async function forcePushCurrentBranch() {
     if (!state.repoPath.value) return;
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading("Loading: force pushing branch...");
       state.loading.value = true;
       const forceResult = await callTauri<string>("push_force", {
         path: state.repoPath.value,
@@ -43,12 +45,17 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Force push failed: " + errMsg);
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
   async function pull() {
     if (!state.repoPath.value) return;
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading("Loading: pulling remote changes...");
       state.loading.value = true;
       const result = await callTauri<string>("pull", {
         path: state.repoPath.value,
@@ -66,12 +73,17 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Pull failed: " + String(e));
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
   async function push() {
     if (!state.repoPath.value) return;
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading("Loading: pushing changes...");
       state.loading.value = true;
       const result = await callTauri<string>("push", {
         path: state.repoPath.value,
@@ -110,12 +122,17 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       }
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
   async function fetchAll() {
     if (!state.repoPath.value) return;
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading("Loading: fetching all remotes...");
       state.loading.value = true;
       const result = await callTauri<string>("fetch_all", {
         path: state.repoPath.value,
@@ -132,6 +149,9 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Fetch failed: " + String(e));
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
@@ -177,7 +197,9 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Cannot reset branch while conflicts exist. Resolve conflicts first.");
       return;
     }
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading(`Loading: resetting ${branch} to origin...`);
       state.loading.value = true;
       const result = await callTauri<string>("reset_branch_to_remote", { path: state.repoPath.value, branch });
       state.terminalOutput.value.push("$ git reset --hard origin/" + branch + "\n" + (result || "(done)"));
@@ -188,6 +210,9 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       state.terminalOutput.value.push("$ git reset --hard origin/" + branch + "\nError: " + e);
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
@@ -202,7 +227,9 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
 
   async function pushToMultiplePlatforms(platform: string, repoName: string) {
     if (!state.repoPath.value) return;
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading(`Loading: pushing to ${platform}...`);
       state.loading.value = true;
       const token = state.providerTokens.value[platform];
       if (!token) {
@@ -228,6 +255,9 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       toast.error(`Push to ${platform} failed: ` + String(e));
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 

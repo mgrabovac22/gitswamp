@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { useToast } from "@/shared/notifications/useToast";
 import { CheckCircle, XCircle, Info, AlertTriangle, X } from "lucide-vue-next";
+import logoCrocLoading from "@/assets/logo_croc_loading.gif";
 
 const { toasts, remove } = useToast();
+const loadingLetters = ["L", "o", "a", "d", "i", "n", "g"];
 
 const icons = {
   success: CheckCircle,
   error: XCircle,
   info: Info,
   warning: AlertTriangle,
+  loading: Info,
 };
 
 const colors = {
@@ -16,6 +19,7 @@ const colors = {
   error: { bg: "bg-[#2a1316]/96", border: "border-[#ef4444]/75", text: "text-[#f87171]", icon: "#f87171" },
   info: { bg: "bg-[#111c2f]/96", border: "border-[#3b82f6]/75", text: "text-[#60a5fa]", icon: "#60a5fa" },
   warning: { bg: "bg-[#2a2210]/96", border: "border-[#f59e0b]/75", text: "text-[#fbbf24]", icon: "#fbbf24" },
+  loading: { bg: "bg-[#10251f]/96", border: "border-[#14b8a6]/75", text: "text-[#5eead4]", icon: "#5eead4" },
 };
 </script>
 
@@ -29,7 +33,21 @@ const colors = {
           class="flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl backdrop-blur-md"
           :class="[colors[toast.type].bg, colors[toast.type].border]"
         >
+          <div v-if="toast.type === 'loading'" class="flex items-center gap-2.5 flex-shrink-0 mt-0.5">
+            <img :src="logoCrocLoading" alt="Loading" class="toast-loader-logo" />
+            <div class="toast-loader-wave" aria-label="Loading">
+              <span
+                v-for="(letter, idx) in loadingLetters"
+                :key="toast.id + '-loading-' + idx"
+                class="toast-loader-letter"
+                :style="{ animationDelay: `${idx * 0.06}s` }"
+              >
+                {{ letter }}
+              </span>
+            </div>
+          </div>
           <component
+            v-else
             :is="icons[toast.type]"
             class="w-5 h-5 flex-shrink-0 mt-0.5"
             :style="{ color: colors[toast.type].icon }"
@@ -72,6 +90,40 @@ const colors = {
 }
 .toast-leave-active {
   animation: toast-out 0.2s ease-in;
+}
+
+.toast-loader-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 6px rgba(20, 184, 166, 0.45));
+}
+
+.toast-loader-wave {
+  display: inline-flex;
+  gap: 0.5px;
+  line-height: 1;
+}
+
+.toast-loader-letter {
+  font-size: 11px;
+  font-weight: 700;
+  color: #5eead4;
+  text-transform: uppercase;
+  animation: toast-loader-bounce 1s ease-in-out infinite;
+}
+
+@keyframes toast-loader-bounce {
+  0%,
+  50%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  25% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
 }
 
 @keyframes toast-in {

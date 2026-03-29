@@ -40,6 +40,7 @@ const quickCommands = [
   { label: "Graph", command: "git log --oneline --graph --decorate -20", title: "Show recent commit graph" },
   { label: "Stash", command: "git stash list", title: "List stashes" },
   { label: "Fetch", command: "git fetch --all --prune", title: "Fetch all remotes and prune deleted refs" },
+  { label: "Untrack", command: "git rm -r --cached .", title: "Stop tracking all currently tracked files in index" },
   { label: "Help", command: "help", title: "Show built-in terminal shortcuts" },
 ] as const;
 

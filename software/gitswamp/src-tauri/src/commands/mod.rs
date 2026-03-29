@@ -6,6 +6,8 @@ pub mod diff;
 pub mod operations;
 pub mod status;
 pub mod clone_init;
+pub mod conflicts;
 pub mod stash;
 pub mod tags;
 pub mod credentials;
+pub mod ghost;

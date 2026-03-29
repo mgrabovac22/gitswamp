@@ -17,7 +17,9 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Cannot checkout branch while conflicts exist. Resolve conflicts first.");
       return;
     }
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading(`Loading: checking out branch ${branchName}...`);
       state.loading.value = true;
       await callTauri("checkout_branch", { path: state.repoPath.value, branchName });
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
@@ -28,6 +30,9 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Checkout branch failed: " + String(e));
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
@@ -81,7 +86,9 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       return;
     }
     const sourceRef = sourceRemote ? `origin/${sourceBranch}` : sourceBranch;
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading(`Loading: merging ${sourceRef}...`);
       state.loading.value = true;
       const result = await callTauri<string>("run_git_command", {
         path: state.repoPath.value,
@@ -97,6 +104,9 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Merge failed: " + String(e));
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 

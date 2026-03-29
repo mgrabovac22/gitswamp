@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from "vue";
+import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  AlertTriangle,
   Calendar,
   Hash,
   ChevronDown,
   FileText,
+  FolderPlus,
   GitBranch,
   ArrowUp,
   ArrowDown,
@@ -54,6 +56,7 @@ const emit = defineEmits<{
   stashDrop: [index: number];
   viewDiff: [{ path: string; sha: string | null; staged: boolean }];
   amendCommitMessage: [newMessage: string];
+  refreshState: [];
 }>();
 
 const commitSummary = ref("");
@@ -151,10 +154,123 @@ const fileCtxVisible = ref(false);
 const fileCtxX = ref(0);
 const fileCtxY = ref(0);
 const fileCtxPath = ref<string | null>(null);
+const compactWorkingLabel = ref(globalThis.innerWidth < 1120);
 const editingSubject = ref(false);
 const editingDescription = ref(false);
 const subjectDraft = ref("");
 const descriptionDraft = ref("");
+const workingChangesLabel = computed(() => (compactWorkingLabel.value ? "Working..." : "Working Changes"));
+const GITKEEP_NOTIFY_KEY = "gitswamp-notify-gitkeep";
+const VERY_LARGE_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024;
+const emptyDirectories = ref<string[]>([]);
+const emptyDirectoriesLoading = ref(false);
+const emptyDirectoriesError = ref("");
+const notifyGitkeep = ref(true);
+let emptyDirectoriesRunToken = 0;
+
+function updateCompactWorkingLabel() {
+  compactWorkingLabel.value = globalThis.innerWidth < 1120;
+}
+
+function syncGitkeepNotifyPreference() {
+  const saved = localStorage.getItem(GITKEEP_NOTIFY_KEY);
+  if (saved === null) {
+    localStorage.setItem(GITKEEP_NOTIFY_KEY, "true");
+    notifyGitkeep.value = true;
+    return;
+  }
+  notifyGitkeep.value = saved !== "false";
+}
+
+function isVeryLargeFile(file: FileStatusInfo): boolean {
+  return (file.file_size_bytes || 0) >= VERY_LARGE_FILE_THRESHOLD_BYTES;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
+
+async function loadEmptyDirectories() {
+  syncGitkeepNotifyPreference();
+
+  if (!props.repoPath || !props.isWorkingChanges || !notifyGitkeep.value) {
+    emptyDirectories.value = [];
+    emptyDirectoriesError.value = "";
+    emptyDirectoriesLoading.value = false;
+    return;
+  }
+
+  const runToken = ++emptyDirectoriesRunToken;
+  emptyDirectoriesLoading.value = true;
+  emptyDirectoriesError.value = "";
+
+  try {
+    const directories = await invoke<string[]>("get_empty_directories", {
+      path: props.repoPath,
+      maxCount: 200,
+    });
+
+    if (runToken !== emptyDirectoriesRunToken) return;
+    emptyDirectories.value = directories;
+  } catch {
+    if (runToken !== emptyDirectoriesRunToken) return;
+    emptyDirectories.value = [];
+    emptyDirectoriesError.value = "Could not scan empty folders for .gitkeep suggestions.";
+  } finally {
+    if (runToken === emptyDirectoriesRunToken) {
+      emptyDirectoriesLoading.value = false;
+    }
+  }
+}
+
+async function addGitkeep(directoryPath: string) {
+  if (!props.repoPath) return;
+
+  try {
+    const createdPath = await invoke<string>("add_gitkeep", {
+      path: props.repoPath,
+      directoryPath,
+      stage: true,
+    });
+
+    toast.success(`Added and staged ${createdPath}`);
+    emit("refreshState");
+    await loadEmptyDirectories();
+  } catch (error) {
+    toast.error(`Could not add .gitkeep for ${directoryPath}: ${String(error)}`);
+  }
+}
+
+async function addGitkeepToAll() {
+  if (!props.repoPath || emptyDirectories.value.length === 0) return;
+
+  const targets = [...emptyDirectories.value];
+  for (const directory of targets) {
+    try {
+      await invoke<string>("add_gitkeep", {
+        path: props.repoPath,
+        directoryPath: directory,
+        stage: true,
+      });
+    } catch (error) {
+      toast.error(`Could not add .gitkeep for ${directory}: ${String(error)}`);
+      return;
+    }
+  }
+
+  toast.success(`Added .gitkeep to ${targets.length} folder${targets.length === 1 ? "" : "s"}`);
+  emit("refreshState");
+  await loadEmptyDirectories();
+}
 
 function syncAmendDraftsFromCommit() {
   const commitMessage = props.commit?.message ?? "";
@@ -409,13 +525,31 @@ function handleGlobalPointerDown() {
 
 onMounted(() => {
   void loadAvailableEditors();
+  syncGitkeepNotifyPreference();
   globalThis.addEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.addEventListener("keydown", handleGlobalKeyDown);
+  globalThis.addEventListener("resize", updateCompactWorkingLabel);
+  updateCompactWorkingLabel();
 });
+
+watch(
+  () => [
+    props.repoPath,
+    props.isWorkingChanges,
+    props.stagedFiles.length,
+    props.unstagedFiles.length,
+    props.conflictFiles?.length || 0,
+  ],
+  () => {
+    void loadEmptyDirectories();
+  },
+  { immediate: true },
+);
 
 onUnmounted(() => {
   globalThis.removeEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.removeEventListener("keydown", handleGlobalKeyDown);
+  globalThis.removeEventListener("resize", updateCompactWorkingLabel);
 });
 </script>
 
@@ -454,7 +588,7 @@ onUnmounted(() => {
         <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent">
           <div class="flex items-center gap-2 mb-1">
             <div class="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse" />
-            <span class="text-[11px] font-semibold text-[var(--foreground)]">Working Changes</span>
+            <span class="text-[11px] font-semibold text-[var(--foreground)] whitespace-nowrap">{{ workingChangesLabel }}</span>
           </div>
           <div class="flex items-center gap-3 text-[10px] text-[var(--muted-foreground)]">
             <span v-if="hasConflicts && (conflictFiles?.length || 0) > 0" class="flex items-center gap-1 text-[#ef4444]">
@@ -469,6 +603,44 @@ onUnmounted(() => {
               <span class="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
               {{ stagedFiles.length }} staged
             </span>
+          </div>
+        </div>
+
+        <div
+          v-if="isWorkingChanges && notifyGitkeep && (emptyDirectoriesLoading || emptyDirectoriesError || emptyDirectories.length > 0)"
+          class="px-3 py-2 border-b border-[var(--border)] bg-[#eab308]/8"
+        >
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="flex items-center gap-1.5 text-[11px] font-semibold text-[#eab308]">
+              <AlertTriangle class="w-3.5 h-3.5" />
+              Empty Folder Guardian
+            </div>
+            <button
+              v-if="emptyDirectories.length > 1"
+              class="text-[10px] px-2 py-0.5 rounded border border-[#eab308]/40 text-[#eab308] hover:bg-[#eab308]/12 transition-colors"
+              @click="addGitkeepToAll"
+            >
+              Add .gitkeep to all
+            </button>
+          </div>
+
+          <div v-if="emptyDirectoriesLoading" class="text-[10px] text-[#facc15]">Scanning for empty folders...</div>
+          <div v-else-if="emptyDirectoriesError" class="text-[10px] text-[#f59e0b]">{{ emptyDirectoriesError }}</div>
+          <div v-else class="space-y-1 max-h-[130px] overflow-y-auto pr-1">
+            <div
+              v-for="directory in emptyDirectories"
+              :key="directory"
+              class="flex items-center gap-2 px-2 py-1 rounded border border-[#eab308]/20 bg-[#eab308]/6"
+            >
+              <FolderPlus class="w-3.5 h-3.5 text-[#facc15] flex-shrink-0" />
+              <span class="text-[10px] text-[var(--foreground)] truncate flex-1" :title="directory">{{ directory }}</span>
+              <button
+                class="text-[10px] px-2 py-0.5 rounded border border-[#eab308]/40 text-[#facc15] hover:bg-[#eab308]/14 transition-colors"
+                @click="addGitkeep(directory)"
+              >
+                Add .gitkeep
+              </button>
+            </div>
           </div>
         </div>
 
@@ -536,7 +708,12 @@ onUnmounted(() => {
             <div
               v-for="f in unstagedFiles.filter(x => !x.conflicted)"
               :key="'u-' + f.path"
-              class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
+              :class="[
+                'flex items-center gap-2 px-4 py-1.5 transition-all group cursor-pointer',
+                isVeryLargeFile(f)
+                  ? 'bg-[#eab308]/8 hover:bg-[#eab308]/12 border-l-2 border-[#eab308]/45'
+                  : 'hover:bg-[var(--primary)]/5',
+              ]"
               @click="openDiff(f.path, null, false)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >
@@ -544,6 +721,9 @@ onUnmounted(() => {
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
                 <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+                <div v-if="isVeryLargeFile(f)" class="text-[10px] text-[#eab308] truncate">
+                  Size of this file is very large ({{ formatFileSize(f.file_size_bytes || 0) }})
+                </div>
               </div>
               <button
                 @click.stop="confirmDiscard(f.path)"
@@ -586,7 +766,12 @@ onUnmounted(() => {
             <div
               v-for="f in stagedFiles.filter(x => !x.conflicted)"
               :key="'s-' + f.path"
-              class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all group cursor-pointer"
+              :class="[
+                'flex items-center gap-2 px-4 py-1.5 transition-all group cursor-pointer',
+                isVeryLargeFile(f)
+                  ? 'bg-[#eab308]/8 hover:bg-[#eab308]/12 border-l-2 border-[#eab308]/45'
+                  : 'hover:bg-[var(--primary)]/5',
+              ]"
               @click="openDiff(f.path, null, true)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >
@@ -594,6 +779,9 @@ onUnmounted(() => {
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
                 <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+                <div v-if="isVeryLargeFile(f)" class="text-[10px] text-[#eab308] truncate">
+                  Size of this file is very large ({{ formatFileSize(f.file_size_bytes || 0) }})
+                </div>
               </div>
               <button
                 @click.stop="openDiff(f.path, null, true)"
@@ -1001,7 +1189,7 @@ onUnmounted(() => {
             @click="openSelectedFileWithEditor(option.id)"
           >
             <div class="text-xs font-medium text-[var(--foreground)]">{{ option.label }}</div>
-            <div class="text-[10px] text-[var(--muted-foreground)]">{{ option.hint }}</div>
+            <div class="file-ctx-option-hint text-[10px] text-[var(--muted-foreground)]">{{ option.hint }}</div>
           </button>
         </div>
       </div>
@@ -1041,3 +1229,13 @@ onUnmounted(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.file-ctx-option-hint {
+  display: none;
+}
+
+:global(html.dummy-mode .file-ctx-option-hint) {
+  display: block;
+}
+</style>

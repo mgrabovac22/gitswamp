@@ -2,7 +2,6 @@
 import {
   Upload,
   RefreshCw,
-  GitBranch,
   Archive,
   Terminal,
   Settings,
@@ -11,6 +10,7 @@ import {
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
+import BranchQuickActions from "@/view/shell/BranchQuickActions.vue";
 import headerIcon from "@/assets/logo_git_croc.gif";
 import headerTextLogoDark from "@/assets/logo_dark.png";
 import headerTextLogoLight from "@/assets/logo_light.png";
@@ -18,6 +18,7 @@ import headerTextLogoLight from "@/assets/logo_light.png";
 defineProps<{
   loading: boolean;
   activeAction?: "pull" | "push" | "fetch" | null;
+  ghostActive?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -25,6 +26,9 @@ const emit = defineEmits<{
   push: [];
   fetch: [];
   branch: [];
+  ghostBranch: [];
+  materializeGhostBranch: [];
+  discardGhostBranch: [];
   stash: [];
   terminal: [];
   settings: [];
@@ -50,7 +54,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex items-center justify-between px-2 shadow-lg flex-shrink-0">
+  <div class="relative z-[40] h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex items-center justify-between px-2 shadow-lg flex-shrink-0">
     <div class="flex items-center gap-2">
       <div class="flex items-center gap-1.5">
         <div class="w-12 h-8 flex items-center justify-center">
@@ -104,15 +108,14 @@ onUnmounted(() => {
     </div>
 
     <div class="flex items-center gap-1">
-      <AppButton
-        variant="ghost"
-        size="sm"
-        class="h-8 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] gap-1.5 transition-all text-xs"
-        @click="emit('branch')"
-      >
-        <GitBranch class="w-3.5 h-3.5" />
-        Branch
-      </AppButton>
+      <BranchQuickActions
+        :loading="loading"
+        :ghost-active="!!ghostActive"
+        @branch="emit('branch')"
+        @ghost="emit('ghostBranch')"
+        @materialize="emit('materializeGhostBranch')"
+        @discard="emit('discardGhostBranch')"
+      />
       <AppButton
         variant="ghost"
         size="sm"

@@ -32,6 +32,11 @@ pub fn run_shell_command(path: String, command: String) -> Result<String, String
 }
 
 #[tauri::command]
+pub fn remove_cached_all(path: String) -> Result<String, String> {
+    GitService::remove_cached_all(&path)
+}
+
+#[tauri::command]
 pub fn get_git_path() -> String {
     GitService::get_git_path()
 }

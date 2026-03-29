@@ -2,10 +2,15 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import FileDiffViewer from "@/shared/ui/FileDiffViewer.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
+import CommitProductivityPanel from "@/view/commit/CommitProductivityPanel.vue";
+import CommitTimeMachinePanel from "@/view/commit/CommitTimeMachinePanel.vue";
+import CommitConflictHeatmapPanel from "@/view/commit/CommitConflictHeatmapPanel.vue";
 import CommitDetails from "@/view/commit/CommitDetails.vue";
 import TerminalPanel from "@/view/shell/TerminalPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
 import type { CommitInfo, StashInfo } from "@/types";
+
+type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
 
 const props = defineProps<{
   git: any;
@@ -17,6 +22,8 @@ const props = defineProps<{
   diffCommitSha: string | null;
   diffStaged: boolean;
   detailsPanelCollapsed: boolean;
+  historyViewMode: HistoryViewMode;
+  timeMachineFocusSha: string | null;
   viewingWorkingChanges: boolean;
   viewingStash: boolean;
 }>();
@@ -25,6 +32,7 @@ const emit = defineEmits<{
   "update:showTerminal": [value: boolean];
   "update:terminalAllowAll": [value: boolean];
   "update:detailsPanelCollapsed": [value: boolean];
+  setHistoryView: [mode: HistoryViewMode];
   closeDiffViewer: [];
   openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean }];
   openConflictResolver: [filePath: string];
@@ -42,6 +50,7 @@ const emit = defineEmits<{
   editCommitMessage: [sha: string];
   renameBranch: [name: string];
   deleteBranchAndRemote: [name: string];
+  timeMachineBlame: [sha: string];
   createGist: [];
 }>();
 
@@ -52,7 +61,8 @@ const hasWorkingChanges = computed(
 const hasConflicts = computed(() => props.git.hasConflicts.value);
 
 const showDetailsPanel = computed(
-  () => props.viewingWorkingChanges || props.viewingStash || props.git.selectedCommit.value !== null,
+  () => props.historyViewMode === "graph"
+    && (props.viewingWorkingChanges || props.viewingStash || props.git.selectedCommit.value !== null),
 );
 
 const canAmendSelectedCommit = computed(() => {
@@ -200,6 +210,14 @@ async function handleAmendCommitMessage(newMessage: string) {
     emit("selectCommit", nextSelected);
   }
 }
+
+function handleRefreshState() {
+  Promise.all([
+    props.git.refreshStatus(),
+    props.git.refreshCommits(),
+    props.git.refreshBranches(),
+  ]).catch(() => {});
+}
 </script>
 
 <template>
@@ -243,8 +261,9 @@ async function handleAmendCommitMessage(newMessage: string) {
         />
 
         <CommitGraph
-          v-else
+          v-else-if="props.historyViewMode === 'graph'"
           :class="showDetailsPanel ? '' : 'flex-1'"
+          :repo-path="props.git.repoPath.value"
           :commits="props.git.displayedCommits.value"
           :selected="props.git.selectedCommit.value"
           :search-query="props.git.searchQuery.value"
@@ -291,7 +310,30 @@ async function handleAmendCommitMessage(newMessage: string) {
           @stash-drop="props.git.stashDrop($event)"
           @select-stash="emit('selectStash', $event)"
           @request-merge="emit('requestMerge', $event)"
+          @time-machine-blame="emit('timeMachineBlame', $event)"
           @jump-to-search-result="handleJumpToSearchResult($event)"
+        />
+
+        <CommitProductivityPanel
+          v-else-if="props.historyViewMode === 'productivity'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          @close="emit('setHistoryView', 'graph')"
+        />
+
+        <CommitTimeMachinePanel
+          v-else-if="props.historyViewMode === 'time-machine'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :focus-sha="props.timeMachineFocusSha"
+          @close="emit('setHistoryView', 'graph')"
+        />
+
+        <CommitConflictHeatmapPanel
+          v-else
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          @close="emit('setHistoryView', 'graph')"
         />
 
         <div
@@ -354,6 +396,7 @@ async function handleAmendCommitMessage(newMessage: string) {
             @stash-drop="props.git.stashDrop($event)"
             @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
+            @refresh-state="handleRefreshState"
           />
         </div>
       </div>

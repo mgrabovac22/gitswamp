@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   X,
@@ -69,7 +70,7 @@ const tokenInstructions: Record<string, string> = {
 };
 
 const activeSource = ref<string | null>(null);
-const clonePath = ref("C:\\Repozitoriji");
+const clonePath = ref(String.raw`C:\Repozitoriji`);
 const cloneUrl = ref("");
 const shallowClone = ref(false);
 const cloning = ref(false);
@@ -142,7 +143,6 @@ async function saveToken() {
   
   if (activeSource.value === "gitlab-self" && gitlabDomain.value.trim()) {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke<string>("verify_gitlab_token", {
         domain: gitlabDomain.value.trim(),
         token: tokenInput.value.trim(),
@@ -192,7 +192,7 @@ async function onClone() {
 }
 
 function copyGitlabPublicKey() {
-  window.navigator.clipboard.writeText(gitlabPublicKey.value);
+  globalThis.navigator.clipboard.writeText(gitlabPublicKey.value);
 }
 
 function selectRepo(repo: GithubRepo) {
@@ -214,7 +214,6 @@ async function doGithubSearch() {
   githubLoading.value = true;
   githubError.value = null;
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
     githubRepos.value = await invoke<GithubRepo[]>("search_github_repos", {
       token: props.token,
       query: githubSearch.value,
@@ -243,7 +242,6 @@ async function doGitlabSearch() {
   gitlabLoading.value = true;
   gitlabError.value = null;
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
     gitlabRepos.value = await invoke<GitlabRepo[]>("search_gitlab_repos", {
       domain: gitlabDomain.value,
       token: token,
@@ -267,10 +265,9 @@ async function generateSshKey() {
   
   gitlabError.value = null;
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
     const [_, pubKey] = await invoke<[string, string]>("generate_ssh_key", {
       email: "gitswamp@local",
-      keyName: `gitswamp_${gitlabDomain.value.replace(/\./g, "_")}`,
+      keyName: `gitswamp_${gitlabDomain.value.split(".").join("_")}`,
     });
     gitlabPublicKey.value = pubKey;
     
@@ -321,8 +318,8 @@ const isUrlMode = computed(() => activeSource.value === "url");
 const isGithubMode = computed(() => activeSource.value === "github");
 const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
 
-const unimplementedProviders = ["github-enterprise", "gitlab", "bitbucket", "bitbucket-dc", "azure"];
-const isUnimplemented = computed(() => activeSource.value && unimplementedProviders.includes(activeSource.value));
+const unimplementedProviders = new Set(["github-enterprise", "gitlab", "bitbucket", "bitbucket-dc", "azure"]);
+const isUnimplemented = computed(() => !!activeSource.value && unimplementedProviders.has(activeSource.value));
 </script>
 
 <template>

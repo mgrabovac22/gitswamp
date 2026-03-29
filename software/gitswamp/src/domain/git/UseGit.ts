@@ -1,6 +1,7 @@
 import { useToast } from "@/shared/notifications/useToast";
 
 import { createBranchActions } from "./composables/gitBranchActions";
+import { createGhostActions } from "./composables/gitGhostActions";
 import { createHistoryActions } from "./composables/gitHistoryActions";
 import { createRefreshActions } from "./composables/gitRefreshActions";
 import { createRemoteActions } from "./composables/gitRemoteActions";
@@ -54,6 +55,16 @@ const branches = createBranchActions(
   toast,
 );
 
+const ghost = createGhostActions(
+  state,
+  {
+    refreshCommits: refresh.refreshCommits,
+    refreshBranches: refresh.refreshBranches,
+    refreshStatus: refresh.refreshStatus,
+  },
+  toast,
+);
+
 const remote = createRemoteActions(
   state,
   {
@@ -87,6 +98,105 @@ const history = createHistoryActions(
 );
 
 const terminal = createTerminalActions(state);
+
+async function openRepositoryWithGhost(path: string) {
+  await repo.openRepository(path);
+  await ghost.refreshGhostBranchState();
+}
+
+async function refreshAllWithGhost() {
+  await refresh.refreshAll();
+  await ghost.refreshGhostBranchState();
+}
+
+function normalizeBranchName(name: string): string {
+  return name
+    .replace(/^origin\//i, "")
+    .replace(/^remotes\/[a-z0-9_-]+\//i, "")
+    .trim();
+}
+
+function shouldOfferGhostExitForTarget(targetBranchName?: string | null): boolean {
+  const ghostState = state.ghostBranchState.value;
+  if (!ghostState.active) {
+    return false;
+  }
+
+  const ghostBranch = normalizeBranchName(ghostState.ghost_branch || "");
+  if (!ghostBranch) {
+    return false;
+  }
+
+  if (!targetBranchName) {
+    return true;
+  }
+
+  return normalizeBranchName(targetBranchName) !== ghostBranch;
+}
+
+async function confirmAndExitGhostMode(actionLabel: string): Promise<boolean> {
+  const ghostBranch = normalizeBranchName(state.ghostBranchState.value.ghost_branch || "");
+  if (!state.ghostBranchState.value.active || !ghostBranch) {
+    return true;
+  }
+
+  const message = [
+    `Ghost mode is currently active on "${ghostBranch}".`,
+    `If you continue, Ghost mode will be discarded before ${actionLabel}.`,
+    "Do you want to continue?",
+  ].join("\n");
+
+  const confirmed = typeof globalThis.confirm === "function" ? globalThis.confirm(message) : true;
+  if (!confirmed) {
+    return false;
+  }
+
+  await ghost.discardGhostBranch();
+  if (state.ghostBranchState.value.active) {
+    toast.error("Could not disable Ghost mode. Resolve this first and retry.");
+    return false;
+  }
+
+  return true;
+}
+
+async function checkoutBranchWithGhostGuard(branchName: string) {
+  if (shouldOfferGhostExitForTarget(branchName)) {
+    const proceed = await confirmAndExitGhostMode(`checking out "${branchName}"`);
+    if (!proceed) {
+      return;
+    }
+  }
+
+  await branches.checkoutBranch(branchName);
+}
+
+async function checkoutCommitWithGhostGuard(sha: string) {
+  if (shouldOfferGhostExitForTarget(null)) {
+    const proceed = await confirmAndExitGhostMode(`checking out commit ${sha.substring(0, 7)}`);
+    if (!proceed) {
+      return;
+    }
+  }
+
+  await history.checkoutCommit(sha);
+}
+
+async function deleteBranchWithGhostGuard(name: string) {
+  const ghostBranch = normalizeBranchName(state.ghostBranchState.value.ghost_branch || "");
+  const targetBranch = normalizeBranchName(name);
+
+  if (state.ghostBranchState.value.active && ghostBranch && targetBranch === ghostBranch) {
+    const proceed = await confirmAndExitGhostMode(`deleting branch "${name}"`);
+    if (!proceed) {
+      return;
+    }
+
+    return;
+  }
+
+  await branches.deleteBranch(name);
+}
 
 void tokens.loadSavedToken();
 void tokens.loadProviderTokens();
@@ -124,14 +234,15 @@ export function useGit() {
     hasMoreCommits: state.hasMoreCommits,
     hasMoreSearchResults: state.hasMoreSearchResults,
     gitPath: state.gitPath,
+    ghostBranchState: state.ghostBranchState,
 
-    openRepository: repo.openRepository,
+    openRepository: openRepositoryWithGhost,
     refreshCommits: refresh.refreshCommits,
     refreshBranches: refresh.refreshBranches,
     refreshStatus: refresh.refreshStatus,
     refreshStashes: refresh.refreshStashes,
     refreshTags: refresh.refreshTags,
-    refreshAll: refresh.refreshAll,
+    refreshAll: refreshAllWithGhost,
     loadMoreCommits: refresh.loadMoreCommits,
     ensureCommitLoaded: refresh.ensureCommitLoaded,
     getCommitFiles: refresh.getCommitFiles,
@@ -146,9 +257,9 @@ export function useGit() {
     resolveAllConflicts: status.resolveAllConflicts,
     promptResolveConflict: status.promptResolveConflict,
 
-    checkoutBranch: branches.checkoutBranch,
+    checkoutBranch: checkoutBranchWithGhostGuard,
     createBranch: branches.createBranch,
-    deleteBranch: branches.deleteBranch,
+    deleteBranch: deleteBranchWithGhostGuard,
     renameBranch: branches.renameBranch,
     mergeBranchIntoCurrent: branches.mergeBranchIntoCurrent,
 
@@ -171,7 +282,7 @@ export function useGit() {
     cherryPick: history.cherryPick,
     revertCommit: history.revertCommit,
     resetToCommit: history.resetToCommit,
-    checkoutCommit: history.checkoutCommit,
+    checkoutCommit: checkoutCommitWithGhostGuard,
     createTagAt: history.createTagAt,
     deleteTag: history.deleteTag,
     editCommitMessage: history.editCommitMessage,
@@ -183,6 +294,10 @@ export function useGit() {
     clearSearch: refresh.clearSearch,
     runTerminalCommand: terminal.runTerminalCommand,
     searchGithubRepos: repo.searchGithubRepos,
+    refreshGhostBranchState: ghost.refreshGhostBranchState,
+    startGhostBranch: ghost.startGhostBranch,
+    materializeGhostBranch: ghost.materializeGhostBranch,
+    discardGhostBranch: ghost.discardGhostBranch,
 
     saveToken: tokens.saveToken,
     deleteToken: tokens.deleteToken,

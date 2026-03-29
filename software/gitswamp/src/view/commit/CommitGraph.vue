@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, watch } from "vue";
+import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -22,6 +22,7 @@ const { rowHeight } = useCompactRowHeight();
 const { svgBgOuter, svgBgInner } = useThemeMode();
 
 const props = defineProps<{
+  repoPath: string;
   commits: CommitInfo[];
   selected: CommitInfo | null;
   searchQuery?: string;
@@ -71,6 +72,7 @@ const emit = defineEmits<{
   stashDrop: [index: number];
   selectStash: [stash: StashInfo];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
+  timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
 }>();
 
@@ -103,12 +105,14 @@ const isolatedBranchName = ref("");
 const pendingSearchSha = ref<string | null>(null);
 const searchNavIndex = ref(0);
 const searchInputEl = ref<HTMLInputElement | null>(null);
+const compactWorkingLabel = ref(globalThis.innerWidth < 1120);
 
 type GraphOptionalColumn = "author" | "authorEmail" | "sha" | "timeAgo" | "date" | "parents" | "refs";
 
 const GRAPH_COLUMN_STORAGE_KEY = "gitswamp-graph-columns";
 const GRAPH_ISOLATE_STORAGE_KEY = "gitswamp-graph-isolate-current";
 const GRAPH_ISOLATE_BRANCH_STORAGE_KEY = "gitswamp-graph-isolate-branch";
+const GRAPH_SCROLL_POSITION_PREFIX = "gitswamp-graph-scroll::";
 const TIME_AGO_COL = 88;
 const DATE_COL = 136;
 const EMAIL_COL = 180;
@@ -151,6 +155,74 @@ const searchResultList = computed(() => props.searchResults ?? []);
 const searchResultShas = computed(() => searchResultList.value.map((commit) => commit.sha));
 const searchResultCount = computed(() => searchResultShas.value.length);
 const searchMatchSet = computed(() => new Set(searchResultShas.value));
+const workingChangesBadgeLabel = computed(() => (compactWorkingLabel.value ? "● Working..." : "● Working Changes"));
+
+function updateCompactWorkingLabel() {
+  compactWorkingLabel.value = globalThis.innerWidth < 1120;
+}
+
+let scrollPersistTimer: ReturnType<typeof setTimeout> | null = null;
+const pendingRepoScrollTop = ref<number | null>(null);
+
+function graphScrollStorageKey(): string | null {
+  const path = (props.repoPath || "").trim();
+  if (!path) return null;
+
+  const normalized = path.replace(/\\/g, "/").toLowerCase();
+  return GRAPH_SCROLL_POSITION_PREFIX + encodeURIComponent(normalized);
+}
+
+function readSavedGraphScrollTop(): number {
+  const key = graphScrollStorageKey();
+  if (!key) return 0;
+
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return 0;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return 0;
+    return Math.round(parsed);
+  } catch {
+    return 0;
+  }
+}
+
+function persistGraphScrollTop(value: number) {
+  const key = graphScrollStorageKey();
+  if (!key) return;
+
+  try {
+    localStorage.setItem(key, String(Math.max(0, Math.round(value))));
+  } catch {}
+}
+
+function schedulePersistGraphScrollTop(value: number) {
+  if (scrollPersistTimer) {
+    clearTimeout(scrollPersistTimer);
+  }
+
+  scrollPersistTimer = setTimeout(() => {
+    persistGraphScrollTop(value);
+    scrollPersistTimer = null;
+  }, 120);
+}
+
+function restoreGraphScrollTop(value: number) {
+  if (!scrollContainer.value) {
+    pendingRepoScrollTop.value = value;
+    return;
+  }
+
+  const maxScrollTop = Math.max(0, scrollContainer.value.scrollHeight - scrollContainer.value.clientHeight);
+  const clamped = Math.min(Math.max(0, value), maxScrollTop);
+  scrollContainer.value.scrollTop = clamped;
+  scrollTop.value = clamped;
+  pendingRepoScrollTop.value = null;
+}
+
+function queueRepoScrollRestore() {
+  pendingRepoScrollTop.value = readSavedGraphScrollTop();
+}
 
 function normalizeBranchName(name: string): string {
   return name.replace(/^origin\//i, "").replace(/^remotes\/[a-z0-9_-]+\//i, "").trim();
@@ -434,6 +506,7 @@ function onScroll(e: Event) {
   const el = e.target as HTMLElement;
   scrollTop.value = el.scrollTop;
   viewportHeight.value = el.clientHeight;
+  schedulePersistGraphScrollTop(el.scrollTop);
   if (props.hasMore && el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
     emit("loadMore");
   }
@@ -746,6 +819,7 @@ function applyShaContextAction(action: string, sha: string): boolean {
     case "reset-hard": emit("resetHard", sha); return true;
     case "tag": emit("createTagAt", sha); return true;
     case "annotated-tag": emit("createAnnotatedTagAt", sha); return true;
+    case "time-machine-blame": emit("timeMachineBlame", sha); return true;
     case "pull": emit("pull"); return true;
     case "push": emit("push"); return true;
     case "edit-message": emit("editCommitMessage", sha); return true;
@@ -857,11 +931,24 @@ watch(() => props.searchResults, (results) => {
 });
 
 watch(() => activeCommits.value.length, () => {
+  if (pendingRepoScrollTop.value !== null) {
+    void nextTick(() => {
+      restoreGraphScrollTop(pendingRepoScrollTop.value ?? 0);
+    });
+  }
+
   if (!pendingSearchSha.value) return;
   if (selectSearchCommit(pendingSearchSha.value)) {
     pendingSearchSha.value = null;
   }
 });
+
+watch(() => props.repoPath, () => {
+  queueRepoScrollRestore();
+  void nextTick(() => {
+    restoreGraphScrollTop(pendingRepoScrollTop.value ?? 0);
+  });
+}, { immediate: true });
 
 watch(graphColumnVisibility, (value) => {
   try {
@@ -907,13 +994,22 @@ onMounted(() => {
 
   document.addEventListener("click", onDocClick);
   globalThis.addEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
+  globalThis.addEventListener("resize", updateCompactWorkingLabel);
+  updateCompactWorkingLabel();
   if (scrollContainer.value) {
     viewportHeight.value = scrollContainer.value.clientHeight;
+    restoreGraphScrollTop(pendingRepoScrollTop.value ?? 0);
   }
 });
 onUnmounted(() => {
+  if (scrollPersistTimer) {
+    clearTimeout(scrollPersistTimer);
+    scrollPersistTimer = null;
+  }
+  persistGraphScrollTop(scrollTop.value);
   document.removeEventListener("click", onDocClick);
   globalThis.removeEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
+  globalThis.removeEventListener("resize", updateCompactWorkingLabel);
 });
 </script>
 
@@ -1084,8 +1180,8 @@ onUnmounted(() => {
           <div class="flex-shrink-0" :style="{ width: BRANCH_COL + 'px' }" />
           <div class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
           <div class="flex-1 flex items-center px-3 min-w-0">
-            <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[var(--primary)]/20 text-[var(--primary)] border border-[var(--primary)]/30">
-              ● Working Changes
+            <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[var(--primary)]/20 text-[var(--primary)] border border-[var(--primary)]/30 whitespace-nowrap">
+              {{ workingChangesBadgeLabel }}
             </span>
           </div>
           <div v-if="showAuthorColumn" class="flex-shrink-0 text-[10px] text-[var(--muted-foreground)] px-1" :style="{ width: AUTHOR_COL + 'px' }">—</div>
@@ -1520,6 +1616,7 @@ onUnmounted(() => {
         <div class="space-y-1">
           <button class="ctx-item" @click="ctxAction('checkout')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout this commit</span><span class="ctx-sub">Detached HEAD at {{ ctxCommit?.short_sha }}</span></button>
           <button class="ctx-item" @click="ctxAction('branch')"><span class="ctx-icon">🌿</span><span class="ctx-main">Create branch here</span><span class="ctx-sub">Create new branch from this commit</span></button>
+          <button class="ctx-item" @click="ctxAction('time-machine-blame')"><span class="ctx-icon">🕰</span><span class="ctx-main">Time Machine Blame</span><span class="ctx-sub">Open Time Machine focused on this commit frame</span></button>
           <button class="ctx-item" @click="ctxAction('cherry-pick')"><span class="ctx-icon">🍒</span><span class="ctx-main">Cherry-pick commit</span><span class="ctx-sub">Apply this commit on top of current branch</span></button>
           <button class="ctx-item" @click="ctxAction('revert')"><span class="ctx-icon">↩</span><span class="ctx-main">Revert commit</span><span class="ctx-sub">Create new commit that undoes this one</span></button>
         </div>
@@ -1692,9 +1789,7 @@ onUnmounted(() => {
   transition: background-color 0.15s ease;
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-areas:
-    "main"
-    "sub";
+  grid-template-areas: "main";
   column-gap: 0;
   row-gap: 0.05rem;
 }
@@ -1711,15 +1806,14 @@ onUnmounted(() => {
 }
 .ctx-sub {
   grid-area: sub;
+  display: none;
   font-size: 8px;
   line-height: 1.2;
   color: var(--muted-foreground);
 }
 .ctx-item-reset {
   grid-template-columns: 1fr auto;
-  grid-template-areas:
-    "main arrow"
-    "sub sub";
+  grid-template-areas: "main arrow";
 }
 .ctx-arrow {
   grid-area: arrow;
@@ -1736,6 +1830,22 @@ onUnmounted(() => {
 }
 .ctx-item-sub:hover {
   background: color-mix(in srgb, var(--primary) 15%, transparent);
+}
+
+:global(html.dummy-mode .ctx-sub) {
+  display: block;
+}
+
+:global(html.dummy-mode .ctx-item) {
+  grid-template-areas:
+    "main"
+    "sub";
+}
+
+:global(html.dummy-mode .ctx-item-reset) {
+  grid-template-areas:
+    "main arrow"
+    "sub sub";
 }
 </style>
 

@@ -87,3 +87,21 @@ pub async fn resolve_all_conflicts(path: String, strategy: String) -> Result<(),
         .await
         .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub async fn get_empty_directories(path: String, max_count: Option<usize>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::get_empty_directories(&path, max_count.unwrap_or(200))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn add_gitkeep(path: String, directory_path: String, stage: Option<bool>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::add_gitkeep(&path, &directory_path, stage.unwrap_or(true))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

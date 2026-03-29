@@ -5,10 +5,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { RepoInfo } from "@/types";
 
 type MenuSection = "file" | "edit" | "view" | "help";
+type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
 
 interface MenuAction {
   id: string;
   label: string;
+  description?: string;
   shortcut?: string;
   disabled?: boolean;
   run: () => void;
@@ -30,12 +32,16 @@ const emit = defineEmits<{
   openInVsCode: [];
   openInExplorer: [];
   createGist: [];
+  setHistoryView: [mode: HistoryViewMode];
 }>();
 
 const menuRoot = ref<HTMLElement | null>(null);
+const menuButton = ref<HTMLElement | null>(null);
+const menuPanel = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 const showHelpPanel = ref(false);
 const activeSection = ref<MenuSection>("file");
+const menuPanelStyle = ref<Record<string, string>>({});
 
 const sectionLabels: { id: MenuSection; label: string }[] = [
   { id: "file", label: "File" },
@@ -53,11 +59,21 @@ function toggleMenu() {
   menuOpen.value = !menuOpen.value;
   if (menuOpen.value) {
     activeSection.value = "file";
+    updateMenuPosition();
   }
 }
 
 function closeMenu() {
   menuOpen.value = false;
+}
+
+function updateMenuPosition() {
+  if (!menuButton.value) return;
+  const rect = menuButton.value.getBoundingClientRect();
+  menuPanelStyle.value = {
+    left: `${Math.max(8, rect.left)}px`,
+    top: `${Math.max(8, rect.bottom + 6)}px`,
+  };
 }
 
 function openHelpPanel() {
@@ -83,18 +99,21 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "new-tab",
       label: "New Tab",
+      description: "Open another workspace tab in GitSwamp.",
       shortcut: "Ctrl+T",
       run: () => emit("newTab"),
     },
     {
       id: "open-repo",
       label: "Open Repository",
+      description: "Select a local repository folder and load it.",
       shortcut: "Ctrl+O",
       run: () => emit("openRepository"),
     },
     {
       id: "close-tab",
       label: "Close Current Tab",
+      description: "Close the active tab and keep other repositories open.",
       shortcut: "Ctrl+W",
       disabled: !canCloseActiveTab.value,
       run: () => emit("closeTab", props.activeTabId),
@@ -102,6 +121,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "create-gist",
       label: "Create a Gist",
+      description: "Create and upload a shareable gist from current context.",
       shortcut: "Ctrl+Shift+G",
       disabled: !hasActiveRepo.value,
       run: () => emit("createGist"),
@@ -111,6 +131,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "copy-path",
       label: "Copy Repository Path",
+      description: "Copy the full active repository path to clipboard.",
       shortcut: "Ctrl+Shift+C",
       disabled: !hasActiveRepo.value,
       run: copyActiveRepoPath,
@@ -118,6 +139,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "refresh-repo",
       label: "Refresh Repository",
+      description: "Reload status, branches and commits from git.",
       shortcut: "Ctrl+Shift+R",
       disabled: !hasActiveRepo.value,
       run: () => emit("refreshRepository"),
@@ -125,6 +147,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "open-vscode",
       label: "Open in VS Code",
+      description: "Open the current repository in Visual Studio Code.",
       shortcut: "Ctrl+Shift+O",
       disabled: !hasActiveRepo.value,
       run: () => emit("openInVsCode"),
@@ -134,12 +157,46 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "toggle-terminal",
       label: "Toggle Terminal",
+      description: "Show or hide the integrated terminal panel.",
       shortcut: "Ctrl+`",
       run: () => emit("toggleTerminal"),
     },
     {
+      id: "view-graph",
+      label: "Visualise Commit History",
+      description: "Open the commit graph timeline view.",
+      shortcut: "Alt+1",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "graph"),
+    },
+    {
+      id: "view-productivity",
+      label: "Productivity Arena",
+      description: "Show commit activity and productivity analytics.",
+      shortcut: "Alt+2",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "productivity"),
+    },
+    {
+      id: "view-time-machine",
+      label: "Time Machine",
+      description: "Navigate history frames and inspect repository state.",
+      shortcut: "Alt+3",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "time-machine"),
+    },
+    {
+      id: "view-conflict-heatmap",
+      label: "Usual Conflict Suspects",
+      description: "Highlight merge hotspots and risky conflict areas.",
+      shortcut: "Alt+4",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "conflict-heatmap"),
+    },
+    {
       id: "open-explorer",
       label: "Open in Folder Explorer",
+      description: "Open the current repository path in system explorer.",
       shortcut: "Alt+O",
       disabled: !hasActiveRepo.value,
       run: () => emit("openInExplorer"),
@@ -147,6 +204,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "open-settings",
       label: "Open Settings",
+      description: "Configure appearance, behavior and authentication.",
       shortcut: "Ctrl+,",
       run: () => emit("openSettings"),
     },
@@ -155,17 +213,20 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "help-overview",
       label: "Help and Shortcuts",
+      description: "Open help panel with shortcuts and key features.",
       shortcut: "F1",
       run: openHelpPanel,
     },
     {
       id: "help-guide",
       label: "Open Online Guide",
+      description: "Open the project wiki in your browser.",
       run: openProjectGuide,
     },
     {
       id: "help-issues",
       label: "Report Issue",
+      description: "Open issue tracker to report bugs or requests.",
       run: openIssueTracker,
     },
   ],
@@ -182,9 +243,16 @@ function executeAction(action: MenuAction) {
 function onDocumentPointerDown(event: MouseEvent) {
   const target = event.target as Node | null;
   if (!menuRoot.value || !target) return;
-  if (!menuRoot.value.contains(target)) {
+  const clickedMenuRoot = menuRoot.value.contains(target);
+  const clickedMenuPanel = !!menuPanel.value?.contains(target);
+  if (!clickedMenuRoot && !clickedMenuPanel) {
     closeMenu();
   }
+}
+
+function onWindowReposition() {
+  if (!menuOpen.value) return;
+  updateMenuPosition();
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -210,66 +278,29 @@ function onGlobalKeyDown(event: KeyboardEvent) {
 onMounted(() => {
   document.addEventListener("mousedown", onDocumentPointerDown);
   document.addEventListener("keydown", onGlobalKeyDown);
+  window.addEventListener("resize", onWindowReposition);
+  window.addEventListener("scroll", onWindowReposition, true);
 });
 
 onUnmounted(() => {
   document.removeEventListener("mousedown", onDocumentPointerDown);
   document.removeEventListener("keydown", onGlobalKeyDown);
+  window.removeEventListener("resize", onWindowReposition);
+  window.removeEventListener("scroll", onWindowReposition, true);
 });
 </script>
 
 <template>
-  <div class="tabs-strip h-10 bg-[var(--background)] flex items-end px-1 border-b border-[var(--border)] gap-px flex-shrink-0 [app-region:no-drag]">
+  <div class="tabs-strip relative z-[12] h-10 bg-[var(--background)] flex items-end px-1 border-b border-[var(--border)] gap-px flex-shrink-0 [app-region:no-drag]">
     <div ref="menuRoot" class="relative flex-shrink-0">
       <button
+        ref="menuButton"
         class="h-9 w-9 flex items-center justify-center rounded-t-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-colors [app-region:no-drag]"
         title="Menu"
         @click.stop="toggleMenu"
       >
         <Menu class="w-3.5 h-3.5" />
       </button>
-
-      <div
-        v-if="menuOpen"
-        class="absolute left-0 top-full mt-1 z-[220] w-[450px] bg-[var(--popover)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden [app-region:no-drag]"
-        @click.stop
-      >
-        <div class="flex min-h-[240px]">
-          <div class="w-[110px] border-r border-[var(--border)] bg-[var(--secondary)]/45 p-1.5">
-            <button
-              v-for="section in sectionLabels"
-              :key="section.id"
-              class="w-full text-left px-2 py-1.5 rounded text-[11px] transition-colors"
-              :class="activeSection === section.id
-                ? 'bg-[var(--primary)]/15 text-[var(--foreground)]'
-                : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]'"
-              @mouseenter="activeSection = section.id"
-              @focus="activeSection = section.id"
-              @click="activeSection = section.id"
-            >
-              {{ section.label }}
-            </button>
-          </div>
-
-          <div class="flex-1 p-2">
-            <button
-              v-for="action in menuActions[activeSection]"
-              :key="action.id"
-              class="w-full text-left px-2.5 py-2 rounded transition-colors mb-1 last:mb-0"
-              :class="action.disabled
-                ? 'opacity-45 cursor-not-allowed text-[var(--muted-foreground)]'
-                : 'hover:bg-[var(--primary)]/12 text-[var(--foreground)]'"
-              :disabled="action.disabled"
-              @click="executeAction(action)"
-            >
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-[11px] font-medium">{{ action.label }}</span>
-                <span v-if="action.shortcut" class="text-[9px] text-[var(--muted-foreground)]">{{ action.shortcut }}</span>
-              </div>
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
 
     <div class="tabs-scroll flex items-end gap-px overflow-x-auto overflow-y-hidden flex-1 min-w-0 [app-region:no-drag]">
@@ -308,8 +339,57 @@ onUnmounted(() => {
 
   <Teleport to="body">
     <div
+      v-if="menuOpen"
+      ref="menuPanel"
+      class="fixed z-[7200] w-[450px] bg-[var(--popover)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden [app-region:no-drag]"
+      :style="menuPanelStyle"
+      @click.stop
+    >
+      <div class="flex min-h-[240px]">
+        <div class="w-[110px] border-r border-[var(--border)] bg-[var(--secondary)]/45 p-1.5">
+          <button
+            v-for="section in sectionLabels"
+            :key="section.id"
+            class="w-full text-left px-2 py-1.5 rounded text-[11px] transition-colors"
+            :class="activeSection === section.id
+              ? 'bg-[var(--primary)]/15 text-[var(--foreground)]'
+              : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]'"
+            @mouseenter="activeSection = section.id"
+            @focus="activeSection = section.id"
+            @click="activeSection = section.id"
+          >
+            {{ section.label }}
+          </button>
+        </div>
+
+        <div class="flex-1 p-2">
+          <button
+            v-for="action in menuActions[activeSection]"
+            :key="action.id"
+            class="menu-action-btn w-full text-left px-2.5 py-2 rounded transition-colors mb-1 last:mb-0"
+            :class="action.disabled
+              ? 'opacity-45 cursor-not-allowed text-[var(--muted-foreground)]'
+              : 'hover:bg-[var(--primary)]/12 text-[var(--foreground)]'"
+            :disabled="action.disabled"
+            @click="executeAction(action)"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[11px] font-medium">{{ action.label }}</span>
+              <span v-if="action.shortcut" class="text-[9px] text-[var(--muted-foreground)]">{{ action.shortcut }}</span>
+            </div>
+            <div v-if="action.description" class="menu-action-desc text-[10px] text-[var(--muted-foreground)] mt-0.5 pr-8">
+              {{ action.description }}
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
       v-if="showHelpPanel"
-      class="fixed inset-0 z-[260] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      class="fixed inset-0 z-[7100] flex items-center justify-center bg-black/55 backdrop-blur-sm"
       @click.self="showHelpPanel = false"
     >
       <div class="w-[700px] max-w-[95vw] max-h-[88vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl">
@@ -347,6 +427,7 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Refresh repository data</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in VS Code</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+O</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in folder explorer</span><span class="text-[var(--muted-foreground)] font-mono">Alt+O</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+4</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open settings</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
@@ -379,5 +460,14 @@ onUnmounted(() => {
 
 .tabs-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(139, 92, 246, 0.45);
+}
+
+.menu-action-desc {
+  display: none;
+  line-height: 1.25;
+}
+
+:global(html.dummy-mode .menu-action-desc) {
+  display: block;
 }
 </style>

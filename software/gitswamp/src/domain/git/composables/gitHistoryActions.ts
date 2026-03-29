@@ -18,7 +18,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       toast.error("Cannot cherry-pick while conflicts exist. Resolve conflicts first.");
       return;
     }
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading("Loading: cherry-pick in progress...");
       state.loading.value = true;
       const result = await callTauri<string>("cherry_pick", { path: state.repoPath.value, sha });
       state.terminalOutput.value.push("$ git cherry-pick " + sha.substring(0, 7) + "\n" + (result || "(done)"));
@@ -28,6 +30,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       state.terminalOutput.value.push("$ git cherry-pick\nError: " + e);
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
@@ -37,7 +42,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       toast.error("Cannot revert while conflicts exist. Resolve conflicts first.");
       return;
     }
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading("Loading: reverting commit...");
       state.loading.value = true;
       const result = await callTauri<string>("revert_commit", { path: state.repoPath.value, sha });
       state.terminalOutput.value.push("$ git revert " + sha.substring(0, 7) + "\n" + (result || "(done)"));
@@ -47,6 +54,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       state.terminalOutput.value.push("$ git revert\nError: " + e);
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
@@ -56,7 +66,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       toast.error("Cannot reset while conflicts exist. Resolve conflicts first.");
       return;
     }
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading(`Loading: reset (${mode}) in progress...`);
       state.loading.value = true;
       const result = await callTauri<string>("reset_to_commit", { path: state.repoPath.value, sha, mode });
       state.terminalOutput.value.push("$ git reset --" + mode + " " + sha.substring(0, 7) + "\n" + (result || "(done)"));
@@ -69,6 +81,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       toast.error("Reset failed: " + String(e));
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 
@@ -78,7 +93,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       toast.error("Cannot checkout commit while conflicts exist. Resolve conflicts first.");
       return;
     }
+    let loadingToastId: number | null = null;
     try {
+      loadingToastId = toast.loading("Loading: checking out commit...");
       state.loading.value = true;
       const result = await callTauri<string>("checkout_commit", { path: state.repoPath.value, sha });
       state.terminalOutput.value.push("$ git checkout " + sha.substring(0, 7) + "\n" + (result || "(done)"));
@@ -91,6 +108,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       toast.error("Checkout failed: " + String(e));
     } finally {
       state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
     }
   }
 

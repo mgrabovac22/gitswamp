@@ -9,6 +9,7 @@ import RepositoryActionDialogs from "@/view/repository/RepositoryActionDialogs.v
 import RepositoryAuthDialogs from "@/view/repository/RepositoryAuthDialogs.vue";
 import CloneDialog from "@/view/repository/CloneDialog.vue";
 import InitDialog from "@/view/repository/InitDialog.vue";
+import GhostBranchDialog from "@/view/repository/GhostBranchDialog.vue";
 import MultiPlatformPushDialog from "@/view/repository/MultiPlatformPushDialog.vue";
 import SettingsDialog from "@/view/shell/SettingsDialog.vue";
 import ToastContainer from "@/shared/ui/ToastContainer.vue";
@@ -43,6 +44,10 @@ if (savedFontSize) {
 const savedCompact = localStorage.getItem("gitswamp-compact-mode");
 if (savedCompact === "true") {
   document.documentElement.classList.add("compact");
+}
+const savedDummyMode = localStorage.getItem("gitswamp-dummy-mode");
+if (savedDummyMode === "true") {
+  document.documentElement.classList.add("dummy-mode");
 }
 const savedAvatars = localStorage.getItem("gitswamp-show-avatars");
 if (savedAvatars === "false") {
@@ -86,16 +91,22 @@ interface Tab {
   path: string;
 }
 
+type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
+
 const tabs = ref<Tab[]>([
   { id: "landing", repo: null, label: "Start", path: "" },
 ]);
 const activeTabId = ref("landing");
+const historyViewMode = ref<HistoryViewMode>("graph");
+const timeMachineFocusSha = ref<string | null>(null);
 const showCloneDialog = ref(false);
 const showInitDialog = ref(false);
 const showTerminal = ref(false);
 const terminalAllowAll = ref(localStorage.getItem("gitswamp-terminal-allow-all") === "true");
 const activeRemoteAction = ref<"pull" | "push" | "fetch" | null>(null);
 const showBranchDialog = ref(false);
+const showGhostMaterializeDialog = ref(false);
+const ghostMaterializeName = ref("");
 const showStashDialog = ref(false);
 const showSettings = ref(false);
 const newBranchName = ref("");
@@ -507,6 +518,23 @@ function toggleTerminalPanel() {
   showTerminal.value = !showTerminal.value;
 }
 
+function setHistoryViewMode(mode: HistoryViewMode) {
+  historyViewMode.value = mode;
+
+  if (mode !== "time-machine") {
+    timeMachineFocusSha.value = null;
+  }
+
+  if (mode !== "graph") {
+    detailsPanelCollapsed.value = true;
+    showDiffViewer.value = false;
+    viewingWorkingChanges.value = false;
+    viewingStash.value = false;
+    git.selectedCommit.value = null;
+    git.clearStashSelection();
+  }
+}
+
 function dispatchFocusCommitSearch() {
   globalThis.dispatchEvent(new Event("gitswamp-focus-commit-search"));
 }
@@ -584,6 +612,66 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select" || tag === "option";
 }
 
+function isAltOnlyShortcut(event: KeyboardEvent): boolean {
+  return event.altKey && !event.ctrlKey && !event.shiftKey;
+}
+
+function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
+  if (!isAltOnlyShortcut(event)) {
+    return false;
+  }
+
+  const viewByKey: Partial<Record<string, HistoryViewMode>> = {
+    "1": "graph",
+    "2": "productivity",
+    "3": "time-machine",
+    "4": "conflict-heatmap",
+  };
+
+  const nextMode = viewByKey[key];
+  if (!nextMode) {
+    return false;
+  }
+
+  event.preventDefault();
+  setHistoryViewMode(nextMode);
+  return true;
+}
+
+function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
+  if (event.ctrlKey && event.shiftKey && key === "o") {
+    event.preventDefault();
+    void openRepoInVsCode();
+    return true;
+  }
+
+  if (isAltOnlyShortcut(event) && key === "o") {
+    event.preventDefault();
+    void openRepoInExplorer();
+    return true;
+  }
+
+  if (event.ctrlKey && !event.shiftKey && key === "r") {
+    event.preventDefault();
+    dispatchFocusCommitSearch();
+    return true;
+  }
+
+  if (event.ctrlKey && event.shiftKey && key === "g") {
+    event.preventDefault();
+    void createGistFromRepo();
+    return true;
+  }
+
+  if (event.ctrlKey && !event.shiftKey && key === ",") {
+    event.preventDefault();
+    showSettings.value = true;
+    return true;
+  }
+
+  return false;
+}
+
 function handleGlobalShortcuts(event: KeyboardEvent) {
   if (isEditableTarget(event.target)) {
     return;
@@ -597,34 +685,11 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
     return;
   }
 
-  if (event.ctrlKey && event.shiftKey && key === "o") {
-    event.preventDefault();
-    void openRepoInVsCode();
+  if (handleHistoryViewShortcut(event, key)) {
     return;
   }
 
-  if (event.altKey && !event.ctrlKey && !event.shiftKey && key === "o") {
-    event.preventDefault();
-    void openRepoInExplorer();
-    return;
-  }
-
-  if (event.ctrlKey && !event.shiftKey && key === "r") {
-    event.preventDefault();
-    dispatchFocusCommitSearch();
-    return;
-  }
-
-  if (event.ctrlKey && event.shiftKey && key === "g") {
-    event.preventDefault();
-    void createGistFromRepo();
-    return;
-  }
-
-  if (event.ctrlKey && !event.shiftKey && key === ",") {
-    event.preventDefault();
-    showSettings.value = true;
-  }
+  handleRepositoryShortcut(event, key);
 }
 
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
@@ -1025,6 +1090,81 @@ function handleCreateBranch() {
   showBranchDialog.value = true;
 }
 
+function normalizeGhostNameFragment(value: string): string {
+  let out = "";
+  let previousDash = false;
+
+  for (const ch of value.toLowerCase()) {
+    const allowed = (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") || ch === "_" || ch === "-";
+    if (!allowed || ch === "-") {
+      if (previousDash || out.length === 0) {
+        continue;
+      }
+      out += "-";
+      previousDash = true;
+      continue;
+    }
+
+    out += ch;
+    previousDash = false;
+  }
+
+  if (out.endsWith("-")) {
+    out = out.slice(0, -1);
+  }
+
+  return out;
+}
+
+function suggestedMaterializedBranchName(): string {
+  const source = git.currentBranch.value || "feature";
+  const withoutOrigin = source.toLowerCase().startsWith("origin/")
+    ? source.slice(7)
+    : source;
+  const flattened = withoutOrigin.split("/").filter(Boolean).join("-");
+  const normalized = normalizeGhostNameFragment(flattened);
+  return normalized ? `${normalized}-materialized` : "materialized-ghost";
+}
+
+function handleOpenGhostMaterializeDialog() {
+  ghostMaterializeName.value = suggestedMaterializedBranchName();
+  showGhostMaterializeDialog.value = true;
+}
+
+async function handleStartGhostBranch() {
+  await git.startGhostBranch();
+}
+
+async function handleSubmitGhostMaterialize(name: string) {
+  await git.materializeGhostBranch(name);
+  showGhostMaterializeDialog.value = false;
+}
+
+function handleDiscardGhostBranch() {
+  toast.action(
+    "warning",
+    "Discard active Ghost Branch experiment?",
+    [
+      {
+        label: "Discard",
+        style: "danger",
+        onClick: () => git.discardGhostBranch(),
+      },
+      {
+        label: "Cancel",
+        style: "neutral",
+        onClick: () => {},
+      },
+    ],
+    18000,
+  );
+}
+
+function handleTimeMachineBlame(sha: string) {
+  timeMachineFocusSha.value = sha;
+  setHistoryViewMode("time-machine");
+}
+
 function submitCreateBranch(name: string) {
   submitCreateBranchFromDialog(name);
 }
@@ -1110,7 +1250,8 @@ const isAnyDialogOpen = computed(() =>
   showMultiPlatformPushDialog.value ||
   showPushUsernameDialog.value ||
   showAuthRequiredDialog.value ||
-  showConflictResolver.value,
+  showConflictResolver.value ||
+  showGhostMaterializeDialog.value,
 );
 
 watch(isAnyDialogOpen, (opened) => {
@@ -1176,6 +1317,7 @@ const openReposList = computed(() =>
       @new-tab="newTab"
       @open-repository="browseAndOpen"
       @toggle-terminal="toggleTerminalPanel"
+      @set-history-view="setHistoryViewMode($event)"
       @open-settings="showSettings = true"
       @refresh-repository="refreshCurrentRepo()"
       @open-in-vs-code="openRepoInVsCode()"
@@ -1201,10 +1343,14 @@ const openReposList = computed(() =>
       <AppHeader
         :loading="git.loading.value"
         :active-action="activeRemoteAction"
+        :ghost-active="git.ghostBranchState.value.active"
         @pull="handlePull"
         @push="handlePush"
         @fetch="handleFetch"
         @branch="handleCreateBranch"
+        @ghost-branch="handleStartGhostBranch"
+        @materialize-ghost-branch="handleOpenGhostMaterializeDialog"
+        @discard-ghost-branch="handleDiscardGhostBranch"
         @stash="handleStash"
         @terminal="toggleTerminalPanel"
         @settings="showSettings = true"
@@ -1219,8 +1365,11 @@ const openReposList = computed(() =>
         :diff-commit-sha="diffCommitSha"
         :diff-staged="diffStaged"
         :details-panel-collapsed="detailsPanelCollapsed"
+        :history-view-mode="historyViewMode"
+        :time-machine-focus-sha="timeMachineFocusSha"
         :viewing-working-changes="viewingWorkingChanges"
         :viewing-stash="viewingStash"
+        @set-history-view="setHistoryViewMode($event)"
         @update:show-terminal="showTerminal = $event"
         @update:terminal-allow-all="terminalAllowAll = $event"
         @update:details-panel-collapsed="detailsPanelCollapsed = $event"
@@ -1241,9 +1390,18 @@ const openReposList = computed(() =>
         @edit-commit-message="handleEditCommitMessage($event)"
         @rename-branch="handleRenameBranch($event)"
         @delete-branch-and-remote="handleDeleteBranchAndRemote($event)"
+        @time-machine-blame="handleTimeMachineBlame($event)"
         @create-gist="createGistFromRepo()"
       />
     </template>
+
+    <GhostBranchDialog
+      :visible="showGhostMaterializeDialog"
+      :loading="git.loading.value"
+      :suggested-name="ghostMaterializeName"
+      @close="showGhostMaterializeDialog = false"
+      @submit="handleSubmitGhostMaterialize"
+    />
 
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"

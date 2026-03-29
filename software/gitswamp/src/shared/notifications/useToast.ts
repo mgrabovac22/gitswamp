@@ -2,7 +2,7 @@ import { ref } from "vue";
 
 export interface Toast {
   id: number;
-  type: "success" | "error" | "info" | "warning";
+  type: "success" | "error" | "info" | "warning" | "loading";
   message: string;
   duration?: number;
   actions?: ToastAction[];
@@ -57,6 +57,10 @@ function action(type: Toast["type"], message: string, actions: ToastAction[], du
   return addToast(type, message, duration, actions);
 }
 
+function loading(message: string) {
+  return addToast("loading", message, 0);
+}
+
 export function useToast() {
   return {
     toasts,
@@ -64,6 +68,7 @@ export function useToast() {
     error,
     info,
     warning,
+    loading,
     action,
     remove: removeToast,
   };

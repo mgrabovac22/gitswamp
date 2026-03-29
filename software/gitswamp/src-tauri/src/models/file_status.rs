@@ -6,4 +6,5 @@ pub struct FileStatusInfo {
     pub status: String,
     pub staged: bool,
     pub conflicted: bool,
+    pub file_size_bytes: Option<u64>,
 }

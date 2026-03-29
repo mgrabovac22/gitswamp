@@ -1,4 +1,5 @@
 import { callTauri } from "./gitCall";
+import { getOriginUrl, getTokenForUrl } from "./gitHelpers";
 import type { GitState } from "./gitState";
 import type { StashInfo } from "@/types";
 
@@ -103,6 +104,7 @@ const GIT_SHORTCUTS: Record<string, string[]> = {
   last: ["log", "-1", "--stat"],
   pl: ["pull"],
   ps: ["push"],
+  rmc: ["rm", "-r", "--cached", "."],
   aa: ["add", "--all"],
   unstage: ["restore", "--staged"],
 };
@@ -114,6 +116,62 @@ function expandGitShortcut(args: string[]): string[] {
   return [...shortcut, ...args.slice(1)];
 }
 
+function normalizeGitArgs(args: string[]): string[] {
+  if (args.length === 0) return args;
+
+  const normalized = [...args];
+  if (normalized[0].toLowerCase() !== "rm") {
+    return normalized;
+  }
+
+  for (let i = 1; i < normalized.length; i += 1) {
+    if (normalized[i].toLowerCase() === "cached") {
+      normalized[i] = "--cached";
+    }
+  }
+
+  return normalized;
+}
+
+function hasArg(args: string[], value: string): boolean {
+  const target = value.toLowerCase();
+  return args.some((arg) => arg.toLowerCase() === target);
+}
+
+function isFetchAllArgs(args: string[]): boolean {
+  return args[0]?.toLowerCase() === "fetch" && hasArg(args.slice(1), "--all");
+}
+
+function isPullArgs(args: string[]): boolean {
+  return args.length === 1 && args[0].toLowerCase() === "pull";
+}
+
+function isPushArgs(args: string[]): boolean {
+  return args.length === 1 && args[0].toLowerCase() === "push";
+}
+
+function isRmCachedAllArgs(args: string[]): boolean {
+  if (args[0]?.toLowerCase() !== "rm") return false;
+  const tail = args.slice(1);
+  const hasRecursive = hasArg(tail, "-r") || hasArg(tail, "--recursive") || hasArg(tail, "-rf") || hasArg(tail, "-fr");
+  return hasRecursive && hasArg(tail, "--cached") && hasArg(tail, ".");
+}
+
+function buildExpandedNote(rawArgs: string[], expandedArgs: string[], args: string[]): string {
+  const expandedFromShortcut = expandedArgs.join(" ") !== rawArgs.join(" ");
+  const normalizedFromInput = args.join(" ") !== expandedArgs.join(" ");
+
+  let expandedNote = "";
+  if (expandedFromShortcut) {
+    expandedNote += `\n(alias expanded from: git ${rawArgs.join(" ")})`;
+  }
+  if (normalizedFromInput) {
+    expandedNote += `\n(normalized to: git ${args.join(" ")})`;
+  }
+
+  return expandedNote;
+}
+
 function buildHelpText(allowAll: boolean): string {
   const modeHint = allowAll
     ? "Mode: all shell commands are allowed."
@@ -123,7 +181,7 @@ function buildHelpText(allowAll: boolean): string {
     "$ help",
     modeHint,
     "Built-ins: clear/cls, !!, help, tools, open <tool>",
-    "Git shortcuts: st->status, br->branch, co->checkout, sw->switch, lg->log graph, last->log -1 --stat",
+    "Git shortcuts: st->status, br->branch, co->checkout, sw->switch, lg->log graph, last->log -1 --stat, rmc->rm -r --cached .",
     "Open tools: explorer, vscode, visualstudio, androidstudio, intellij (detected once and cached)",
     "Example: 'st' => git status, 'lg' => git log --oneline --graph --decorate -20",
   ].join("\n");
@@ -356,8 +414,80 @@ export function createTerminalActions(state: GitState) {
     return false;
   }
 
+  async function runToolbarCompatibleGitCommand(
+    args: string[],
+    commandLabel: string,
+    expandedNote: string,
+  ): Promise<boolean> {
+    const originUrl = getOriginUrl(state);
+    const token = getTokenForUrl(state, originUrl);
+
+    if (isFetchAllArgs(args)) {
+      try {
+        const result = await callTauri<string>("fetch_all", {
+          path: state.repoPath.value,
+          token,
+        });
+        appendOutput(commandLabel + expandedNote + "\n" + (result || "(done)") + "\n(toolbar-compatible fetch)");
+      } catch (fetchError) {
+        appendOutput(commandLabel + expandedNote + "\nError: " + String(fetchError));
+      }
+      return true;
+    }
+
+    if (isPullArgs(args)) {
+      try {
+        const result = await callTauri<string>("pull", {
+          path: state.repoPath.value,
+          token,
+        });
+        appendOutput(commandLabel + expandedNote + "\n" + (result || "(done)") + "\n(toolbar-compatible pull)");
+      } catch (pullError) {
+        appendOutput(commandLabel + expandedNote + "\nError: " + String(pullError));
+      }
+      return true;
+    }
+
+    if (isPushArgs(args)) {
+      try {
+        const result = await callTauri<string>("push", {
+          path: state.repoPath.value,
+          token,
+        });
+        appendOutput(commandLabel + expandedNote + "\n" + (result || "(done)") + "\n(toolbar-compatible push)");
+      } catch (pushError) {
+        appendOutput(commandLabel + expandedNote + "\nError: " + String(pushError));
+      }
+      return true;
+    }
+
+    if (isRmCachedAllArgs(args)) {
+      try {
+        const result = await callTauri<string>("remove_cached_all", {
+          path: state.repoPath.value,
+        });
+        appendOutput(commandLabel + expandedNote + "\n" + (result || "(done)") + "\n(index-only remove)");
+      } catch (removeCachedError) {
+        appendOutput(commandLabel + expandedNote + "\nError: " + String(removeCachedError));
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  async function runStashListCommand(commandLabel: string, expandedNote: string) {
+    try {
+      const stashes = await callTauri<StashInfo[]>("stash_list", { path: state.repoPath.value });
+      appendOutput(commandLabel + expandedNote + "\n" + formatStashListOutput(stashes));
+    } catch (stashError) {
+      appendOutput(commandLabel + expandedNote + "\nError: " + String(stashError));
+    }
+  }
+
   async function executeGitArgs(rawArgs: string[], typedCommand: string, allowAllMode: boolean) {
-    const args = expandGitShortcut(rawArgs);
+    const expandedArgs = expandGitShortcut(rawArgs);
+    const args = normalizeGitArgs(expandedArgs);
 
     if (args.length === 0) {
       appendOutput("$ git\nError: Missing git arguments.");
@@ -365,20 +495,16 @@ export function createTerminalActions(state: GitState) {
     }
 
     const commandLabel = "$ git " + args.join(" ");
-    const expandedFromShortcut = args.join(" ") !== rawArgs.join(" ");
-    const expandedNote = expandedFromShortcut
-      ? `\n(alias expanded from: git ${rawArgs.join(" ")})`
-      : "";
+    const expandedNote = buildExpandedNote(rawArgs, expandedArgs, args);
 
     lastExecuted = { command: typedCommand, allowAll: allowAllMode };
 
+    if (await runToolbarCompatibleGitCommand(args, commandLabel, expandedNote)) {
+      return;
+    }
+
     if (isStashListArgs(args)) {
-      try {
-        const stashes = await callTauri<StashInfo[]>("stash_list", { path: state.repoPath.value });
-        appendOutput(commandLabel + expandedNote + "\n" + formatStashListOutput(stashes));
-      } catch (stashError) {
-        appendOutput(commandLabel + expandedNote + "\nError: " + String(stashError));
-      }
+      await runStashListCommand(commandLabel, expandedNote);
       return;
     }
 

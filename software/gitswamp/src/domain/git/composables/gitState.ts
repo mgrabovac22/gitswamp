@@ -5,6 +5,7 @@ import type {
   CommitFileInfo,
   CommitInfo,
   FileStatusInfo,
+  GhostBranchState,
   RepoInfo,
   StashInfo,
   TagInfo,
@@ -35,6 +36,11 @@ export function createGitState() {
   const hasMoreCommits = ref(true);
   const hasMoreSearchResults = ref(false);
   const gitPath = ref("");
+  const ghostBranchState = ref<GhostBranchState>({
+    active: false,
+    base_branch: "",
+    ghost_branch: "",
+  });
   const lastStatusHash = ref("");
 
   const localBranches = computed(() => branches.value.filter((b) => !b.is_remote));
@@ -76,6 +82,7 @@ export function createGitState() {
     hasMoreCommits,
     hasMoreSearchResults,
     gitPath,
+    ghostBranchState,
     lastStatusHash,
     localBranches,
     remoteBranches,

@@ -28,7 +28,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-8 bg-[var(--header-bg)] flex items-center justify-between px-2 border-b border-[var(--border)] select-none [app-region:drag]" data-tauri-drag-region>
+  <div class="relative z-[50] h-8 bg-[var(--header-bg)] flex items-center justify-between px-2 border-b border-[var(--border)] select-none [app-region:drag]" data-tauri-drag-region>
     <div class="flex items-center gap-2">
       <div class="text-sm font-semibold text-[var(--header-fg)] tracking-wide flex items-center gap-1.5">
         <div class="w-6 h-6 flex items-center justify-center">

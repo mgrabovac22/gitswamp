@@ -1,5 +1,5 @@
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::{BranchType, Repository, Sort, StatusOptions};
@@ -9,8 +9,8 @@ use crate::constants::{
     DEFAULT_BRANCH, DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL, GITHUB_HOST,
 };
 use crate::models::{
-    BranchInfo, CommitFileInfo, CommitInfo, FileStatusInfo, GithubRepo, GitlabRepo, RepoInfo,
-    StashInfo, TagInfo,
+    BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot, FileStatusInfo, GhostBranchState,
+    GithubRepo, GitlabRepo, RepoInfo, StashInfo, TagInfo,
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
@@ -21,9 +21,289 @@ use crate::services::stash_service::StashService;
 
 pub struct GitService;
 
+const GHOST_ACTIVE_KEY: &str = "gitswamp.ghost.active";
+const GHOST_BASE_KEY: &str = "gitswamp.ghost.base";
+const GHOST_BRANCH_KEY: &str = "gitswamp.ghost.branch";
+
 impl GitService {
+    fn resolve_worktree_file_size(repo_root: &Path, repo_relative_path: &str) -> Option<u64> {
+        if repo_relative_path.trim().is_empty() {
+            return None;
+        }
+
+        let full_path = repo_root.join(repo_relative_path);
+        let metadata = std::fs::metadata(full_path).ok()?;
+        if metadata.is_file() {
+            Some(metadata.len())
+        } else {
+            None
+        }
+    }
+
+    fn sanitize_relative_path(input: &str) -> Result<PathBuf, String> {
+        let mut out = PathBuf::new();
+
+        for component in Path::new(input).components() {
+            match component {
+                std::path::Component::Normal(value) => out.push(value),
+                std::path::Component::CurDir => {}
+                _ => return Err("Invalid relative path.".to_string()),
+            }
+        }
+
+        if out.as_os_str().is_empty() {
+            return Err("Path cannot be empty.".to_string());
+        }
+
+        Ok(out)
+    }
+
+    fn normalize_relative_path(path: &Path) -> String {
+        path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_matches('/')
+            .to_string()
+    }
+
+    fn should_skip_empty_scan_dir(name: &str) -> bool {
+        matches!(
+            name,
+            ".git" | "node_modules" | "target" | "dist" | "build" | ".idea" | ".vscode"
+        )
+    }
+
+    fn read_repo_config(repo: &Repository, key: &str) -> Option<String> {
+        repo.config()
+            .ok()
+            .and_then(|cfg| cfg.get_string(key).ok())
+            .and_then(|value| {
+                if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value)
+                }
+            })
+    }
+
+    fn write_repo_config(repo: &Repository, key: &str, value: &str) -> Result<(), String> {
+        let mut cfg = repo.config().map_err(|e| e.message().to_string())?;
+        cfg.set_str(key, value).map_err(|e| e.message().to_string())
+    }
+
+    fn clear_repo_config(repo: &Repository, key: &str) {
+        if let Ok(mut cfg) = repo.config() {
+            let _ = cfg.remove(key);
+        }
+    }
+
+    fn sanitize_ghost_segment(value: &str) -> String {
+        let mut out = String::new();
+        for ch in value.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                out.push(ch);
+            } else {
+                out.push('-');
+            }
+        }
+        out.trim_matches('-').to_string()
+    }
+
+    fn ghost_branch_name(base_branch: &str) -> String {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let safe_base = Self::sanitize_ghost_segment(base_branch);
+        if safe_base.is_empty() {
+            format!("ghost/session-{}", stamp)
+        } else {
+            format!("ghost/{}-{}", safe_base, stamp)
+        }
+    }
+
+    fn current_branch_name(repo: &Repository) -> Result<String, String> {
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let current = head.shorthand().unwrap_or_default().trim().to_string();
+        if current.is_empty() || current == "HEAD" {
+            return Err("Cannot run this operation in detached HEAD state.".to_string());
+        }
+        Ok(current)
+    }
+
+    fn is_worktree_clean(repo: &Repository) -> Result<bool, String> {
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false);
+
+        let statuses = repo
+            .statuses(Some(&mut opts))
+            .map_err(|e| e.message().to_string())?;
+        Ok(statuses.is_empty())
+    }
+
+    fn unique_ghost_branch_name(repo: &Repository, base_branch: &str) -> String {
+        let base = Self::ghost_branch_name(base_branch);
+        if repo.find_branch(&base, BranchType::Local).is_err() {
+            return base;
+        }
+
+        let mut counter = 2usize;
+        loop {
+            let candidate = format!("{}-{}", base, counter);
+            if repo.find_branch(&candidate, BranchType::Local).is_err() {
+                return candidate;
+            }
+            counter += 1;
+        }
+    }
+
     pub fn get_git_path() -> String {
         RemoteService::get_git_path()
+    }
+
+    pub fn ghost_branch_state(path: &str) -> Result<GhostBranchState, String> {
+        let repo = GitRepository::open(path)?;
+
+        let active = Self::read_repo_config(&repo, GHOST_ACTIVE_KEY)
+            .map(|value| value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let base_branch = Self::read_repo_config(&repo, GHOST_BASE_KEY).unwrap_or_default();
+        let ghost_branch = Self::read_repo_config(&repo, GHOST_BRANCH_KEY).unwrap_or_default();
+        let branch_exists = !ghost_branch.is_empty() && repo.find_branch(&ghost_branch, BranchType::Local).is_ok();
+
+        Ok(GhostBranchState {
+            active: active && !ghost_branch.is_empty() && branch_exists,
+            base_branch,
+            ghost_branch,
+        })
+    }
+
+    pub fn start_ghost_branch(path: &str) -> Result<GhostBranchState, String> {
+        let repo = GitRepository::open(path)?;
+        let existing = Self::ghost_branch_state(path)?;
+        if existing.active {
+            return Err(format!(
+                "Ghost branch is already active: {}",
+                existing.ghost_branch
+            ));
+        }
+
+        if !Self::is_worktree_clean(&repo)? {
+            return Err(
+                "Ghost mode requires a clean working tree. Commit, stash, or discard pending changes first."
+                    .to_string(),
+            );
+        }
+
+        let base_branch = Self::current_branch_name(&repo)?;
+        let ghost_branch = Self::unique_ghost_branch_name(&repo, &base_branch);
+
+        let head_commit = repo
+            .head()
+            .map_err(|e| e.message().to_string())?
+            .peel_to_commit()
+            .map_err(|e| e.message().to_string())?;
+
+        repo.branch(&ghost_branch, &head_commit, false)
+            .map_err(|e| e.message().to_string())?;
+
+        Self::checkout_branch(path, &ghost_branch)?;
+
+        let repo_after = GitRepository::open(path)?;
+        Self::write_repo_config(&repo_after, GHOST_ACTIVE_KEY, "true")?;
+        Self::write_repo_config(&repo_after, GHOST_BASE_KEY, &base_branch)?;
+        Self::write_repo_config(&repo_after, GHOST_BRANCH_KEY, &ghost_branch)?;
+
+        Ok(GhostBranchState {
+            active: true,
+            base_branch,
+            ghost_branch,
+        })
+    }
+
+    pub fn materialize_ghost_branch(path: &str, name: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        let branch_name = name.trim();
+        if branch_name.is_empty() {
+            return Err("Materialize target branch name is required.".to_string());
+        }
+
+        let state = Self::ghost_branch_state(path)?;
+        if !state.active {
+            return Err("Ghost mode is not active.".to_string());
+        }
+
+        if repo.find_branch(branch_name, BranchType::Local).is_ok() {
+            return Err(format!("Branch '{}' already exists.", branch_name));
+        }
+
+        let current = Self::current_branch_name(&repo)?;
+        if current != state.ghost_branch {
+            Self::checkout_branch(path, &state.ghost_branch)?;
+        }
+
+        let repo_after = GitRepository::open(path)?;
+        let mut ghost = repo_after
+            .find_branch(&state.ghost_branch, BranchType::Local)
+            .map_err(|e| e.message().to_string())?;
+        ghost
+            .rename(branch_name, false)
+            .map_err(|e| e.message().to_string())?;
+
+        Self::clear_repo_config(&repo_after, GHOST_ACTIVE_KEY);
+        Self::clear_repo_config(&repo_after, GHOST_BASE_KEY);
+        Self::clear_repo_config(&repo_after, GHOST_BRANCH_KEY);
+
+        Ok(format!(
+            "Ghost branch materialized as '{}'.",
+            branch_name
+        ))
+    }
+
+    pub fn discard_ghost_branch(path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        let state = Self::ghost_branch_state(path)?;
+        if !state.active {
+            return Err("Ghost mode is not active.".to_string());
+        }
+        if state.base_branch.trim().is_empty() {
+            return Err("Ghost mode state is missing base branch metadata.".to_string());
+        }
+
+        let current = Self::current_branch_name(&repo)?;
+        if current != state.ghost_branch {
+            Self::checkout_branch(path, &state.ghost_branch)?;
+        }
+
+        let repo_ghost = GitRepository::open(path)?;
+        let head_commit = repo_ghost
+            .head()
+            .map_err(|e| e.message().to_string())?
+            .peel_to_commit()
+            .map_err(|e| e.message().to_string())?;
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.force().remove_untracked(true);
+        repo_ghost
+            .reset(head_commit.as_object(), git2::ResetType::Hard, Some(&mut checkout))
+            .map_err(|e| e.message().to_string())?;
+
+        Self::checkout_branch(path, &state.base_branch)?;
+
+        let repo_after = GitRepository::open(path)?;
+        if let Ok(mut ghost_branch) = repo_after.find_branch(&state.ghost_branch, BranchType::Local) {
+            ghost_branch.delete().map_err(|e| e.message().to_string())?;
+        }
+
+        Self::clear_repo_config(&repo_after, GHOST_ACTIVE_KEY);
+        Self::clear_repo_config(&repo_after, GHOST_BASE_KEY);
+        Self::clear_repo_config(&repo_after, GHOST_BRANCH_KEY);
+
+        Ok(format!(
+            "Discarded ghost branch '{}' and restored '{}'.",
+            state.ghost_branch, state.base_branch
+        ))
     }
 
     pub fn repo_info(path: &str) -> Result<RepoInfo, String> {
@@ -114,6 +394,154 @@ impl GitService {
         Ok(result)
     }
 
+    pub fn author_deletion_stats(
+        path: &str,
+        max_count: usize,
+    ) -> Result<Vec<(String, usize, usize)>, String> {
+        let commits = Self::commits(path, max_count)?;
+        let mut by_author: HashMap<String, (usize, usize)> = HashMap::new();
+
+        for commit in commits {
+            let files = match Self::commit_files(path, &commit.sha) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let deletion_sum: usize = files.iter().map(|file| file.deletions).sum();
+            if deletion_sum == 0 {
+                continue;
+            }
+
+            let author = if commit.author_name.trim().is_empty() {
+                "Unknown".to_string()
+            } else {
+                commit.author_name
+            };
+
+            let entry = by_author.entry(author).or_insert((0, 0));
+            entry.0 += deletion_sum;
+            entry.1 += 1;
+        }
+
+        let mut rows: Vec<(String, usize, usize)> = by_author
+            .into_iter()
+            .map(|(author, (deletions, commits_count))| (author, deletions, commits_count))
+            .collect();
+
+        rows.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        Ok(rows)
+    }
+
+    pub fn conflict_hotspots(path: &str, max_count: usize) -> Result<Vec<ConflictHotspot>, String> {
+        let scan_limit = max_count.saturating_mul(5).max(max_count);
+        let commits = Self::commits(path, scan_limit)?;
+
+        let mut by_path: HashMap<String, (usize, usize, usize)> = HashMap::new();
+        let mut inspected_merges = 0usize;
+
+        for commit in commits {
+            if commit.parent_shas.len() < 2 {
+                continue;
+            }
+            if inspected_merges >= max_count {
+                break;
+            }
+
+            inspected_merges += 1;
+            let mentions_conflict = commit.message.to_lowercase().contains("conflict");
+
+            let files = match Self::commit_files(path, &commit.sha) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            for file in files {
+                let file_path = file.path.trim();
+                if file_path.is_empty() {
+                    continue;
+                }
+
+                let entry = by_path.entry(file_path.to_string()).or_insert((0, 0, 0));
+                entry.0 += 1;
+                entry.1 += 1;
+                if mentions_conflict {
+                    entry.0 += 2;
+                    entry.2 += 1;
+                }
+            }
+        }
+
+        let mut hotspots: Vec<ConflictHotspot> = by_path
+            .into_iter()
+            .map(|(path, (score, merge_touches, conflict_mentions))| ConflictHotspot {
+                path,
+                score,
+                merge_touches,
+                conflict_mentions,
+            })
+            .collect();
+
+        hotspots.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| b.merge_touches.cmp(&a.merge_touches))
+                .then_with(|| b.conflict_mentions.cmp(&a.conflict_mentions))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+
+        Ok(hotspots)
+    }
+
+    pub fn commit_tree_paths(path: &str, sha: &str) -> Result<Vec<String>, String> {
+        let repo = GitRepository::open(path)?;
+        let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+        let tree = commit.tree().map_err(|e| e.message().to_string())?;
+
+        let mut files = Vec::new();
+        Self::collect_commit_tree_paths(&repo, &tree, "", &mut files)?;
+        files.sort();
+        Ok(files)
+    }
+
+    fn collect_commit_tree_paths(
+        repo: &Repository,
+        tree: &git2::Tree,
+        prefix: &str,
+        files: &mut Vec<String>,
+    ) -> Result<(), String> {
+        for entry in tree.iter() {
+            let name = match entry.name() {
+                Some(value) if !value.is_empty() => value,
+                _ => continue,
+            };
+
+            let next_path = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{}/{}", prefix, name)
+            };
+
+            match entry.kind() {
+                Some(git2::ObjectType::Blob) => {
+                    files.push(next_path);
+                }
+                Some(git2::ObjectType::Tree) => {
+                    let subtree = repo.find_tree(entry.id()).map_err(|e| e.message().to_string())?;
+                    Self::collect_commit_tree_paths(repo, &subtree, &next_path, files)?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn branches(path: &str) -> Result<Vec<BranchInfo>, String> {
         let repo = GitRepository::open(path)?;
         let head = repo.head().ok();
@@ -159,6 +587,7 @@ impl GitService {
 
     pub fn status(path: &str) -> Result<Vec<FileStatusInfo>, String> {
         let repo = GitRepository::open(path)?;
+        let repo_root = Path::new(path);
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true)
@@ -169,10 +598,15 @@ impl GitService {
             .map_err(|e| e.message().to_string())?;
 
         let mut files = Vec::new();
+        let mut size_cache: HashMap<String, Option<u64>> = HashMap::new();
 
         for entry in statuses.iter() {
             let s = entry.status();
             let file_path = entry.path().unwrap_or("").to_string();
+            let file_size_bytes = size_cache
+                .entry(file_path.clone())
+                .or_insert_with(|| Self::resolve_worktree_file_size(repo_root, &file_path))
+                .to_owned();
 
             if s.is_index_new()
                 || s.is_index_modified()
@@ -185,6 +619,7 @@ impl GitService {
                     status: index_status_label(s),
                     staged: true,
                     conflicted: s.is_conflicted(),
+                    file_size_bytes,
                 });
             }
 
@@ -199,6 +634,7 @@ impl GitService {
                     status: wt_status_label(s),
                     staged: false,
                     conflicted: s.is_conflicted(),
+                    file_size_bytes,
                 });
             }
 
@@ -208,11 +644,104 @@ impl GitService {
                     status: "conflicted".to_string(),
                     staged: false,
                     conflicted: true,
+                    file_size_bytes,
                 });
             }
         }
 
         Ok(files)
+    }
+
+    pub fn get_empty_directories(path: &str, max_count: usize) -> Result<Vec<String>, String> {
+        if max_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let repo_root = Path::new(path)
+            .canonicalize()
+            .map_err(|e| format!("Failed to access repository root: {}", e))?;
+
+        let mut stack = vec![repo_root.clone()];
+        let mut result = Vec::new();
+
+        while let Some(current) = stack.pop() {
+            if result.len() >= max_count {
+                break;
+            }
+
+            let mut has_any_entry = false;
+            let entries = match std::fs::read_dir(&current) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            for entry in entries {
+                let entry = match entry {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                has_any_entry = true;
+                let file_type = match entry.file_type() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if Self::should_skip_empty_scan_dir(&name) {
+                        continue;
+                    }
+                    stack.push(entry.path());
+                }
+            }
+
+            if current == repo_root || has_any_entry {
+                continue;
+            }
+
+            if let Ok(relative) = current.strip_prefix(&repo_root) {
+                let normalized = Self::normalize_relative_path(relative);
+                if !normalized.is_empty() {
+                    result.push(normalized);
+                }
+            }
+        }
+
+        result.sort();
+        Ok(result)
+    }
+
+    pub fn add_gitkeep(path: &str, directory_path: &str, stage: bool) -> Result<String, String> {
+        let repo_root = Path::new(path)
+            .canonicalize()
+            .map_err(|e| format!("Failed to access repository root: {}", e))?;
+
+        let relative = Self::sanitize_relative_path(directory_path)?;
+        let target_directory = repo_root.join(&relative);
+
+        if !target_directory.exists() {
+            std::fs::create_dir_all(&target_directory)
+                .map_err(|e| format!("Failed to create target directory: {}", e))?;
+        }
+
+        if !target_directory.is_dir() {
+            return Err("Target path is not a directory.".to_string());
+        }
+
+        let gitkeep_path = target_directory.join(".gitkeep");
+        if !gitkeep_path.exists() {
+            std::fs::write(&gitkeep_path, "")
+                .map_err(|e| format!("Failed to create .gitkeep: {}", e))?;
+        }
+
+        let relative_gitkeep = format!("{}/.gitkeep", Self::normalize_relative_path(&relative));
+
+        if stage {
+            Self::stage_file(path, &relative_gitkeep)?;
+        }
+
+        Ok(relative_gitkeep)
     }
 
     pub fn stage_file(path: &str, file_path: &str) -> Result<(), String> {
@@ -300,6 +829,19 @@ impl GitService {
 
     pub fn run_shell_command(path: &str, command: &str) -> Result<String, String> {
         RemoteService::run_shell_command(path, command)
+    }
+
+    pub fn remove_cached_all(path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        let pathspec = [Path::new(".")];
+
+        index
+            .remove_all(pathspec.iter(), None)
+            .map_err(|e| e.message().to_string())?;
+        index.write().map_err(|e| e.message().to_string())?;
+
+        Ok("Removed tracked files from index (equivalent to git rm -r --cached .).".to_string())
     }
 
     pub fn cherry_pick(path: &str, sha: &str) -> Result<String, String> {

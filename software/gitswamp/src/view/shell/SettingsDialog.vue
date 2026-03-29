@@ -33,12 +33,14 @@ const themeMode = ref<ThemeModePreference>("dark");
 const appPalette = ref<AppPalettePreference>("default");
 const fontSize = ref<"small" | "medium" | "large">("medium");
 const compactMode = ref(false);
+const dummyMode = ref(false);
 const fullScreenOnStart = ref(true);
 const showAvatars = ref(true);
 const restoreSession = ref(true);
 const reducedMotion = ref(false);
 const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
+const notifyGitkeep = ref(true);
 
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
@@ -65,6 +67,10 @@ onMounted(() => {
   if (savedCompact) {
     compactMode.value = savedCompact === "true";
   }
+  const savedDummyMode = localStorage.getItem("gitswamp-dummy-mode");
+  if (savedDummyMode) {
+    dummyMode.value = savedDummyMode === "true";
+  }
   const savedFullscreenOnStart = localStorage.getItem("gitswamp-fullscreen-on-start");
   if (savedFullscreenOnStart !== null) {
     fullScreenOnStart.value = savedFullscreenOnStart === "true";
@@ -89,6 +95,12 @@ onMounted(() => {
   if (savedShowDiffLineNumbers !== null) {
     showDiffLineNumbers.value = savedShowDiffLineNumbers !== "false";
   }
+  const savedNotifyGitkeep = localStorage.getItem("gitswamp-notify-gitkeep");
+  if (savedNotifyGitkeep === null) {
+    localStorage.setItem("gitswamp-notify-gitkeep", "true");
+  } else {
+    notifyGitkeep.value = savedNotifyGitkeep !== "false";
+  }
   
   applySettings();
 });
@@ -96,22 +108,25 @@ onMounted(() => {
 function applySettings() {
   document.documentElement.style.setProperty("--font-size", fontSizes[fontSize.value]);
   document.documentElement.classList.toggle("compact", compactMode.value);
+  document.documentElement.classList.toggle("dummy-mode", dummyMode.value);
   document.documentElement.classList.toggle("hide-avatars", !showAvatars.value);
   document.documentElement.classList.toggle("reduced-motion", reducedMotion.value);
   document.documentElement.classList.toggle("diff-wrap-lines", wrapDiffLines.value);
   document.documentElement.classList.toggle("hide-diff-line-numbers", !showDiffLineNumbers.value);
 }
 
-watch([fontSize, compactMode, fullScreenOnStart, showAvatars, restoreSession, reducedMotion, wrapDiffLines, showDiffLineNumbers], () => {
+watch([fontSize, compactMode, dummyMode, fullScreenOnStart, showAvatars, restoreSession, reducedMotion, wrapDiffLines, showDiffLineNumbers, notifyGitkeep], () => {
   applySettings();
   localStorage.setItem("gitswamp-font-size", fontSize.value);
   localStorage.setItem("gitswamp-compact-mode", String(compactMode.value));
+  localStorage.setItem("gitswamp-dummy-mode", String(dummyMode.value));
   localStorage.setItem("gitswamp-fullscreen-on-start", String(fullScreenOnStart.value));
   localStorage.setItem("gitswamp-show-avatars", String(showAvatars.value));
   localStorage.setItem("gitswamp-restore-session", String(restoreSession.value));
   localStorage.setItem("gitswamp-reduced-motion", String(reducedMotion.value));
   localStorage.setItem("gitswamp-wrap-diff-lines", String(wrapDiffLines.value));
   localStorage.setItem("gitswamp-show-diff-line-numbers", String(showDiffLineNumbers.value));
+  localStorage.setItem("gitswamp-notify-gitkeep", String(notifyGitkeep.value));
 });
 
 watch(themeMode, (value) => {
@@ -258,6 +273,23 @@ function handleDelete() {
 
           <div class="flex items-center justify-between py-2">
             <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Dummy Mode</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Show extra beginner descriptions in right-click, View and hamburger menus</p>
+            </div>
+            <button
+              @click="dummyMode = !dummyMode"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="dummyMode ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="dummyMode ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
               <div class="text-xs font-medium text-[var(--foreground)] block">Full Screen on Start</div>
               <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Starts maximized and keeps taskbar visible</p>
             </div>
@@ -354,6 +386,23 @@ function handleDelete() {
               <div
                 class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
                 :class="showDiffLineNumbers ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Notify for .gitkeep Need</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warn when empty folders are detected and offer one-click .gitkeep</p>
+            </div>
+            <button
+              @click="notifyGitkeep = !notifyGitkeep"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="notifyGitkeep ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="notifyGitkeep ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
               />
             </button>
           </div>
