@@ -263,9 +263,15 @@ function detectAuthProviderFromOrigin(): "github" | "gitlab" | "gitlab-self" {
 
 function parseAuthDomainFromOrigin(): string {
   const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url || "";
+  const parsed = parseRemoteHostAndPath(origin);
+  if (parsed && parsed.host) return parsed.host;
+
   const noProto = origin.replace(/^https?:\/\//i, "");
   const noCreds = noProto.includes("@") ? noProto.split("@")[1] : noProto;
-  return noCreds.split("/")[0] || "";
+  const firstSegment = noCreds.split("/")[0] || "";
+  // Handle scp-like URLs (git@host:owner/repo) or host:port by stripping trailing ":..."
+  const hostOnly = firstSegment.split(":")[0];
+  return hostOnly;
 }
 
 function normalizeBranchName(name: string): string {
@@ -950,11 +956,13 @@ async function saveAuthToken() {
     } else if (authProvider.value === "gitlab") {
       await git.saveProviderToken("gitlab", token);
     } else {
-      if (!authDomainInput.value.trim()) {
-        toast.error("Domain is required for self-hosted GitLab");
-        return;
-      }
-      await git.saveProviderToken("gitlab-self", `${authDomainInput.value.trim()}|${token}`);
+        const domainRaw = authDomainInput.value.trim();
+        if (!domainRaw) {
+          toast.error("Domain is required for self-hosted GitLab");
+          return;
+        }
+        const domainClean = domainRaw.replace(/^https?:\/\//i, "").replace(/\/+$/i, "");
+        await git.saveProviderToken("gitlab-self", `${domainClean}|${token}`);
     }
 
     showAuthRequiredDialog.value = false;
@@ -980,8 +988,10 @@ async function generateAndPushGitlabKey() {
       keyName,
     });
     const publicKey = generated[1];
+    const domainRaw = authDomainInput.value.trim();
+    const domainClean = domainRaw.replace(/^https?:\/\//i, "").replace(/\/+$/i, "");
     await invoke("add_gitlab_ssh_key", {
-      domain: authDomainInput.value.trim(),
+      domain: domainClean,
       token: authTokenInput.value.trim(),
       title: `gitswamp-${Date.now()}`,
       key: publicKey,
