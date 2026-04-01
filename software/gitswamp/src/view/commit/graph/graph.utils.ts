@@ -6,6 +6,13 @@ interface AvatarSvgOptions {
   colors: readonly string[];
 }
 
+interface MergeDotOptions {
+  topColor?: string;
+  bottomColor?: string;
+  showTop?: boolean;
+  showBottom?: boolean;
+}
+
 export function nameHash(name: string): number {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (name.codePointAt(i) ?? 0) + ((h << 5) - h);
@@ -49,15 +56,34 @@ export function avatarSvg(
     }
   }
 
-  return '<g class="commit-avatar" style="--avatar-color:' + c + '"><circle class="commit-avatar-outer" cx="' + cx + '" cy="' + cy + '" r="' + (r + 1.5) + '" fill="' + svgBgOuter + '"/>'
+  return '<g class="commit-avatar" style="--avatar-color:' + c + '"><circle class="commit-avatar-outer" cx="' + cx + '" cy="' + cy + '" r="' + (r + 2) + '" fill="' + svgBgOuter + '"/>'
     + '<circle class="commit-avatar-inner" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + svgBgInner + '"/>'
     + '<g class="commit-avatar-pattern">' + cells + '</g>'
     + '<circle class="commit-avatar-ring" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + branchColor + '" stroke-width="1.5" opacity="0.8"/></g>';
 }
 
-export function mergeDotSvg(cx: number, cy: number, color: string, svgBgOuter: string): string {
-  return '<circle cx="' + cx + '" cy="' + cy + '" r="5" fill="' + svgBgOuter + '"/>'
-    + '<circle cx="' + cx + '" cy="' + cy + '" r="4" fill="' + color + '" opacity="0.9"/>';
+export function mergeDotSvg(
+  cx: number,
+  cy: number,
+  color: string,
+  svgBgOuter: string,
+  options: MergeDotOptions = {},
+): string {
+  const top = options.topColor || color;
+  const bottom = options.bottomColor || color;
+  const showTop = options.showTop ?? true;
+  const showBottom = options.showBottom ?? true;
+  const topSegment = showTop
+    ? '<line x1="' + cx + '" y1="' + (cy - 7) + '" x2="' + cx + '" y2="' + cy + '" stroke="' + top + '" stroke-width="2" stroke-linecap="round" opacity="0.95"/>'
+    : "";
+  const bottomSegment = showBottom
+    ? '<line x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy + 7) + '" stroke="' + bottom + '" stroke-width="2" stroke-linecap="round" opacity="0.95"/>'
+    : "";
+
+  return '<circle cx="' + cx + '" cy="' + cy + '" r="7" fill="' + svgBgOuter + '"/>'
+    + topSegment
+    + bottomSegment
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="4" fill="' + color + '" opacity="0.94"/>';
 }
 
 export function isMergeCommit(commit: CommitInfo): boolean {

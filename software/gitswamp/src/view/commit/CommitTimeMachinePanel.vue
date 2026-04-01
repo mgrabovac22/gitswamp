@@ -666,7 +666,7 @@ onUnmounted(() => {
             <p class="text-xs text-[var(--muted-foreground)] mt-1">Slide through history and preview rollback frames.</p>
           </div>
           <div class="flex items-center gap-2">
-            <div class="px-3 py-1.5 rounded-full border border-[var(--border)] bg-[var(--secondary)]">
+            <div class="px-3 py-1.5 rounded-md border border-[var(--border)] bg-[var(--secondary)]">
               <span class="text-[11px] font-semibold text-[var(--primary)]">Frame {{ hasCommits ? selectedIndex + 1 : 0 }} / {{ historyCommits.length }}</span>
             </div>
             <button
@@ -717,7 +717,7 @@ onUnmounted(() => {
               :max="Math.max(0, historyCommits.length - 1)"
               step="1"
             />
-            <div class="mt-2 h-1 rounded-full bg-[var(--secondary)] overflow-hidden">
+            <div class="mt-2 h-1 rounded bg-[var(--secondary)] overflow-hidden">
               <div class="h-full timeline-progress" :style="{ width: `${timelineProgress}%` }" />
             </div>
           </div>
@@ -911,7 +911,7 @@ onUnmounted(() => {
 }
 
 .tm-card {
-  border-radius: 1rem;
+  border-radius: 0.65rem;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--card) 90%, transparent);
   padding: 1rem;
@@ -929,7 +929,7 @@ onUnmounted(() => {
   appearance: none;
   width: 15px;
   height: 15px;
-  border-radius: 999px;
+  border-radius: 0.35rem;
   border: 2px solid color-mix(in srgb, var(--ring) 80%, white 20%);
   background: var(--primary);
   cursor: pointer;
@@ -939,7 +939,7 @@ onUnmounted(() => {
 .timeline-slider::-moz-range-thumb {
   width: 15px;
   height: 15px;
-  border-radius: 999px;
+  border-radius: 0.35rem;
   border: 2px solid color-mix(in srgb, var(--ring) 80%, white 20%);
   background: var(--primary);
   cursor: pointer;
@@ -948,7 +948,7 @@ onUnmounted(() => {
 .tm-btn {
   height: 30px;
   padding: 0 11px;
-  border-radius: 999px;
+  border-radius: 0.45rem;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--secondary) 88%, transparent);
   color: var(--foreground);
@@ -966,7 +966,7 @@ onUnmounted(() => {
 .tm-close {
   width: 28px;
   height: 28px;
-  border-radius: 999px;
+  border-radius: 0.45rem;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--secondary) 78%, transparent);
   color: var(--muted-foreground);
@@ -1022,7 +1022,7 @@ onUnmounted(() => {
 }
 
 .snapshot-chip {
-  border-radius: 0.7rem;
+  border-radius: 0.45rem;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--secondary) 74%, transparent);
   padding: 0.45rem 0.55rem;
@@ -1047,7 +1047,7 @@ onUnmounted(() => {
 .crumb-btn {
   height: 24px;
   padding: 0 8px;
-  border-radius: 999px;
+  border-radius: 0.35rem;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--secondary) 88%, transparent);
   color: var(--muted-foreground);
@@ -1064,7 +1064,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-radius: 8px;
+  border-radius: 0.4rem;
   padding: 6px 8px;
   font-size: 11px;
   border: 1px solid var(--border);
@@ -1092,7 +1092,7 @@ onUnmounted(() => {
   font-weight: 700;
   letter-spacing: 0.04em;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 0.35rem;
   border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border));
   background: color-mix(in srgb, var(--primary) 12%, var(--secondary));
   color: color-mix(in srgb, var(--primary) 75%, white);
@@ -1103,7 +1103,7 @@ onUnmounted(() => {
   overflow: auto;
   background: color-mix(in srgb, var(--secondary) 84%, transparent);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0.45rem;
   padding: 8px;
   color: var(--foreground);
   font-family: Consolas, "Courier New", monospace;

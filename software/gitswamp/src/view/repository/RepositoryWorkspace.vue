@@ -8,6 +8,7 @@ import CommitTimeMachinePanel from "@/view/commit/CommitTimeMachinePanel.vue";
 import CommitConflictHeatmapPanel from "@/view/commit/CommitConflictHeatmapPanel.vue";
 import CommitDetails from "@/view/commit/CommitDetails.vue";
 import TerminalPanel from "@/view/shell/TerminalPanel.vue";
+import LogsPanel from "@/view/shell/LogsPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
 import RemoteInsightsPanel from "@/view/repository/RemoteInsightsPanel.vue";
 import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
@@ -35,12 +36,17 @@ const props = defineProps<{
   timeMachineFocusSha: string | null;
   viewingWorkingChanges: boolean;
   viewingStash: boolean;
+  showLogsPanel: boolean;
+  appLogs: string[];
+  userLogs: string[];
+  errorLogs: string[];
 }>();
 
 const emit = defineEmits<{
   "update:showTerminal": [value: boolean];
   "update:terminalAllowAll": [value: boolean];
   "update:detailsPanelCollapsed": [value: boolean];
+  "update:showLogsPanel": [value: boolean];
   setHistoryView: [mode: HistoryViewMode];
   closeDiffViewer: [];
   closeConflictResolver: [];
@@ -94,11 +100,13 @@ const canAmendSelectedCommit = computed(() => {
 
 const SIDEBAR_WIDTH_KEY = "gitswamp-sidebar-width";
 const DETAILS_WIDTH_KEY = "gitswamp-details-width";
+const LOGS_WIDTH_KEY = "gitswamp-logs-width";
 const TERMINAL_HEIGHT_KEY = "gitswamp-terminal-height";
 const sidebarWidth = ref(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 224);
 const detailsWidth = ref(Number(localStorage.getItem(DETAILS_WIDTH_KEY)) || 320);
+const logsWidth = ref(Number(localStorage.getItem(LOGS_WIDTH_KEY)) || 360);
 const terminalHeight = ref(Number(localStorage.getItem(TERMINAL_HEIGHT_KEY)) || 240);
-const resizeTarget = ref<"sidebar" | "details" | "terminal" | null>(null);
+const resizeTarget = ref<"sidebar" | "details" | "logs" | "terminal" | null>(null);
 const resizeStartX = ref(0);
 const resizeStartWidth = ref(0);
 const resizeStartY = ref(0);
@@ -114,9 +122,13 @@ const terminalPanelStyle = computed(() => ({
   height: `${terminalHeight.value}px`,
 }));
 
-function clampWidth(target: "sidebar" | "details", width: number): number {
+function clampWidth(target: "sidebar" | "details" | "logs", width: number): number {
   if (target === "sidebar") {
     return Math.min(Math.max(width, 180), 420);
+  }
+
+  if (target === "logs") {
+    return Math.min(Math.max(width, 280), 720);
   }
 
   return Math.min(Math.max(width, 260), 700);
@@ -132,7 +144,7 @@ function onWindowResize() {
   terminalHeight.value = clampTerminalHeight(terminalHeight.value);
 }
 
-function beginResize(target: "sidebar" | "details" | "terminal", event: MouseEvent) {
+function beginResize(target: "sidebar" | "details" | "logs" | "terminal", event: MouseEvent) {
   resizeTarget.value = target;
 
   if (target === "terminal") {
@@ -141,7 +153,13 @@ function beginResize(target: "sidebar" | "details" | "terminal", event: MouseEve
     document.body.style.cursor = "row-resize";
   } else {
     resizeStartX.value = event.clientX;
-    resizeStartWidth.value = target === "sidebar" ? sidebarWidth.value : detailsWidth.value;
+    if (target === "sidebar") {
+      resizeStartWidth.value = sidebarWidth.value;
+    } else if (target === "logs") {
+      resizeStartWidth.value = logsWidth.value;
+    } else {
+      resizeStartWidth.value = detailsWidth.value;
+    }
     document.body.style.cursor = "col-resize";
   }
 
@@ -160,6 +178,8 @@ function onPointerMove(event: MouseEvent) {
   const deltaX = event.clientX - resizeStartX.value;
   if (resizeTarget.value === "sidebar") {
     sidebarWidth.value = clampWidth("sidebar", resizeStartWidth.value + deltaX);
+  } else if (resizeTarget.value === "logs") {
+    logsWidth.value = clampWidth("logs", resizeStartWidth.value - deltaX);
   } else {
     detailsWidth.value = clampWidth("details", resizeStartWidth.value - deltaX);
   }
@@ -170,6 +190,8 @@ function endResize() {
 
   if (resizeTarget.value === "terminal") {
     localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight.value));
+  } else if (resizeTarget.value === "logs") {
+    localStorage.setItem(LOGS_WIDTH_KEY, String(logsWidth.value));
   } else {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
     localStorage.setItem(DETAILS_WIDTH_KEY, String(detailsWidth.value));
@@ -445,6 +467,26 @@ function handleRefreshState() {
             @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
             @refresh-state="handleRefreshState"
+          />
+        </div>
+
+        <div
+          v-if="props.showLogsPanel"
+          class="w-1.5 h-full flex-shrink-0 cursor-col-resize bg-[var(--border)]/40 hover:bg-[var(--primary)]/40 transition-colors"
+          title="Resize logs panel"
+          @mousedown.prevent="beginResize('logs', $event)"
+        />
+
+        <div
+          v-if="props.showLogsPanel"
+          class="h-full flex-shrink-0"
+          :style="{ width: `${logsWidth}px` }"
+        >
+          <LogsPanel
+            :app-logs="props.appLogs"
+            :user-logs="props.userLogs"
+            :error-logs="props.errorLogs"
+            @close="emit('update:showLogsPanel', false)"
           />
         </div>
       </div>

@@ -93,7 +93,7 @@ watch(
 <template>
   <div class="flex-1 min-h-0 overflow-y-auto bg-[var(--background)]">
     <div class="p-4 md:p-5 space-y-4">
-      <section class="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
+      <section class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p class="text-[10px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">Visualise Commit History</p>
@@ -101,7 +101,7 @@ watch(
             <p class="text-xs text-[var(--muted-foreground)] mt-1">Files touched by merge-heavy history glow hotter in red.</p>
           </div>
           <button
-            class="h-7 w-7 rounded-full border border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:border-[var(--destructive)]/50 transition-colors"
+            class="h-7 w-7 rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:border-[var(--destructive)]/50 transition-colors"
             title="Back to Git Graph"
             @click="emit('close')"
           >
@@ -110,33 +110,33 @@ watch(
         </div>
       </section>
 
-      <section v-if="loading" class="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 flex flex-col items-center justify-center gap-2 min-h-[220px]">
+      <section v-if="loading" class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-6 flex flex-col items-center justify-center gap-2 min-h-[220px]">
         <img :src="logoCrocLoading" alt="Loading conflict heatmap" class="w-14 h-14 object-contain" />
         <p class="text-xs text-[var(--muted-foreground)]">Scanning merge history for recurring conflict hotspots...</p>
       </section>
 
-      <section v-else-if="error" class="rounded-2xl border border-[var(--destructive)]/40 bg-[var(--destructive)]/10 p-4 text-sm text-[var(--destructive)]">
+      <section v-else-if="error" class="rounded-lg border border-[var(--destructive)]/40 bg-[var(--destructive)]/10 p-4 text-sm text-[var(--destructive)]">
         {{ error }}
       </section>
 
       <template v-else>
-        <section class="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
+        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <input
               v-model="query"
               placeholder="Filter hotspots by path..."
-              class="h-8 min-w-[240px] flex-1 max-w-[580px] px-3 rounded border border-[var(--border)] bg-[var(--input-background)] text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+              class="h-7 min-w-[240px] flex-1 max-w-[580px] px-3 rounded-md border border-[var(--border)] bg-[var(--input-background)] text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
             />
             <div class="flex items-center gap-2">
               <button
                 v-if="!loadAll"
-                class="h-7 px-3 rounded-full text-[11px] border border-[var(--primary)]/35 text-[var(--primary)] hover:border-[var(--primary)]/65 hover:bg-[var(--primary)]/10 transition-colors"
+                class="h-7 px-3 rounded text-[11px] border border-[var(--primary)]/35 text-[var(--primary)] hover:border-[var(--primary)]/65 hover:bg-[var(--primary)]/10 transition-colors"
                 :disabled="loading"
                 @click="enableLoadAll"
               >
                 Load all
               </button>
-              <span v-else class="text-[10px] px-2 py-0.5 rounded-full border border-[var(--primary)]/25 bg-[var(--primary)]/10 text-[var(--primary)]">All history loaded</span>
+              <span v-else class="text-[10px] px-2 py-0.5 rounded border border-[var(--primary)]/25 bg-[var(--primary)]/10 text-[var(--primary)]">All history loaded</span>
               <div class="text-[11px] text-[var(--muted-foreground)]">
               {{ filteredItems.length }} hotspot{{ filteredItems.length === 1 ? "" : "s" }}
             </div>
@@ -147,7 +147,7 @@ watch(
           </p>
         </section>
 
-        <section class="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3">
+        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
           <div v-if="filteredItems.length === 0" class="px-2 py-6 text-xs text-[var(--muted-foreground)] text-center">
             No conflict suspects for this filter.
           </div>
@@ -156,7 +156,7 @@ watch(
             <div
               v-for="item in filteredItems"
               :key="item.path"
-              class="rounded-lg border px-3 py-2"
+              class="rounded-md border px-3 py-2"
               :style="rowStyle(item.score)"
             >
               <div class="flex flex-wrap items-start justify-between gap-2">
@@ -170,8 +170,8 @@ watch(
                     score: {{ item.score }}
                   </div>
                 </div>
-                <div class="w-[140px] h-2 rounded-full bg-[var(--secondary)] overflow-hidden self-center">
-                  <div class="h-full rounded-full" :style="scoreBarStyle(item.score)" />
+                <div class="w-[140px] h-2 rounded bg-[var(--secondary)] overflow-hidden self-center">
+                  <div class="h-full rounded" :style="scoreBarStyle(item.score)" />
                 </div>
               </div>
             </div>

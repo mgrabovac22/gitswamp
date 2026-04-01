@@ -139,6 +139,11 @@ const pushPlatform = ref("");
 const pushUsername = ref("");
 const pushDomain = ref("");
 const detailsPanelCollapsed = ref(true);
+const showLogsPanel = ref(localStorage.getItem("gitswamp-show-logs-panel") === "true");
+const appLogs = ref<string[]>([]);
+const userLogs = ref<string[]>([]);
+const errorLogs = ref<string[]>([]);
+const MAX_LOG_ROWS = 400;
 const openPullRequestBranches = ref<string[]>([]);
 const githubIssues = ref<IssueInfo[]>([]);
 const githubPullRequests = ref<PullRequestInfo[]>([]);
@@ -155,6 +160,33 @@ const authDomainInput = ref("");
 const authEmailInput = ref("");
 const authKeyNameInput = ref("gitswamp");
 const authSubmitting = ref(false);
+
+function normalizeLogMessage(value: string): string {
+  const flattened = value.replace(/\s+/g, " ").trim();
+  if (flattened.length <= 240) {
+    return flattened;
+  }
+  return flattened.slice(0, 240) + "...";
+}
+
+function appendLog(target: "app" | "user" | "error", message: string) {
+  const row = `[${new Date().toLocaleTimeString()}] ${normalizeLogMessage(message)}`;
+  let bucket = appLogs;
+  if (target === "user") {
+    bucket = userLogs;
+  } else if (target === "error") {
+    bucket = errorLogs;
+  }
+  bucket.value.push(row);
+  if (bucket.value.length > MAX_LOG_ROWS) {
+    bucket.value.splice(0, bucket.value.length - MAX_LOG_ROWS);
+  }
+}
+
+function openLogsPanel() {
+  showLogsPanel.value = true;
+  appendLog("user", "Opened logs panel.");
+}
 
 function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
   diffFilePath.value = filePath;
@@ -950,9 +982,15 @@ async function handleSaveGithubTokenFromSettings(token: string) {
 }
 
 async function handlePull() {
+  appendLog("user", "Pull triggered.");
   activeRemoteAction.value = "pull";
   try {
     await git.pull();
+    if (git.error.value) {
+      appendLog("error", `Pull failed: ${git.error.value}`);
+    } else {
+      appendLog("app", "Pull completed.");
+    }
     maybeShowAuthDialogFromGitError();
   } finally {
     activeRemoteAction.value = null;
@@ -960,9 +998,15 @@ async function handlePull() {
 }
 
 async function handleFetch() {
+  appendLog("user", "Fetch triggered.");
   activeRemoteAction.value = "fetch";
   try {
     await git.fetchAll();
+    if (git.error.value) {
+      appendLog("error", `Fetch failed: ${git.error.value}`);
+    } else {
+      appendLog("app", "Fetch completed.");
+    }
     maybeShowAuthDialogFromGitError();
   } finally {
     activeRemoteAction.value = null;
@@ -971,6 +1015,7 @@ async function handleFetch() {
 
 function toggleTerminalPanel() {
   showTerminal.value = !showTerminal.value;
+  appendLog("user", `Terminal ${showTerminal.value ? "opened" : "closed"}.`);
 }
 
 function setHistoryViewMode(mode: HistoryViewMode) {
@@ -1122,6 +1167,12 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
     return true;
   }
 
+  if (event.ctrlKey && event.shiftKey && key === "l") {
+    event.preventDefault();
+    openLogsPanel();
+    return true;
+  }
+
   if (event.ctrlKey && !event.shiftKey && key === ",") {
     event.preventDefault();
     showSettings.value = true;
@@ -1155,6 +1206,7 @@ const recentRepos = ref<{ name: string; path: string; branch: string; owner?: st
 
 onMounted(() => {
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
+  appendLog("app", "Application started.");
 
   const restoreSession = shouldRestoreSession();
 
@@ -1216,6 +1268,27 @@ watch(activeTabId, () => {
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
 });
+
+watch(showLogsPanel, (value) => {
+  localStorage.setItem("gitswamp-show-logs-panel", String(value));
+});
+
+watch(() => git.error.value, (value) => {
+  if (!value) return;
+  appendLog("error", value);
+});
+
+watch(
+  () => git.terminalOutput.value.length,
+  (length, previousLength) => {
+    if (length <= 0) return;
+    const start = Math.max(previousLength ?? 0, 0);
+    const recent = git.terminalOutput.value.slice(start);
+    for (const row of recent) {
+      appendLog("app", `Terminal: ${row}`);
+    }
+  },
+);
 
 watch(recentRepos, () => {
   try {
@@ -1287,6 +1360,7 @@ async function openRepo(path: string) {
     await git.openRepository(path);
     if (git.repoInfo.value) {
       const repo = git.repoInfo.value;
+      appendLog("user", `Opened repository: ${repo.path}`);
       const tab = tabs.value.find((t) => t.id === activeTabId.value);
       if (tab) {
         tab.repo = repo;
@@ -1352,6 +1426,7 @@ async function handleInit(path: string, branchName: string) {
 }
 
 async function handlePush() {
+  appendLog("user", "Push triggered.");
   // First, check if origin exists
   const hasOrigin = await git.checkOriginExists();
   if (hasOrigin) {
@@ -1359,11 +1434,17 @@ async function handlePush() {
     activeRemoteAction.value = "push";
     try {
       await git.push();
+      if (git.error.value) {
+        appendLog("error", `Push failed: ${git.error.value}`);
+      } else {
+        appendLog("app", "Push completed.");
+      }
       maybeShowAuthDialogFromGitError();
     } finally {
       activeRemoteAction.value = null;
     }
   } else {
+    appendLog("app", "Push requires remote setup first.");
     // No origin, show dialog to select platform
     const repoName = git.repoInfo.value?.name || "repository";
     multiPlatformPushRepoName.value = repoName;
@@ -1810,6 +1891,7 @@ const openReposList = computed(() =>
       @open-in-vs-code="openRepoInVsCode()"
       @open-in-explorer="openRepoInExplorer()"
       @create-gist="createGistFromRepo()"
+      @open-logs="openLogsPanel()"
     />
 
     <template v-if="isLanding">
@@ -1863,10 +1945,15 @@ const openReposList = computed(() =>
         :time-machine-focus-sha="timeMachineFocusSha"
         :viewing-working-changes="viewingWorkingChanges"
         :viewing-stash="viewingStash"
+        :show-logs-panel="showLogsPanel"
+        :app-logs="appLogs"
+        :user-logs="userLogs"
+        :error-logs="errorLogs"
         @set-history-view="setHistoryViewMode($event)"
         @update:show-terminal="showTerminal = $event"
         @update:terminal-allow-all="terminalAllowAll = $event"
         @update:details-panel-collapsed="detailsPanelCollapsed = $event"
+        @update:show-logs-panel="showLogsPanel = $event"
         @close-diff-viewer="closeDiffViewer"
         @open-diff-viewer="openDiffViewer($event.path, $event.sha, $event.staged)"
         @open-conflict-resolver="openConflictResolver($event)"

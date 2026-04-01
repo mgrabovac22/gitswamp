@@ -33,6 +33,7 @@ const emit = defineEmits<{
   openInExplorer: [];
   createGist: [];
   setHistoryView: [mode: HistoryViewMode];
+  openLogs: [];
 }>();
 
 const menuRoot = ref<HTMLElement | null>(null);
@@ -229,6 +230,13 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       label: "About GitSwamp",
       description: "Project summary, creator and technology stack.",
       run: openAboutPanel,
+    },
+    {
+      id: "help-logs",
+      label: "Logs",
+      description: "Open app, user and error log panel on the right side.",
+      shortcut: "Ctrl+Shift+L",
+      run: () => emit("openLogs"),
     },
     {
       id: "help-guide",
@@ -445,6 +453,7 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open settings</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open logs panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+L</span></div>
             </div>
           </section>
         </div>

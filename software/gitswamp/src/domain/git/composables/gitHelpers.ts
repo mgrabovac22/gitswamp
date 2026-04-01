@@ -136,14 +136,6 @@ function gitlabTokenForRemote(
   remote: { host: string; hostWithPort: string },
   urlLower: string,
 ): string | null | undefined {
-  if (remote.host === "gitlab.com") {
-    return state.providerTokens.value["gitlab"] || null;
-  }
-
-  if (!(remote.host.includes("gitlab.") || urlLower.includes("/gitlab"))) {
-    return undefined;
-  }
-
   const selfHostedRaw = state.providerTokens.value["gitlab-self"];
   const selfHostedParsed = parseGitlabSelfToken(selfHostedRaw);
 
@@ -151,11 +143,19 @@ function gitlabTokenForRemote(
     return selfHostedParsed.token;
   }
 
-  if (selfHostedRaw && !selfHostedParsed) {
-    return selfHostedRaw;
+  if (remote.host === "gitlab.com") {
+    return state.providerTokens.value["gitlab"] || null;
   }
 
-  return state.providerTokens.value["gitlab"] || null;
+  if (remote.host.includes("gitlab.") || urlLower.includes("/gitlab")) {
+    if (selfHostedRaw && !selfHostedParsed) {
+      return selfHostedRaw;
+    }
+
+    return state.providerTokens.value["gitlab"] || null;
+  }
+
+  return undefined;
 }
 
 function providerTokenByHost(

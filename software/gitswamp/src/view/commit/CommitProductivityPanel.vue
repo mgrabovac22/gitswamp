@@ -486,12 +486,12 @@ watch(uniqueAuthorNames, (authorNames) => {
   <div class="flex-1 overflow-y-auto min-h-0 relative productivity-surface">
     <div class="absolute inset-0 pointer-events-none productivity-radial" />
     <div class="relative z-10 p-4 md:p-5 space-y-4">
-      <section class="rounded-2xl border border-[#1f2937] bg-[#08151a]/88 backdrop-blur-sm p-4">
+      <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 backdrop-blur-sm p-4">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p class="text-[10px] uppercase tracking-[0.18em] text-[#7dd3fc]/80">Visualise Commit History</p>
-            <h2 class="text-lg md:text-xl font-bold text-[#d1fae5]">Swamp Productivity Arena</h2>
-            <p class="text-xs text-[#9ca3af] mt-1">Gamified pulse of your repository rhythm from full history.</p>
+            <p class="text-[10px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Visualise Commit History</p>
+            <h2 class="text-lg md:text-xl font-bold text-[var(--foreground)]">Swamp Productivity Arena</h2>
+            <p class="text-xs text-[var(--muted-foreground)] mt-1">Gamified pulse of your repository rhythm from full history.</p>
           </div>
           <div class="flex items-center gap-2 flex-wrap justify-end">
             <div class="arena-author-filter">
@@ -507,8 +507,8 @@ watch(uniqueAuthorNames, (authorNames) => {
                 </option>
               </select>
             </div>
-            <div class="px-3 py-1.5 rounded-full border border-[#14b8a6]/35 bg-[#0f2a2a]/70 min-w-[150px] text-center">
-              <span class="text-[11px] font-semibold text-[#5eead4]">Rank: {{ productivityRank }}</span>
+            <div class="px-3 py-1.5 rounded-md border border-[var(--primary)]/35 bg-[var(--secondary)] min-w-[150px] text-center">
+              <span class="text-[11px] font-semibold text-[var(--primary)]">Rank: {{ productivityRank }}</span>
             </div>
             <button
               v-if="!loadAllHistory"
@@ -532,7 +532,7 @@ watch(uniqueAuthorNames, (authorNames) => {
 
       <section
         v-if="historyLoading"
-        class="rounded-2xl border border-[#1f2937] bg-[#071118]/88 p-6 flex flex-col items-center justify-center gap-2 min-h-[220px]"
+        class="rounded-lg border border-[var(--border)] bg-[var(--card)]/92 p-6 flex flex-col items-center justify-center gap-2 min-h-[220px]"
       >
         <img :src="logoCrocLoading" alt="Loading productivity arena" class="arena-loader-logo" />
         <div class="arena-loader-wave" aria-label="Loading">
@@ -545,21 +545,21 @@ watch(uniqueAuthorNames, (authorNames) => {
             {{ letter }}
           </span>
         </div>
-        <p class="text-xs text-[#94a3b8]">
+        <p class="text-xs text-[var(--muted-foreground)]">
           {{ loadAllHistory ? "Crunching full history stats..." : `Crunching latest ${PREVIEW_HISTORY_LIMIT} commits...` }}
         </p>
       </section>
 
       <section
         v-else-if="historyError"
-        class="rounded-2xl border border-[#7f1d1d] bg-[#2a1316]/85 p-4 text-sm text-[#fca5a5]"
+        class="rounded-lg border border-[var(--destructive)]/35 bg-[var(--destructive)]/12 p-4 text-sm text-[var(--destructive)]"
       >
         {{ historyError }}
       </section>
 
       <template v-else>
-        <section class="rounded-2xl border border-[#1f2937] bg-[#071118]/72 px-4 py-2.5">
-          <p class="text-[11px] text-[#94a3b8]">
+        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/78 px-4 py-2.5">
+          <p class="text-[11px] text-[var(--muted-foreground)]">
             {{
               selectedAuthor === "all"
                 ? (loadAllHistory ? "Showing full loaded history." : `Showing latest ${PREVIEW_HISTORY_LIMIT} commits.`)
@@ -614,10 +614,10 @@ watch(uniqueAuthorNames, (authorNames) => {
           </article>
         </section>
 
-        <section class="rounded-2xl border border-[#1f2937] bg-[#071118]/85 p-4">
+        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
           <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <h3 class="text-sm font-semibold text-[#e2e8f0]">Consistency and Momentum</h3>
-            <span class="text-[10px] text-[#94a3b8]">{{ repoAgeDays }} day repository age</span>
+            <h3 class="text-sm font-semibold text-[var(--foreground)]">Consistency and Momentum</h3>
+            <span class="text-[10px] text-[var(--muted-foreground)]">{{ repoAgeDays }} day repository age</span>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <div class="momentum-card">
@@ -641,10 +641,10 @@ watch(uniqueAuthorNames, (authorNames) => {
           </div>
         </section>
 
-        <section class="rounded-2xl border border-[#1f2937] bg-[#071118]/85 p-4">
+        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
           <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-semibold text-[#e2e8f0]">Activity Heat Map</h3>
-            <span class="text-[10px] text-[#94a3b8]">Last 12 months</span>
+            <h3 class="text-sm font-semibold text-[var(--foreground)]">Activity Heat Map</h3>
+            <span class="text-[10px] text-[var(--muted-foreground)]">Last 12 months</span>
           </div>
 
           <div>
@@ -666,37 +666,37 @@ watch(uniqueAuthorNames, (authorNames) => {
           </div>
         </section>
 
-        <section class="rounded-2xl border border-[#1f2937] bg-[#081118]/86 p-4">
+        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
           <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <h3 class="text-sm font-semibold text-[#e2e8f0]">Bug Killer Leaderboard</h3>
-            <span class="text-[10px] text-[#94a3b8]">Deletion stats across loaded history window</span>
+            <h3 class="text-sm font-semibold text-[var(--foreground)]">Bug Killer Leaderboard</h3>
+            <span class="text-[10px] text-[var(--muted-foreground)]">Deletion stats across loaded history window</span>
           </div>
 
-          <div v-if="bugKillerLoading" class="flex items-center gap-2 text-xs text-[#5eead4]">
+          <div v-if="bugKillerLoading" class="flex items-center gap-2 text-xs text-[var(--primary)]">
             <img :src="logoCrocLoading" alt="Loading deletions" class="mini-loader-logo" />
             {{ loadAllHistory ? "Loading full-history deletion stats..." : `Loading latest ${PREVIEW_HISTORY_LIMIT} commit stats...` }}
           </div>
-          <div v-else-if="bugKillerError" class="text-xs text-[#f87171]">{{ bugKillerError }}</div>
-          <div v-else-if="displayedBugKillers.length === 0" class="text-xs text-[#94a3b8]">No deletion-heavy commits found yet.</div>
+          <div v-else-if="bugKillerError" class="text-xs text-[var(--destructive)]">{{ bugKillerError }}</div>
+          <div v-else-if="displayedBugKillers.length === 0" class="text-xs text-[var(--muted-foreground)]">No deletion-heavy commits found yet.</div>
           <div v-else class="space-y-2">
-            <div class="rounded-xl border border-[#14b8a6]/30 bg-[#0f172a]/65 px-3 py-2.5">
-              <div class="text-[10px] uppercase tracking-[0.14em] text-[#5eead4]/85">Top Slayer</div>
-              <div class="mt-1 text-sm font-semibold text-[#d1fae5]">{{ topBugKiller?.author }}</div>
-              <div class="text-[11px] text-[#9ca3af]">{{ topBugKiller?.deletions }} lines removed across {{ topBugKiller?.commits }} commits</div>
+            <div class="rounded-md border border-[var(--primary)]/30 bg-[var(--secondary)]/80 px-3 py-2.5">
+              <div class="text-[10px] uppercase tracking-[0.14em] text-[var(--primary)]">Top Slayer</div>
+              <div class="mt-1 text-sm font-semibold text-[var(--foreground)]">{{ topBugKiller?.author }}</div>
+              <div class="text-[11px] text-[var(--muted-foreground)]">{{ topBugKiller?.deletions }} lines removed across {{ topBugKiller?.commits }} commits</div>
             </div>
 
             <div
               v-for="row in displayedBugKillers"
               :key="row.author"
-              class="rounded-xl border border-[#1f2937] bg-[#0b1520]/75 px-3 py-2"
+              class="rounded-md border border-[var(--border)] bg-[var(--secondary)]/70 px-3 py-2"
             >
               <div class="flex items-center justify-between gap-2 text-[11px] mb-1.5">
-                <span class="font-medium text-[#e2e8f0] truncate">{{ row.author }}</span>
-                <span class="text-[#5eead4] font-semibold">{{ row.deletions }} del</span>
+                <span class="font-medium text-[var(--foreground)] truncate">{{ row.author }}</span>
+                <span class="text-[var(--primary)] font-semibold">{{ row.deletions }} del</span>
               </div>
-              <div class="h-1.5 rounded-full bg-[#1f2937] overflow-hidden">
+              <div class="h-1.5 rounded bg-[var(--muted)] overflow-hidden">
                 <div
-                  class="h-full rounded-full bg-gradient-to-r from-[#14b8a6] to-[#06b6d4]"
+                  class="h-full rounded bg-gradient-to-r from-[var(--primary)] to-[var(--chart-2)]"
                   :style="{ width: `${Math.max(8, Math.round((row.deletions / maxKillerDeletes) * 100))}%` }"
                 />
               </div>
@@ -711,9 +711,9 @@ watch(uniqueAuthorNames, (authorNames) => {
 <style scoped>
 .productivity-surface {
   background:
-    radial-gradient(circle at 15% 18%, rgba(20, 184, 166, 0.12), transparent 45%),
-    radial-gradient(circle at 82% 12%, rgba(14, 116, 144, 0.16), transparent 40%),
-    linear-gradient(145deg, rgba(2, 6, 23, 0.96) 0%, rgba(3, 12, 20, 0.94) 52%, rgba(4, 16, 24, 0.97) 100%);
+    radial-gradient(circle at 15% 18%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 45%),
+    radial-gradient(circle at 82% 12%, color-mix(in srgb, var(--chart-2) 12%, transparent), transparent 40%),
+    linear-gradient(145deg, color-mix(in srgb, var(--background) 94%, black 6%) 0%, var(--background) 52%, color-mix(in srgb, var(--card) 72%, var(--background) 28%) 100%);
 }
 
 .productivity-radial {
@@ -721,15 +721,15 @@ watch(uniqueAuthorNames, (authorNames) => {
     125deg,
     transparent 0,
     transparent 14px,
-    rgba(20, 184, 166, 0.035) 14px,
-    rgba(20, 184, 166, 0.035) 15px
+    color-mix(in srgb, var(--primary) 10%, transparent) 14px,
+    color-mix(in srgb, var(--primary) 10%, transparent) 15px
   );
 }
 
 .metric-card {
-  border: 1px solid rgba(31, 41, 55, 0.9);
-  border-radius: 0.9rem;
-  background: rgba(8, 18, 28, 0.84);
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--card) 90%, transparent);
   padding: 0.8rem 0.9rem;
 }
 
@@ -741,7 +741,7 @@ watch(uniqueAuthorNames, (authorNames) => {
   font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.9);
+  color: color-mix(in srgb, var(--muted-foreground) 90%, transparent);
 }
 
 .metric-value {
@@ -749,26 +749,26 @@ watch(uniqueAuthorNames, (authorNames) => {
   font-size: 1.4rem;
   line-height: 1;
   font-weight: 700;
-  color: #d1fae5;
+  color: var(--foreground);
 }
 
 .metric-foot {
   margin-top: 0.22rem;
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--muted-foreground);
 }
 
 .metric-mini {
   margin-top: 0.22rem;
   font-size: 1.02rem;
   font-weight: 700;
-  color: #d1fae5;
+  color: var(--foreground);
 }
 
 .momentum-card {
-  border: 1px solid rgba(51, 65, 85, 0.88);
-  border-radius: 0.75rem;
-  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--secondary) 78%, transparent);
   padding: 0.65rem 0.75rem;
 }
 
@@ -776,12 +776,12 @@ watch(uniqueAuthorNames, (authorNames) => {
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: var(--muted-foreground);
 }
 
 .momentum-value {
   margin-top: 0.2rem;
-  color: #e2e8f0;
+  color: var(--foreground);
   font-size: 1rem;
   font-weight: 700;
 }
@@ -789,16 +789,16 @@ watch(uniqueAuthorNames, (authorNames) => {
 .momentum-sub {
   margin-top: 0.14rem;
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--muted-foreground);
 }
 
 .arena-close {
   width: 28px;
   height: 28px;
-  border-radius: 999px;
-  border: 1px solid rgba(51, 65, 85, 0.9);
-  background: rgba(15, 23, 42, 0.75);
-  color: #cbd5e1;
+  border-radius: 0.45rem;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--secondary) 78%, transparent);
+  color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
@@ -807,18 +807,18 @@ watch(uniqueAuthorNames, (authorNames) => {
 
 .arena-load-all {
   height: 28px;
-  border-radius: 999px;
-  border: 1px solid rgba(94, 234, 212, 0.35);
-  background: rgba(15, 42, 42, 0.62);
-  color: #5eead4;
+  border-radius: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: color-mix(in srgb, var(--secondary) 72%, transparent);
+  color: var(--primary);
   font-size: 11px;
   font-weight: 600;
   padding: 0 10px;
 }
 
 .arena-load-all:hover {
-  border-color: rgba(94, 234, 212, 0.7);
-  background: rgba(20, 78, 78, 0.45);
+  border-color: color-mix(in srgb, var(--primary) 70%, var(--border));
+  background: color-mix(in srgb, var(--primary) 14%, var(--secondary));
 }
 
 .arena-load-all:disabled {
@@ -830,26 +830,26 @@ watch(uniqueAuthorNames, (authorNames) => {
   height: 28px;
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
-  border: 1px solid rgba(45, 212, 191, 0.28);
-  background: rgba(8, 28, 28, 0.62);
-  color: #99f6e4;
+  border-radius: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border));
+  background: color-mix(in srgb, var(--primary) 10%, var(--secondary));
+  color: var(--primary);
   font-size: 11px;
   font-weight: 600;
   padding: 0 10px;
 }
 
 .arena-close:hover {
-  color: #f8fafc;
-  border-color: rgba(248, 113, 113, 0.8);
-  background: rgba(127, 29, 29, 0.5);
+  color: var(--foreground);
+  border-color: color-mix(in srgb, var(--destructive) 62%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 14%, var(--secondary));
 }
 
 .arena-loader-logo {
   width: 54px;
   height: 54px;
   object-fit: contain;
-  filter: drop-shadow(0 0 7px rgba(45, 212, 191, 0.38));
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--primary) 35%, transparent));
 }
 
 .mini-loader-logo {
@@ -866,7 +866,7 @@ watch(uniqueAuthorNames, (authorNames) => {
 .arena-loader-letter {
   font-size: 12px;
   font-weight: 700;
-  color: #5eead4;
+  color: var(--primary);
   text-transform: uppercase;
   animation: arena-loader-bounce 1s ease-in-out infinite;
 }
@@ -876,32 +876,32 @@ watch(uniqueAuthorNames, (authorNames) => {
   align-items: center;
   gap: 0.45rem;
   padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid rgba(45, 212, 191, 0.26);
-  background: rgba(8, 22, 30, 0.78);
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
+  background: color-mix(in srgb, var(--secondary) 88%, transparent);
 }
 
 .arena-author-filter label {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #93c5fd;
+  color: var(--muted-foreground);
 }
 
 .arena-author-filter select {
-  background: rgba(15, 35, 46, 0.95);
-  border: 1px solid rgba(45, 212, 191, 0.35);
-  border-radius: 999px;
+  background: var(--input-background);
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
   height: 24px;
   min-width: 150px;
   padding: 0 0.65rem;
   font-size: 11px;
-  color: #d1fae5;
+  color: var(--foreground);
   outline: none;
 }
 
 .arena-author-filter select:focus {
-  border-color: rgba(94, 234, 212, 0.78);
+  border-color: color-mix(in srgb, var(--primary) 75%, var(--border));
 }
 
 .heatmap-grid {
@@ -922,7 +922,7 @@ watch(uniqueAuthorNames, (authorNames) => {
 .heatmap-cell {
   width: 100%;
   aspect-ratio: 1 / 1;
-  border-radius: 4px;
+  border-radius: 2px;
   border-width: 1px;
   transition: transform 0.15s ease;
 }

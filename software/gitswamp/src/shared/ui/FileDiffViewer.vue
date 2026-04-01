@@ -54,6 +54,7 @@ interface TimeLapseFrame {
   message: string;
   timestamp: number;
   content: string;
+  diffLines: DiffLine[];
 }
 
 const timeLapseFrames = ref<TimeLapseFrame[]>([]);
@@ -139,6 +140,36 @@ const FILE_WATCH_INTERVAL_MS = 1800;
 const CACHE_CLEANUP_INTERVAL_MS = 12_000;
 const FULL_FILE_SIMPLIFY_LINE_LIMIT = 35000;
 const FULL_FILE_SIMPLIFY_CHAR_LIMIT = 1200000;
+const DIFF_COLORING_TIMEOUT_MS = 5000;
+
+const rawDiffFallbackActive = ref(false);
+const rawDiffFallbackReason = ref<string | null>(null);
+let diffColoringDeadline = 0;
+let diffFallbackNotified = false;
+
+function resetDiffColoringBudget() {
+  diffColoringDeadline = Date.now() + DIFF_COLORING_TIMEOUT_MS;
+  rawDiffFallbackActive.value = false;
+  rawDiffFallbackReason.value = null;
+  diffFallbackNotified = false;
+}
+
+function shouldAbortDiffColoring(): boolean {
+  return diffColoringDeadline > 0 && Date.now() > diffColoringDeadline;
+}
+
+function activateRawDiffFallback(reason = "Coloring exceeded 5 seconds. Showing regular Git diff.") {
+  if (rawDiffFallbackActive.value) return;
+
+  rawDiffFallbackActive.value = true;
+  rawDiffFallbackReason.value = reason;
+  highlightedLineCache.value.clear();
+
+  if (!diffFallbackNotified) {
+    diffFallbackNotified = true;
+    toast.info("Diff coloring exceeded 5 seconds. Showing regular Git diff.");
+  }
+}
 
 const isPlainTextFastPath = computed(() => PLAIN_TEXT_FAST_PATH_PATTERN.test(props.filePath));
 
@@ -365,6 +396,10 @@ watch(viewMode, (mode) => {
     stopTimeLapsePlayback();
   }
 
+  if (mode === "diff" || mode === "file-diff") {
+    resetDiffColoringBudget();
+  }
+
   if (mode === "edit") {
     loadFileForEdit();
   } else if (mode === "file-diff") {
@@ -378,6 +413,8 @@ watch(viewMode, (mode) => {
 
 async function reload() {
   if (viewMode.value === "edit") return;
+
+  resetDiffColoringBudget();
   
   loading.value = true;
   error.value = null;
@@ -746,6 +783,10 @@ const diffPayload = computed(() => {
 });
 
 const usePlainTextHighlighting = computed(() => {
+  if (rawDiffFallbackActive.value) {
+    return true;
+  }
+
   if (viewMode.value === "file-diff") {
     return fullFileLines.value.length > MAX_HIGHLIGHT_LINES || fileContent.value.length > MAX_HIGHLIGHT_CHARS;
   }
@@ -754,7 +795,7 @@ const usePlainTextHighlighting = computed(() => {
 });
 
 const inlineDiffEnabled = computed(() => {
-  if (isPlainTextFastPath.value || usePlainTextHighlighting.value) {
+  if (rawDiffFallbackActive.value || isPlainTextFastPath.value || usePlainTextHighlighting.value) {
     return false;
   }
 
@@ -773,6 +814,106 @@ const activeTimeLapseFrame = computed(() => {
   const idx = Math.min(Math.max(0, timeLapseFrameIndex.value), timeLapseFrames.value.length - 1);
   return timeLapseFrames.value[idx] || null;
 });
+
+interface TimeLapseRenderLine {
+  key: string;
+  oldLineNo: number | null;
+  newLineNo: number | null;
+  type: "context" | "addition" | "deletion";
+  content: string;
+}
+
+interface TimeLapseDecorations {
+  additionsByLine: Map<number, DiffLine>;
+  deletionsByAnchor: Map<number, DiffLine[]>;
+}
+
+function buildPlainTimeLapseRenderLines(lines: string[]): TimeLapseRenderLine[] {
+  return lines.map((content, idx) => ({
+    key: `ctx:${idx + 1}`,
+    oldLineNo: idx + 1,
+    newLineNo: idx + 1,
+    type: "context",
+    content,
+  }));
+}
+
+function collectTimeLapseDecorations(diffLines: DiffLine[]): TimeLapseDecorations {
+  const additionsByLine = new Map<number, DiffLine>();
+  const deletionsByAnchor = new Map<number, DiffLine[]>();
+  let currentNewLine = 1;
+
+  for (const diffLine of diffLines) {
+    if (diffLine.new_line_no !== null) {
+      currentNewLine = diffLine.new_line_no;
+    }
+
+    if (diffLine.line_type === "addition" && diffLine.new_line_no !== null) {
+      additionsByLine.set(diffLine.new_line_no, diffLine);
+      continue;
+    }
+
+    if (diffLine.line_type === "deletion") {
+      const anchor = Math.max(1, currentNewLine);
+      const bucket = deletionsByAnchor.get(anchor) ?? [];
+      bucket.push(diffLine);
+      deletionsByAnchor.set(anchor, bucket);
+    }
+  }
+
+  return { additionsByLine, deletionsByAnchor };
+}
+
+function appendTimeLapseDeletions(rendered: TimeLapseRenderLine[], anchor: number, deletions: DiffLine[], tail = false) {
+  deletions.forEach((line, deleteIdx) => {
+    rendered.push({
+      key: `${tail ? "tail-del" : "del"}:${anchor}:${deleteIdx}:${line.old_line_no ?? 0}`,
+      oldLineNo: line.old_line_no,
+      newLineNo: null,
+      type: "deletion",
+      content: line.content.replace(/\n$/, ""),
+    });
+  });
+}
+
+function buildTimeLapseRenderLines(frame: TimeLapseFrame | null): TimeLapseRenderLine[] {
+  if (!frame) return [];
+
+  const lines = frame.content.split("\n");
+  if (!frame.diffLines.length) {
+    return buildPlainTimeLapseRenderLines(lines);
+  }
+
+  const { additionsByLine, deletionsByAnchor } = collectTimeLapseDecorations(frame.diffLines);
+
+  const rendered: TimeLapseRenderLine[] = [];
+
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const lineNo = idx + 1;
+    const pendingDeletions = deletionsByAnchor.get(lineNo);
+    if (pendingDeletions && pendingDeletions.length) {
+      appendTimeLapseDeletions(rendered, lineNo, pendingDeletions);
+      deletionsByAnchor.delete(lineNo);
+    }
+
+    const addition = additionsByLine.get(lineNo);
+    rendered.push({
+      key: `line:${lineNo}`,
+      oldLineNo: addition ? null : lineNo,
+      newLineNo: lineNo,
+      type: addition ? "addition" : "context",
+      content: lines[idx],
+    });
+  }
+
+  for (const [anchor, trailing] of deletionsByAnchor) {
+    appendTimeLapseDeletions(rendered, anchor, trailing, true);
+  }
+
+  return rendered;
+}
+
+const activeTimeLapseRenderLines = computed(() => buildTimeLapseRenderLines(activeTimeLapseFrame.value));
 
 function stopTimeLapsePlayback() {
   if (timeLapseTimer) {
@@ -811,6 +952,73 @@ function formatTimeLapseTimestamp(timestamp: number): string {
   return new Date(value).toLocaleString();
 }
 
+function normalizeCommitFilePath(path: string): string {
+  return path.replace(/\\/g, "/").trim();
+}
+
+async function getCommitFilesSafe(sha: string): Promise<CommitFileInfo[] | null> {
+  try {
+    return await invoke<CommitFileInfo[]>("get_commit_files", {
+      path: props.repoPath,
+      sha,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function commitTouchesFile(commitFiles: CommitFileInfo[], normalizedPath: string): boolean {
+  return commitFiles.some((file) => normalizeCommitFilePath(file.path) === normalizedPath);
+}
+
+async function getFrameDiffLinesSafe(sha: string): Promise<DiffLine[]> {
+  try {
+    const frameDiff = await invoke<FileDiff>("get_commit_diff", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      sha,
+    });
+
+    const lines: DiffLine[] = [];
+    for (const hunk of frameDiff.hunks) {
+      for (const line of hunk.lines) {
+        lines.push(line);
+      }
+    }
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+async function buildTimeLapseFrame(commit: CommitInfo, normalizedPath: string): Promise<TimeLapseFrame | null> {
+  const commitFiles = await getCommitFilesSafe(commit.sha);
+  if (!commitFiles || !commitTouchesFile(commitFiles, normalizedPath)) {
+    return null;
+  }
+
+  try {
+    const content = await invoke<string>("get_file_content", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      sha: commit.sha,
+    });
+
+    const diffLines = await getFrameDiffLinesSafe(commit.sha);
+    return {
+      sha: commit.sha,
+      shortSha: commit.short_sha,
+      author: commit.author_name,
+      message: commit.message.split("\n")[0],
+      timestamp: commit.timestamp,
+      content,
+      diffLines,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function loadTimeLapseFrames() {
   if (timeLapseLoading.value) return;
   if (!props.repoPath) return;
@@ -826,48 +1034,19 @@ async function loadTimeLapseFrames() {
       maxCount: 180,
     });
 
-    const normalizedPath = props.filePath.replace(/\\/g, "/").trim();
+    const normalizedPath = normalizeCommitFilePath(props.filePath);
     const frames: TimeLapseFrame[] = [];
     let previousContent = "";
 
     for (const commit of commits) {
       if (frames.length >= TIME_LAPSE_MAX_FRAMES) break;
 
-      let commitFiles: CommitFileInfo[] = [];
-      try {
-        commitFiles = await invoke<CommitFileInfo[]>("get_commit_files", {
-          path: props.repoPath,
-          sha: commit.sha,
-        });
-      } catch {
-        continue;
-      }
+      const frame = await buildTimeLapseFrame(commit, normalizedPath);
+      if (!frame) continue;
+      if (frame.content === previousContent && frames.length > 0) continue;
 
-      const changedTarget = commitFiles.some((file) => file.path.replace(/\\/g, "/").trim() === normalizedPath);
-      if (!changedTarget) continue;
-
-      try {
-        const content = await invoke<string>("get_file_content", {
-          path: props.repoPath,
-          filePath: props.filePath,
-          sha: commit.sha,
-        });
-
-        if (content === previousContent && frames.length > 0) {
-          continue;
-        }
-
-        frames.push({
-          sha: commit.sha,
-          shortSha: commit.short_sha,
-          author: commit.author_name,
-          message: commit.message.split("\n")[0],
-          timestamp: commit.timestamp,
-          content,
-        });
-        previousContent = content;
-      } catch {
-      }
+      frames.push(frame);
+      previousContent = frame.content;
     }
 
     timeLapseFrames.value = frames.reverse();
@@ -1069,6 +1248,15 @@ function escapeHtml(value: string): string {
 }
 
 function getHighlightedLine(lineText: string, key: string): string {
+  if (rawDiffFallbackActive.value) {
+    return escapeHtml(lineText);
+  }
+
+  if (shouldAbortDiffColoring()) {
+    activateRawDiffFallback();
+    return escapeHtml(lineText);
+  }
+
   const cached = highlightedLineCache.value.get(key);
   if (cached !== undefined) {
     return cached;
@@ -1124,47 +1312,133 @@ function getHighlightedFileLine(rowIdx: number, line: FullFileLine): string {
   return getHighlightedLine(line.content, `file:${rowIdx}:${line.content}`);
 }
 
-const inlineDiffPairs = computed(() => {
-  const pairs = new Map<string, InlineDiffPair>();
-  if (!diff.value || !inlineDiffEnabled.value) {
-    return pairs;
+function shouldStopInlineColoring(): boolean {
+  if (rawDiffFallbackActive.value) {
+    return true;
+  }
+  if (!shouldAbortDiffColoring()) {
+    return false;
   }
 
-  diff.value.hunks.forEach((hunk, hunkIdx) => {
-    let lineIdx = 0;
-    while (lineIdx < hunk.lines.length) {
-      if (hunk.lines[lineIdx].line_type !== "deletion") {
-        lineIdx += 1;
-        continue;
-      }
+  activateRawDiffFallback();
+  return true;
+}
 
-      const deletionStart = lineIdx;
-      while (lineIdx < hunk.lines.length && hunk.lines[lineIdx].line_type === "deletion") {
-        lineIdx += 1;
-      }
+interface InlineDiffBlock {
+  deletionStart: number;
+  additionStart: number;
+  end: number;
+}
 
-      const additionStart = lineIdx;
-      while (lineIdx < hunk.lines.length && hunk.lines[lineIdx].line_type === "addition") {
-        lineIdx += 1;
-      }
+function readInlineDiffBlock(lines: DiffLine[], startIndex: number): InlineDiffBlock | null {
+  if (lines[startIndex]?.line_type !== "deletion") {
+    return null;
+  }
 
-      const deletionCount = additionStart - deletionStart;
-      const additionCount = lineIdx - additionStart;
-      if (deletionCount === 0 || additionCount === 0) {
-        continue;
-      }
+  let cursor = startIndex;
+  const deletionStart = cursor;
+  while (cursor < lines.length && lines[cursor].line_type === "deletion") {
+    cursor += 1;
+  }
 
-      const deletionIndexes = Array.from({ length: deletionCount }, (_, offset) => deletionStart + offset);
-      const additionIndexes = Array.from({ length: additionCount }, (_, offset) => additionStart + offset);
-      const matchedPairs = collectInlineLinePairs(hunk, deletionIndexes, additionIndexes);
-      for (const [delLineIdx, addLineIdx] of matchedPairs) {
-        const deletionText = hunk.lines[delLineIdx].content.replace(/\n$/, "");
-        const additionText = hunk.lines[addLineIdx].content.replace(/\n$/, "");
-        pairs.set(`${hunkIdx}:${delLineIdx}`, { compareText: additionText });
-        pairs.set(`${hunkIdx}:${addLineIdx}`, { compareText: deletionText });
-      }
+  const additionStart = cursor;
+  while (cursor < lines.length && lines[cursor].line_type === "addition") {
+    cursor += 1;
+  }
+
+  return {
+    deletionStart,
+    additionStart,
+    end: cursor,
+  };
+}
+
+function applyInlinePairsForBlock(
+  hunk: { lines: DiffLine[] },
+  hunkIdx: number,
+  block: InlineDiffBlock,
+  pairs: Map<string, InlineDiffPair>,
+): boolean {
+  const deletionCount = block.additionStart - block.deletionStart;
+  const additionCount = block.end - block.additionStart;
+  if (deletionCount === 0 || additionCount === 0) {
+    return true;
+  }
+
+  const deletionIndexes = Array.from({ length: deletionCount }, (_, offset) => block.deletionStart + offset);
+  const additionIndexes = Array.from({ length: additionCount }, (_, offset) => block.additionStart + offset);
+  const matchedPairs = collectInlineLinePairs(hunk, deletionIndexes, additionIndexes);
+
+  for (const [delLineIdx, addLineIdx] of matchedPairs) {
+    if (shouldStopInlineColoring()) {
+      return false;
     }
-  });
+
+    const deletionText = hunk.lines[delLineIdx].content.replace(/\n$/, "");
+    const additionText = hunk.lines[addLineIdx].content.replace(/\n$/, "");
+    pairs.set(`${hunkIdx}:${delLineIdx}`, { compareText: additionText });
+    pairs.set(`${hunkIdx}:${addLineIdx}`, { compareText: deletionText });
+  }
+
+  return true;
+}
+
+function collectInlinePairsForHunk(
+  hunk: { lines: DiffLine[] },
+  hunkIdx: number,
+  pairs: Map<string, InlineDiffPair>,
+): boolean {
+  let lineIdx = 0;
+  while (lineIdx < hunk.lines.length) {
+    if (shouldStopInlineColoring()) {
+      return false;
+    }
+
+    const block = readInlineDiffBlock(hunk.lines, lineIdx);
+    if (!block) {
+      lineIdx += 1;
+      continue;
+    }
+
+    const applied = applyInlinePairsForBlock(hunk, hunkIdx, block, pairs);
+    if (!applied) {
+      return false;
+    }
+
+    lineIdx = block.end;
+  }
+
+  return true;
+}
+
+const inlineDiffPairs = computed(() => {
+  if (!diff.value || !inlineDiffEnabled.value || rawDiffFallbackActive.value) {
+    return new Map<string, InlineDiffPair>();
+  }
+
+  if (shouldStopInlineColoring()) {
+    return new Map<string, InlineDiffPair>();
+  }
+
+  const pairs = new Map<string, InlineDiffPair>();
+  let aborted = false;
+
+  for (const [hunkIdx, hunk] of diff.value.hunks.entries()) {
+    if (shouldStopInlineColoring()) {
+      aborted = true;
+      break;
+    }
+
+    const collected = collectInlinePairsForHunk(hunk, hunkIdx, pairs);
+    if (!collected) {
+      aborted = true;
+      break;
+    }
+  }
+
+  if (aborted) {
+    return new Map(pairs);
+  }
 
   return pairs;
 });
@@ -1400,6 +1674,13 @@ watch(usePlainTextHighlighting, () => {
 
       <div v-else-if="viewMode === 'diff' && diff" class="min-w-fit">
         <div
+          v-if="rawDiffFallbackActive"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+        >
+          {{ rawDiffFallbackReason || 'Coloring exceeded 5 seconds. Showing regular Git diff.' }}
+        </div>
+
+        <div
           v-if="usePlainTextHighlighting"
           class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
         >
@@ -1451,6 +1732,13 @@ watch(usePlainTextHighlighting, () => {
       </div>
 
       <div v-else-if="viewMode === 'file-diff'" class="min-w-fit h-full overflow-auto" @scroll="onFileDiffScroll">
+        <div
+          v-if="rawDiffFallbackActive"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+        >
+          {{ rawDiffFallbackReason || 'Coloring exceeded 5 seconds. Showing regular Git diff.' }}
+        </div>
+
         <div v-if="loadingFileContent" class="flex items-center justify-center h-full">
           <div class="diff-loader-shell">
             <img :src="logoCrocGif" alt="Loading file content" class="diff-loader-logo" />
@@ -1565,7 +1853,35 @@ watch(usePlainTextHighlighting, () => {
             </div>
           </div>
           <div class="flex-1 overflow-auto">
-            <pre class="m-0 p-3 font-mono text-[12px] leading-[1.45] whitespace-pre-wrap break-all text-[var(--diff-text)]">{{ activeTimeLapseFrame.content }}</pre>
+            <div v-if="activeTimeLapseRenderLines.length === 0" class="h-full flex items-center justify-center text-[var(--muted-foreground)] text-sm">
+              No timeline content available for this frame.
+            </div>
+            <div v-else class="font-mono text-[12px] leading-[1.4] min-w-fit">
+              <div
+                v-for="line in activeTimeLapseRenderLines"
+                :key="line.key"
+                class="flex"
+                :class="line.type === 'addition'
+                  ? 'bg-[var(--diff-add-bg)] text-[var(--diff-add-fg)]'
+                  : line.type === 'deletion'
+                    ? 'bg-[var(--diff-del-bg)] text-[var(--diff-del-fg)]'
+                    : 'text-[var(--diff-text)]'"
+              >
+                <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
+                  {{ line.oldLineNo ?? '' }}
+                </div>
+                <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
+                  {{ line.newLineNo ?? '' }}
+                </div>
+                <div
+                  class="w-5 flex-shrink-0 text-center select-none font-bold"
+                  :class="line.type === 'addition' ? 'text-[var(--diff-sign-add)]' : line.type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
+                >
+                  {{ linePrefix(line.type) }}
+                </div>
+                <pre class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden m-0"><code class="hljs bg-transparent">{{ line.content }}</code></pre>
+              </div>
+            </div>
           </div>
           <div class="px-3 py-1.5 border-t border-[var(--diff-border)] bg-[var(--secondary)]/40 text-[10px] text-[var(--muted-foreground)]">
             Frame {{ Math.min(timeLapseFrameIndex + 1, timeLapseFrames.length) }} / {{ timeLapseFrames.length }}
@@ -1668,24 +1984,24 @@ watch(usePlainTextHighlighting, () => {
 }
 
 :deep(.diff-inline-add) {
-  background: color-mix(in srgb, var(--diff-sign-add) 55%, transparent);
-  border: 1.5px solid color-mix(in srgb, var(--diff-sign-add) 95%, transparent);
+  background: var(--diff-inline-add-bg);
+  border: 1.5px solid color-mix(in srgb, var(--diff-sign-add) 90%, transparent);
   border-radius: 2px;
-  color: var(--diff-sign-add);
+  color: var(--diff-inline-add-text);
   font-weight: inherit;
   font-style: normal;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 88%, transparent), 0 0 3px color-mix(in srgb, var(--diff-sign-add) 35%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 85%, transparent), 0 0 2px color-mix(in srgb, var(--diff-sign-add) 30%, transparent);
   text-decoration: none;
 }
 
 :deep(.diff-inline-del) {
-  background: color-mix(in srgb, var(--diff-sign-del) 55%, transparent);
-  border: 1.5px solid color-mix(in srgb, var(--diff-sign-del) 95%, transparent);
+  background: var(--diff-inline-del-bg);
+  border: 1.5px solid color-mix(in srgb, var(--diff-sign-del) 90%, transparent);
   border-radius: 2px;
-  color: var(--diff-sign-del);
+  color: var(--diff-inline-del-text);
   font-weight: inherit;
   font-style: normal;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 88%, transparent), 0 0 3px color-mix(in srgb, var(--diff-sign-del) 35%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 85%, transparent), 0 0 2px color-mix(in srgb, var(--diff-sign-del) 30%, transparent);
   text-decoration: none;
 }
 </style>

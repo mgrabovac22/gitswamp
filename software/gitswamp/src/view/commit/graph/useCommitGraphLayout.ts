@@ -2,7 +2,7 @@ import { computed, type Ref } from "vue";
 
 import type { CommitInfo, GraphEdge, GraphNode, StashInfo, TagInfo } from "@/types";
 
-import { CORNER_R, GRAPH_COLORS, LANE_WIDTH, OVERSCAN } from "./graph.constants";
+import { CORNER_R, GRAPH_COLORS, LANE_WIDTH, NODE_RADIUS, OVERSCAN } from "./graph.constants";
 
 export interface MergedRef {
   name: string;
@@ -27,12 +27,173 @@ type CommitGraphProps = {
   tags?: TagInfo[];
 };
 
-function rangesOverlap(a: { min: number; max: number }, b: { min: number; max: number }): boolean {
-  return a.min <= b.max && b.min <= a.max;
+function nextAvailableLane(used: Set<number>): number {
+  let lane = 0;
+  while (used.has(lane)) {
+    lane += 1;
+  }
+  return lane;
+}
+
+function normalizedRefName(refName: string): string | null {
+  const value = refName.trim();
+  if (!value || value === "HEAD" || value.includes("->")) {
+    return null;
+  }
+
+  return value.replace(/^origin\//, "");
+}
+
+function preferredLaneFromRefs(
+  commit: CommitInfo,
+  branchLaneMap: Map<string, number>,
+  activeLanes: Set<number>,
+): number | undefined {
+  for (const ref of commit.refs) {
+    const normalized = normalizedRefName(ref);
+    if (!normalized) continue;
+    const reservedLane = branchLaneMap.get(normalized);
+    if (reservedLane !== undefined && !activeLanes.has(reservedLane)) {
+      return reservedLane;
+    }
+  }
+
+  return undefined;
+}
+
+function registerCommitRefs(commit: CommitInfo, lane: number, branchLaneMap: Map<string, number>) {
+  for (const ref of commit.refs) {
+    const normalized = normalizedRefName(ref);
+    if (!normalized) continue;
+    if (!branchLaneMap.has(normalized)) {
+      branchLaneMap.set(normalized, lane);
+    }
+  }
+}
+
+function reserveParentLaneHints(commit: CommitInfo, lane: number, laneHintsBySha: Map<string, number>): number {
+  let maxAssignedLane = lane;
+  const firstParentSha = commit.parent_shas[0];
+  if (firstParentSha && !laneHintsBySha.has(firstParentSha)) {
+    laneHintsBySha.set(firstParentSha, lane);
+  }
+
+  for (const parentSha of commit.parent_shas.slice(1)) {
+    if (!parentSha || laneHintsBySha.has(parentSha)) continue;
+
+    const usedForMerge = new Set(laneHintsBySha.values());
+    usedForMerge.add(lane);
+    const mergeLane = nextAvailableLane(usedForMerge);
+    laneHintsBySha.set(parentSha, mergeLane);
+    maxAssignedLane = Math.max(maxAssignedLane, mergeLane);
+  }
+
+  return maxAssignedLane;
+}
+
+function buildGraphModel(commits: CommitInfo[], currentBranch: string) {
+  if (!commits.length) {
+    return {
+      nodes: [] as GraphNode[],
+      edges: [] as GraphEdge[],
+      laneCount: 0,
+      branchLanes: new Map<string, number>(),
+    };
+  }
+
+  const shaIdx = new Map<string, number>();
+  commits.forEach((commit, idx) => shaIdx.set(commit.sha, idx));
+
+  const laneHintsBySha = new Map<string, number>();
+  const branchLaneMap = new Map<string, number>();
+  if (currentBranch.trim()) {
+    branchLaneMap.set(currentBranch.trim(), 0);
+  }
+
+  const nodes: GraphNode[] = [];
+  let maxLane = 0;
+
+  for (const commit of commits) {
+    const hintedLane = laneHintsBySha.get(commit.sha);
+    if (hintedLane !== undefined) {
+      laneHintsBySha.delete(commit.sha);
+    }
+
+    const activeLanes = new Set(laneHintsBySha.values());
+    let lane = hintedLane;
+    lane ??= preferredLaneFromRefs(commit, branchLaneMap, activeLanes);
+    lane ??= nextAvailableLane(activeLanes);
+    if (activeLanes.has(lane)) {
+      lane = nextAvailableLane(activeLanes);
+    }
+
+    maxLane = Math.max(maxLane, lane);
+    nodes.push({
+      commit,
+      lane,
+      color: GRAPH_COLORS[lane % GRAPH_COLORS.length],
+    });
+
+    registerCommitRefs(commit, lane, branchLaneMap);
+    maxLane = Math.max(maxLane, reserveParentLaneHints(commit, lane, laneHintsBySha));
+  }
+
+  const edges: GraphEdge[] = [];
+  commits.forEach((commit, idx) => {
+    const fromNode = nodes[idx];
+    for (const parentSha of commit.parent_shas) {
+      const parentIdx = shaIdx.get(parentSha);
+      if (parentIdx === undefined) continue;
+
+      edges.push({
+        fromIndex: idx,
+        toIndex: parentIdx,
+        fromLane: fromNode.lane,
+        toLane: nodes[parentIdx].lane,
+        color: fromNode.color,
+      });
+    }
+  });
+
+  return {
+    nodes,
+    edges,
+    laneCount: Math.max(1, maxLane + 1),
+    branchLanes: branchLaneMap,
+  };
 }
 
 function laneX(lane: number): number {
   return lane * LANE_WIDTH + LANE_WIDTH / 2 + 4;
+}
+
+function nodeConnectionGap(commit: CommitInfo): number {
+  // Merge edges should connect to the center of the merge node.
+  if (commit.parent_shas.length > 1) {
+    return 0;
+  }
+
+  return NODE_RADIUS + 2;
+}
+
+function nodeShieldRadius(commit: CommitInfo): number {
+  if (commit.parent_shas.length > 1) {
+    return 8;
+  }
+
+  return NODE_RADIUS + 2;
+}
+
+function buildQuickVerticalPath(x: number, startY: number, endY: number, includeMove: boolean): string | null {
+  if (Math.abs(endY - startY) < 0.1) {
+    return `${includeMove ? "M" : "L"} ${x} ${startY}`;
+  }
+
+  if (endY < startY) {
+    return `${includeMove ? "M" : "L"} ${x} ${startY} L ${x} ${endY}`;
+  }
+
+  return null;
 }
 
 function refsWithoutHead(commit: CommitInfo): string[] {
@@ -50,130 +211,7 @@ export function useCommitGraphLayout(
   scrollTop: Ref<number>,
   viewportHeight: Ref<number>,
 ) {
-  const graph = computed(() => {
-    const all = props.commits;
-    if (!all.length) {
-      return {
-        nodes: [] as GraphNode[],
-        edges: [] as GraphEdge[],
-        laneCount: 0,
-        branchLanes: new Map<string, number>(),
-      };
-    }
-
-    const shaIdx = new Map<string, number>();
-    all.forEach((c, i) => shaIdx.set(c.sha, i));
-
-    const branchHeads = new Map<string, number>();
-    const commitBranch = new Map<number, string>();
-
-    all.forEach((commit, idx) => {
-      for (const r of commit.refs) {
-        const name = r.replace(/^origin\//, "");
-        if (name === "HEAD" || name.includes("->")) continue;
-        if (!branchHeads.has(name)) {
-          branchHeads.set(name, idx);
-          if (!commitBranch.has(idx)) commitBranch.set(idx, name);
-        }
-      }
-    });
-
-    for (const [branchName, headIdx] of branchHeads) {
-      let current = headIdx;
-      const visited = new Set<number>();
-      while (current !== undefined && !visited.has(current)) {
-        visited.add(current);
-        const commit = all[current];
-        if (commit.parent_shas.length > 0) {
-          const fp = shaIdx.get(commit.parent_shas[0]);
-          if (fp !== undefined && !commitBranch.has(fp)) {
-            commitBranch.set(fp, branchName);
-            current = fp;
-          } else {
-            break;
-          }
-        } else {
-          break;
-        }
-      }
-    }
-
-    all.forEach((_, idx) => {
-      if (!commitBranch.has(idx)) commitBranch.set(idx, "__default");
-    });
-
-    const branchRange = new Map<string, { min: number; max: number }>();
-    all.forEach((_, idx) => {
-      const b = commitBranch.get(idx) ?? "__default";
-      const cur = branchRange.get(b);
-      if (cur) {
-        cur.min = Math.min(cur.min, idx);
-        cur.max = Math.max(cur.max, idx);
-      } else {
-        branchRange.set(b, { min: idx, max: idx });
-      }
-    });
-
-    const branchOrder: string[] = [];
-    const addBr = (n: string) => {
-      if (!branchOrder.includes(n) && branchRange.has(n)) branchOrder.push(n);
-    };
-
-    if (props.currentBranch) addBr(props.currentBranch);
-    for (const n of ["main", "master"]) addBr(n);
-    all.forEach((_, idx) => {
-      const b = commitBranch.get(idx);
-      if (b) addBr(b);
-    });
-
-    const laneOccupied: Array<Array<{ min: number; max: number }>> = [];
-    const laneMap = new Map<string, number>();
-
-    for (const branch of branchOrder) {
-      const range = branchRange.get(branch);
-      if (!range) continue;
-      let assigned = -1;
-      for (let lane = 0; lane < laneOccupied.length; lane++) {
-        const conflicts = laneOccupied[lane].some(r => rangesOverlap(r, range));
-        if (!conflicts) {
-          assigned = lane;
-          break;
-        }
-      }
-      if (assigned === -1) {
-        assigned = laneOccupied.length;
-        laneOccupied.push([]);
-      }
-      laneOccupied[assigned].push(range);
-      laneMap.set(branch, assigned);
-    }
-
-    const laneCount = laneOccupied.length;
-
-    const nodes: GraphNode[] = all.map((commit, idx) => {
-      const branch = commitBranch.get(idx) || "__default";
-      const lane = laneMap.get(branch) ?? 0;
-      return { commit, lane, color: GRAPH_COLORS[lane % GRAPH_COLORS.length] };
-    });
-
-    const edges: GraphEdge[] = [];
-    all.forEach((commit, idx) => {
-      for (const parentSha of commit.parent_shas) {
-        const pi = shaIdx.get(parentSha);
-        if (pi !== undefined) {
-          edges.push({
-            fromIndex: idx,
-            toIndex: pi,
-            fromLane: nodes[idx].lane,
-            toLane: nodes[pi].lane,
-            color: nodes[idx].color,
-          });
-        }
-      }
-    });
-
-    return { nodes, edges, laneCount, branchLanes: laneMap };
-  });
+  const graph = computed(() => buildGraphModel(props.commits, props.currentBranch));
 
   const stashNodes = computed(() => {
     if (!props.stashes?.length) return [];
@@ -276,21 +314,328 @@ export function useCommitGraphLayout(
     return index * rowHeight.value + rowHeight.value / 2 + wcOffset.value;
   }
 
+  function firstBlockingNodeBlock(
+    x: number,
+    startY: number,
+    endY: number,
+    excludedIndexes: Set<number>,
+  ): { start: number; end: number } | null {
+    const minY = Math.min(startY, endY);
+    const maxY = Math.max(startY, endY);
+
+    const blocks: Array<{ start: number; end: number }> = [];
+    for (let idx = 0; idx < graph.value.nodes.length; idx += 1) {
+      if (excludedIndexes.has(idx)) continue;
+
+      const node = graph.value.nodes[idx];
+      const centerX = laneX(node.lane);
+      const radius = nodeShieldRadius(node.commit);
+      if (Math.abs(centerX - x) >= radius) {
+        continue;
+      }
+
+      const centerY = ry(idx);
+      const start = centerY - radius;
+      const end = centerY + radius;
+      if (end <= minY || start >= maxY) {
+        continue;
+      }
+
+      blocks.push({
+        start: Math.max(start, minY),
+        end: Math.min(end, maxY),
+      });
+    }
+
+    if (blocks.length === 0) {
+      return null;
+    }
+
+    blocks.sort((a, b) => a.start - b.start);
+
+    const first = { ...blocks[0] };
+    for (const block of blocks.slice(1)) {
+      if (block.start <= first.end) {
+        first.end = Math.max(first.end, block.end);
+      } else {
+        break;
+      }
+    }
+
+    return first;
+  }
+
+  function blockingNodeBlocksAtX(
+    x: number,
+    startY: number,
+    endY: number,
+    excludedIndexes: Set<number>,
+  ): Array<{ start: number; end: number }> {
+    const minY = Math.min(startY, endY);
+    const maxY = Math.max(startY, endY);
+    const blocks: Array<{ start: number; end: number }> = [];
+
+    for (let idx = 0; idx < graph.value.nodes.length; idx += 1) {
+      if (excludedIndexes.has(idx)) continue;
+
+      const node = graph.value.nodes[idx];
+      const centerX = laneX(node.lane);
+      const radius = nodeShieldRadius(node.commit);
+      if (Math.abs(centerX - x) >= radius) {
+        continue;
+      }
+
+      const centerY = ry(idx);
+      const start = centerY - radius;
+      const end = centerY + radius;
+      if (end <= minY || start >= maxY) {
+        continue;
+      }
+
+      blocks.push({
+        start: Math.max(minY, start),
+        end: Math.min(maxY, end),
+      });
+    }
+
+    blocks.sort((a, b) => a.start - b.start);
+    return blocks;
+  }
+
+  function hasConsecutiveBlockingNodes(blocks: Array<{ start: number; end: number }>): boolean {
+    if (blocks.length < 2) {
+      return false;
+    }
+
+    const adjacencyGap = Math.max(2, rowHeight.value * 0.4);
+    for (let idx = 1; idx < blocks.length; idx += 1) {
+      if (blocks[idx].start - blocks[idx - 1].end <= adjacencyGap) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function segmentIntersectsAnyForeignNode(
+    x: number,
+    startY: number,
+    endY: number,
+    excludedIndexes: Set<number>,
+  ): boolean {
+    const minY = Math.min(startY, endY);
+    const maxY = Math.max(startY, endY);
+
+    for (let idx = 0; idx < graph.value.nodes.length; idx += 1) {
+      if (excludedIndexes.has(idx)) continue;
+
+      const node = graph.value.nodes[idx];
+      const centerX = laneX(node.lane);
+      const centerY = ry(idx);
+      const radius = nodeShieldRadius(node.commit);
+
+      if (centerY + radius < minY || centerY - radius > maxY) {
+        continue;
+      }
+
+      if (Math.abs(centerX - x) < radius) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function findRightClearX(
+    fromX: number,
+    startY: number,
+    endY: number,
+    excludedIndexes: Set<number>,
+  ): number {
+    const unit = Math.max(6, Math.floor(LANE_WIDTH * 0.4));
+    let candidate = fromX + unit;
+
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (!segmentIntersectsAnyForeignNode(candidate, startY, endY, excludedIndexes)) {
+        return candidate;
+      }
+      candidate += unit;
+    }
+
+    return fromX + unit;
+  }
+
+  function routeStairDetours(
+    path: string,
+    startX: number,
+    startY: number,
+    endY: number,
+    clearance: number,
+    excludedIndexes: Set<number>,
+  ): { path: string; cursorX: number; cursorY: number } {
+    let nextPath = path;
+    let cursorX = startX;
+    let cursorY = startY;
+    let guard = 0;
+
+    while (cursorY < endY && guard < 50) {
+      guard += 1;
+      const block = firstBlockingNodeBlock(cursorX, cursorY, endY, excludedIndexes);
+      if (!block) {
+        nextPath += ` L ${cursorX} ${endY}`;
+        cursorY = endY;
+        break;
+      }
+
+      const approachY = Math.max(cursorY, block.start - clearance);
+      if (approachY > cursorY) {
+        nextPath += ` L ${cursorX} ${approachY}`;
+      }
+
+      const leaveY = Math.min(endY, block.end + clearance);
+      const detourX = findRightClearX(cursorX, approachY, leaveY, excludedIndexes);
+      nextPath += ` L ${detourX} ${approachY}`;
+      nextPath += ` L ${detourX} ${leaveY}`;
+      cursorX = detourX;
+      cursorY = leaveY;
+    }
+
+    return { path: nextPath, cursorX, cursorY };
+  }
+
+  function settleStairPath(
+    path: string,
+    cursorX: number,
+    cursorY: number,
+    startX: number,
+    startY: number,
+    endY: number,
+  ): string {
+    let nextPath = path;
+    if (cursorY < endY) {
+      nextPath += ` L ${cursorX} ${endY}`;
+    }
+
+    if (Math.abs(cursorX - startX) <= 0.1) {
+      return nextPath;
+    }
+
+    const settleY = Math.max(startY, endY - Math.max(8, rowHeight.value * 0.24));
+    if (cursorY < settleY) {
+      nextPath += ` L ${cursorX} ${settleY}`;
+    }
+    nextPath += ` L ${startX} ${settleY}`;
+    nextPath += ` L ${startX} ${endY}`;
+    return nextPath;
+  }
+
+  function stairStepVerticalPath(
+    x: number,
+    startY: number,
+    endY: number,
+    excludedIndexes: Set<number>,
+    includeMove = true,
+  ): string {
+    const quickPath = buildQuickVerticalPath(x, startY, endY, includeMove);
+    if (quickPath) return quickPath;
+
+    const initialBlocks = blockingNodeBlocksAtX(x, startY, endY, excludedIndexes);
+    if (!hasConsecutiveBlockingNodes(initialBlocks)) {
+      return `${includeMove ? "M" : "L"} ${x} ${startY} L ${x} ${endY}`;
+    }
+
+    const clearance = Math.max(2, Math.floor(NODE_RADIUS * 0.25));
+    const startCommand = `${includeMove ? "M" : "L"} ${x} ${startY}`;
+    const routed = routeStairDetours(startCommand, x, startY, endY, clearance, excludedIndexes);
+    return settleStairPath(routed.path, routed.cursorX, routed.cursorY, x, startY, endY);
+  }
+
   function ep(e: GraphEdge): string {
     const x1 = laneX(e.fromLane);
     const y1 = ry(e.fromIndex);
     const x2 = laneX(e.toLane);
     const y2 = ry(e.toIndex);
-    if (e.fromLane === e.toLane) return "M " + x1 + " " + y1 + " L " + x2 + " " + y2;
-    const r = Math.min(CORNER_R, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 4);
-    const d = x2 > x1 ? 1 : -1;
-    const turnY = y1 + rowHeight.value * 0.5;
-    return "M " + x1 + " " + y1
-      + " L " + x1 + " " + (turnY - r)
-      + " Q " + x1 + " " + turnY + " " + (x1 + d * r) + " " + turnY
-      + " L " + (x2 - d * r) + " " + turnY
-      + " Q " + x2 + " " + turnY + " " + x2 + " " + (turnY + r)
-      + " L " + x2 + " " + y2;
+
+    const fromCommit = props.commits[e.fromIndex];
+    const toCommit = props.commits[e.toIndex];
+    const sy = y1 + nodeConnectionGap(fromCommit);
+    const ey = y2 - nodeConnectionGap(toCommit);
+    const excludedIndexes = new Set<number>([e.fromIndex, e.toIndex]);
+
+    if (e.fromLane === e.toLane) {
+      return stairStepVerticalPath(
+        x1,
+        sy,
+        ey,
+        excludedIndexes,
+      );
+    }
+
+    const d: -1 | 1 = x2 > x1 ? 1 : -1;
+    const adx = Math.abs(x2 - x1);
+
+    if (ey <= sy) {
+      const bridgeY = (sy + ey) / 2;
+      const up = Math.max(0, sy - bridgeY);
+      const down = Math.max(0, bridgeY - ey);
+      const r = Math.max(1, Math.min(CORNER_R, adx / 2, up, down));
+
+      return `M ${x1} ${sy}`
+        + ` L ${x1} ${bridgeY + r}`
+        + ` Q ${x1} ${bridgeY} ${x1 + d * r} ${bridgeY}`
+        + ` L ${x2 - d * r} ${bridgeY}`
+        + ` Q ${x2} ${bridgeY} ${x2} ${bridgeY - r}`
+        + ` L ${x2} ${ey}`;
+    }
+
+    const dy = ey - sy;
+
+    if (dy < rowHeight.value) {
+      const leadY = Math.max(2, Math.min(rowHeight.value * 0.2, dy * 0.4));
+      const available = Math.max(1, dy - leadY);
+      const r = Math.max(1, Math.min(CORNER_R, adx / 2, available / 2));
+      const turnY = sy + leadY + r;
+
+      return `M ${x1} ${sy}`
+        + ` L ${x1} ${turnY - r}`
+        + ` Q ${x1} ${turnY} ${x1 + d * r} ${turnY}`
+        + ` L ${x2 - d * r} ${turnY}`
+        + ` Q ${x2} ${turnY} ${x2} ${turnY + r}`
+        + ` L ${x2} ${ey}`;
+    }
+
+    const minBottomGap = Math.max(8, rowHeight.value * 0.34);
+    const preferredTurnY = sy + Math.max(10, rowHeight.value * 0.56);
+    const maxTurnY = ey - minBottomGap;
+    const turnY = Math.min(preferredTurnY, maxTurnY);
+
+    // Use one consistent, symmetric corner radius so all lane changes
+    // have the same horizontal<->vertical transition feel.
+    const targetRadius = CORNER_R + 2;
+    const availableUp = Math.max(1, turnY - sy);
+    const availableDown = Math.max(1, ey - turnY);
+    const r = Math.min(targetRadius, adx / 2, availableUp, availableDown);
+
+    const firstVertical = stairStepVerticalPath(
+      x1,
+      sy,
+      turnY - r,
+      excludedIndexes,
+    );
+
+    const secondVertical = stairStepVerticalPath(
+      x2,
+      turnY + r,
+      ey,
+      excludedIndexes,
+      false,
+    );
+
+    return firstVertical
+      + ` Q ${x1} ${turnY} ${x1 + d * r} ${turnY}`
+      + ` L ${x2 - d * r} ${turnY}`
+      + ` Q ${x2} ${turnY} ${x2} ${turnY + r}`
+      + secondVertical;
   }
 
   function wcEdge(): string {

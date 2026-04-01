@@ -16,6 +16,86 @@ impl RemoteService {
         GitRepository::get_git_path()
     }
 
+    fn push_unique_candidate(candidates: &mut Vec<String>, candidate: &str) {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if !candidates.iter().any(|value| value == trimmed) {
+            candidates.push(trimmed.to_string());
+        }
+    }
+
+    fn auth_username_candidates(remote_url: &str, username_from_url: Option<&str>) -> Vec<String> {
+        let host_and_path = remote_url
+            .strip_prefix(HTTPS_SCHEME)
+            .unwrap_or(remote_url);
+        let host = host_and_path
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .to_lowercase();
+        let host_and_path_lower = host_and_path.to_lowercase();
+
+        let mut candidates: Vec<String> = Vec::new();
+
+        if let Some(user) = username_from_url {
+            Self::push_unique_candidate(&mut candidates, user);
+        }
+
+        if host.contains(BITBUCKET_HOST) {
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_BITBUCKET);
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITHUB);
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITLAB);
+            return candidates;
+        }
+
+        if host.contains(AZURE_HOST) || host.contains(AZURE_LEGACY_HOST) {
+            Self::push_unique_candidate(&mut candidates, "pat");
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITHUB);
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITLAB);
+            return candidates;
+        }
+
+        if host == GITLAB_HOST
+            || host.contains("gitlab.")
+            || host_and_path_lower.contains("/gitlab")
+        {
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITLAB);
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITHUB);
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_BITBUCKET);
+            return candidates;
+        }
+
+        if host == GITHUB_HOST || host.contains("github.") {
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITHUB);
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_GITLAB);
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_BITBUCKET);
+            return candidates;
+        }
+
+        // Unknown hosts include self-hosted platforms, so prefer GitLab's oauth2 alias first
+        // and then fall back to other common token usernames.
+        Self::push_unique_candidate(&mut candidates, AUTH_USER_GITLAB);
+        Self::push_unique_candidate(&mut candidates, AUTH_USER_GITHUB);
+        Self::push_unique_candidate(&mut candidates, AUTH_USER_BITBUCKET);
+
+        candidates
+    }
+
+    fn authenticated_url_with_username(remote_url: &str, username: &str, token: &str) -> Option<String> {
+        if !remote_url.starts_with(HTTPS_SCHEME) || remote_url.contains('@') {
+            return None;
+        }
+
+        let host_and_path = &remote_url[HTTPS_SCHEME.len()..];
+        let enc_token = urlencoded(token);
+        Some(format!(
+            "{}{}:{}@{}",
+            HTTPS_SCHEME, username, enc_token, host_and_path
+        ))
+    }
+
     pub fn fetch_all(path: &str, token: Option<&str>) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let remotes = repo.remotes().map_err(|e| e.message().to_string())?;
@@ -32,8 +112,42 @@ impl RemoteService {
             let mut callbacks = git2::RemoteCallbacks::new();
             if let Some(t) = token {
                 let tok = t.to_string();
-                callbacks.credentials(move |_url, _username, _allowed| {
-                    git2::Cred::userpass_plaintext("x-access-token", &tok)
+                let configured_url = remote.url().unwrap_or_default().to_string();
+                let mut attempt = 0usize;
+                callbacks.credentials(move |url, username_from_url, allowed| {
+                    if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                        let current_url = if url.is_empty() {
+                            configured_url.as_str()
+                        } else {
+                            url
+                        };
+                        let candidates =
+                            Self::auth_username_candidates(current_url, username_from_url);
+                        let user = candidates
+                            .get(attempt)
+                            .or_else(|| candidates.last())
+                            .map(|value| value.as_str())
+                            .unwrap_or(AUTH_USER_GITLAB);
+                        attempt = attempt.saturating_add(1);
+                        return git2::Cred::userpass_plaintext(user, &tok);
+                    }
+
+                    if allowed.contains(git2::CredentialType::USERNAME) {
+                        let current_url = if url.is_empty() {
+                            configured_url.as_str()
+                        } else {
+                            url
+                        };
+                        let candidates =
+                            Self::auth_username_candidates(current_url, username_from_url);
+                        let user = candidates
+                            .first()
+                            .map(|value| value.as_str())
+                            .unwrap_or(AUTH_USER_GITLAB);
+                        return git2::Cred::username(user);
+                    }
+
+                    git2::Cred::default()
                 });
             }
             let mut fetch_opts = git2::FetchOptions::new();
@@ -137,44 +251,48 @@ impl RemoteService {
         let remote_url = remote.url().unwrap_or_default().to_string();
         if let Some(t) = token {
             if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
-                let host_and_path = &remote_url[HTTPS_SCHEME.len()..];
-                let enc_token = urlencoded(t);
+                let users = Self::auth_username_candidates(&remote_url, None);
+                let mut last_error: Option<String> = None;
 
-                let authed_url = if host_and_path.contains("gitlab.") || host_and_path.contains("/gitlab") {
-                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITLAB, enc_token, host_and_path)
-                } else if host_and_path.contains(BITBUCKET_HOST) {
-                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_BITBUCKET, enc_token, host_and_path)
-                } else if host_and_path.contains(AZURE_HOST)
-                    || host_and_path.contains(AZURE_LEGACY_HOST)
-                {
-                    format!("{}:{}@{}", HTTPS_SCHEME, enc_token, host_and_path)
-                } else {
-                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITHUB, enc_token, host_and_path)
-                };
+                for user in users {
+                    let Some(authed_url) = Self::authenticated_url_with_username(&remote_url, &user, t)
+                    else {
+                        continue;
+                    };
 
-                if repo.find_remote(TEMP_PUSH_REMOTE_AUTH).is_ok() {
-                    let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                    if repo.find_remote(TEMP_PUSH_REMOTE_AUTH).is_ok() {
+                        let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                    }
+
+                    let mut temp_remote = repo
+                        .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
+                        .map_err(|e| {
+                            format!("Failed to create temporary authenticated remote: {}", e.message())
+                        })?;
+
+                    let callbacks = git2::RemoteCallbacks::new();
+                    let mut push_opts = git2::PushOptions::new();
+                    push_opts.remote_callbacks(callbacks);
+
+                    match temp_remote.push(&[&refspec], Some(&mut push_opts)) {
+                        Ok(_) => {
+                            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                            return Ok(if force {
+                                "Force push complete.".to_string()
+                            } else {
+                                "Push complete.".to_string()
+                            });
+                        }
+                        Err(err) => {
+                            last_error = Some(err.message().to_string());
+                            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                        }
+                    }
                 }
 
-                let mut temp_remote = repo
-                    .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
-                    .map_err(|e| {
-                        format!("Failed to create temporary authenticated remote: {}", e.message())
-                    })?;
-
-                let callbacks = git2::RemoteCallbacks::new();
-                let mut push_opts = git2::PushOptions::new();
-                push_opts.remote_callbacks(callbacks);
-
-                let result = temp_remote.push(&[&refspec], Some(&mut push_opts));
-                let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
-
-                result.map_err(|e| e.message().to_string())?;
-                return Ok(if force {
-                    "Force push complete.".to_string()
-                } else {
-                    "Push complete.".to_string()
-                });
+                if let Some(error) = last_error {
+                    return Err(error);
+                }
             }
         }
 
@@ -221,40 +339,44 @@ impl RemoteService {
         let remote_url = remote_ref.url().unwrap_or_default().to_string();
         if let Some(t) = token {
             if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
-                let host_and_path = &remote_url[HTTPS_SCHEME.len()..];
-                let enc_token = urlencoded(t);
+                let users = Self::auth_username_candidates(&remote_url, None);
+                let mut last_error: Option<String> = None;
 
-                let authed_url = if host_and_path.contains("gitlab.") || host_and_path.contains("/gitlab") {
-                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITLAB, enc_token, host_and_path)
-                } else if host_and_path.contains(BITBUCKET_HOST) {
-                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_BITBUCKET, enc_token, host_and_path)
-                } else if host_and_path.contains(AZURE_HOST)
-                    || host_and_path.contains(AZURE_LEGACY_HOST)
-                {
-                    format!("{}:{}@{}", HTTPS_SCHEME, enc_token, host_and_path)
-                } else {
-                    format!("{}{}:{}@{}", HTTPS_SCHEME, AUTH_USER_GITHUB, enc_token, host_and_path)
-                };
+                for user in users {
+                    let Some(authed_url) = Self::authenticated_url_with_username(&remote_url, &user, t)
+                    else {
+                        continue;
+                    };
 
-                if repo.find_remote(TEMP_PUSH_REMOTE_AUTH).is_ok() {
-                    let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                    if repo.find_remote(TEMP_PUSH_REMOTE_AUTH).is_ok() {
+                        let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                    }
+
+                    let mut temp_remote = repo
+                        .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
+                        .map_err(|e| {
+                            format!("Failed to create temporary authenticated remote: {}", e.message())
+                        })?;
+
+                    let callbacks = git2::RemoteCallbacks::new();
+                    let mut push_opts = git2::PushOptions::new();
+                    push_opts.remote_callbacks(callbacks);
+
+                    match temp_remote.push(&[&refspec], Some(&mut push_opts)) {
+                        Ok(_) => {
+                            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                            return Ok(format!("Deleted remote branch {}/{}", remote, branch));
+                        }
+                        Err(err) => {
+                            last_error = Some(err.message().to_string());
+                            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                        }
+                    }
                 }
 
-                let mut temp_remote = repo
-                    .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
-                    .map_err(|e| {
-                        format!("Failed to create temporary authenticated remote: {}", e.message())
-                    })?;
-
-                let callbacks = git2::RemoteCallbacks::new();
-                let mut push_opts = git2::PushOptions::new();
-                push_opts.remote_callbacks(callbacks);
-
-                let result = temp_remote.push(&[&refspec], Some(&mut push_opts));
-                let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
-                result.map_err(|e| e.message().to_string())?;
-
-                return Ok(format!("Deleted remote branch {}/{}", remote, branch));
+                if let Some(error) = last_error {
+                    return Err(error);
+                }
             }
         }
 

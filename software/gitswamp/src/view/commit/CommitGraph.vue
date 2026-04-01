@@ -442,8 +442,48 @@ function avatarSvg(name: string, cx: number, cy: number, r: number, branchColor:
   );
 }
 
-function mergeDotSvg(cx: number, cy: number, color: string): string {
-  return buildMergeDotSvg(cx, cy, color, svgBgOuter.value);
+const mergeConnectorColorsByIndex = computed(() => {
+  const colors = new Map<number, { top: string; bottom: string; hasTop: boolean; hasBottom: boolean }>();
+
+  for (const edge of graph.value.edges) {
+    const incoming = colors.get(edge.toIndex) || {
+      top: graph.value.nodes[edge.toIndex]?.color || edge.color,
+      bottom: graph.value.nodes[edge.toIndex]?.color || edge.color,
+      hasTop: false,
+      hasBottom: false,
+    };
+    incoming.top = edge.color;
+    incoming.hasTop = true;
+    colors.set(edge.toIndex, incoming);
+
+    const outgoing = colors.get(edge.fromIndex) || {
+      top: graph.value.nodes[edge.fromIndex]?.color || edge.color,
+      bottom: graph.value.nodes[edge.fromIndex]?.color || edge.color,
+      hasTop: false,
+      hasBottom: false,
+    };
+    outgoing.bottom = edge.color;
+    outgoing.hasBottom = true;
+    colors.set(edge.fromIndex, outgoing);
+  }
+
+  return colors;
+});
+
+function mergeDotSvg(cx: number, cy: number, color: string, idx: number): string {
+  const connector = mergeConnectorColorsByIndex.value.get(idx);
+  return buildMergeDotSvg(
+    cx,
+    cy,
+    color,
+    svgBgOuter.value,
+    {
+      topColor: connector?.top || color,
+      bottomColor: connector?.bottom || color,
+      showTop: connector?.hasTop ?? false,
+      showBottom: connector?.hasBottom ?? true,
+    },
+  );
 }
 
 const layoutProps = {
@@ -1251,7 +1291,7 @@ onUnmounted(() => {
           <g
             v-for="item in visibleNodes"
             :key="'n' + item.node.commit.sha"
-            v-html="isMergeCommit(item.node.commit) ? mergeDotSvg(lx(item.node.lane), ry(item.idx), item.node.color) : avatarSvg(item.node.commit.author_name, lx(item.node.lane), ry(item.idx), NODE_RADIUS, item.node.color)"
+            v-html="isMergeCommit(item.node.commit) ? mergeDotSvg(lx(item.node.lane), ry(item.idx), item.node.color, item.idx) : avatarSvg(item.node.commit.author_name, lx(item.node.lane), ry(item.idx), NODE_RADIUS, item.node.color)"
             class="node-pop"
           />
 
