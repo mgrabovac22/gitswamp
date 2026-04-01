@@ -1,23 +1,31 @@
 use crate::services::git_service::GitService;
 
 #[tauri::command]
-pub fn pull(path: String, token: Option<String>) -> Result<String, String> {
-    GitService::pull(&path, token.as_deref())
+pub async fn pull(path: String, token: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::pull(&path, token.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn push(path: String, token: Option<String>) -> Result<String, String> {
-    GitService::push(&path, token.as_deref())
+pub async fn push(path: String, token: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::push(&path, token.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn push_force(path: String, token: Option<String>) -> Result<String, String> {
-    GitService::push_force(&path, token.as_deref())
+pub async fn push_force(path: String, token: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::push_force(&path, token.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn fetch_all(path: String, token: Option<String>) -> Result<String, String> {
-    GitService::fetch_all(&path, token.as_deref())
+pub async fn fetch_all(path: String, token: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::fetch_all(&path, token.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -122,8 +130,12 @@ pub fn rename_branch(path: String, old_name: String, new_name: String) -> Result
 }
 
 #[tauri::command]
-pub fn delete_remote_branch(path: String, remote: String, branch: String, token: Option<String>) -> Result<String, String> {
-    GitService::delete_remote_branch(&path, &remote, &branch, token.as_deref())
+pub async fn delete_remote_branch(path: String, remote: String, branch: String, token: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::delete_remote_branch(&path, &remote, &branch, token.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -147,8 +159,12 @@ pub fn reset_branch_to_remote(path: String, branch: String) -> Result<String, St
 }
 
 #[tauri::command]
-pub fn push_to_platform(path: String, platform: String, provider_token: String, repo_name: String) -> Result<String, String> {
-    GitService::push_to_platform(&path, &platform, &provider_token, &repo_name)
+pub async fn push_to_platform(path: String, platform: String, provider_token: String, repo_name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::push_to_platform(&path, &platform, &provider_token, &repo_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

@@ -6,11 +6,14 @@ use std::os::windows::process::CommandExt;
 
 use crate::constants::{
     API_GITHUB_LIST_REPOS, API_GITHUB_SEARCH_REPOS, API_GITLAB_BASE_PATH,
-    API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT, CREATE_NO_WINDOW,
+    API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT,
     GITHUB_ACCEPT_HEADER, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
 };
 use crate::models::{GithubRepo, GitlabRepo};
 use crate::services::helpers::urlencoded;
+
+#[cfg(windows)]
+use crate::constants::CREATE_NO_WINDOW;
 
 pub struct IntegrationService;
 

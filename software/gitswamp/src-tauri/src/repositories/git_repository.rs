@@ -5,6 +5,7 @@ use std::os::windows::process::CommandExt;
 
 use git2::Repository;
 
+#[cfg(windows)]
 use crate::constants::{COMMON_GIT_PATHS, CREATE_NO_WINDOW};
 
 pub struct GitRepository;

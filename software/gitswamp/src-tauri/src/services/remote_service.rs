@@ -96,6 +96,105 @@ impl RemoteService {
         ))
     }
 
+    fn home_dir() -> Option<std::path::PathBuf> {
+        std::env::var("HOME")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("USERPROFILE")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(std::path::PathBuf::from)
+            })
+    }
+
+    fn default_ssh_private_keys() -> Vec<std::path::PathBuf> {
+        let mut keys = Vec::new();
+        if let Some(home) = Self::home_dir() {
+            let ssh_dir = home.join(".ssh");
+            for name in ["id_ed25519", "id_rsa", "id_ecdsa"] {
+                let key = ssh_dir.join(name);
+                if key.exists() {
+                    keys.push(key);
+                }
+            }
+        }
+        keys
+    }
+
+    fn build_remote_callbacks(
+        token: Option<&str>,
+        configured_url: &str,
+    ) -> git2::RemoteCallbacks<'static> {
+        let tok = token.map(|value| value.to_string());
+        let configured_url = configured_url.to_string();
+        let ssh_keys = Self::default_ssh_private_keys();
+        let mut https_attempt = 0usize;
+        let mut ssh_attempt = 0usize;
+
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(move |url, username_from_url, allowed| {
+            let current_url = if url.is_empty() {
+                configured_url.as_str()
+            } else {
+                url
+            };
+            let username_candidates = Self::auth_username_candidates(current_url, username_from_url);
+            let default_user = username_candidates
+                .first()
+                .map(|value| value.as_str())
+                .unwrap_or(AUTH_USER_GITLAB);
+
+            if allowed.contains(git2::CredentialType::SSH_KEY) {
+                let ssh_user = username_from_url.unwrap_or("git");
+
+                if let Ok(cred) = git2::Cred::ssh_key_from_agent(ssh_user) {
+                    return Ok(cred);
+                }
+
+                if !ssh_keys.is_empty() {
+                    let key = ssh_keys
+                        .get(ssh_attempt)
+                        .or_else(|| ssh_keys.last())
+                        .expect("ssh key candidates are not empty");
+                    ssh_attempt = ssh_attempt.saturating_add(1);
+                    if let Ok(cred) = git2::Cred::ssh_key(ssh_user, None, key, None) {
+                        return Ok(cred);
+                    }
+                }
+            }
+
+            if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                if let Some(tok) = &tok {
+                    let user = username_candidates
+                        .get(https_attempt)
+                        .or_else(|| username_candidates.last())
+                        .map(|value| value.as_str())
+                        .unwrap_or(AUTH_USER_GITLAB);
+                    https_attempt = https_attempt.saturating_add(1);
+                    return git2::Cred::userpass_plaintext(user, tok);
+                }
+            }
+
+            if allowed.contains(git2::CredentialType::USERNAME) {
+                return git2::Cred::username(default_user);
+            }
+
+            if allowed.contains(git2::CredentialType::DEFAULT) {
+                if let Ok(cred) = git2::Cred::default() {
+                    return Ok(cred);
+                }
+            }
+
+            Err(git2::Error::from_str(
+                "Authentication required but no usable credentials were available for this remote",
+            ))
+        });
+
+        callbacks
+    }
+
     pub fn fetch_all(path: &str, token: Option<&str>) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let remotes = repo.remotes().map_err(|e| e.message().to_string())?;
@@ -109,47 +208,8 @@ impl RemoteService {
                 .find_remote(remote_name)
                 .map_err(|e| e.message().to_string())?;
 
-            let mut callbacks = git2::RemoteCallbacks::new();
-            if let Some(t) = token {
-                let tok = t.to_string();
-                let configured_url = remote.url().unwrap_or_default().to_string();
-                let mut attempt = 0usize;
-                callbacks.credentials(move |url, username_from_url, allowed| {
-                    if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-                        let current_url = if url.is_empty() {
-                            configured_url.as_str()
-                        } else {
-                            url
-                        };
-                        let candidates =
-                            Self::auth_username_candidates(current_url, username_from_url);
-                        let user = candidates
-                            .get(attempt)
-                            .or_else(|| candidates.last())
-                            .map(|value| value.as_str())
-                            .unwrap_or(AUTH_USER_GITLAB);
-                        attempt = attempt.saturating_add(1);
-                        return git2::Cred::userpass_plaintext(user, &tok);
-                    }
-
-                    if allowed.contains(git2::CredentialType::USERNAME) {
-                        let current_url = if url.is_empty() {
-                            configured_url.as_str()
-                        } else {
-                            url
-                        };
-                        let candidates =
-                            Self::auth_username_candidates(current_url, username_from_url);
-                        let user = candidates
-                            .first()
-                            .map(|value| value.as_str())
-                            .unwrap_or(AUTH_USER_GITLAB);
-                        return git2::Cred::username(user);
-                    }
-
-                    git2::Cred::default()
-                });
-            }
+            let configured_url = remote.url().unwrap_or_default().to_string();
+            let callbacks = Self::build_remote_callbacks(token, &configured_url);
             let mut fetch_opts = git2::FetchOptions::new();
             fetch_opts.remote_callbacks(callbacks);
 
@@ -270,7 +330,7 @@ impl RemoteService {
                             format!("Failed to create temporary authenticated remote: {}", e.message())
                         })?;
 
-                    let callbacks = git2::RemoteCallbacks::new();
+                    let callbacks = Self::build_remote_callbacks(Some(t), &authed_url);
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 
@@ -296,7 +356,7 @@ impl RemoteService {
             }
         }
 
-        let callbacks = git2::RemoteCallbacks::new();
+        let callbacks = Self::build_remote_callbacks(token, &remote_url);
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
@@ -358,7 +418,7 @@ impl RemoteService {
                             format!("Failed to create temporary authenticated remote: {}", e.message())
                         })?;
 
-                    let callbacks = git2::RemoteCallbacks::new();
+                    let callbacks = Self::build_remote_callbacks(Some(t), &authed_url);
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 
@@ -380,7 +440,7 @@ impl RemoteService {
             }
         }
 
-        let callbacks = git2::RemoteCallbacks::new();
+        let callbacks = Self::build_remote_callbacks(token, &remote_url);
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
@@ -549,7 +609,7 @@ impl RemoteService {
             .remote(TEMP_PUSH_REMOTE_PLATFORM, &remote_url)
             .map_err(|e| format!("Failed to create temporary remote: {}", e.message()))?;
 
-        let callbacks = git2::RemoteCallbacks::new();
+        let callbacks = Self::build_remote_callbacks(Some(token), &remote_url);
 
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
