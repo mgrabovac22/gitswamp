@@ -106,6 +106,7 @@ const pendingSearchSha = ref<string | null>(null);
 const searchNavIndex = ref(0);
 const searchInputEl = ref<HTMLInputElement | null>(null);
 const compactWorkingLabel = ref(globalThis.innerWidth < 1120);
+const loadingToEnd = ref(false);
 
 type GraphOptionalColumn = "author" | "authorEmail" | "sha" | "timeAgo" | "date" | "parents" | "refs";
 
@@ -911,6 +912,74 @@ function onFocusSearchShortcut() {
   searchInputEl.value?.select();
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  const tag = element.tagName.toLowerCase();
+  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select" || tag === "option";
+}
+
+function scrollGraphToTop(behavior: ScrollBehavior = "smooth") {
+  if (!scrollContainer.value) return;
+  scrollContainer.value.scrollTo({ top: 0, behavior });
+}
+
+function scrollGraphToBottom(behavior: ScrollBehavior = "auto") {
+  if (!scrollContainer.value) return;
+  const target = Math.max(0, scrollContainer.value.scrollHeight - scrollContainer.value.clientHeight);
+  scrollContainer.value.scrollTo({ top: target, behavior });
+}
+
+async function waitForCommitGrowth(previousCount: number, timeoutMs = 2400): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    if (props.commits.length > previousCount || !props.hasMore) {
+      return props.commits.length > previousCount;
+    }
+  }
+  return props.commits.length > previousCount;
+}
+
+async function jumpToEndStep() {
+  scrollGraphToBottom("auto");
+  if (!props.hasMore || loadingToEnd.value) {
+    return;
+  }
+
+  loadingToEnd.value = true;
+  try {
+    const previousCount = props.commits.length;
+    emit("loadMore");
+    await waitForCommitGrowth(previousCount);
+    await nextTick();
+    scrollGraphToBottom("auto");
+  } finally {
+    loadingToEnd.value = false;
+  }
+}
+
+function onGlobalGraphKeyDown(event: KeyboardEvent) {
+  if (isEditableTarget(event.target)) {
+    return;
+  }
+
+  if (showGraphSettings.value || ctxVisible.value || refCtxVisible.value || stashCtxVisible.value) {
+    return;
+  }
+
+  if (event.key === "Home") {
+    event.preventDefault();
+    scrollGraphToTop("smooth");
+    return;
+  }
+
+  if (event.key === "End") {
+    event.preventDefault();
+    void jumpToEndStep();
+  }
+}
+
 watch(() => props.searchQuery ?? "", (query) => {
   if (searchInput.value !== query) {
     searchInput.value = query;
@@ -993,6 +1062,7 @@ onMounted(() => {
   }
 
   document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.addEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
   updateCompactWorkingLabel();
@@ -1008,6 +1078,7 @@ onUnmounted(() => {
   }
   persistGraphScrollTop(scrollTop.value);
   document.removeEventListener("click", onDocClick);
+  document.removeEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.removeEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
 });
@@ -1031,6 +1102,14 @@ onUnmounted(() => {
         />
         <button v-if="searchInput" @click="clearSearch" class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <button
+          v-if="!isSearchActive"
+          class="ml-1 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          title="Jump to top (Home)"
+          @click="scrollGraphToTop('smooth')"
+        >
+          Home
         </button>
         <button
           v-if="!isSearchActive"
@@ -1071,6 +1150,14 @@ onUnmounted(() => {
             {{ searchResultCount === 0 ? '0 results' : (searchNavIndex + 1) + '/' + searchResultCount }}
           </span>
         </div>
+        <button
+          v-if="isSearchActive"
+          class="ml-2 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          title="Jump to top (Home)"
+          @click="scrollGraphToTop('smooth')"
+        >
+          Home
+        </button>
         <button
           v-if="isSearchActive"
           class="ml-auto mr-2 p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"

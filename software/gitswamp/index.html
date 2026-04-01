@@ -3,11 +3,161 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="preload" as="image" href="/logo_croc_loading.gif" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GitSwamp</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: #030712;
+      }
+
+      #app {
+        width: 100%;
+        height: 100%;
+      }
+
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 14% 20%, rgba(20, 184, 166, 0.22), transparent 45%),
+          radial-gradient(circle at 84% 18%, rgba(2, 132, 199, 0.2), transparent 40%),
+          radial-gradient(circle at 50% 80%, rgba(13, 148, 136, 0.2), transparent 45%),
+          #020617;
+        opacity: 1;
+        transition: opacity 0.26s ease;
+      }
+
+      #boot-splash.boot-splash-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .boot-glow {
+        position: absolute;
+        border-radius: 999px;
+        filter: blur(40px);
+        opacity: 0.45;
+        animation: boot-glow-drift 4.2s ease-in-out infinite;
+      }
+
+      .boot-glow-a {
+        width: 240px;
+        height: 240px;
+        left: 10%;
+        top: 8%;
+        background: rgba(20, 184, 166, 0.45);
+      }
+
+      .boot-glow-b {
+        width: 260px;
+        height: 260px;
+        right: 10%;
+        bottom: 12%;
+        background: rgba(14, 116, 144, 0.42);
+        animation-delay: 0.8s;
+      }
+
+      .boot-orbit {
+        position: absolute;
+        border-radius: 999px;
+        border: 1px solid rgba(94, 234, 212, 0.24);
+        animation: boot-spin 3.8s linear infinite;
+      }
+
+      .boot-orbit-1 {
+        width: 230px;
+        height: 230px;
+      }
+
+      .boot-orbit-2 {
+        width: 290px;
+        height: 290px;
+        border-color: rgba(125, 211, 252, 0.26);
+        animation-duration: 5.5s;
+        animation-direction: reverse;
+      }
+
+      .boot-center {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 22px 26px;
+        border-radius: 18px;
+        background: rgba(3, 11, 20, 0.55);
+        border: 1px solid rgba(20, 184, 166, 0.3);
+        box-shadow: 0 14px 40px rgba(8, 47, 73, 0.42);
+        backdrop-filter: blur(6px);
+      }
+
+      .boot-logo {
+        width: 76px;
+        height: 76px;
+        object-fit: contain;
+        filter: drop-shadow(0 0 12px rgba(45, 212, 191, 0.45));
+      }
+
+      .boot-title {
+        font: 700 17px/1.2 "Segoe UI", Arial, sans-serif;
+        letter-spacing: 0.04em;
+        color: #d1fae5;
+      }
+
+      .boot-subtitle {
+        font: 500 11px/1.3 "Segoe UI", Arial, sans-serif;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(147, 197, 253, 0.9);
+        animation: boot-pulse 1.35s ease-in-out infinite;
+      }
+
+      @keyframes boot-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+
+      @keyframes boot-pulse {
+        0%,
+        100% { opacity: 0.52; }
+        50% { opacity: 1; }
+      }
+
+      @keyframes boot-glow-drift {
+        0%,
+        100% { transform: translate3d(0, 0, 0); }
+        50% { transform: translate3d(0, -14px, 0); }
+      }
+    </style>
   </head>
 
   <body>
+    <div id="boot-splash" aria-live="polite" aria-label="Loading GitSwamp">
+      <div class="boot-glow boot-glow-a"></div>
+      <div class="boot-glow boot-glow-b"></div>
+      <div class="boot-orbit boot-orbit-1"></div>
+      <div class="boot-orbit boot-orbit-2"></div>
+      <div class="boot-center">
+        <img class="boot-logo" src="/logo_croc_loading.gif" alt="GitSwamp loading" />
+        <div class="boot-title">GitSwamp</div>
+        <div class="boot-subtitle">Loading Repository Engine</div>
+      </div>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

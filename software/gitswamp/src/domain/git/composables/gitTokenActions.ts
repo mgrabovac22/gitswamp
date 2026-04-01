@@ -31,6 +31,10 @@ export function createTokenActions(state: GitState) {
         state.providerTokens.value[p] = null;
       }
     }
+
+    if (!state.githubToken.value && state.providerTokens.value.github) {
+      state.githubToken.value = state.providerTokens.value.github;
+    }
   }
 
   async function loadGitPath() {
@@ -64,6 +68,11 @@ export function createTokenActions(state: GitState) {
     try {
       await callTauri("save_provider_token", { provider, token });
       state.providerTokens.value[provider] = token;
+
+      if (provider === "github") {
+        state.githubToken.value = token;
+        await callTauri("save_token", { token });
+      }
     } catch (e) {
       state.error.value = String(e);
     }
@@ -73,15 +82,25 @@ export function createTokenActions(state: GitState) {
     try {
       await callTauri("delete_provider_token", { provider });
       state.providerTokens.value[provider] = null;
+
+      if (provider === "github") {
+        state.githubToken.value = null;
+        await callTauri("delete_token");
+      }
     } catch (e) {
       state.error.value = String(e);
     }
+  }
+
+  async function reloadAuthTokens() {
+    await Promise.all([loadSavedToken(), loadProviderTokens()]);
   }
 
   return {
     loadSavedToken,
     loadProviderTokens,
     loadGitPath,
+    reloadAuthTokens,
     saveToken,
     deleteToken,
     saveProviderToken,

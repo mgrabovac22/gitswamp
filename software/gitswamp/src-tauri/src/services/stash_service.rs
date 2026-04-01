@@ -58,52 +58,34 @@ impl StashService {
     pub fn stash_push(path: &str, message: Option<&str>) -> Result<String, String> {
         let mut repo = GitRepository::open(path)?;
 
-        let repo_path = repo
-            .path()
-            .parent()
-            .ok_or("Invalid repository path")?
-            .to_path_buf();
-
-        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
-
-        let mut total_size: u64 = 0;
-        let mut large_files = Vec::new();
-
-        for entry in statuses.iter() {
-            if let Some(path_val) = entry.path() {
-                let full_path = repo_path.join(path_val);
-                if let Ok(metadata) = std::fs::metadata(&full_path) {
-                    let size = metadata.len();
-                    total_size += size;
-
-                    if size > 50_000_000 {
-                        large_files.push((path_val.to_string(), size));
-                    }
-                }
-            }
-        }
-
-        drop(statuses);
-
-        if !large_files.is_empty() {
-            eprintln!(
-                "Stashing with {} large files, total size: {} MB",
-                large_files.len(),
-                total_size / 1_000_000
-            );
-        }
-
         let sig = repo
             .signature()
             .or_else(|_| git2::Signature::now("GitSwamp", "gitswamp@local"))
             .map_err(|e| e.message().to_string())?;
 
         let msg = message.unwrap_or("WIP");
-        let oid = repo
-            .stash_save(&sig, msg, Some(git2::StashFlags::INCLUDE_UNTRACKED))
-            .map_err(|e| e.message().to_string())?;
 
-        Ok(format!("Saved stash {}", oid))
+        match repo.stash_save(&sig, msg, Some(git2::StashFlags::INCLUDE_UNTRACKED)) {
+            Ok(oid) => Ok(format!("Saved stash {}", oid)),
+            Err(include_err) => {
+                let include_msg = include_err.message().to_string();
+
+                let fallback = repo
+                    .stash_save(&sig, msg, None)
+                    .map_err(|fallback_err| {
+                        format!(
+                            "Failed to stash tracked + untracked changes: {}. Fallback (tracked only) also failed: {}",
+                            include_msg,
+                            fallback_err.message()
+                        )
+                    })?;
+
+                Ok(format!(
+                    "Saved stash {} (tracked files only; untracked files were skipped due to repository size)",
+                    fallback
+                ))
+            }
+        }
     }
 
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {

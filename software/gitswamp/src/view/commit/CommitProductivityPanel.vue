@@ -38,6 +38,7 @@ const bugKillers = ref<BugKillerRow[]>([]);
 const bugKillerLoading = ref(false);
 const bugKillerError = ref("");
 const loadAllHistory = ref(false);
+const selectedAuthor = ref("all");
 let loadRunToken = 0;
 
 const activeHistoryLimit = computed(() =>
@@ -75,7 +76,11 @@ function shiftDay(dayKey: string, offsetDays: number): string {
   return dayKeyFromDate(date);
 }
 
-const totalCommits = computed(() => historyCommits.value.length);
+function startOfDay(date: Date): Date {
+  const value = new Date(date);
+  value.setHours(0, 0, 0, 0);
+  return value;
+}
 
 const uniqueAuthorNames = computed(() => {
   const values = new Set<string>();
@@ -83,14 +88,33 @@ const uniqueAuthorNames = computed(() => {
     const name = commit.author_name?.trim() || "Unknown";
     values.add(name);
   }
-  return Array.from(values);
+  return Array.from(values).sort((a, b) => a.localeCompare(b));
 });
 
-const uniqueAuthors = computed(() => uniqueAuthorNames.value.length);
+const filteredHistoryCommits = computed(() => {
+  if (selectedAuthor.value === "all") {
+    return historyCommits.value;
+  }
+
+  return historyCommits.value.filter(
+    (commit) => (commit.author_name?.trim() || "Unknown") === selectedAuthor.value,
+  );
+});
+
+const totalCommits = computed(() => filteredHistoryCommits.value.length);
+
+const uniqueAuthors = computed(() => {
+  const values = new Set<string>();
+  for (const commit of filteredHistoryCommits.value) {
+    const name = commit.author_name?.trim() || "Unknown";
+    values.add(name);
+  }
+  return values.size;
+});
 
 const commitsPerDay = computed(() => {
   const map = new Map<string, number>();
-  for (const commit of historyCommits.value) {
+  for (const commit of filteredHistoryCommits.value) {
     const key = dayKeyFromUnixTimestamp(commit.timestamp);
     map.set(key, (map.get(key) ?? 0) + 1);
   }
@@ -154,13 +178,13 @@ const hottestDay = computed(() => {
 });
 
 const firstCommitTimestamp = computed(() => {
-  if (historyCommits.value.length === 0) return null;
-  return historyCommits.value.reduce((min, commit) => Math.min(min, commit.timestamp), Number.POSITIVE_INFINITY);
+  if (filteredHistoryCommits.value.length === 0) return null;
+  return filteredHistoryCommits.value.reduce((min, commit) => Math.min(min, commit.timestamp), Number.POSITIVE_INFINITY);
 });
 
 const latestCommitTimestamp = computed(() => {
-  if (historyCommits.value.length === 0) return null;
-  return historyCommits.value.reduce((max, commit) => Math.max(max, commit.timestamp), Number.NEGATIVE_INFINITY);
+  if (filteredHistoryCommits.value.length === 0) return null;
+  return filteredHistoryCommits.value.reduce((max, commit) => Math.max(max, commit.timestamp), Number.NEGATIVE_INFINITY);
 });
 
 const repoAgeDays = computed(() => {
@@ -177,7 +201,7 @@ const averageCommitsPerDay = computed(() => {
   return Math.round((totalCommits.value / days) * 10) / 10;
 });
 
-const mergeCommits = computed(() => historyCommits.value.filter((commit) => commit.parent_shas.length > 1).length);
+const mergeCommits = computed(() => filteredHistoryCommits.value.filter((commit) => commit.parent_shas.length > 1).length);
 
 const mergeCommitRatio = computed(() => {
   if (totalCommits.value === 0) return 0;
@@ -186,7 +210,7 @@ const mergeCommitRatio = computed(() => {
 
 const weekendCommits = computed(() => {
   let total = 0;
-  for (const commit of historyCommits.value) {
+  for (const commit of filteredHistoryCommits.value) {
     const value = Math.abs(commit.timestamp) < 1000000000000 ? commit.timestamp * 1000 : commit.timestamp;
     const day = new Date(value).getDay();
     if (day === 0 || day === 6) {
@@ -203,7 +227,7 @@ const weekendCommitRatio = computed(() => {
 
 const hourlyCounts = computed(() => {
   const values = Array.from({ length: 24 }, () => 0);
-  for (const commit of historyCommits.value) {
+  for (const commit of filteredHistoryCommits.value) {
     const value = Math.abs(commit.timestamp) < 1000000000000 ? commit.timestamp * 1000 : commit.timestamp;
     const hour = new Date(value).getHours();
     values[hour] += 1;
@@ -225,7 +249,7 @@ const peakHour = computed(() => {
 
 const weekdayCounts = computed(() => {
   const counts = Array.from({ length: 7 }, () => 0);
-  for (const commit of historyCommits.value) {
+  for (const commit of filteredHistoryCommits.value) {
     const value = Math.abs(commit.timestamp) < 1000000000000 ? commit.timestamp * 1000 : commit.timestamp;
     const day = new Date(value).getDay();
     counts[day] += 1;
@@ -247,7 +271,7 @@ const topWeekday = computed(() => {
 
 const authorCommitCounts = computed(() => {
   const byAuthor = new Map<string, number>();
-  for (const commit of historyCommits.value) {
+  for (const commit of filteredHistoryCommits.value) {
     const key = commit.author_name?.trim() || "Unknown";
     byAuthor.set(key, (byAuthor.get(key) ?? 0) + 1);
   }
@@ -273,25 +297,32 @@ const topContributor = computed(() => {
 
 const heatCells = computed<HeatCell[]>(() => {
   const cells: HeatCell[] = [];
-  const now = new Date();
-  const totalDays = 12 * 7;
+  const today = startOfDay(new Date());
+  const rangeStart = startOfDay(today);
+  rangeStart.setMonth(rangeStart.getMonth() - 12);
+  rangeStart.setDate(rangeStart.getDate() + 1);
 
-  for (let offset = totalDays - 1; offset >= 0; offset -= 1) {
-    const date = new Date(now);
-    date.setHours(0, 0, 0, 0);
-    date.setDate(now.getDate() - offset);
+  const alignedStart = startOfDay(rangeStart);
+  alignedStart.setDate(alignedStart.getDate() - alignedStart.getDay());
 
-    const key = dayKeyFromDate(date);
-    const count = commitsPerDay.value.get(key) ?? 0;
+  const alignedEnd = startOfDay(today);
+  alignedEnd.setDate(alignedEnd.getDate() + (6 - alignedEnd.getDay()));
+
+  const cursor = new Date(alignedStart);
+  while (cursor <= alignedEnd) {
+    const key = dayKeyFromDate(cursor);
+    const inWindow = cursor >= rangeStart && cursor <= today;
 
     cells.push({
       key,
-      dateLabel: date.toLocaleDateString(undefined, {
+      dateLabel: cursor.toLocaleDateString(undefined, {
         day: "2-digit",
         month: "short",
       }),
-      count,
+      count: inWindow ? (commitsPerDay.value.get(key) ?? 0) : 0,
     });
+
+    cursor.setDate(cursor.getDate() + 1);
   }
 
   return cells;
@@ -327,9 +358,17 @@ function heatCellStyle(cell: HeatCell): Record<string, string> {
   };
 }
 
-const topBugKiller = computed(() => bugKillers.value[0] ?? null);
+const displayedBugKillers = computed(() => {
+  if (selectedAuthor.value === "all") {
+    return bugKillers.value;
+  }
+
+  return bugKillers.value.filter((row) => row.author === selectedAuthor.value);
+});
+
+const topBugKiller = computed(() => displayedBugKillers.value[0] ?? null);
 const maxKillerDeletes = computed(() => {
-  const maxValue = bugKillers.value.reduce((max, row) => Math.max(max, row.deletions), 0);
+  const maxValue = displayedBugKillers.value.reduce((max, row) => Math.max(max, row.deletions), 0);
   return maxValue <= 0 ? 1 : maxValue;
 });
 
@@ -380,37 +419,43 @@ async function loadArenaData() {
   historyError.value = "";
   bugKillerError.value = "";
 
-  const [commitsResult, killerResult] = await Promise.allSettled([
-    invoke<CommitInfo[]>("get_commits", {
-      path: props.repoPath,
-      maxCount,
-    }),
-    invoke<AuthorDeletionTuple[]>("get_author_deletion_stats", {
-      path: props.repoPath,
-      maxCount,
-    }),
-  ]);
+  const commitsPromise = invoke<CommitInfo[]>("get_commits", {
+    path: props.repoPath,
+    maxCount,
+  });
 
-  if (runToken !== loadRunToken) {
-    return;
-  }
+  const killerPromise = invoke<AuthorDeletionTuple[]>("get_author_deletion_stats", {
+    path: props.repoPath,
+    maxCount,
+  });
 
-  if (commitsResult.status === "fulfilled") {
-    historyCommits.value = commitsResult.value;
-  } else {
+  try {
+    const commits = await commitsPromise;
+    if (runToken !== loadRunToken) return;
+    historyCommits.value = commits;
+  } catch {
+    if (runToken !== loadRunToken) return;
     historyCommits.value = [];
     historyError.value = "Could not load full commit history.";
+  } finally {
+    if (runToken === loadRunToken) {
+      historyLoading.value = false;
+    }
   }
 
-  if (killerResult.status === "fulfilled") {
-    bugKillers.value = normalizeBugKillerRows(killerResult.value);
-  } else {
+  try {
+    const killerRows = await killerPromise;
+    if (runToken !== loadRunToken) return;
+    bugKillers.value = normalizeBugKillerRows(killerRows);
+  } catch {
+    if (runToken !== loadRunToken) return;
     bugKillers.value = [];
     bugKillerError.value = "Could not load full-history deletion stats.";
+  } finally {
+    if (runToken === loadRunToken) {
+      bugKillerLoading.value = false;
+    }
   }
-
-  historyLoading.value = false;
-  bugKillerLoading.value = false;
 }
 
 function enableLoadAllHistory() {
@@ -423,10 +468,18 @@ watch(
   () => props.repoPath,
   () => {
     loadAllHistory.value = false;
+    selectedAuthor.value = "all";
     void loadArenaData();
   },
   { immediate: true },
 );
+
+watch(uniqueAuthorNames, (authorNames) => {
+  if (selectedAuthor.value === "all") return;
+  if (!authorNames.includes(selectedAuthor.value)) {
+    selectedAuthor.value = "all";
+  }
+});
 </script>
 
 <template>
@@ -440,8 +493,21 @@ watch(
             <h2 class="text-lg md:text-xl font-bold text-[#d1fae5]">Swamp Productivity Arena</h2>
             <p class="text-xs text-[#9ca3af] mt-1">Gamified pulse of your repository rhythm from full history.</p>
           </div>
-          <div class="flex items-center gap-2">
-            <div class="px-3 py-1.5 rounded-full border border-[#14b8a6]/35 bg-[#0f2a2a]/70">
+          <div class="flex items-center gap-2 flex-wrap justify-end">
+            <div class="arena-author-filter">
+              <label for="arena-author-filter">Author</label>
+              <select id="arena-author-filter" v-model="selectedAuthor">
+                <option value="all">All contributors</option>
+                <option
+                  v-for="author in uniqueAuthorNames"
+                  :key="`author-${author}`"
+                  :value="author"
+                >
+                  {{ author }}
+                </option>
+              </select>
+            </div>
+            <div class="px-3 py-1.5 rounded-full border border-[#14b8a6]/35 bg-[#0f2a2a]/70 min-w-[150px] text-center">
               <span class="text-[11px] font-semibold text-[#5eead4]">Rank: {{ productivityRank }}</span>
             </div>
             <button
@@ -494,7 +560,11 @@ watch(
       <template v-else>
         <section class="rounded-2xl border border-[#1f2937] bg-[#071118]/72 px-4 py-2.5">
           <p class="text-[11px] text-[#94a3b8]">
-            {{ loadAllHistory ? "Showing full loaded history." : `Showing latest ${PREVIEW_HISTORY_LIMIT} commits.` }}
+            {{
+              selectedAuthor === "all"
+                ? (loadAllHistory ? "Showing full loaded history." : `Showing latest ${PREVIEW_HISTORY_LIMIT} commits.`)
+                : `Filtered by ${selectedAuthor}.`
+            }}
           </p>
         </section>
 
@@ -512,7 +582,7 @@ watch(
           <article class="metric-card">
             <div class="metric-label">Total commits</div>
             <div class="metric-value">{{ totalCommits }}</div>
-            <div class="metric-foot">loaded from full history</div>
+            <div class="metric-foot">within active author filter</div>
           </article>
           <article class="metric-card">
             <div class="metric-label">Arena health</div>
@@ -574,20 +644,20 @@ watch(
         <section class="rounded-2xl border border-[#1f2937] bg-[#071118]/85 p-4">
           <div class="flex items-center justify-between mb-3">
             <h3 class="text-sm font-semibold text-[#e2e8f0]">Activity Heat Map</h3>
-            <span class="text-[10px] text-[#94a3b8]">Last 12 weeks</span>
+            <span class="text-[10px] text-[#94a3b8]">Last 12 months</span>
           </div>
 
-          <div class="overflow-x-auto">
-            <div class="inline-flex gap-1 min-w-[420px]">
+          <div>
+            <div class="heatmap-grid">
               <div
                 v-for="(week, weekIndex) in heatWeeks"
                 :key="`week-${weekIndex}`"
-                class="grid grid-rows-7 gap-1"
+                class="heatmap-week"
               >
                 <div
                   v-for="cell in week"
                   :key="cell.key"
-                  class="w-3.5 h-3.5 rounded-[4px] border transition-transform hover:scale-110"
+                  class="heatmap-cell"
                   :style="heatCellStyle(cell)"
                   :title="`${cell.dateLabel}: ${cell.count} commit${cell.count === 1 ? '' : 's'}`"
                 />
@@ -607,7 +677,7 @@ watch(
             {{ loadAllHistory ? "Loading full-history deletion stats..." : `Loading latest ${PREVIEW_HISTORY_LIMIT} commit stats...` }}
           </div>
           <div v-else-if="bugKillerError" class="text-xs text-[#f87171]">{{ bugKillerError }}</div>
-          <div v-else-if="bugKillers.length === 0" class="text-xs text-[#94a3b8]">No deletion-heavy commits found yet.</div>
+          <div v-else-if="displayedBugKillers.length === 0" class="text-xs text-[#94a3b8]">No deletion-heavy commits found yet.</div>
           <div v-else class="space-y-2">
             <div class="rounded-xl border border-[#14b8a6]/30 bg-[#0f172a]/65 px-3 py-2.5">
               <div class="text-[10px] uppercase tracking-[0.14em] text-[#5eead4]/85">Top Slayer</div>
@@ -616,7 +686,7 @@ watch(
             </div>
 
             <div
-              v-for="row in bugKillers"
+              v-for="row in displayedBugKillers"
               :key="row.author"
               class="rounded-xl border border-[#1f2937] bg-[#0b1520]/75 px-3 py-2"
             >
@@ -799,6 +869,66 @@ watch(
   color: #5eead4;
   text-transform: uppercase;
   animation: arena-loader-bounce 1s ease-in-out infinite;
+}
+
+.arena-author-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(45, 212, 191, 0.26);
+  background: rgba(8, 22, 30, 0.78);
+}
+
+.arena-author-filter label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #93c5fd;
+}
+
+.arena-author-filter select {
+  background: rgba(15, 35, 46, 0.95);
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  border-radius: 999px;
+  height: 24px;
+  min-width: 150px;
+  padding: 0 0.65rem;
+  font-size: 11px;
+  color: #d1fae5;
+  outline: none;
+}
+
+.arena-author-filter select:focus {
+  border-color: rgba(94, 234, 212, 0.78);
+}
+
+.heatmap-grid {
+  width: 100%;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.heatmap-week {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.heatmap-cell {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 4px;
+  border-width: 1px;
+  transition: transform 0.15s ease;
+}
+
+.heatmap-cell:hover {
+  transform: scale(1.07);
 }
 
 @keyframes arena-loader-bounce {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import FileDiffViewer from "@/shared/ui/FileDiffViewer.vue";
+import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
 import CommitProductivityPanel from "@/view/commit/CommitProductivityPanel.vue";
 import CommitTimeMachinePanel from "@/view/commit/CommitTimeMachinePanel.vue";
@@ -8,19 +9,27 @@ import CommitConflictHeatmapPanel from "@/view/commit/CommitConflictHeatmapPanel
 import CommitDetails from "@/view/commit/CommitDetails.vue";
 import TerminalPanel from "@/view/shell/TerminalPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
-import type { CommitInfo, StashInfo } from "@/types";
+import RemoteInsightsPanel from "@/view/repository/RemoteInsightsPanel.vue";
+import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
 
-type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
+type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
+type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 
 const props = defineProps<{
   git: any;
   showTerminal: boolean;
   terminalAllowAll: boolean;
   openPullRequestBranches?: string[];
+  issues?: IssueInfo[];
+  pullRequests?: PullRequestInfo[];
+  selectedIssue?: IssueInfo | null;
+  selectedPullRequest?: PullRequestInfo | null;
+  remoteInsightsMode?: RemoteInsightsViewMode;
   showDiffViewer: boolean;
   diffFilePath: string;
   diffCommitSha: string | null;
   diffStaged: boolean;
+  conflictResolverPath?: string;
   detailsPanelCollapsed: boolean;
   historyViewMode: HistoryViewMode;
   timeMachineFocusSha: string | null;
@@ -34,12 +43,20 @@ const emit = defineEmits<{
   "update:detailsPanelCollapsed": [value: boolean];
   setHistoryView: [mode: HistoryViewMode];
   closeDiffViewer: [];
+  closeConflictResolver: [];
+  conflictResolved: [];
   openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean }];
   openConflictResolver: [filePath: string];
   selectCommit: [commit: CommitInfo | null];
   selectWorkingChanges: [];
   selectConflicts: [];
   selectStash: [stash: StashInfo];
+  selectIssue: [issueNumber: number];
+  selectPullRequest: [pullRequestNumber: number];
+  openCreateIssue: [];
+  openCreatePullRequest: [];
+  createIssue: [payload: { title: string; description: string }];
+  createPullRequest: [payload: { title: string; description: string; sourceBranch: string; targetBranch: string }];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   checkoutRemoteBranch: [name: string];
   pull: [];
@@ -230,6 +247,10 @@ function handleRefreshState() {
         :stashes="props.git.stashes.value"
         :tags="props.git.tags.value"
         :open-pull-request-branches="props.openPullRequestBranches || []"
+        :issues="props.issues || []"
+        :pull-requests="props.pullRequests || []"
+        :selected-issue-number="props.selectedIssue?.number || null"
+        :selected-pull-request-number="props.selectedPullRequest?.number || null"
         :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
         @checkout="props.git.checkoutBranch($event)"
         @create-branch="props.git.createBranch($event)"
@@ -237,6 +258,10 @@ function handleRefreshState() {
         @stash-pop="props.git.stashPop($event)"
         @stash-apply="props.git.stashApply($event)"
         @stash-drop="props.git.stashDrop($event)"
+        @select-issue="emit('selectIssue', $event)"
+        @select-pull-request="emit('selectPullRequest', $event)"
+        @open-create-issue="emit('openCreateIssue')"
+        @open-create-pull-request="emit('openCreatePullRequest')"
         @create-gist="emit('createGist')"
       />
     </div>
@@ -258,6 +283,16 @@ function handleRefreshState() {
           :staged="props.diffStaged"
           @close="emit('closeDiffViewer')"
           @refresh="props.git.refreshStatus()"
+        />
+
+        <ConflictResolver
+          v-else-if="props.historyViewMode === 'conflict-resolve' && props.conflictResolverPath && props.git.repoPath.value"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :file-path="props.conflictResolverPath"
+          :embedded="true"
+          @close="emit('closeConflictResolver')"
+          @resolved="emit('conflictResolved')"
         />
 
         <CommitGraph
@@ -330,10 +365,23 @@ function handleRefreshState() {
         />
 
         <CommitConflictHeatmapPanel
-          v-else
+          v-else-if="props.historyViewMode === 'conflict-heatmap'"
           class="flex-1"
           :repo-path="props.git.repoPath.value"
           @close="emit('setHistoryView', 'graph')"
+        />
+
+        <RemoteInsightsPanel
+          v-else
+          class="flex-1"
+          :mode="props.remoteInsightsMode || 'pull-request-detail'"
+          :pull-request="props.selectedPullRequest || null"
+          :issue="props.selectedIssue || null"
+          :remote-branches="props.git.remoteBranches.value"
+          :current-branch="props.git.currentBranch.value"
+          @close="emit('setHistoryView', 'graph')"
+          @create-pull-request="emit('createPullRequest', $event)"
+          @create-issue="emit('createIssue', $event)"
         />
 
         <div

@@ -19,6 +19,10 @@ defineProps<{
   loading: boolean;
   activeAction?: "pull" | "push" | "fetch" | null;
   ghostActive?: boolean;
+  originConflictRisk?: {
+    level: "none" | "medium" | "high";
+    label: string;
+  };
 }>();
 
 const emit = defineEmits<{
@@ -108,6 +112,16 @@ onUnmounted(() => {
     </div>
 
     <div class="flex items-center gap-1">
+      <span
+        v-if="originConflictRisk && originConflictRisk.level !== 'none'"
+        class="px-2 py-0.5 rounded-full text-[10px] font-semibold border"
+        :class="originConflictRisk.level === 'high'
+          ? 'text-[#ef4444] border-[#ef4444]/50 bg-[#ef4444]/10'
+          : 'text-[#f59e0b] border-[#f59e0b]/45 bg-[#f59e0b]/10'"
+        :title="originConflictRisk.label"
+      >
+        {{ originConflictRisk.level === 'high' ? 'Conflict Risk' : 'Merge Warning' }}
+      </span>
       <BranchQuickActions
         :loading="loading"
         :ghost-active="!!ghostActive"

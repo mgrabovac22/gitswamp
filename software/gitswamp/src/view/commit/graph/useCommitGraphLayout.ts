@@ -39,6 +39,11 @@ function refsWithoutHead(commit: CommitInfo): string[] {
   return commit.refs.filter(r => !r.includes("HEAD") && !r.includes("->"));
 }
 
+function hasDetachedHeadRef(commit: CommitInfo, currentBranch: string): boolean {
+  if (currentBranch !== "HEAD") return false;
+  return commit.refs.some((ref) => ref.trim() === "HEAD");
+}
+
 export function useCommitGraphLayout(
   props: CommitGraphProps,
   rowHeight: Ref<number>,
@@ -345,7 +350,11 @@ export function useCommitGraphLayout(
 
   function branchRefs(commit: CommitInfo): string[] {
     const tags = tagNameSet.value;
-    return refsWithoutHead(commit).filter(r => !tags.has(r));
+    const refs = refsWithoutHead(commit).filter(r => !tags.has(r));
+    if (hasDetachedHeadRef(commit, props.currentBranch)) {
+      return ["HEAD", ...refs];
+    }
+    return refs;
   }
 
   function mergedRefs(commit: CommitInfo): MergedRef[] {

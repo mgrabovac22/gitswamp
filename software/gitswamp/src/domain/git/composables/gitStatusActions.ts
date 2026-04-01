@@ -10,15 +10,12 @@ type RefreshDeps = {
 };
 
 export function createStatusActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
-  function refreshStatusInBackground() {
-    void refresh.refreshStatus();
-  }
 
   async function stageFile(filePath: string) {
     if (!state.repoPath.value) return;
     try {
       await callTauri("stage_file", { path: state.repoPath.value, filePath });
-      refreshStatusInBackground();
+      await refresh.refreshStatus();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -28,7 +25,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     if (!state.repoPath.value) return;
     try {
       await callTauri("unstage_file", { path: state.repoPath.value, filePath });
-      refreshStatusInBackground();
+      await refresh.refreshStatus();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -40,7 +37,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       const filePaths = state.unstagedFiles.value.map((f) => f.path);
       if (!filePaths.length) return;
       await callTauri("stage_files", { path: state.repoPath.value, filePaths });
-      refreshStatusInBackground();
+      await refresh.refreshStatus();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -52,7 +49,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       const filePaths = state.stagedFiles.value.map((f) => f.path);
       if (!filePaths.length) return;
       await callTauri("unstage_files", { path: state.repoPath.value, filePaths });
-      refreshStatusInBackground();
+      await refresh.refreshStatus();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -72,7 +69,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     if (!state.repoPath.value) return;
     try {
       await callTauri("discard_file", { path: state.repoPath.value, filePath });
-      refreshStatusInBackground();
+      await refresh.refreshStatus();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -84,7 +81,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       const filePaths = state.unstagedFiles.value.map((f) => f.path);
       if (!filePaths.length) return;
       await callTauri("discard_files", { path: state.repoPath.value, filePaths });
-      refreshStatusInBackground();
+      await refresh.refreshStatus();
     } catch (e) {
       state.error.value = String(e);
     }

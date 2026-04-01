@@ -303,6 +303,7 @@ export function useGit() {
     deleteToken: tokens.deleteToken,
     saveProviderToken: tokens.saveProviderToken,
     deleteProviderToken: tokens.deleteProviderToken,
+    reloadAuthTokens: tokens.reloadAuthTokens,
 
     startFileWatcher: watcher.startFileWatcher,
     stopFileWatcher: watcher.stopFileWatcher,

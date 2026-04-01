@@ -18,6 +18,10 @@ import {
   Archive,
   Eye,
   X,
+  Folder,
+  File,
+  FolderTree,
+  Files,
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
@@ -159,6 +163,7 @@ const editingSubject = ref(false);
 const editingDescription = ref(false);
 const subjectDraft = ref("");
 const descriptionDraft = ref("");
+const showAmendHint = ref(false);
 const workingChangesLabel = computed(() => (compactWorkingLabel.value ? "Working..." : "Working Changes"));
 const GITKEEP_NOTIFY_KEY = "gitswamp-notify-gitkeep";
 const VERY_LARGE_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024;
@@ -278,6 +283,7 @@ function syncAmendDraftsFromCommit() {
   descriptionDraft.value = commitBody(commitMessage);
   editingSubject.value = false;
   editingDescription.value = false;
+  showAmendHint.value = false;
 }
 
 watch(() => props.commit?.sha, () => {
@@ -296,13 +302,21 @@ function canAmendSelectedCommit(): boolean {
 }
 
 function beginSubjectEdit() {
-  if (!canAmendSelectedCommit()) return;
+  if (!canAmendSelectedCommit()) {
+    showAmendHint.value = true;
+    return;
+  }
+  showAmendHint.value = false;
   subjectDraft.value = commitSubject(props.commit?.message ?? "");
   editingSubject.value = true;
 }
 
 function beginDescriptionEdit() {
-  if (!canAmendSelectedCommit()) return;
+  if (!canAmendSelectedCommit()) {
+    showAmendHint.value = true;
+    return;
+  }
+  showAmendHint.value = false;
   descriptionDraft.value = commitBody(props.commit?.message ?? "");
   editingDescription.value = true;
 }
@@ -381,7 +395,12 @@ function parentRefs(commit: CommitInfo): string[] {
 }
 
 function branchRefs(commit: CommitInfo): string[] {
-  return commit.refs.filter((r) => !r.includes("HEAD") && !r.includes("->"));
+  const refs = commit.refs.filter((r) => !r.includes("->"));
+  const withoutHead = refs.filter((r) => r !== "HEAD");
+  if (refs.includes("HEAD")) {
+    return ["HEAD", ...withoutHead];
+  }
+  return withoutHead;
 }
 
 function refStatus(commit: CommitInfo): { local: boolean; remote: boolean } {
@@ -403,12 +422,327 @@ function statusIcon(status: string): string {
 
 function statusColor(status: string): string {
   switch (status) {
+    case "conflicted": return "#ef4444";
     case "added": case "new": return "#10b981";
     case "deleted": return "#ef4444";
     case "modified": return "#f59e0b";
     case "renamed": return "#06b6d4";
     default: return "#64748b";
   }
+}
+
+type ChangesViewMode = "files" | "tree";
+
+interface TreeFileMeta {
+  status: string;
+  hasStaged: boolean;
+  hasUnstaged: boolean;
+  conflicted: boolean;
+}
+
+interface ChangesTreeNode {
+  key: string;
+  type: "folder" | "file";
+  name: string;
+  path: string;
+  changed: boolean;
+  status: string | null;
+  children: ChangesTreeNode[];
+}
+
+interface ChangesTreeRow {
+  node: ChangesTreeNode;
+  depth: number;
+}
+
+const changesViewMode = ref<ChangesViewMode>("files");
+const showAllFilesInTree = ref(false);
+const commitTreePaths = ref<string[]>([]);
+const commitTreeLoading = ref(false);
+const commitTreeError = ref("");
+const expandedTreeFolders = ref<Record<string, boolean>>({});
+let commitTreeRunToken = 0;
+
+const isCommitChangesView = computed(() => !!props.commit && !props.isWorkingChanges && !props.isStash);
+
+function normalizeRepoPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").trim();
+}
+
+function isTreeFolderExpanded(path: string): boolean {
+  return expandedTreeFolders.value[path] !== false;
+}
+
+function toggleTreeFolder(path: string) {
+  expandedTreeFolders.value[path] = !isTreeFolderExpanded(path);
+}
+
+function ensureTreeFolderTracked(path: string) {
+  if (!(path in expandedTreeFolders.value)) {
+    expandedTreeFolders.value[path] = true;
+  }
+}
+
+const workingTreeMeta = computed(() => {
+  const map = new Map<string, TreeFileMeta>();
+
+  const applyMeta = (file: FileStatusInfo, staged: boolean, conflicted: boolean) => {
+    const path = normalizeRepoPath(file.path);
+    if (!path) return;
+
+    const existing = map.get(path);
+    if (!existing) {
+      map.set(path, {
+        status: conflicted ? "conflicted" : file.status,
+        hasStaged: staged,
+        hasUnstaged: !staged,
+        conflicted,
+      });
+      return;
+    }
+
+    existing.hasStaged = existing.hasStaged || staged;
+    existing.hasUnstaged = existing.hasUnstaged || !staged;
+    existing.conflicted = existing.conflicted || conflicted;
+    if (existing.conflicted) {
+      existing.status = "conflicted";
+    }
+  };
+
+  for (const file of props.unstagedFiles) {
+    applyMeta(file, false, !!file.conflicted);
+  }
+
+  for (const file of props.stagedFiles) {
+    applyMeta(file, true, !!file.conflicted);
+  }
+
+  for (const file of props.conflictFiles || []) {
+    applyMeta(file, false, true);
+  }
+
+  return map;
+});
+
+const commitTreeMeta = computed(() => {
+  const map = new Map<string, TreeFileMeta>();
+  for (const file of props.commitFiles) {
+    const path = normalizeRepoPath(file.path);
+    if (!path) continue;
+    map.set(path, {
+      status: file.status,
+      hasStaged: false,
+      hasUnstaged: false,
+      conflicted: false,
+    });
+  }
+  return map;
+});
+
+const stashTreeMeta = computed(() => {
+  const map = new Map<string, TreeFileMeta>();
+  for (const file of props.stashFiles || []) {
+    const path = normalizeRepoPath(file.path);
+    if (!path) continue;
+    map.set(path, {
+      status: file.status,
+      hasStaged: false,
+      hasUnstaged: false,
+      conflicted: false,
+    });
+  }
+  return map;
+});
+
+const activeTreeMeta = computed(() => {
+  if (props.isWorkingChanges) {
+    return workingTreeMeta.value;
+  }
+
+  if (props.isStash) {
+    return stashTreeMeta.value;
+  }
+
+  return commitTreeMeta.value;
+});
+
+const treeSourcePaths = computed(() => {
+  const changedPaths = Array.from(activeTreeMeta.value.keys());
+
+  if (!isCommitChangesView.value || !showAllFilesInTree.value) {
+    return changedPaths;
+  }
+
+  const values = new Set<string>([
+    ...changedPaths,
+    ...commitTreePaths.value.map((path) => normalizeRepoPath(path)).filter((path) => path.length > 0),
+  ]);
+  return Array.from(values);
+});
+
+function sortedNodes(nodes: ChangesTreeNode[]): ChangesTreeNode[] {
+  return [...nodes]
+    .sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === "folder" ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    })
+    .map((node) => ({
+      ...node,
+      children: sortedNodes(node.children),
+    }));
+}
+
+function refreshFolderChangedState(node: ChangesTreeNode): boolean {
+  if (node.type === "file") {
+    return node.changed;
+  }
+
+  let hasChangedChild = false;
+  for (const child of node.children) {
+    if (refreshFolderChangedState(child)) {
+      hasChangedChild = true;
+    }
+  }
+  node.changed = hasChangedChild;
+  return hasChangedChild;
+}
+
+function buildChangesTree(paths: string[], meta: Map<string, TreeFileMeta>): ChangesTreeNode[] {
+  const rootNodes: ChangesTreeNode[] = [];
+  const byPath = new Map<string, ChangesTreeNode>();
+
+  for (const rawPath of paths) {
+    const normalized = normalizeRepoPath(rawPath);
+    if (!normalized) continue;
+
+    const segments = normalized.split("/").filter((value) => value.length > 0);
+    if (segments.length === 0) continue;
+
+    let branchNodes = rootNodes;
+    let currentPath = "";
+
+    for (let idx = 0; idx < segments.length; idx += 1) {
+      const segment = segments[idx];
+      const isFile = idx === segments.length - 1;
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+
+      let node = byPath.get(currentPath);
+      if (!node) {
+        node = {
+          key: `${isFile ? "file" : "folder"}:${currentPath}`,
+          type: isFile ? "file" : "folder",
+          name: segment,
+          path: currentPath,
+          changed: false,
+          status: null,
+          children: [],
+        };
+        byPath.set(currentPath, node);
+        branchNodes.push(node);
+      }
+
+      if (isFile) {
+        const fileMeta = meta.get(normalized);
+        node.changed = !!fileMeta;
+        node.status = fileMeta ? fileMeta.status : null;
+      } else {
+        ensureTreeFolderTracked(currentPath);
+        branchNodes = node.children;
+      }
+    }
+  }
+
+  for (const node of rootNodes) {
+    refreshFolderChangedState(node);
+  }
+
+  return sortedNodes(rootNodes);
+}
+
+function flattenTreeRows(nodes: ChangesTreeNode[], depth = 0, rows: ChangesTreeRow[] = []): ChangesTreeRow[] {
+  for (const node of nodes) {
+    rows.push({ node, depth });
+    if (node.type === "folder" && isTreeFolderExpanded(node.path)) {
+      flattenTreeRows(node.children, depth + 1, rows);
+    }
+  }
+  return rows;
+}
+
+const treeNodes = computed(() => buildChangesTree(treeSourcePaths.value, activeTreeMeta.value));
+const treeRows = computed(() => flattenTreeRows(treeNodes.value));
+
+function setChangesViewMode(mode: ChangesViewMode) {
+  changesViewMode.value = mode;
+  if (mode !== "tree") {
+    showAllFilesInTree.value = false;
+  }
+}
+
+function onTreeRowClick(row: ChangesTreeRow) {
+  if (row.node.type === "folder") {
+    toggleTreeFolder(row.node.path);
+    return;
+  }
+
+  openTreeFile(row.node.path);
+}
+
+function onTreeRowContextMenu(event: MouseEvent, row: ChangesTreeRow) {
+  if (row.node.type !== "file") return;
+  openFileContextMenu(event, row.node.path);
+}
+
+async function loadCommitTreePaths() {
+  if (!props.repoPath || !props.commit?.sha) {
+    commitTreePaths.value = [];
+    commitTreeError.value = "";
+    commitTreeLoading.value = false;
+    return;
+  }
+
+  const runToken = ++commitTreeRunToken;
+  commitTreeLoading.value = true;
+  commitTreeError.value = "";
+
+  try {
+    const paths = await invoke<string[]>("get_commit_tree_paths", {
+      path: props.repoPath,
+      sha: props.commit.sha,
+    });
+
+    if (runToken !== commitTreeRunToken) return;
+    commitTreePaths.value = paths;
+  } catch {
+    if (runToken !== commitTreeRunToken) return;
+    commitTreePaths.value = [];
+    commitTreeError.value = "Could not load full commit tree.";
+  } finally {
+    if (runToken === commitTreeRunToken) {
+      commitTreeLoading.value = false;
+    }
+  }
+}
+
+function openTreeFile(path: string) {
+  const normalized = normalizeRepoPath(path);
+
+  if (props.isWorkingChanges) {
+    const meta = workingTreeMeta.value.get(normalized);
+    if (!meta) return;
+    openDiff(normalized, null, !meta.hasUnstaged && meta.hasStaged);
+    return;
+  }
+
+  if (props.isStash) {
+    return;
+  }
+
+  const commitMeta = commitTreeMeta.value.get(normalized);
+  if (!commitMeta || !props.commit) return;
+  openDiff(normalized, props.commit.sha, false);
 }
 
 function onCommit() {
@@ -546,6 +880,37 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => [
+    props.repoPath,
+    props.commit?.sha,
+    props.isWorkingChanges,
+    props.isStash,
+    changesViewMode.value,
+    showAllFilesInTree.value,
+  ],
+  () => {
+    if (isCommitChangesView.value && changesViewMode.value === "tree" && showAllFilesInTree.value) {
+      void loadCommitTreePaths();
+      return;
+    }
+
+    commitTreeRunToken += 1;
+    commitTreePaths.value = [];
+    commitTreeError.value = "";
+    commitTreeLoading.value = false;
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [props.isWorkingChanges, props.isStash, props.commit?.sha],
+  () => {
+    showAllFilesInTree.value = false;
+    changesViewMode.value = "files";
+  },
+);
+
 onUnmounted(() => {
   globalThis.removeEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.removeEventListener("keydown", handleGlobalKeyDown);
@@ -585,10 +950,28 @@ onUnmounted(() => {
 
     <div v-show="activeTab === 'changes' && isWorkingChanges" class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto">
-        <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent">
-          <div class="flex items-center gap-2 mb-1">
-            <div class="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse" />
-            <span class="text-[11px] font-semibold text-[var(--foreground)] whitespace-nowrap">{{ workingChangesLabel }}</span>
+        <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0 || (conflictFiles?.length || 0) > 0" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="flex items-center gap-2 min-w-0">
+              <div class="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse" />
+              <span class="text-[11px] font-semibold text-[var(--foreground)] whitespace-nowrap">{{ workingChangesLabel }}</span>
+            </div>
+            <div class="flex items-center gap-1 p-0.5 rounded-md border border-[var(--border)] bg-[var(--input-background)]">
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'files' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('files')"
+              >
+                <Files class="w-3 h-3" />
+              </button>
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'tree' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('tree')"
+              >
+                <FolderTree class="w-3 h-3" />
+              </button>
+            </div>
           </div>
           <div class="flex items-center gap-3 text-[10px] text-[var(--muted-foreground)]">
             <span v-if="hasConflicts && (conflictFiles?.length || 0) > 0" class="flex items-center gap-1 text-[#ef4444]">
@@ -643,6 +1026,8 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+
+        <template v-if="changesViewMode === 'files'">
 
         <div v-if="hasConflicts" class="border-b border-[var(--border)]">
           <div class="flex items-center justify-between px-3 py-2 bg-[var(--card)]">
@@ -802,6 +1187,105 @@ onUnmounted(() => {
           <p class="text-xs text-[var(--muted-foreground)] font-medium">Working tree clean</p>
           <p class="text-[10px] text-[var(--muted-foreground)] opacity-60 mt-1">No uncommitted changes</p>
         </div>
+
+        </template>
+
+        <template v-else>
+          <div class="border-b border-[var(--border)]">
+            <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)]">
+              <span class="text-xs font-medium text-[var(--foreground)]">Changes tree</span>
+              <div class="flex items-center gap-1">
+                <button
+                  v-if="hasConflicts"
+                  class="text-[10px] text-[#ef4444] hover:text-[#f87171] transition-colors px-1.5 py-0.5 rounded hover:bg-[#ef4444]/10"
+                  @click="emit('resolveAllConflicts')"
+                >
+                  Resolve All
+                </button>
+                <button
+                  v-if="unstagedFiles.length > 0"
+                  class="text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--secondary)]"
+                  @click="emit('stageAll')"
+                >
+                  Stage All
+                </button>
+                <button
+                  v-if="stagedFiles.length > 0"
+                  class="text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--secondary)]"
+                  @click="emit('unstageAll')"
+                >
+                  Unstage All
+                </button>
+                <button
+                  v-if="unstagedFiles.length > 0"
+                  class="text-[10px] text-[#ef4444]/70 hover:text-[#ef4444] transition-colors px-1.5 py-0.5 rounded hover:bg-[#ef4444]/10"
+                  @click="confirmDiscard(null)"
+                >
+                  Discard All
+                </button>
+              </div>
+            </div>
+
+            <div v-if="treeRows.length === 0" class="px-4 py-8 text-[11px] text-[var(--muted-foreground)] text-center">
+              No files to show in tree mode.
+            </div>
+
+            <div
+              v-for="row in treeRows"
+              :key="row.node.key"
+              class="group flex items-center gap-2 py-1.5 pr-3 transition-colors"
+              :class="[
+                row.node.type === 'folder' ? 'hover:bg-[var(--secondary)]/45 cursor-pointer' : 'cursor-pointer hover:bg-[var(--primary)]/6',
+                row.node.changed ? '' : 'opacity-70',
+              ]"
+              :style="{ paddingLeft: `${10 + row.depth * 14}px` }"
+              @click="onTreeRowClick(row)"
+              @contextmenu="onTreeRowContextMenu($event, row)"
+            >
+              <button
+                v-if="row.node.type === 'folder'"
+                class="w-3.5 h-3.5 flex items-center justify-center rounded hover:bg-[var(--secondary)]"
+                @click.stop="toggleTreeFolder(row.node.path)"
+              >
+                <ChevronDown class="w-3 h-3 transition-transform" :class="isTreeFolderExpanded(row.node.path) ? '' : '-rotate-90'" />
+              </button>
+              <span v-else class="w-3.5" />
+
+              <Folder
+                v-if="row.node.type === 'folder'"
+                class="w-3.5 h-3.5 flex-shrink-0"
+                :class="row.node.changed ? 'text-[var(--primary)]' : 'text-[var(--muted-foreground)]/70'"
+              />
+              <File
+                v-else
+                class="w-3.5 h-3.5 flex-shrink-0"
+                :style="{ color: row.node.status ? statusColor(row.node.status) : 'var(--muted-foreground)' }"
+              />
+
+              <span
+                class="flex-1 min-w-0 text-xs truncate"
+                :class="row.node.changed ? 'text-[var(--foreground)]' : 'text-[var(--muted-foreground)]'"
+                :title="row.node.path"
+              >
+                {{ row.node.name }}
+              </span>
+
+              <span
+                v-if="row.node.type === 'folder'"
+                class="w-1.5 h-1.5 rounded-full"
+                :class="row.node.changed ? 'bg-[var(--primary)]' : 'bg-[var(--muted-foreground)]/35'"
+              />
+
+              <span
+                v-else-if="row.node.status"
+                class="text-[10px] font-bold w-4 text-center"
+                :style="{ color: statusColor(row.node.status) }"
+              >
+                {{ statusIcon(row.node.status) }}
+              </span>
+            </div>
+          </div>
+        </template>
       </div>
 
       <div class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0">
@@ -848,34 +1332,142 @@ onUnmounted(() => {
 
     <div v-show="activeTab === 'changes' && !isWorkingChanges && commit" class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto">
-        <div v-if="commitFiles.length > 0">
-          <div class="flex items-center gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)]">
+        <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)] border-b border-[var(--border)]">
+          <div class="flex items-center gap-2 min-w-0">
             <span class="font-medium">Changed files</span>
             <span class="text-[10px] bg-[var(--primary)]/20 text-[var(--primary)] px-1.5 py-0.5 rounded-full">{{ commitFiles.length }}</span>
           </div>
-          <div
-            v-for="f in commitFiles"
-            :key="f.path"
-            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
-            @click="openDiff(f.path, commit!.sha, false)"
-            @contextmenu="openFileContextMenu($event, f.path)"
-          >
-            <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-            <div class="flex-1 min-w-0">
-              <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
-              <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+
+          <div class="flex items-center gap-2">
+            <label
+              v-if="changesViewMode === 'tree'"
+              class="flex items-center gap-1 text-[10px] text-[var(--muted-foreground)] cursor-pointer select-none"
+            >
+              <input
+                type="checkbox"
+                class="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--input-background)]"
+                v-model="showAllFilesInTree"
+              >
+              View all
+            </label>
+
+            <div class="flex items-center gap-1 p-0.5 rounded-md border border-[var(--border)] bg-[var(--input-background)]">
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'files' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('files')"
+              >
+                <Files class="w-3 h-3" />
+              </button>
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'tree' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('tree')"
+              >
+                <FolderTree class="w-3 h-3" />
+              </button>
             </div>
-            <Eye class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity" />
-            <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
-            <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
           </div>
         </div>
-        <div v-else class="px-4 py-12 flex flex-col items-center justify-center">
-          <div class="w-12 h-12 rounded-full bg-[var(--card)] flex items-center justify-center mb-3 border border-[var(--border)]">
-            <FileText class="w-6 h-6 text-[var(--muted-foreground)] opacity-40" />
+
+        <template v-if="changesViewMode === 'files'">
+          <div v-if="commitFiles.length > 0">
+            <div
+              v-for="f in commitFiles"
+              :key="f.path"
+              class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
+              @click="openDiff(f.path, commit!.sha, false)"
+              @contextmenu="openFileContextMenu($event, f.path)"
+            >
+              <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+              </div>
+              <Eye class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity" />
+              <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
+              <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
+            </div>
           </div>
-          <p class="text-xs text-[var(--muted-foreground)]">No file changes</p>
-        </div>
+          <div v-else class="px-4 py-12 flex flex-col items-center justify-center">
+            <div class="w-12 h-12 rounded-full bg-[var(--card)] flex items-center justify-center mb-3 border border-[var(--border)]">
+              <FileText class="w-6 h-6 text-[var(--muted-foreground)] opacity-40" />
+            </div>
+            <p class="text-xs text-[var(--muted-foreground)]">No file changes</p>
+          </div>
+        </template>
+
+        <template v-else>
+          <div v-if="showAllFilesInTree && commitTreeLoading" class="px-3 py-2 text-[10px] text-[var(--muted-foreground)] border-b border-[var(--border)]">
+            Loading full commit tree...
+          </div>
+          <div v-else-if="showAllFilesInTree && commitTreeError" class="px-3 py-2 text-[10px] text-[#f59e0b] border-b border-[var(--border)]">
+            {{ commitTreeError }}
+          </div>
+
+          <div v-if="treeRows.length > 0">
+            <div
+              v-for="row in treeRows"
+              :key="row.node.key"
+              class="group flex items-center gap-2 py-1.5 pr-3 transition-colors"
+              :class="[
+                row.node.type === 'folder' ? 'hover:bg-[var(--secondary)]/45 cursor-pointer' : 'hover:bg-[var(--primary)]/6',
+                row.node.changed ? '' : 'opacity-70',
+              ]"
+              :style="{ paddingLeft: `${10 + row.depth * 14}px` }"
+              @click="onTreeRowClick(row)"
+              @contextmenu="onTreeRowContextMenu($event, row)"
+            >
+              <button
+                v-if="row.node.type === 'folder'"
+                class="w-3.5 h-3.5 flex items-center justify-center rounded hover:bg-[var(--secondary)]"
+                @click.stop="toggleTreeFolder(row.node.path)"
+              >
+                <ChevronDown class="w-3 h-3 transition-transform" :class="isTreeFolderExpanded(row.node.path) ? '' : '-rotate-90'" />
+              </button>
+              <span v-else class="w-3.5" />
+
+              <Folder
+                v-if="row.node.type === 'folder'"
+                class="w-3.5 h-3.5 flex-shrink-0"
+                :class="row.node.changed ? 'text-[var(--primary)]' : 'text-[var(--muted-foreground)]/70'"
+              />
+              <File
+                v-else
+                class="w-3.5 h-3.5 flex-shrink-0"
+                :style="{ color: row.node.status ? statusColor(row.node.status) : 'var(--muted-foreground)' }"
+              />
+
+              <span
+                class="flex-1 min-w-0 text-xs truncate"
+                :class="row.node.changed ? 'text-[var(--foreground)]' : 'text-[var(--muted-foreground)]'"
+                :title="row.node.path"
+              >
+                {{ row.node.name }}
+              </span>
+
+              <span
+                v-if="row.node.type === 'folder'"
+                class="w-1.5 h-1.5 rounded-full"
+                :class="row.node.changed ? 'bg-[var(--primary)]' : 'bg-[var(--muted-foreground)]/35'"
+              />
+
+              <span
+                v-else-if="row.node.status"
+                class="text-[10px] font-bold w-4 text-center"
+                :style="{ color: statusColor(row.node.status) }"
+              >
+                {{ statusIcon(row.node.status) }}
+              </span>
+            </div>
+          </div>
+          <div v-else class="px-4 py-12 flex flex-col items-center justify-center">
+            <div class="w-12 h-12 rounded-full bg-[var(--card)] flex items-center justify-center mb-3 border border-[var(--border)]">
+              <FileText class="w-6 h-6 text-[var(--muted-foreground)] opacity-40" />
+            </div>
+            <p class="text-xs text-[var(--muted-foreground)]">No file changes</p>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -885,7 +1477,7 @@ onUnmounted(() => {
           <div class="flex items-center justify-between gap-2 mb-1.5">
             <div class="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider">Commit Message</div>
             <span
-              v-if="!canAmendSelectedCommit()"
+              v-if="showAmendHint && !canAmendSelectedCommit()"
               class="text-[9px] text-[var(--muted-foreground)]"
             >
               Amend is available only for current HEAD commit
@@ -1055,24 +1647,102 @@ onUnmounted(() => {
         </div>
 
         <div v-if="stashFiles && stashFiles.length > 0">
-          <div class="flex items-center gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)]">
-            <span class="font-medium">Stashed files</span>
-            <span class="text-[10px] bg-[#f59e0b]/20 text-[#f59e0b] px-1.5 py-0.5 rounded-full">{{ stashFiles.length }}</span>
-          </div>
-          <div
-            v-for="f in stashFiles"
-            :key="f.path"
-            class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
-            @contextmenu="openFileContextMenu($event, f.path)"
-          >
-            <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-            <div class="flex-1 min-w-0">
-              <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
-              <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+          <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)] border-b border-[var(--border)]">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="font-medium">Stashed files</span>
+              <span class="text-[10px] bg-[#f59e0b]/20 text-[#f59e0b] px-1.5 py-0.5 rounded-full">{{ stashFiles.length }}</span>
             </div>
-            <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
-            <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
+            <div class="flex items-center gap-1 p-0.5 rounded-md border border-[var(--border)] bg-[var(--input-background)]">
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'files' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('files')"
+              >
+                <Files class="w-3 h-3" />
+              </button>
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'tree' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('tree')"
+              >
+                <FolderTree class="w-3 h-3" />
+              </button>
+            </div>
           </div>
+
+          <template v-if="changesViewMode === 'files'">
+            <div
+              v-for="f in stashFiles"
+              :key="f.path"
+              class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
+              @contextmenu="openFileContextMenu($event, f.path)"
+            >
+              <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+              </div>
+              <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
+              <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
+            </div>
+          </template>
+
+          <template v-else>
+            <div
+              v-for="row in treeRows"
+              :key="row.node.key"
+              class="group flex items-center gap-2 py-1.5 pr-3 transition-colors"
+              :class="[
+                row.node.type === 'folder' ? 'hover:bg-[var(--secondary)]/45 cursor-pointer' : 'hover:bg-[#f59e0b]/8',
+                row.node.changed ? '' : 'opacity-70',
+              ]"
+              :style="{ paddingLeft: `${10 + row.depth * 14}px` }"
+              @click="onTreeRowClick(row)"
+              @contextmenu="onTreeRowContextMenu($event, row)"
+            >
+              <button
+                v-if="row.node.type === 'folder'"
+                class="w-3.5 h-3.5 flex items-center justify-center rounded hover:bg-[var(--secondary)]"
+                @click.stop="toggleTreeFolder(row.node.path)"
+              >
+                <ChevronDown class="w-3 h-3 transition-transform" :class="isTreeFolderExpanded(row.node.path) ? '' : '-rotate-90'" />
+              </button>
+              <span v-else class="w-3.5" />
+
+              <Folder
+                v-if="row.node.type === 'folder'"
+                class="w-3.5 h-3.5 flex-shrink-0"
+                :class="row.node.changed ? 'text-[#f59e0b]' : 'text-[var(--muted-foreground)]/70'"
+              />
+              <File
+                v-else
+                class="w-3.5 h-3.5 flex-shrink-0"
+                :style="{ color: row.node.status ? statusColor(row.node.status) : 'var(--muted-foreground)' }"
+              />
+
+              <span
+                class="flex-1 min-w-0 text-xs truncate"
+                :class="row.node.changed ? 'text-[var(--foreground)]' : 'text-[var(--muted-foreground)]'"
+                :title="row.node.path"
+              >
+                {{ row.node.name }}
+              </span>
+
+              <span
+                v-if="row.node.type === 'folder'"
+                class="w-1.5 h-1.5 rounded-full"
+                :class="row.node.changed ? 'bg-[#f59e0b]' : 'bg-[var(--muted-foreground)]/35'"
+              />
+
+              <span
+                v-else-if="row.node.status"
+                class="text-[10px] font-bold w-4 text-center"
+                :style="{ color: statusColor(row.node.status) }"
+              >
+                {{ statusIcon(row.node.status) }}
+              </span>
+            </div>
+          </template>
         </div>
         <div v-else class="px-4 py-12 flex flex-col items-center justify-center">
           <div class="w-12 h-12 rounded-full bg-[var(--card)] flex items-center justify-center mb-3 border border-[var(--border)]">

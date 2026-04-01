@@ -1,4 +1,4 @@
-import type { RepoInfo } from "@/types";
+import type { CommitFileInfo, CommitInfo, RepoInfo } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
 
 import { callTauri } from "./gitCall";
@@ -142,10 +142,31 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
   async function editCommitMessage(sha: string, newMessage: string) {
     if (!state.repoPath.value) return;
     try {
+      state.error.value = null;
       state.loading.value = true;
       const result = await callTauri<string>("edit_commit_message", { path: state.repoPath.value, sha, newMessage });
       state.terminalOutput.value.push("$ git commit --amend\n" + (result || "(done)"));
-      await refresh.refreshCommits();
+
+      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+
+      const branch = state.repoInfo.value?.current_branch || "";
+      const remoteBranch = branch ? `origin/${branch}` : "";
+      const headRef = branch ? `HEAD -> ${branch}` : "";
+
+      const selectedHead = state.commits.value.find((commit: CommitInfo) =>
+        branch && commit.refs.some((ref) => ref === branch || ref === remoteBranch || ref.includes(headRef)),
+      ) ?? state.commits.value[0] ?? null;
+
+      state.selectedCommit.value = selectedHead;
+      if (selectedHead) {
+        state.selectedCommitFiles.value = await callTauri<CommitFileInfo[]>("get_commit_files", {
+          path: state.repoPath.value,
+          sha: selectedHead.sha,
+        });
+      } else {
+        state.selectedCommitFiles.value = [];
+      }
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git commit --amend\nError: " + e);

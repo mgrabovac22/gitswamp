@@ -108,78 +108,67 @@ impl IntegrationService {
 
         let key_path = ssh_dir.join(key_name);
         let pub_key_path = ssh_dir.join(format!("{}.pub", key_name));
+        let ssh_keygen_candidates = Self::ssh_keygen_candidates();
 
         if key_path.exists() {
-            let pub_key = std::fs::read_to_string(&pub_key_path)
-                .map_err(|e| format!("Failed to read existing public key: {}", e))?;
+            let pub_key = if pub_key_path.exists() {
+                std::fs::read_to_string(&pub_key_path)
+                    .map_err(|e| format!("Failed to read existing public key: {}", e))?
+            } else {
+                let derived = Self::derive_public_key(&ssh_keygen_candidates, &key_path)?;
+                std::fs::write(&pub_key_path, &derived)
+                    .map_err(|e| format!("Failed to write derived public key: {}", e))?;
+                derived
+            };
             return Ok((key_path.to_string_lossy().to_string(), pub_key));
         }
 
-        let ssh_keygen_paths = [
-            Path::new("C:\\Program Files\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
-            Path::new("C:\\Program Files (x86)\\Git\\usr\\bin\\ssh-keygen.exe").to_path_buf(),
-            Path::new("C:\\Program Files\\Git\\bin\\ssh-keygen.exe").to_path_buf(),
-            Path::new("C:\\Program Files (x86)\\Git\\bin\\ssh-keygen.exe").to_path_buf(),
-            Path::new("C:\\Program Files\\Git\\cmd\\ssh-keygen.exe").to_path_buf(),
-            Path::new("C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe").to_path_buf(),
-            Path::new("/usr/bin/ssh-keygen").to_path_buf(),
-            Path::new("/usr/local/bin/ssh-keygen").to_path_buf(),
-        ];
+        let mut failures: Vec<String> = Vec::new();
+        for ssh_keygen in &ssh_keygen_candidates {
+            let mut cmd = std::process::Command::new(ssh_keygen);
+            cmd.args(["-t", "ed25519", "-C", email, "-f"])
+                .arg(&key_path)
+                .arg("-N")
+                .arg("");
 
-        let from_path: Option<PathBuf> = {
             #[cfg(windows)]
-            {
-                std::process::Command::new("where")
-                    .arg("ssh-keygen")
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .and_then(|s| s.lines().next().map(|l| PathBuf::from(l.trim())))
-                    .filter(|p: &PathBuf| p.exists())
+            cmd.creation_flags(CREATE_NO_WINDOW);
+
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    let pub_key = std::fs::read_to_string(&pub_key_path)
+                        .map_err(|e| format!("Failed to read public key: {}", e))?;
+
+                    return Ok((key_path.to_string_lossy().to_string(), pub_key));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let detail = if !stderr.is_empty() { stderr } else { stdout };
+                    failures.push(format!(
+                        "{} -> {}",
+                        ssh_keygen.display(),
+                        if detail.is_empty() {
+                            "no additional error output".to_string()
+                        } else {
+                            detail
+                        }
+                    ));
+                }
+                Err(error) => {
+                    failures.push(format!("{} -> {}", ssh_keygen.display(), error));
+                }
             }
-            #[cfg(not(windows))]
-            {
-                std::process::Command::new("which")
-                    .arg("ssh-keygen")
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| PathBuf::from(s.trim()))
-                    .filter(|p: &PathBuf| p.exists())
-            }
-        };
-
-        let ssh_keygen = from_path
-            .or_else(|| ssh_keygen_paths.iter().find(|p| p.exists()).cloned())
-            .ok_or("ssh-keygen not found. Please ensure Git is installed with SSH support, or install Windows OpenSSH.")?;
-
-        let mut cmd = std::process::Command::new(ssh_keygen);
-        cmd.args(["-t", "ed25519", "-C", email, "-f"])
-            .arg(&key_path)
-            .arg("-N")
-            .arg("");
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run ssh-keygen: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "ssh-keygen failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
         }
 
-        let pub_key = std::fs::read_to_string(&pub_key_path)
-            .map_err(|e| format!("Failed to read public key: {}", e))?;
+        if failures.is_empty() {
+            return Err("ssh-keygen failed: no executable candidates were found".to_string());
+        }
 
-        Ok((key_path.to_string_lossy().to_string(), pub_key))
+        Err(format!(
+            "ssh-keygen failed on all candidates: {}",
+            failures.join(" | ")
+        ))
     }
 
     pub fn add_gitlab_ssh_key(domain: &str, token: &str, title: &str, key: &str) -> Result<(), String> {
@@ -780,6 +769,123 @@ impl IntegrationService {
             .iter()
             .map(|name| bin_dir.join(name))
             .find(|path| path.exists())
+    }
+
+    fn push_unique_path(paths: &mut Vec<PathBuf>, value: PathBuf) {
+        if value.as_os_str().is_empty() {
+            return;
+        }
+        if paths.iter().any(|existing| existing == &value) {
+            return;
+        }
+        paths.push(value);
+    }
+
+    fn ssh_keygen_candidates() -> Vec<PathBuf> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        if let Ok(custom) = std::env::var("GITSWAMP_SSH_KEYGEN") {
+            let custom_path = PathBuf::from(custom.trim());
+            if !custom_path.as_os_str().is_empty() {
+                Self::push_unique_path(&mut candidates, custom_path);
+            }
+        }
+
+        if let Some(path) = Self::find_command_in_path(&["ssh-keygen.exe", "ssh-keygen"]) {
+            Self::push_unique_path(&mut candidates, path);
+        }
+
+        let static_paths = [
+            PathBuf::from("C:\\Program Files\\Git\\usr\\bin\\ssh-keygen.exe"),
+            PathBuf::from("C:\\Program Files (x86)\\Git\\usr\\bin\\ssh-keygen.exe"),
+            PathBuf::from("C:\\Program Files\\Git\\bin\\ssh-keygen.exe"),
+            PathBuf::from("C:\\Program Files (x86)\\Git\\bin\\ssh-keygen.exe"),
+            PathBuf::from("C:\\Program Files\\Git\\cmd\\ssh-keygen.exe"),
+            PathBuf::from("C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe"),
+            PathBuf::from("/bin/ssh-keygen"),
+            PathBuf::from("/usr/bin/ssh-keygen"),
+            PathBuf::from("/usr/local/bin/ssh-keygen"),
+            PathBuf::from("/usr/sbin/ssh-keygen"),
+            PathBuf::from("/usr/local/sbin/ssh-keygen"),
+            PathBuf::from("/usr/lib/ssh/ssh-keygen"),
+            PathBuf::from("/snap/bin/ssh-keygen"),
+            PathBuf::from("/opt/homebrew/bin/ssh-keygen"),
+        ];
+
+        for candidate in static_paths {
+            if candidate.exists() {
+                Self::push_unique_path(&mut candidates, candidate);
+            }
+        }
+
+        if let Some(path_env) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_env) {
+                for binary in ["ssh-keygen.exe", "ssh-keygen"] {
+                    let candidate = dir.join(binary);
+                    if candidate.exists() {
+                        Self::push_unique_path(&mut candidates, candidate);
+                    }
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            if cfg!(windows) {
+                candidates.push(PathBuf::from("ssh-keygen.exe"));
+            } else {
+                candidates.push(PathBuf::from("ssh-keygen"));
+            }
+        }
+
+        candidates
+    }
+
+    fn derive_public_key(candidates: &[PathBuf], private_key_path: &Path) -> Result<String, String> {
+        let mut failures: Vec<String> = Vec::new();
+
+        for ssh_keygen in candidates {
+            let mut cmd = std::process::Command::new(ssh_keygen);
+            cmd.arg("-y").arg("-f").arg(private_key_path);
+
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if value.is_empty() {
+                        failures.push(format!(
+                            "{} -> empty stdout while deriving public key",
+                            ssh_keygen.display()
+                        ));
+                        continue;
+                    }
+                    return Ok(value + "\n");
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let detail = if !stderr.is_empty() { stderr } else { stdout };
+                    failures.push(format!(
+                        "{} -> {}",
+                        ssh_keygen.display(),
+                        if detail.is_empty() {
+                            "no additional error output".to_string()
+                        } else {
+                            detail
+                        }
+                    ));
+                }
+                Err(error) => {
+                    failures.push(format!("{} -> {}", ssh_keygen.display(), error));
+                }
+            }
+        }
+
+        Err(format!(
+            "Failed to derive SSH public key from existing private key: {}",
+            failures.join(" | ")
+        ))
     }
 
     fn find_command_in_path(candidates: &[&str]) -> Option<PathBuf> {

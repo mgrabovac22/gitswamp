@@ -10,7 +10,7 @@ use commands::commit_files::get_commit_files;
 use commands::commits::{get_author_deletion_stats, get_commit_tree_paths, get_commits};
 use commands::conflicts::get_conflict_hotspots;
 use commands::credentials::{delete_token, load_token, save_token, save_provider_token, load_provider_token, delete_provider_token};
-use commands::diff::{get_working_diff, get_commit_diff, get_file_content, save_file_content, revert_hunk, has_conflict_markers};
+use commands::diff::{get_working_diff, get_commit_diff, get_file_content, get_staged_file_content, save_file_content, revert_hunk, has_conflict_markers};
 use commands::ghost::{discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch};
 use commands::operations::{cherry_pick, checkout_commit, create_tag_at, delete_tag, fetch_all, get_git_path, pull, push, push_force, reset_to_commit, revert_commit, run_git_command, run_shell_command, remove_cached_all, search_github_repos, search_gitlab_repos, generate_ssh_key, add_gitlab_ssh_key, verify_gitlab_token, get_available_external_editors, get_available_external_tools, open_file_with_editor, open_path_with_tool, rename_branch, delete_remote_branch, set_upstream, edit_commit_message, create_annotated_tag, reset_branch_to_remote, push_to_platform, check_origin};
 use commands::repository::get_repo_info;
@@ -100,6 +100,7 @@ pub fn run() {
             get_working_diff,
             get_commit_diff,
             get_file_content,
+            get_staged_file_content,
             save_file_content,
             revert_hunk,
             has_conflict_markers,

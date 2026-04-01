@@ -62,6 +62,10 @@ const colors = {
                 :class="[
                   action.style === 'danger'
                     ? 'bg-[#ef4444] text-white hover:bg-[#dc2626]'
+                    : action.style === 'success'
+                      ? 'bg-[#16a34a] text-white hover:bg-[#15803d]'
+                      : action.style === 'warning'
+                        ? 'bg-[#eab308] text-black hover:bg-[#ca8a04]'
                     : action.style === 'primary'
                       ? 'bg-[#2563eb] text-white hover:bg-[#1d4ed8]'
                       : 'bg-[#374151] text-white hover:bg-[#4b5563]'

@@ -1,7 +1,7 @@
 import { callTauri } from "./gitCall";
 import { getOriginUrl, getTokenForUrl } from "./gitHelpers";
 import type { GitState } from "./gitState";
-import type { StashInfo } from "@/types";
+import type { FileStatusInfo, StashInfo } from "@/types";
 
 type QuoteMode = '"' | "'" | null;
 
@@ -150,6 +150,10 @@ function isPushArgs(args: string[]): boolean {
   return args.length === 1 && args[0].toLowerCase() === "push";
 }
 
+function isStatusArgs(args: string[]): boolean {
+  return args.length >= 1 && args[0].toLowerCase() === "status";
+}
+
 function isRmCachedAllArgs(args: string[]): boolean {
   if (args[0]?.toLowerCase() !== "rm") return false;
   const tail = args.slice(1);
@@ -260,6 +264,45 @@ function formatStashListOutput(stashes: StashInfo[]): string {
     .join("\n");
 }
 
+function formatNativeStatusLine(file: FileStatusInfo): string {
+  if (file.conflicted) {
+    return `UU ${file.path}`;
+  }
+
+  const normalized = (file.status || "").toLowerCase();
+  const stageKey = file.staged ? "staged" : "unstaged";
+  const lookup: Record<string, string> = {
+    "added:staged": "A ",
+    "new:staged": "A ",
+    "added:unstaged": "??",
+    "new:unstaged": "??",
+    "modified:staged": "M ",
+    "modified:unstaged": " M",
+    "deleted:staged": "D ",
+    "deleted:unstaged": " D",
+    "renamed:staged": "R ",
+    "renamed:unstaged": " M",
+    "copied:staged": "C ",
+    "copied:unstaged": " M",
+  };
+
+  const code = lookup[`${normalized}:${stageKey}`] ?? "??";
+
+  return `${code} ${file.path}`;
+}
+
+function formatNativeStatusOutput(files: FileStatusInfo[]): string {
+  if (files.length === 0) {
+    return "On branch (current)\nnothing to commit, working tree clean";
+  }
+
+  return files
+    .slice()
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(formatNativeStatusLine)
+    .join("\n");
+}
+
 export function createTerminalActions(state: GitState) {
   let lastExecuted: { command: string; allowAll: boolean } | null = null;
   let cachedGitExecutable: string | null = null;
@@ -275,8 +318,8 @@ export function createTerminalActions(state: GitState) {
     }
   }
 
-  async function loadGitExecutablePath(): Promise<string | null> {
-    if (cachedGitExecutable !== null) {
+  async function loadGitExecutablePath(forceRefresh = false): Promise<string | null> {
+    if (!forceRefresh && cachedGitExecutable !== null) {
       return cachedGitExecutable;
     }
 
@@ -324,8 +367,8 @@ export function createTerminalActions(state: GitState) {
     }
   }
 
-  async function runGitViaShell(path: string, args: string[]): Promise<string> {
-    const executable = await loadGitExecutablePath();
+  async function runGitViaShell(path: string, args: string[], forceRefresh = false): Promise<string> {
+    const executable = await loadGitExecutablePath(forceRefresh);
     const base = executable ? quoteForShell(executable) : "git";
     const command = `${base} ${args.map(quoteForShell).join(" ")}`.trim();
     return callTauri<string>("run_shell_command", {
@@ -419,6 +462,18 @@ export function createTerminalActions(state: GitState) {
     commandLabel: string,
     expandedNote: string,
   ): Promise<boolean> {
+    if (isStatusArgs(args)) {
+      try {
+        const result = await callTauri<FileStatusInfo[]>("get_status", {
+          path: state.repoPath.value,
+        });
+        appendOutput(commandLabel + expandedNote + "\n" + formatNativeStatusOutput(result) + "\n(native status)");
+      } catch (statusError) {
+        appendOutput(commandLabel + expandedNote + "\nError: " + String(statusError));
+      }
+      return true;
+    }
+
     const originUrl = getOriginUrl(state);
     const token = getTokenForUrl(state, originUrl);
 
@@ -485,6 +540,54 @@ export function createTerminalActions(state: GitState) {
     }
   }
 
+  async function runGitCommandWithFallback(args: string[], commandLabel: string, expandedNote: string) {
+    try {
+      const result = await callTauri<string>("run_git_command", {
+        path: state.repoPath.value,
+        args,
+      });
+      appendOutput(commandLabel + expandedNote + "\n" + (result || "(done)"));
+      return;
+    } catch (primaryError) {
+      try {
+        const fallbackResult = await runGitViaShell(state.repoPath.value, args);
+        appendOutput(
+          commandLabel + expandedNote + "\n" + (fallbackResult || "(done)") + "\n(shell fallback)",
+        );
+        return;
+      } catch (fallbackError) {
+        const primaryText = String(primaryError);
+        const fallbackText = String(fallbackError);
+
+        if (isGitMissingError(primaryText) || isGitMissingError(fallbackText)) {
+          cachedGitExecutable = null;
+          try {
+            const refreshedResult = await runGitViaShell(state.repoPath.value, args, true);
+            appendOutput(
+              commandLabel + expandedNote + "\n" + (refreshedResult || "(done)") + "\n(refreshed git path)",
+            );
+            return;
+          } catch {
+          }
+        }
+
+        const missingGitHint = isGitMissingError(primaryText) || isGitMissingError(fallbackText)
+          ? "\nHint: Git executable was not found. Check that Git is installed and available in PATH (you may need to reopen the app if PATH was changed outside)."
+          : "";
+
+        appendOutput(
+          commandLabel
+            + expandedNote
+            + "\nError: "
+            + primaryText
+            + "\nFallback Error: "
+            + fallbackText
+            + missingGitHint,
+        );
+      }
+    }
+  }
+
   async function executeGitArgs(rawArgs: string[], typedCommand: string, allowAllMode: boolean) {
     const expandedArgs = expandGitShortcut(rawArgs);
     const args = normalizeGitArgs(expandedArgs);
@@ -508,35 +611,7 @@ export function createTerminalActions(state: GitState) {
       return;
     }
 
-    try {
-      const result = await callTauri<string>("run_git_command", {
-        path: state.repoPath.value,
-        args,
-      });
-      appendOutput(commandLabel + expandedNote + "\n" + (result || "(done)"));
-    } catch (e) {
-      try {
-        const fallbackResult = await runGitViaShell(state.repoPath.value, args);
-        appendOutput(
-          commandLabel + expandedNote + "\n" + (fallbackResult || "(done)") + "\n(shell fallback)",
-        );
-      } catch (fallbackError) {
-        const primaryError = String(e);
-        const secondaryError = String(fallbackError);
-        const missingGitHint = isGitMissingError(primaryError) || isGitMissingError(secondaryError)
-          ? "\nHint: Git executable was not found. Install Git for Windows (or add git.exe to PATH) and restart the app."
-          : "";
-        appendOutput(
-          commandLabel
-            + expandedNote
-            + "\nError: "
-            + primaryError
-            + "\nFallback Error: "
-            + secondaryError
-            + missingGitHint,
-        );
-      }
-    }
+    await runGitCommandWithFallback(args, commandLabel, expandedNote);
   }
 
   async function runAllowAllCommand(trimmed: string, parsed: string[] | null) {

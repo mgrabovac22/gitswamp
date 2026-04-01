@@ -124,6 +124,9 @@ impl GitService {
 
     fn current_branch_name(repo: &Repository) -> Result<String, String> {
         let head = repo.head().map_err(|e| e.message().to_string())?;
+        if !head.is_branch() {
+            return Err("Cannot run this operation in detached HEAD state.".to_string());
+        }
         let current = head.shorthand().unwrap_or_default().trim().to_string();
         if current.is_empty() || current == "HEAD" {
             return Err("Cannot run this operation in detached HEAD state.".to_string());
@@ -309,7 +312,11 @@ impl GitService {
     pub fn repo_info(path: &str) -> Result<RepoInfo, String> {
         let repo = GitRepository::open(path)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
-        let branch_name = head.shorthand().unwrap_or("HEAD").to_string();
+        let branch_name = if head.is_branch() {
+            head.shorthand().unwrap_or("HEAD").to_string()
+        } else {
+            "HEAD".to_string()
+        };
         let head_sha = head.target().map(|oid| oid.to_string());
         let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
 
@@ -353,7 +360,17 @@ impl GitService {
             .set_sorting(Sort::TIME | Sort::TOPOLOGICAL)
             .map_err(|e| e.message().to_string())?;
 
-        let ref_map = build_ref_map(&repo);
+        let mut ref_map = build_ref_map(&repo);
+        if let Ok(head) = repo.head() {
+            if !head.is_branch() {
+                if let Some(head_target) = head.target() {
+                    let refs = ref_map.entry(head_target.to_string()).or_default();
+                    if !refs.iter().any(|value| value == "HEAD") {
+                        refs.push("HEAD".to_string());
+                    }
+                }
+            }
+        }
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -398,16 +415,50 @@ impl GitService {
         path: &str,
         max_count: usize,
     ) -> Result<Vec<(String, usize, usize)>, String> {
+        let repo = GitRepository::open(path)?;
         let commits = Self::commits(path, max_count)?;
         let mut by_author: HashMap<String, (usize, usize)> = HashMap::new();
 
         for commit in commits {
-            let files = match Self::commit_files(path, &commit.sha) {
+            let oid = match git2::Oid::from_str(&commit.sha) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
 
-            let deletion_sum: usize = files.iter().map(|file| file.deletions).sum();
+            let commit_object = match repo.find_commit(oid) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let tree = match commit_object.tree() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let parent_tree = if commit_object.parent_count() > 0 {
+                commit_object
+                    .parent(0)
+                    .ok()
+                    .and_then(|parent| parent.tree().ok())
+            } else {
+                None
+            };
+
+            let diff = match repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let mut deletion_sum = 0usize;
+            let delta_count = diff.deltas().len();
+            for idx in 0..delta_count {
+                if let Ok(Some(patch)) = git2::Patch::from_diff(&diff, idx) {
+                    if let Ok((_, _, deletions)) = patch.line_stats() {
+                        deletion_sum += deletions;
+                    }
+                }
+            }
+
             if deletion_sum == 0 {
                 continue;
             }
@@ -547,7 +598,7 @@ impl GitService {
         let head = repo.head().ok();
         let head_name = head
             .as_ref()
-            .and_then(|h| h.shorthand().map(|s| s.to_string()));
+            .and_then(|h| if h.is_branch() { h.shorthand().map(|s| s.to_string()) } else { None });
 
         let mut result = Vec::new();
 
@@ -1431,6 +1482,10 @@ impl GitService {
 
     pub fn get_file_content(path: &str, file_path: &str, sha: Option<&str>) -> Result<String, String> {
         DiffService::get_file_content(path, file_path, sha)
+    }
+
+    pub fn get_staged_file_content(path: &str, file_path: &str) -> Result<String, String> {
+        DiffService::get_staged_file_content(path, file_path)
     }
 
     pub fn has_conflict_markers(path: &str, file_path: &str) -> Result<bool, String> {

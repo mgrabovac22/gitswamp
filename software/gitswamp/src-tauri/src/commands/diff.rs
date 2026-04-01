@@ -23,6 +23,13 @@ pub async fn get_file_content(path: String, file_path: String, sha: Option<Strin
 }
 
 #[tauri::command]
+pub async fn get_staged_file_content(path: String, file_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::get_staged_file_content(&path, &file_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn has_conflict_markers(path: String, file_path: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || GitService::has_conflict_markers(&path, &file_path))
         .await

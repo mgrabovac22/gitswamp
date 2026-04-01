@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::OnceLock;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -7,9 +6,6 @@ use std::os::windows::process::CommandExt;
 use git2::Repository;
 
 use crate::constants::{COMMON_GIT_PATHS, CREATE_NO_WINDOW};
-
-static GIT_PATH: OnceLock<String> = OnceLock::new();
-static FULL_PATH: OnceLock<String> = OnceLock::new();
 
 pub struct GitRepository;
 
@@ -20,7 +16,7 @@ impl GitRepository {
 
     pub fn get_git_path() -> String {
         let exe = Self::git_executable();
-        let full = Self::full_path();
+        let full = Self::full_path_live();
         let path_count = full
             .split(Self::path_separator())
             .filter(|s| !s.trim().is_empty())
@@ -37,12 +33,14 @@ impl GitRepository {
             return Ok(String::new());
         }
 
+        let live_path = Self::full_path_live();
+
         #[cfg(windows)]
         {
             let output = std::process::Command::new("cmd.exe")
                 .args(["/d", "/s", "/c", command])
                 .current_dir(path)
-                .env("PATH", Self::full_path())
+                .env("PATH", &live_path)
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .creation_flags(CREATE_NO_WINDOW)
                 .output()
@@ -60,6 +58,14 @@ impl GitRepository {
             }
 
             let message = if !stderr.is_empty() { stderr } else { stdout };
+
+            if let Some(git_args) = Self::extract_git_args(command) {
+                let git_arg_refs: Vec<&str> = git_args.iter().map(|value| value.as_str()).collect();
+                if let Ok(fallback) = Self::run_git_cmd(Some(path), &git_arg_refs) {
+                    return Ok(fallback);
+                }
+            }
+
             return Err(if message.is_empty() {
                 format!("Command failed with exit code {:?}", output.status.code())
             } else {
@@ -88,6 +94,14 @@ impl GitRepository {
             }
 
             let message = if !stderr.is_empty() { stderr } else { stdout };
+
+            if let Some(git_args) = Self::extract_git_args(command) {
+                let git_arg_refs: Vec<&str> = git_args.iter().map(|value| value.as_str()).collect();
+                if let Ok(fallback) = Self::run_git_cmd(Some(path), &git_arg_refs) {
+                    return Ok(fallback);
+                }
+            }
+
             Err(if message.is_empty() {
                 format!("Command failed with exit code {:?}", output.status.code())
             } else {
@@ -104,63 +118,61 @@ impl GitRepository {
         }
     }
 
-    fn full_path() -> &'static str {
-        FULL_PATH.get_or_init(|| {
-            #[cfg(not(windows))]
+    fn full_path_live() -> String {
+        #[cfg(not(windows))]
+        {
+            return std::env::var("PATH").unwrap_or_default();
+        }
+
+        let mut paths: Vec<String> = Vec::new();
+
+        if let Ok(current) = std::env::var("PATH") {
+            for dir in current.split(';') {
+                let d = dir.trim().to_string();
+                if !d.is_empty() {
+                    paths.push(d);
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(&[
+                    "query",
+                    r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                    "/v",
+                    "Path",
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
             {
-                return std::env::var("PATH").unwrap_or_default();
-            }
-
-            let mut paths: Vec<String> = Vec::new();
-
-            if let Ok(current) = std::env::var("PATH") {
-                for dir in current.split(';') {
-                    let d = dir.trim().to_string();
-                    if !d.is_empty() {
-                        paths.push(d);
-                    }
+                if output.status.success() {
+                    Self::extract_reg_paths(&String::from_utf8_lossy(&output.stdout), &mut paths);
                 }
             }
 
-            #[cfg(windows)]
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(&["query", r"HKCU\Environment", "/v", "Path"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
             {
-                if let Ok(output) = std::process::Command::new("reg")
-                    .args(&[
-                        "query",
-                        r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
-                        "/v",
-                        "Path",
-                    ])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output()
-                {
-                    if output.status.success() {
-                        Self::extract_reg_paths(&String::from_utf8_lossy(&output.stdout), &mut paths);
-                    }
-                }
-
-                if let Ok(output) = std::process::Command::new("reg")
-                    .args(&["query", r"HKCU\Environment", "/v", "Path"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output()
-                {
-                    if output.status.success() {
-                        Self::extract_reg_paths(&String::from_utf8_lossy(&output.stdout), &mut paths);
-                    }
+                if output.status.success() {
+                    Self::extract_reg_paths(&String::from_utf8_lossy(&output.stdout), &mut paths);
                 }
             }
+        }
 
-            paths.join(";")
-        })
+        paths.join(";")
     }
 
-    fn git_executable() -> &'static str {
-        GIT_PATH.get_or_init(Self::find_git)
+    fn git_executable() -> String {
+        Self::find_git()
     }
 
     fn run_git_cmd(cwd: Option<&str>, args: &[&str]) -> Result<String, String> {
         let primary = Self::git_executable();
-        let full_path = Self::full_path();
+        let full_path = Self::full_path_live();
         let separator = Self::path_separator();
         let git_name = if cfg!(windows) { "git.exe" } else { "git" };
         let split_count = full_path
@@ -168,7 +180,7 @@ impl GitRepository {
             .filter(|s| !s.trim().is_empty())
             .count();
 
-        if let Ok(output) = Self::try_git_exec(primary, cwd, args, full_path) {
+        if let Ok(output) = Self::try_git_exec(primary.as_str(), cwd, args, full_path.as_str()) {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -191,7 +203,7 @@ impl GitRepository {
             if candidate.exists() {
                 let exe_str = candidate.to_string_lossy().to_string();
                 if exe_str != primary {
-                    if let Ok(output) = Self::try_git_exec(&exe_str, cwd, args, full_path) {
+                    if let Ok(output) = Self::try_git_exec(&exe_str, cwd, args, full_path.as_str()) {
                         if output.status.success() {
                             let stdout = String::from_utf8_lossy(&output.stdout);
                             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -206,7 +218,7 @@ impl GitRepository {
         #[cfg(windows)]
         for fallback in COMMON_GIT_PATHS {
             if Path::new(fallback).exists() {
-                if let Ok(output) = Self::try_git_exec(fallback, cwd, args, full_path) {
+                if let Ok(output) = Self::try_git_exec(fallback, cwd, args, full_path.as_str()) {
                     if output.status.success() {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -227,7 +239,7 @@ impl GitRepository {
                 cmd.current_dir(dir);
             }
             cmd.env("GIT_TERMINAL_PROMPT", "0");
-            cmd.env("PATH", full_path);
+            cmd.env("PATH", full_path.as_str());
             cmd.creation_flags(CREATE_NO_WINDOW);
             if let Ok(output) = cmd.output() {
                 if output.status.success() {
@@ -275,7 +287,7 @@ impl GitRepository {
             }
         }
 
-        let full = Self::full_path();
+        let full = Self::full_path_live();
         for dir in full.split(separator) {
             let dir = dir.trim();
             if dir.is_empty() {
@@ -386,7 +398,7 @@ impl GitRepository {
             if let Ok(output) = std::process::Command::new("where.exe")
                 .arg("git")
                 .creation_flags(CREATE_NO_WINDOW)
-                .env("PATH", Self::full_path())
+                .env("PATH", Self::full_path_live())
                 .output()
             {
                 if output.status.success() {
@@ -403,7 +415,7 @@ impl GitRepository {
             if let Ok(output) = std::process::Command::new("cmd")
                 .args(&["/c", "where", "git"])
                 .creation_flags(CREATE_NO_WINDOW)
-                .env("PATH", Self::full_path())
+                .env("PATH", Self::full_path_live())
                 .output()
             {
                 if output.status.success() {
@@ -419,6 +431,71 @@ impl GitRepository {
         }
 
         "git".to_string()
+    }
+
+    fn parse_shell_like_args(input: &str) -> Option<Vec<String>> {
+        let mut args = Vec::<String>::new();
+        let mut current = String::new();
+        let mut quote: Option<char> = None;
+        let mut escaping = false;
+
+        for ch in input.chars() {
+            if escaping {
+                current.push(ch);
+                escaping = false;
+                continue;
+            }
+
+            if let Some(active_quote) = quote {
+                if ch == active_quote {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+                continue;
+            }
+
+            match ch {
+                '\\' => escaping = true,
+                '"' | '\'' => quote = Some(ch),
+                c if c.is_whitespace() => {
+                    if !current.is_empty() {
+                        args.push(current.clone());
+                        current.clear();
+                    }
+                }
+                _ => current.push(ch),
+            }
+        }
+
+        if escaping || quote.is_some() {
+            return None;
+        }
+
+        if !current.is_empty() {
+            args.push(current);
+        }
+
+        Some(args)
+    }
+
+    fn extract_git_args(command: &str) -> Option<Vec<String>> {
+        let parsed = Self::parse_shell_like_args(command.trim())?;
+        if parsed.is_empty() {
+            return None;
+        }
+
+        let first = parsed[0].to_lowercase();
+        if first == "git"
+            || first.ends_with("/git")
+            || first.ends_with("\\git")
+            || first.ends_with("/git.exe")
+            || first.ends_with("\\git.exe")
+        {
+            return Some(parsed.into_iter().skip(1).collect());
+        }
+
+        None
     }
 
     fn try_git_exec(

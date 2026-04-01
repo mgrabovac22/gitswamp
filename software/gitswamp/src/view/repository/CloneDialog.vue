@@ -97,7 +97,7 @@ const gitlabSearchInput = ref<HTMLInputElement | null>(null);
 const showGrid = computed(() => activeSource.value === null);
 
 function getProviderToken(provider: string): string | null {
-  if (provider === "github") return props.token || null;
+  if (provider === "github") return props.token || props.providerTokens?.github || null;
   const stored = props.providerTokens?.[provider] || null;
   if (provider === "gitlab-self" && stored && stored.includes("|")) {
     const parts = stored.split("|");

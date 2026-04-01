@@ -12,10 +12,11 @@ import {
   HardDrive,
   Cloud,
   GitPullRequest,
+  CircleDot,
   FileCode2,
 } from "lucide-vue-next";
 import RepositorySidebarSection from "./RepositorySidebarSection.vue";
-import type { BranchInfo, StashInfo, TagInfo } from "@/types";
+import type { BranchInfo, StashInfo, TagInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 const props = defineProps<{
   branches: BranchInfo[];
@@ -23,6 +24,10 @@ const props = defineProps<{
   currentBranch: string;
   stashes: StashInfo[];
   tags: TagInfo[];
+  issues?: IssueInfo[];
+  pullRequests?: PullRequestInfo[];
+  selectedIssueNumber?: number | null;
+  selectedPullRequestNumber?: number | null;
   openPullRequestBranches?: string[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
 }>();
@@ -34,6 +39,10 @@ const emit = defineEmits<{
   stashPop: [index: number];
   stashApply: [index: number];
   stashDrop: [index: number];
+  selectIssue: [issueNumber: number];
+  selectPullRequest: [pullRequestNumber: number];
+  openCreateIssue: [];
+  openCreatePullRequest: [];
   createGist: [];
 }>();
 
@@ -42,6 +51,8 @@ interface RepositorySidebarSections {
   remote: boolean;
   stashes: boolean;
   tags: boolean;
+  issues: boolean;
+  pullRequests: boolean;
 }
 
 const expandedSections = reactive<RepositorySidebarSections>({
@@ -49,9 +60,12 @@ const expandedSections = reactive<RepositorySidebarSections>({
   remote: false,
   stashes: false,
   tags: false,
+  issues: false,
+  pullRequests: false,
 });
 
 const branchFilter = ref("");
+const issueSearch = ref("");
 const showNewBranch = ref(false);
 const newBranchName = ref("");
 
@@ -84,6 +98,53 @@ const remoteLabel = computed(() => {
 
 const remoteIcon = computed(() => {
   return props.remoteProvider === 'github' ? Github : Globe;
+});
+
+const showGithubInsights = computed(() => props.remoteProvider === "github");
+
+const sortedIssues = computed(() => {
+  const values = [...(props.issues || [])];
+  values.sort((a, b) => b.number - a.number);
+  return values;
+});
+
+const filteredIssues = computed(() => {
+  const query = issueSearch.value.trim().toLowerCase();
+  if (!query) {
+    return sortedIssues.value;
+  }
+
+  return sortedIssues.value.filter((issue) => {
+    return issue.title.toLowerCase().includes(query)
+      || issue.author.toLowerCase().includes(query)
+      || String(issue.number).includes(query);
+  });
+});
+
+const visibleIssues = computed(() => {
+  if (issueSearch.value.trim()) {
+    return filteredIssues.value;
+  }
+
+  return filteredIssues.value.slice(0, 100);
+});
+
+const showIssueSearch = computed(() => {
+  return sortedIssues.value.length > 100 || issueSearch.value.trim().length > 0;
+});
+
+const issuesCountLabel = computed(() => {
+  if (sortedIssues.value.length > 100 && !issueSearch.value.trim()) {
+    return "100+";
+  }
+
+  return String(visibleIssues.value.length);
+});
+
+const sortedPullRequests = computed(() => {
+  const values = [...(props.pullRequests || [])];
+  values.sort((a, b) => b.number - a.number);
+  return values;
 });
 
 const openPullRequestBranchSet = computed(() => {
@@ -286,6 +347,91 @@ function showPullRequestBadge(branch: BranchInfo): boolean {
         >
           <span class="truncate">{{ tag.name }}</span>
         </div>
+      </RepositorySidebarSection>
+
+      <RepositorySidebarSection
+        v-if="showGithubInsights"
+        label="ISSUES"
+        :count="issuesCountLabel"
+        :icon="CircleDot"
+        :expanded="expandedSections.issues"
+        @toggle="toggleSection('issues')"
+      >
+        <div class="px-4 pb-1">
+          <button
+            @click="emit('openCreateIssue')"
+            class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
+          >
+            <Plus class="w-3 h-3" />
+            Create issue
+          </button>
+        </div>
+        <div v-if="showIssueSearch" class="px-4 pb-1">
+          <input
+            v-model="issueSearch"
+            type="text"
+            placeholder="Search issues..."
+            class="w-full h-6 px-2 bg-[var(--sidebar-accent)] border border-[var(--sidebar-border)] rounded text-[10px] text-[var(--sidebar-foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--sidebar-ring)]/40"
+          />
+        </div>
+        <div v-if="visibleIssues.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
+          No open issues
+        </div>
+        <button
+          v-for="issue in visibleIssues"
+          :key="`issue-${issue.id}`"
+          class="w-full text-left px-4 py-1.5 pl-8 transition-all"
+          :class="props.selectedIssueNumber === issue.number
+            ? 'bg-[var(--sidebar-primary)]/12 text-[var(--sidebar-foreground)]'
+            : 'text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]'"
+          @click="emit('selectIssue', issue.number)"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[10px] font-semibold">#{{ issue.number }}</span>
+            <span class="text-[9px] uppercase tracking-wide">{{ issue.state }}</span>
+          </div>
+          <div class="text-[10px] truncate">{{ issue.title }}</div>
+        </button>
+      </RepositorySidebarSection>
+
+      <RepositorySidebarSection
+        v-if="showGithubInsights"
+        label="PULL REQUESTS"
+        :count="sortedPullRequests.length"
+        :icon="GitPullRequest"
+        :expanded="expandedSections.pullRequests"
+        @toggle="toggleSection('pullRequests')"
+      >
+        <div class="px-4 pb-1">
+          <button
+            @click="emit('openCreatePullRequest')"
+            class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
+          >
+            <Plus class="w-3 h-3" />
+            Create pull request
+          </button>
+        </div>
+        <div v-if="sortedPullRequests.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
+          No open pull requests
+        </div>
+        <button
+          v-for="pullRequest in sortedPullRequests"
+          :key="`pr-${pullRequest.id}`"
+          class="w-full text-left px-4 py-1.5 pl-8 transition-all"
+          :class="props.selectedPullRequestNumber === pullRequest.number
+            ? 'bg-[var(--sidebar-primary)]/12 text-[var(--sidebar-foreground)]'
+            : 'text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]'"
+          @click="emit('selectPullRequest', pullRequest.number)"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[10px] font-semibold">#{{ pullRequest.number }}</span>
+            <span class="text-[9px] uppercase tracking-wide">{{ pullRequest.state }}</span>
+          </div>
+          <div class="text-[10px] truncate">{{ pullRequest.title }}</div>
+          <div class="text-[9px] text-[var(--muted-foreground)] truncate">
+            {{ pullRequest.sourceBranch }} -> {{ pullRequest.targetBranch }}
+          </div>
+        </button>
       </RepositorySidebarSection>
 
       <div class="px-4 py-2 border-b border-[var(--sidebar-border)]">

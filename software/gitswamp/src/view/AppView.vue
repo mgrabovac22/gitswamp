@@ -3,7 +3,6 @@ import TitleBar from "@/view/shell/TitleBar.vue";
 import AppHeader from "@/view/shell/AppHeader.vue";
 import RepositoryTabs from "@/view/repository/RepositoryTabs.vue";
 import RepositoryWorkspace from "@/view/repository/RepositoryWorkspace.vue";
-import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
 import LandingPage from "@/view/repository/LandingPage.vue";
 import RepositoryActionDialogs from "@/view/repository/RepositoryActionDialogs.vue";
 import RepositoryAuthDialogs from "@/view/repository/RepositoryAuthDialogs.vue";
@@ -27,7 +26,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
-import type { RepoInfo, CommitInfo, StashInfo, RemoteInfo } from "@/types";
+import type { RepoInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 const git = useGit();
 const toast = useToast();
@@ -91,7 +90,8 @@ interface Tab {
   path: string;
 }
 
-type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
+type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
+type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 
 const tabs = ref<Tab[]>([
   { id: "landing", repo: null, label: "Start", path: "" },
@@ -130,7 +130,6 @@ const diffFilePath = ref("");
 const diffCommitSha = ref<string | null>(null);
 const diffStaged = ref(false);
 
-const showConflictResolver = ref(false);
 const conflictResolverPath = ref("");
 
 const showMultiPlatformPushDialog = ref(false);
@@ -141,6 +140,11 @@ const pushUsername = ref("");
 const pushDomain = ref("");
 const detailsPanelCollapsed = ref(true);
 const openPullRequestBranches = ref<string[]>([]);
+const githubIssues = ref<IssueInfo[]>([]);
+const githubPullRequests = ref<PullRequestInfo[]>([]);
+const selectedIssueNumber = ref<number | null>(null);
+const selectedPullRequestNumber = ref<number | null>(null);
+const remoteInsightsMode = ref<RemoteInsightsViewMode>("pull-request-detail");
 let pullRequestFetchSequence = 0;
 let pullRequestFetchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -165,66 +169,64 @@ function closeDiffViewer() {
 
 async function openConflictResolver(filePath: string) {
   try {
-    const hasMarkers = await invoke<boolean>("has_conflict_markers", {
-      path: git.repoPath.value,
-      filePath: filePath,
-    });
-
-    if (hasMarkers) {
-      // File has markers - open the large window with line-by-line resolver
-      conflictResolverPath.value = filePath;
-      showConflictResolver.value = true;
-    } else {
-      // File has no markers - show toast with 4 options
-      const actions = [
+    toast.action(
+      "warning",
+      `Resolve conflict: ${filePath}`,
+      [
         {
-          label: 'Keep Modified',
-          style: 'primary' as const,
+          label: "Resolve Manually",
+          style: "warning",
           onClick: async () => {
-            await resolveConflict(filePath, 'keep-modified');
-          }
+            conflictResolverPath.value = filePath;
+            setHistoryViewMode("conflict-resolve");
+          },
         },
         {
-          label: 'Keep Base',
-          style: 'neutral' as const,
+          label: "Keep Modified",
+          style: "success",
           onClick: async () => {
-            await resolveConflict(filePath, 'keep-base');
-          }
+            await resolveConflict(filePath, "keep-modified");
+          },
         },
         {
-          label: 'Delete File',
-          style: 'danger' as const,
+          label: "Keep Base",
+          style: "primary",
           onClick: async () => {
-            await resolveConflict(filePath, 'delete');
-          }
+            await resolveConflict(filePath, "keep-base");
+          },
         },
         {
-          label: 'Cancel',
-          style: 'neutral' as const,
+          label: "Delete File",
+          style: "danger",
           onClick: async () => {
-            // Just close the toast, do nothing
-          }
-        }
-      ];
-
-      toast.action(
-        'warning',
-        `Resolve conflict: ${filePath}`,
-        actions,
-        30000 // 30 seconds for user to decide
-      );
-    }
+            await resolveConflict(filePath, "delete");
+          },
+        },
+        {
+          label: "Cancel",
+          style: "neutral",
+          onClick: async () => {},
+        },
+      ],
+      30000,
+    );
   } catch (e) {
     toast.error(`Error opening conflict resolver: ${String(e)}`);
   }
 }
 
 function closeConflictResolver() {
-  showConflictResolver.value = false;
+  conflictResolverPath.value = "";
+  if (historyViewMode.value === "conflict-resolve") {
+    setHistoryViewMode("graph");
+  }
 }
 
 function onConflictResolved() {
-  showConflictResolver.value = false;
+  conflictResolverPath.value = "";
+  if (historyViewMode.value === "conflict-resolve") {
+    setHistoryViewMode("graph");
+  }
   git.refreshAll();
   toast.success("Conflict resolved and file staged");
 }
@@ -372,6 +374,61 @@ function getGitlabTokenForHost(host: string): string | null {
   return git.providerTokens.value.gitlab || null;
 }
 
+function collectChangedWorkingPaths(): string[] {
+  const values = new Set<string>();
+  const addPath = (input: string | undefined) => {
+    const normalized = (input || "").replace(/\\/g, "/").trim();
+    if (normalized) {
+      values.add(normalized);
+    }
+  };
+
+  for (const file of git.stagedFiles.value) addPath(file.path);
+  for (const file of git.unstagedFiles.value) addPath(file.path);
+  for (const file of git.conflictFiles.value) addPath(file.path);
+
+  return Array.from(values);
+}
+
+const originConflictRisk = computed(() => {
+  const current = git.currentBranch.value;
+  if (!current) {
+    return { level: "none" as const, label: "No active branch" };
+  }
+
+  const local = git.localBranches.value.find((branch) => branch.name === current || branch.is_head);
+  const behind = local?.behind || 0;
+  const ahead = local?.ahead || 0;
+  const changedFiles = collectChangedWorkingPaths().length;
+
+  if (git.hasConflicts.value) {
+    return { level: "high" as const, label: "Unresolved conflicts are present." };
+  }
+
+  if (behind > 0 && changedFiles > 0) {
+    return {
+      level: "high" as const,
+      label: `Current branch is behind origin by ${behind} commit(s) while ${changedFiles} local file(s) are modified.`,
+    };
+  }
+
+  if (behind > 0 || (ahead > 0 && changedFiles > 0)) {
+    return {
+      level: "medium" as const,
+      label: `Branch divergence detected (ahead ${ahead}, behind ${behind}).`,
+    };
+  }
+
+  return { level: "none" as const, label: "No origin conflict risk." };
+});
+
+interface GithubApiContext {
+  apiBase: string;
+  owner: string;
+  repo: string;
+  token: string;
+}
+
 async function fetchJsonWithTimeout(url: string, headers: Record<string, string>): Promise<unknown> {
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), 8000);
@@ -392,15 +449,23 @@ async function fetchJsonWithTimeout(url: string, headers: Record<string, string>
   }
 }
 
-async function fetchOpenGithubPullRequestBranches(remoteUrl: string): Promise<string[]> {
+function getGithubApiContext(remoteUrl: string): GithubApiContext | null {
   const parsed = parseGithubRemote(remoteUrl);
-  if (!parsed) return [];
+  if (!parsed) return null;
 
   const apiBase = parsed.host === "github.com"
     ? "https://api.github.com"
     : `https://${parsed.host}/api/v3`;
 
-  const token = git.providerTokens.value.github || git.githubToken.value || "";
+  return {
+    apiBase,
+    owner: parsed.owner,
+    repo: parsed.repo,
+    token: git.providerTokens.value.github || git.githubToken.value || "",
+  };
+}
+
+function githubHeaders(token: string): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
   };
@@ -409,19 +474,115 @@ async function fetchOpenGithubPullRequestBranches(remoteUrl: string): Promise<st
     headers.Authorization = `Bearer ${token}`;
   }
 
+  return headers;
+}
+
+function mapGithubPullRequest(item: unknown): PullRequestInfo | null {
+  if (!item || typeof item !== "object") return null;
+  const value = item as Record<string, unknown>;
+  const head = (value.head as Record<string, unknown> | undefined) || {};
+  const base = (value.base as Record<string, unknown> | undefined) || {};
+  const user = (value.user as Record<string, unknown> | undefined) || {};
+
+  const id = Number(value.id);
+  const number = Number(value.number);
+  const title = String(value.title || "").trim();
+  if (!Number.isFinite(id) || !Number.isFinite(number) || !title) {
+    return null;
+  }
+
+  return {
+    id,
+    number,
+    title,
+    state: String(value.state || "unknown"),
+    draft: Boolean(value.draft),
+    author: String(user.login || "Unknown"),
+    sourceBranch: String(head.ref || ""),
+    targetBranch: String(base.ref || ""),
+    createdAt: String(value.created_at || ""),
+    updatedAt: String(value.updated_at || ""),
+    url: String(value.html_url || ""),
+    description: String(value.body || ""),
+  };
+}
+
+function mapGithubIssue(item: unknown): IssueInfo | null {
+  if (!item || typeof item !== "object") return null;
+  const value = item as Record<string, unknown>;
+  if (value.pull_request) {
+    return null;
+  }
+
+  const user = (value.user as Record<string, unknown> | undefined) || {};
+  const id = Number(value.id);
+  const number = Number(value.number);
+  const title = String(value.title || "").trim();
+  if (!Number.isFinite(id) || !Number.isFinite(number) || !title) {
+    return null;
+  }
+
+  return {
+    id,
+    number,
+    title,
+    state: String(value.state || "unknown"),
+    author: String(user.login || "Unknown"),
+    createdAt: String(value.created_at || ""),
+    updatedAt: String(value.updated_at || ""),
+    url: String(value.html_url || ""),
+    description: String(value.body || ""),
+  };
+}
+
+async function fetchGithubPullRequests(remoteUrl: string): Promise<PullRequestInfo[]> {
+  const context = getGithubApiContext(remoteUrl);
+  if (!context) return [];
+
   const payload = await fetchJsonWithTimeout(
-    `${apiBase}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/pulls?state=open&per_page=100`,
-    headers,
+    `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls?state=open&per_page=100`,
+    githubHeaders(context.token),
   );
 
   if (!Array.isArray(payload)) return [];
   return payload
-    .map((item) => {
-      if (!item || typeof item !== "object") return "";
-      const candidate = (item as { head?: { ref?: unknown } }).head?.ref;
-      return typeof candidate === "string" ? candidate : "";
-    })
-    .filter((name) => name.length > 0);
+    .map(mapGithubPullRequest)
+    .filter((item): item is PullRequestInfo => item !== null);
+}
+
+async function fetchGithubIssues(remoteUrl: string): Promise<IssueInfo[]> {
+  const context = getGithubApiContext(remoteUrl);
+  if (!context) return [];
+
+  const issues: IssueInfo[] = [];
+
+  for (let page = 1; page <= 5 && issues.length < 100; page += 1) {
+    const { mapped, rawCount } = await fetchGithubIssuesPage(context, page);
+    if (rawCount === 0) break;
+
+    issues.push(...mapped);
+    if (rawCount < 100) break;
+  }
+
+  return issues.slice(0, 100);
+}
+
+async function fetchGithubIssuesPage(context: GithubApiContext, page: number): Promise<{ mapped: IssueInfo[]; rawCount: number }> {
+  const payload = await fetchJsonWithTimeout(
+    `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues?state=open&per_page=100&page=${page}`,
+    githubHeaders(context.token),
+  );
+
+  if (!Array.isArray(payload)) {
+    return { mapped: [], rawCount: 0 };
+  }
+
+  return {
+    mapped: payload
+      .map(mapGithubIssue)
+      .filter((item): item is IssueInfo => item !== null),
+    rawCount: payload.length,
+  };
 }
 
 async function fetchOpenGitlabMergeRequestBranches(remoteUrl: string): Promise<string[]> {
@@ -452,27 +613,64 @@ async function fetchOpenGitlabMergeRequestBranches(remoteUrl: string): Promise<s
     .filter((name) => name.length > 0);
 }
 
+function ensureRemoteInsightSelection() {
+  if (!githubPullRequests.value.some((pr) => pr.number === selectedPullRequestNumber.value)) {
+    selectedPullRequestNumber.value = githubPullRequests.value[0]?.number ?? null;
+  }
+
+  if (!githubIssues.value.some((issue) => issue.number === selectedIssueNumber.value)) {
+    selectedIssueNumber.value = githubIssues.value[0]?.number ?? null;
+  }
+}
+
 async function refreshOpenPullRequestBranches() {
   const remotes = git.repoInfo.value?.remotes || [];
   const primaryRemote = getPrimaryRemote(remotes);
 
   if (!primaryRemote || (primaryRemote.provider !== "github" && primaryRemote.provider !== "gitlab")) {
     openPullRequestBranches.value = [];
+    githubPullRequests.value = [];
+    githubIssues.value = [];
+    selectedPullRequestNumber.value = null;
+    selectedIssueNumber.value = null;
     return;
   }
 
   const sequence = ++pullRequestFetchSequence;
 
   try {
-    const branches = primaryRemote.provider === "github"
-      ? await fetchOpenGithubPullRequestBranches(primaryRemote.url)
-      : await fetchOpenGitlabMergeRequestBranches(primaryRemote.url);
+    if (primaryRemote.provider === "github") {
+      const [pullRequests, issues] = await Promise.all([
+        fetchGithubPullRequests(primaryRemote.url),
+        fetchGithubIssues(primaryRemote.url),
+      ]);
+
+      if (sequence !== pullRequestFetchSequence) return;
+
+      githubPullRequests.value = pullRequests;
+      githubIssues.value = issues;
+      ensureRemoteInsightSelection();
+      openPullRequestBranches.value = uniqueNormalizedBranches(
+        pullRequests.map((item) => item.sourceBranch),
+      );
+      return;
+    }
+
+    const branches = await fetchOpenGitlabMergeRequestBranches(primaryRemote.url);
 
     if (sequence !== pullRequestFetchSequence) return;
+    githubPullRequests.value = [];
+    githubIssues.value = [];
+    selectedPullRequestNumber.value = null;
+    selectedIssueNumber.value = null;
     openPullRequestBranches.value = uniqueNormalizedBranches(branches);
   } catch {
     if (sequence !== pullRequestFetchSequence) return;
     openPullRequestBranches.value = [];
+    githubPullRequests.value = [];
+    githubIssues.value = [];
+    selectedPullRequestNumber.value = null;
+    selectedIssueNumber.value = null;
   }
 }
 
@@ -484,6 +682,170 @@ function scheduleOpenPullRequestRefresh() {
   pullRequestFetchTimer = setTimeout(() => {
     void refreshOpenPullRequestBranches();
   }, 250);
+}
+
+function promptGithubInsightsAuth() {
+  authProvider.value = "github";
+  authDomainInput.value = "";
+  authTokenInput.value = "";
+  showAuthRequiredDialog.value = true;
+}
+
+function getPrimaryGithubContext(): { apiBase: string; owner: string; repo: string; token: string } | null {
+  const remotes = git.repoInfo.value?.remotes || [];
+  const primaryRemote = getPrimaryRemote(remotes);
+  if (!primaryRemote || primaryRemote.provider !== "github") {
+    return null;
+  }
+
+  return getGithubApiContext(primaryRemote.url);
+}
+
+function openIssueDetails(number: number) {
+  selectedIssueNumber.value = number;
+  remoteInsightsMode.value = "issue-detail";
+  setHistoryViewMode("remote-insights");
+}
+
+function openPullRequestDetails(number: number) {
+  selectedPullRequestNumber.value = number;
+  remoteInsightsMode.value = "pull-request-detail";
+  setHistoryViewMode("remote-insights");
+}
+
+function openCreateIssuePanel() {
+  remoteInsightsMode.value = "issue-create";
+  setHistoryViewMode("remote-insights");
+}
+
+function openCreatePullRequestPanel() {
+  remoteInsightsMode.value = "pull-request-create";
+  setHistoryViewMode("remote-insights");
+}
+
+async function readGithubError(response: Response): Promise<string> {
+  try {
+    const payload = await response.json() as { message?: unknown };
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+  } catch {
+    // Ignore JSON parse errors and fall back to HTTP status.
+  }
+
+  return `HTTP ${response.status}`;
+}
+
+async function createRemoteIssue(payload: { title: string; description: string }) {
+  const context = getPrimaryGithubContext();
+  if (!context) {
+    toast.warning("GitHub remote is required for issue creation.");
+    return;
+  }
+
+  if (!context.token) {
+    promptGithubInsightsAuth();
+    toast.warning("GitHub token is required to create issues.");
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues`,
+      {
+        method: "POST",
+        headers: {
+          ...githubHeaders(context.token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: payload.title,
+          body: payload.description || undefined,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        promptGithubInsightsAuth();
+      }
+      throw new Error(await readGithubError(response));
+    }
+
+    const created = mapGithubIssue(await response.json());
+    if (!created) {
+      throw new Error("Created issue payload could not be parsed.");
+    }
+
+    githubIssues.value = [created, ...githubIssues.value.filter((item) => item.number !== created.number)];
+    selectedIssueNumber.value = created.number;
+    remoteInsightsMode.value = "issue-detail";
+    setHistoryViewMode("remote-insights");
+    toast.success(`Issue #${created.number} created.`);
+    scheduleOpenPullRequestRefresh();
+  } catch (e) {
+    toast.error("Create issue failed: " + String(e));
+  }
+}
+
+async function createRemotePullRequest(payload: { title: string; description: string; sourceBranch: string; targetBranch: string }) {
+  const context = getPrimaryGithubContext();
+  if (!context) {
+    toast.warning("GitHub remote is required for pull request creation.");
+    return;
+  }
+
+  if (!context.token) {
+    promptGithubInsightsAuth();
+    toast.warning("GitHub token is required to create pull requests.");
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls`,
+      {
+        method: "POST",
+        headers: {
+          ...githubHeaders(context.token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: payload.title,
+          body: payload.description || undefined,
+          head: payload.sourceBranch,
+          base: payload.targetBranch,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        promptGithubInsightsAuth();
+      }
+      throw new Error(await readGithubError(response));
+    }
+
+    const created = mapGithubPullRequest(await response.json());
+    if (!created) {
+      throw new Error("Created pull request payload could not be parsed.");
+    }
+
+    githubPullRequests.value = [
+      created,
+      ...githubPullRequests.value.filter((item) => item.number !== created.number),
+    ];
+    openPullRequestBranches.value = uniqueNormalizedBranches(
+      githubPullRequests.value.map((item) => item.sourceBranch),
+    );
+    selectedPullRequestNumber.value = created.number;
+    remoteInsightsMode.value = "pull-request-detail";
+    setHistoryViewMode("remote-insights");
+    toast.success(`Pull request #${created.number} created.`);
+    scheduleOpenPullRequestRefresh();
+  } catch (e) {
+    toast.error("Create pull request failed: " + String(e));
+  }
 }
 
 function isAuthenticationRequiredError(message: string | null | undefined): boolean {
@@ -498,6 +860,26 @@ function maybeShowAuthDialogFromGitError() {
   authDomainInput.value = authProvider.value === "gitlab-self" ? parseAuthDomainFromOrigin() : "";
   authTokenInput.value = "";
   showAuthRequiredDialog.value = true;
+}
+
+async function syncAuthStateAfterChange() {
+  await git.reloadAuthTokens();
+  scheduleOpenPullRequestRefresh();
+}
+
+async function handleSaveProviderToken(provider: string, token: string) {
+  await git.saveProviderToken(provider, token);
+  await syncAuthStateAfterChange();
+}
+
+async function handleDeleteProviderToken(provider: string) {
+  await git.deleteProviderToken(provider);
+  await syncAuthStateAfterChange();
+}
+
+async function handleSaveGithubTokenFromSettings(token: string) {
+  await handleSaveProviderToken("github", token);
+  showSettings.value = false;
 }
 
 async function handlePull() {
@@ -538,6 +920,10 @@ function setHistoryViewMode(mode: HistoryViewMode) {
     viewingStash.value = false;
     git.selectedCommit.value = null;
     git.clearStashSelection();
+  }
+
+  if (mode !== "conflict-resolve") {
+    conflictResolverPath.value = "";
   }
 }
 
@@ -736,6 +1122,7 @@ onMounted(() => {
       appWindow.maximize().catch(() => {});
     }, 120);
   }
+
 });
 
 onUnmounted(() => {
@@ -745,6 +1132,7 @@ onUnmounted(() => {
     clearTimeout(pullRequestFetchTimer);
     pullRequestFetchTimer = null;
   }
+
 });
 
 watch([tabs, activeTabId], () => {
@@ -790,6 +1178,14 @@ watch(() => git.selectedCommit.value, (commit) => {
     git.getCommitFiles(commit.sha);
   }
 });
+
+const selectedIssue = computed(() =>
+  githubIssues.value.find((item) => item.number === selectedIssueNumber.value) || null,
+);
+
+const selectedPullRequest = computed(() =>
+  githubPullRequests.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
+);
 
 const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value));
 const isLanding = computed(() => !activeTab.value?.repo);
@@ -952,7 +1348,6 @@ async function saveAuthToken() {
 
     if (authProvider.value === "github") {
       await git.saveProviderToken("github", token);
-      await git.saveToken(token);
     } else if (authProvider.value === "gitlab") {
       await git.saveProviderToken("gitlab", token);
     } else {
@@ -965,8 +1360,10 @@ async function saveAuthToken() {
         await git.saveProviderToken("gitlab-self", `${domainClean}|${token}`);
     }
 
+    await syncAuthStateAfterChange();
+
     showAuthRequiredDialog.value = false;
-    toast.success("Authentication token saved. Retry the remote action.");
+    toast.success("Authentication token saved and loaded.");
   } catch (e) {
     toast.error("Failed to save token: " + String(e));
   } finally {
@@ -997,7 +1394,8 @@ async function generateAndPushGitlabKey() {
       key: publicKey,
     });
 
-    await git.saveProviderToken("gitlab-self", `${authDomainInput.value.trim()}|${authTokenInput.value.trim()}`);
+    await git.saveProviderToken("gitlab-self", `${domainClean}|${authTokenInput.value.trim()}`);
+    await syncAuthStateAfterChange();
     showAuthRequiredDialog.value = false;
     toast.success("SSH key generated and pushed to self-hosted GitLab");
   } catch (e) {
@@ -1260,7 +1658,6 @@ const isAnyDialogOpen = computed(() =>
   showMultiPlatformPushDialog.value ||
   showPushUsernameDialog.value ||
   showAuthRequiredDialog.value ||
-  showConflictResolver.value ||
   showGhostMaterializeDialog.value,
 );
 
@@ -1354,6 +1751,7 @@ const openReposList = computed(() =>
         :loading="git.loading.value"
         :active-action="activeRemoteAction"
         :ghost-active="git.ghostBranchState.value.active"
+        :origin-conflict-risk="originConflictRisk"
         @pull="handlePull"
         @push="handlePush"
         @fetch="handleFetch"
@@ -1370,10 +1768,16 @@ const openReposList = computed(() =>
         :show-terminal="showTerminal"
         :terminal-allow-all="terminalAllowAll"
         :open-pull-request-branches="openPullRequestBranches"
+        :issues="githubIssues"
+        :pull-requests="githubPullRequests"
+        :selected-issue="selectedIssue"
+        :selected-pull-request="selectedPullRequest"
+        :remote-insights-mode="remoteInsightsMode"
         :show-diff-viewer="showDiffViewer"
         :diff-file-path="diffFilePath"
         :diff-commit-sha="diffCommitSha"
         :diff-staged="diffStaged"
+        :conflict-resolver-path="conflictResolverPath"
         :details-panel-collapsed="detailsPanelCollapsed"
         :history-view-mode="historyViewMode"
         :time-machine-focus-sha="timeMachineFocusSha"
@@ -1386,10 +1790,18 @@ const openReposList = computed(() =>
         @close-diff-viewer="closeDiffViewer"
         @open-diff-viewer="openDiffViewer($event.path, $event.sha, $event.staged)"
         @open-conflict-resolver="openConflictResolver($event)"
+        @close-conflict-resolver="closeConflictResolver"
+        @conflict-resolved="onConflictResolved"
         @select-commit="onSelectCommit($event)"
         @select-working-changes="onSelectWorkingChanges"
         @select-conflicts="onSelectConflicts"
         @select-stash="onSelectStash($event)"
+        @select-issue="openIssueDetails($event)"
+        @select-pull-request="openPullRequestDetails($event)"
+        @open-create-issue="openCreateIssuePanel"
+        @open-create-pull-request="openCreatePullRequestPanel"
+        @create-issue="createRemoteIssue($event)"
+        @create-pull-request="createRemotePullRequest($event)"
         @request-merge="handleRequestMerge($event)"
         @checkout-remote-branch="handleCheckoutRemoteBranch($event)"
         @pull="handlePull"
@@ -1455,14 +1867,14 @@ const openReposList = computed(() =>
       :provider-tokens="git.providerTokens.value"
       @close="showCloneDialog = false"
       @clone="handleClone"
-      @save-provider-token="(provider: string, token: string) => git.saveProviderToken(provider, token)"
+      @save-provider-token="handleSaveProviderToken"
     />
     <InitDialog
       :visible="showInitDialog"
       :provider-tokens="git.providerTokens.value"
       @close="showInitDialog = false"
       @init="handleInit"
-      @save-provider-token="(provider: string, token: string) => git.saveProviderToken(provider, token)"
+      @save-provider-token="handleSaveProviderToken"
     />
     <MultiPlatformPushDialog
       :visible="showMultiPlatformPushDialog"
@@ -1476,18 +1888,10 @@ const openReposList = computed(() =>
       v-if="showSettings"
       :token="git.githubToken.value"
       :git-path="git.gitPath.value"
-      @save="git.saveProviderToken('github', $event); showSettings = false"
-      @delete="git.deleteProviderToken('github')"
+      @save="handleSaveGithubTokenFromSettings"
+      @delete="handleDeleteProviderToken('github')"
       @close="showSettings = false"
     />
-    <ConflictResolver
-      v-if="showConflictResolver && git.repoPath.value"
-      :repo-path="git.repoPath.value"
-      :file-path="conflictResolverPath"
-      @close="closeConflictResolver"
-      @resolved="onConflictResolved"
-    />
-
     <RepositoryAuthDialogs
       :show-push-username-dialog="showPushUsernameDialog"
       :push-platform="pushPlatform"

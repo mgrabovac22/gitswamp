@@ -7,6 +7,7 @@ import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 const props = defineProps<{
   repoPath: string;
   filePath: string;
+  embedded?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -45,6 +46,25 @@ const simpleResolution = ref<'keep-modified' | 'keep-base' | 'delete' | null>(nu
 const CONTEXT_LINES = 5;
 const highlightedLineCache = ref(new Map<string, string>());
 const fileNameParts = computed(() => splitFilePath(props.filePath));
+const isEmbedded = computed(() => !!props.embedded);
+
+function hasOursOptions(hunk: ConflictHunk): boolean {
+  return hunk.oursLines.length > 0;
+}
+
+function hasTheirsOptions(hunk: ConflictHunk): boolean {
+  return hunk.theirsLines.length > 0;
+}
+
+function hasBothOptions(hunk: ConflictHunk): boolean {
+  return hasOursOptions(hunk) && hasTheirsOptions(hunk);
+}
+
+function onBackdropClick() {
+  if (!isEmbedded.value) {
+    emit('close');
+  }
+}
 
 // Parse conflict markers from file content
 function parseConflicts(content: string): ConflictHunk[] {
@@ -319,9 +339,14 @@ const allHunksResolved = computed(() => {
   if (!hasMarkers.value) {
     return simpleResolution.value !== null;
   }
-  return selections.value.every(sel => 
-    sel.oursSelected.some(s => s) || sel.theirsSelected.some(s => s)
-  );
+  return selections.value.every((sel, idx) => {
+    const hunk = hunks.value[idx];
+    if (!hunk) return false;
+    if (hunk.oursLines.length === 0 && hunk.theirsLines.length === 0) {
+      return true;
+    }
+    return sel.oursSelected.some(Boolean) || sel.theirsSelected.some(Boolean);
+  });
 });
 
 async function saveResolution() {
@@ -377,8 +402,17 @@ watch(() => props.filePath, () => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" @click.self="emit('close')">
-    <div class="w-[98vw] max-w-[1600px] h-[95vh] bg-[var(--card)] rounded-xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden">
+  <div
+    :class="isEmbedded
+      ? 'w-full h-full flex items-stretch justify-stretch'
+      : 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm'"
+    @click.self="onBackdropClick"
+  >
+    <div
+      :class="isEmbedded
+        ? 'w-full h-full bg-[var(--card)] border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden'
+        : 'w-[98vw] max-w-[1600px] h-[95vh] bg-[var(--card)] rounded-xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden'"
+    >
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-3 border-b border-[var(--border)] bg-[var(--card)] flex-shrink-0">
         <div class="flex items-center gap-3">
@@ -391,6 +425,7 @@ watch(() => props.filePath, () => {
         </div>
         <div class="flex items-center gap-2">
           <button
+            v-if="hasMarkers"
             @click="reset"
             class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-[var(--border)] bg-[var(--secondary)] hover:bg-[var(--accent)]/10 text-[var(--foreground)] transition-colors"
           >
@@ -508,6 +543,7 @@ watch(() => props.filePath, () => {
               <!-- Quick Actions -->
               <div class="flex items-center gap-2" @click.stop>
                 <button
+                  v-if="hasOursOptions(hunk)"
                   @click.stop="selectAllOurs(hunkIdx)"
                   :class="[
                     'px-2.5 py-1 text-[10px] font-semibold rounded transition-colors',
@@ -521,6 +557,7 @@ watch(() => props.filePath, () => {
                   Ours
                 </button>
                 <button
+                  v-if="hasBothOptions(hunk)"
                   @click.stop="selectBoth(hunkIdx)"
                   :class="[
                     'px-2.5 py-1 text-[10px] font-semibold rounded transition-colors',
@@ -533,6 +570,7 @@ watch(() => props.filePath, () => {
                   Both
                 </button>
                 <button
+                  v-if="hasTheirsOptions(hunk)"
                   @click.stop="selectAllTheirs(hunkIdx)"
                   :class="[
                     'px-2.5 py-1 text-[10px] font-semibold rounded transition-colors',

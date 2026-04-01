@@ -10,7 +10,7 @@ export interface Toast {
 
 export interface ToastAction {
   label: string;
-  style?: "primary" | "danger" | "neutral";
+  style?: "primary" | "danger" | "neutral" | "success" | "warning";
   onClick: () => void | Promise<void>;
 }
 

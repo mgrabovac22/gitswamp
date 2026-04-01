@@ -10,13 +10,15 @@ pub struct DiffService;
 impl DiffService {
     pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<FileDiff, String> {
         let repo = GitRepository::open(path)?;
+        let mut diff_opts = git2::DiffOptions::new();
+        diff_opts.context_lines(3).interhunk_lines(1);
 
         let diff = if staged {
             let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
-            repo.diff_tree_to_index(head_tree.as_ref(), None, None)
+            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))
                 .map_err(|e| e.message().to_string())?
         } else {
-            repo.diff_index_to_workdir(None, None)
+            repo.diff_index_to_workdir(None, Some(&mut diff_opts))
                 .map_err(|e| e.message().to_string())?
         };
 
@@ -28,11 +30,13 @@ impl DiffService {
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         let tree = commit.tree().map_err(|e| e.message().to_string())?;
+        let mut diff_opts = git2::DiffOptions::new();
+        diff_opts.context_lines(3).interhunk_lines(1);
 
         let parent_tree = commit.parent(0).and_then(|p| p.tree()).ok();
 
         let diff = repo
-            .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+            .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut diff_opts))
             .map_err(|e| e.message().to_string())?;
 
         extract_file_diff(&diff, file_path)
@@ -58,6 +62,21 @@ impl DiffService {
             let full_path = Path::new(path).join(file_path);
             std::fs::read_to_string(&full_path).map_err(|e| e.to_string())
         }
+    }
+
+    pub fn get_staged_file_content(path: &str, file_path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        let index = repo.index().map_err(|e| e.message().to_string())?;
+        let entry = index
+            .get_path(Path::new(file_path), 0)
+            .ok_or_else(|| format!("File '{}' not found in index", file_path))?;
+        let blob = repo.find_blob(entry.id).map_err(|e| e.message().to_string())?;
+
+        if blob.is_binary() {
+            return Err("Binary file".to_string());
+        }
+
+        String::from_utf8(blob.content().to_vec()).map_err(|_| "File is not valid UTF-8".to_string())
     }
 
     pub fn has_conflict_markers(path: &str, file_path: &str) -> Result<bool, String> {
