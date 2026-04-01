@@ -295,11 +295,11 @@ onUnmounted(() => {
     <div ref="menuRoot" class="relative flex-shrink-0">
       <button
         ref="menuButton"
-        class="h-9 w-9 flex items-center justify-center rounded-t-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-colors [app-region:no-drag]"
+        class="h-9 w-9 flex items-center justify-center rounded-t-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-all [app-region:no-drag]"
         title="Menu"
         @click.stop="toggleMenu"
       >
-        <Menu class="w-3.5 h-3.5" />
+        <Menu :class="['w-3.5 h-3.5 transition-transform duration-300 ease-out', menuOpen && 'rotate-90']" />
       </button>
     </div>
 

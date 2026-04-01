@@ -61,9 +61,22 @@ const scrollTop = ref(0);
 const containerHeight = ref(400);
 const LINE_HEIGHT = 20; // pixels per line
 const OVERSCAN = 10;
+const MAX_HIGHLIGHT_CACHE_SIZE = 2000;
 
 let fileWatchInterval: ReturnType<typeof setInterval> | null = null;
 let lastFileHash = "";
+
+function maintainHighlightCache() {
+  if (highlightedLineCache.value.size > MAX_HIGHLIGHT_CACHE_SIZE) {
+    const toDelete = Math.floor(MAX_HIGHLIGHT_CACHE_SIZE * 0.2);
+    let deleted = 0;
+    for (const key of highlightedLineCache.value.keys()) {
+      if (deleted >= toDelete) break;
+      highlightedLineCache.value.delete(key);
+      deleted++;
+    }
+  }
+}
 
 const isWorkingChanges = computed(() => !props.commitSha);
 const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
@@ -937,6 +950,7 @@ function getHighlightedLine(lineText: string, key: string): string {
     ? escapeHtml(lineText)
     : highlightCodeLine(lineText, props.filePath);
   highlightedLineCache.value.set(key, highlighted);
+  maintainHighlightCache();
   return highlighted;
 }
 
@@ -953,6 +967,7 @@ function getHighlightedDiffLine(hunkIdx: number, lineIdx: number, line: DiffLine
     const inlineClass = line.line_type === "addition" ? "diff-inline-add" : "diff-inline-del";
     const html = buildInlineDiffMarkup(lineText, pair.compareText, inlineClass);
     highlightedLineCache.value.set(key, html);
+    maintainHighlightCache();
     return html;
   }
 
@@ -1507,22 +1522,35 @@ watch(usePlainTextHighlighting, () => {
   animation: none;
 }
 
+/* Performance hints */
+.diff-code-line {
+  contain: layout style paint;
+}
+
 .diff-inline-add {
-  background: color-mix(in srgb, var(--diff-sign-add) 42%, transparent);
-  border: 1px solid color-mix(in srgb, var(--diff-sign-add) 82%, transparent);
+  background: color-mix(in srgb, var(--diff-sign-add) 55%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--diff-sign-add) 95%, transparent);
   border-radius: 2px;
   color: var(--diff-sign-add);
-  font-weight: 800;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 78%, transparent);
+  font-weight: 900;
+  font-style: italic;
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 88%, transparent), 0 0 3px color-mix(in srgb, var(--diff-sign-add) 35%, transparent);
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 1px;
 }
 
 .diff-inline-del {
-  background: color-mix(in srgb, var(--diff-sign-del) 42%, transparent);
-  border: 1px solid color-mix(in srgb, var(--diff-sign-del) 82%, transparent);
+  background: color-mix(in srgb, var(--diff-sign-del) 55%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--diff-sign-del) 95%, transparent);
   border-radius: 2px;
   color: var(--diff-sign-del);
-  font-weight: 800;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 78%, transparent);
+  font-weight: 900;
+  font-style: italic;
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 88%, transparent), 0 0 3px color-mix(in srgb, var(--diff-sign-del) 35%, transparent);
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 1px;
 }
 </style>
 

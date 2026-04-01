@@ -27,7 +27,17 @@ import AppButton from "@/shared/ui/AppButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
 import { splitFilePath } from "@/shared/codeView";
 import { useToast } from "@/shared/notifications/useToast";
-import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo } from "@/types";
+import {
+  createCommitLintEngine,
+  inferScopeFromPaths,
+  type CommitLintFinding,
+  type CommitLintResult,
+} from "@/domain/analyzer/commitAnalyzer";
+import {
+  COMMIT_ANALYZER_SETTINGS_EVENT,
+  getStoredCommitAnalyzerSettings,
+} from "@/shared/config/commitAnalyzerPreferences";
+import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo, StagedDiffSummary } from "@/types";
 
 const props = defineProps<{
   commit: CommitInfo | null;
@@ -65,6 +75,21 @@ const emit = defineEmits<{
 
 const commitSummary = ref("");
 const commitDescription = ref("");
+const commitLintEngine = createCommitLintEngine();
+const commitAnalyzerSettings = ref(getStoredCommitAnalyzerSettings());
+const commitLintResult = ref<CommitLintResult | null>(null);
+const commitLintLoading = ref(false);
+const stagedDiffSummary = ref<StagedDiffSummary>({
+  total_lines_added: 0,
+  total_lines_removed: 0,
+  files_changed: 0,
+  file_types: [],
+  has_test_changes: false,
+  has_migration_changes: false,
+  inferred_scope: "general",
+});
+const COMMIT_LINT_DEBOUNCE_MS = 300;
+let commitLintTimer: ReturnType<typeof setTimeout> | null = null;
 const showDiscardConfirm = ref(false);
 const discardPath = ref<string | null>(null);
 
@@ -172,6 +197,56 @@ const emptyDirectoriesLoading = ref(false);
 const emptyDirectoriesError = ref("");
 const notifyGitkeep = ref(true);
 let emptyDirectoriesRunToken = 0;
+
+const stagedFingerprint = computed(() => props.stagedFiles
+  .map((file) => `${file.path}:${file.status}:${file.staged}`)
+  .sort()
+  .join("|"));
+
+const hasTypedCommitMessage = computed(() => commitSummary.value.trim().length > 0);
+
+const commitLintIndicator = computed<"none" | "warning" | "error">(() => {
+  if (!hasTypedCommitMessage.value || !commitLintResult.value) {
+    return "none";
+  }
+  if (commitLintResult.value.errors.length > 0) {
+    return "error";
+  }
+  if (commitLintResult.value.warnings.length > 0) {
+    return "warning";
+  }
+  return "none";
+});
+
+const commitLintTooltipFindings = computed(() => {
+  if (!hasTypedCommitMessage.value || !commitLintResult.value) {
+    return [];
+  }
+
+  const topErrors = commitLintResult.value.errors.slice(0, 2);
+  const topWarnings = commitLintResult.value.warnings.slice(0, 2);
+  return [...topErrors, ...topWarnings].slice(0, 3);
+});
+
+const commitLintIndicatorClass = computed(() => {
+  if (commitLintIndicator.value === "error") {
+    return "text-[#ef4444] border-[#ef4444]/50 bg-[#ef4444]/15";
+  }
+  if (commitLintIndicator.value === "warning") {
+    return "text-[#f59e0b] border-[#f59e0b]/50 bg-[#f59e0b]/15";
+  }
+  return "text-[var(--muted-foreground)] border-[var(--border)] bg-[var(--secondary)]";
+});
+
+function commitLintFindingClass(finding: CommitLintFinding): string {
+  if (finding.severity === "error") {
+    return "text-[#ef4444]";
+  }
+  if (finding.severity === "warning") {
+    return "text-[#f59e0b]";
+  }
+  return "text-[var(--muted-foreground)]";
+}
 
 function updateCompactWorkingLabel() {
   compactWorkingLabel.value = globalThis.innerWidth < 1120;
@@ -370,6 +445,115 @@ function autoExpandTextarea(textarea: HTMLTextAreaElement) {
 function onDescriptionInput(event: Event) {
   const textarea = event.target as HTMLTextAreaElement;
   autoExpandTextarea(textarea);
+}
+
+function refreshCommitAnalyzerSettings() {
+  commitAnalyzerSettings.value = getStoredCommitAnalyzerSettings();
+}
+
+function buildFallbackStagedDiffSummary(): StagedDiffSummary {
+  const paths = props.stagedFiles.map((file) => file.path);
+  const fileTypes = new Set<string>();
+  let hasTestChanges = false;
+  let hasMigrationChanges = false;
+
+  for (const rawPath of paths) {
+    const path = rawPath.toLowerCase().split("\\").join("/");
+    const dotIndex = path.lastIndexOf(".");
+    if (dotIndex > 0 && dotIndex < path.length - 1) {
+      fileTypes.add(path.slice(dotIndex));
+    }
+
+    if (path.includes("/test/") || path.includes("/tests/") || path.includes(".test.") || path.includes(".spec.")) {
+      hasTestChanges = true;
+    }
+    if (path.includes("migration") || path.includes("/migrations/")) {
+      hasMigrationChanges = true;
+    }
+  }
+
+  return {
+    total_lines_added: 0,
+    total_lines_removed: 0,
+    files_changed: paths.length,
+    file_types: Array.from(fileTypes).sort(),
+    has_test_changes: hasTestChanges,
+    has_migration_changes: hasMigrationChanges,
+    inferred_scope: inferScopeFromPaths(paths),
+  };
+}
+
+async function loadStagedDiffSummary() {
+  if (!props.repoPath || !props.isWorkingChanges || props.stagedFiles.length === 0) {
+    stagedDiffSummary.value = buildFallbackStagedDiffSummary();
+    queueCommitLintAnalysis();
+    return;
+  }
+
+  commitLintLoading.value = true;
+  try {
+    stagedDiffSummary.value = await invoke<StagedDiffSummary>("get_staged_diff_summary", {
+      path: props.repoPath,
+    });
+  } catch {
+    stagedDiffSummary.value = buildFallbackStagedDiffSummary();
+  } finally {
+    commitLintLoading.value = false;
+    queueCommitLintAnalysis();
+  }
+}
+
+function runCommitLintAnalysis() {
+  if (!props.isWorkingChanges) {
+    commitLintResult.value = null;
+    return;
+  }
+
+  if (!commitAnalyzerSettings.value.enabled) {
+    commitLintResult.value = null;
+    return;
+  }
+
+  if (!commitSummary.value.trim()) {
+    commitLintResult.value = null;
+    return;
+  }
+
+  commitLintResult.value = commitLintEngine.analyze({
+    message: commitSummary.value,
+    description: commitDescription.value,
+    stagedFiles: props.stagedFiles.map((file) => ({
+      path: file.path,
+      status: file.status,
+      staged: file.staged,
+    })),
+    diffSummary: {
+      totalLinesAdded: stagedDiffSummary.value.total_lines_added,
+      totalLinesRemoved: stagedDiffSummary.value.total_lines_removed,
+      filesChanged: stagedDiffSummary.value.files_changed,
+      fileTypes: stagedDiffSummary.value.file_types,
+      hasTestChanges: stagedDiffSummary.value.has_test_changes,
+      hasMigrationChanges: stagedDiffSummary.value.has_migration_changes,
+      inferredScope: stagedDiffSummary.value.inferred_scope,
+    },
+    settings: commitAnalyzerSettings.value,
+  });
+}
+
+function queueCommitLintAnalysis() {
+  if (commitLintTimer) {
+    clearTimeout(commitLintTimer);
+    commitLintTimer = null;
+  }
+
+  commitLintTimer = setTimeout(() => {
+    runCommitLintAnalysis();
+  }, COMMIT_LINT_DEBOUNCE_MS);
+}
+
+function handleCommitAnalyzerSettingsChanged() {
+  refreshCommitAnalyzerSettings();
+  queueCommitLintAnalysis();
 }
 
 function formatDate(timestamp: number) {
@@ -860,9 +1044,11 @@ function handleGlobalPointerDown() {
 onMounted(() => {
   void loadAvailableEditors();
   syncGitkeepNotifyPreference();
+  refreshCommitAnalyzerSettings();
   globalThis.addEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.addEventListener("keydown", handleGlobalKeyDown);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
+  globalThis.addEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
   updateCompactWorkingLabel();
 });
 
@@ -911,10 +1097,47 @@ watch(
   },
 );
 
+watch(
+  () => [
+    props.repoPath,
+    props.isWorkingChanges,
+    stagedFingerprint.value,
+  ],
+  () => {
+    void loadStagedDiffSummary();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [
+    commitSummary.value,
+    commitDescription.value,
+    props.isWorkingChanges,
+    stagedFingerprint.value,
+    stagedDiffSummary.value.total_lines_added,
+    stagedDiffSummary.value.total_lines_removed,
+    stagedDiffSummary.value.files_changed,
+    stagedDiffSummary.value.inferred_scope,
+    commitAnalyzerSettings.value.enabled,
+    commitAnalyzerSettings.value.severityThreshold,
+    commitAnalyzerSettings.value.maxDiffLinesForDescWarning,
+  ],
+  () => {
+    queueCommitLintAnalysis();
+  },
+  { immediate: true },
+);
+
 onUnmounted(() => {
+  if (commitLintTimer) {
+    clearTimeout(commitLintTimer);
+    commitLintTimer = null;
+  }
   globalThis.removeEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.removeEventListener("keydown", handleGlobalKeyDown);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
+  globalThis.removeEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
 });
 </script>
 
@@ -1290,14 +1513,46 @@ onUnmounted(() => {
 
       <div class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0">
         <div class="mb-2">
-          <div class="flex items-center justify-between mb-1">
+          <div class="flex items-center justify-between mb-1 gap-2">
             <div class="text-[10px] font-medium text-[var(--muted-foreground)]">Subject</div>
-            <span :class="[
-              'text-[10px] font-medium',
-              commitSummary.length > 72 ? 'text-[#ef4444]' : 'text-[var(--muted-foreground)]'
-            ]">
-              {{ commitSummary.length > 72 ? '-' + (commitSummary.length - 72) : (72 - commitSummary.length) }}
-            </span>
+            <div class="flex items-center gap-2">
+              <span :class="[
+                'text-[10px] font-medium',
+                commitSummary.length > 72 ? 'text-[#ef4444]' : 'text-[var(--muted-foreground)]'
+              ]">
+                {{ commitSummary.length > 72 ? '-' + (commitSummary.length - 72) : (72 - commitSummary.length) }}
+              </span>
+
+              <div
+                v-if="commitAnalyzerSettings.enabled && commitLintIndicator !== 'none'"
+                class="relative group"
+              >
+                <span
+                  :class="[
+                    'inline-flex items-center justify-center w-4 h-4 rounded border text-[10px] font-bold cursor-help',
+                    commitLintIndicatorClass,
+                  ]"
+                >
+                  {{ commitLintIndicator === 'error' ? 'X' : '!' }}
+                </span>
+
+                <div class="hidden group-hover:block absolute right-0 top-[calc(100%+6px)] z-40 w-[270px] rounded-md border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-xl">
+                  <div class="text-[11px] font-semibold text-[var(--foreground)] mb-1">Commit checks</div>
+                  <div v-if="commitLintLoading" class="text-[10px] text-[var(--muted-foreground)]">Analyzing staged diff...</div>
+                  <div v-else class="space-y-1">
+                    <div
+                      v-for="finding in commitLintTooltipFindings"
+                      :key="finding.id"
+                      class="flex items-start gap-1.5 text-[10px]"
+                      :class="commitLintFindingClass(finding)"
+                    >
+                      <span class="w-8 text-center font-semibold">{{ finding.severity === 'error' ? 'ERR' : 'WARN' }}</span>
+                      <span class="flex-1 leading-snug">{{ finding.message }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
           <input
             v-model="commitSummary"
@@ -1320,6 +1575,7 @@ onUnmounted(() => {
           class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-2 overflow-y-auto"
           @input="onDescriptionInput"
         />
+
         <AppButton
           class="w-full bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium h-8"
           :disabled="!commitSummary.trim() || stagedFiles.length === 0"

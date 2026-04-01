@@ -10,7 +10,7 @@ use crate::constants::{
 };
 use crate::models::{
     BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot, FileStatusInfo, GhostBranchState,
-    GithubRepo, GitlabRepo, RepoInfo, StashInfo, TagInfo,
+    GithubRepo, GitlabRepo, RepoInfo, StagedDiffSummary, StashInfo, TagInfo,
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
@@ -64,6 +64,31 @@ impl GitService {
             .replace('\\', "/")
             .trim_matches('/')
             .to_string()
+    }
+
+    fn infer_scope_from_path(path: &str) -> &'static str {
+        if path.contains("/auth/") {
+            return "auth";
+        }
+        if path.contains("/api/") || path.contains("/routes/") || path.contains("/controllers/") {
+            return "api";
+        }
+        if path.contains("/ui/") || path.contains("/view/") || path.contains("/components/") {
+            return "ui";
+        }
+        if path.contains("/styles/") || path.ends_with(".css") || path.ends_with(".scss") {
+            return "style";
+        }
+        if path.contains("/docs/") || path.ends_with(".md") {
+            return "docs";
+        }
+        if path.contains("/db/") || path.contains("migration") {
+            return "data";
+        }
+        if path.contains("/test/") || path.contains("/tests/") || path.contains(".test.") || path.contains(".spec.") {
+            return "tests";
+        }
+        "general"
     }
 
     fn should_skip_empty_scan_dir(name: &str) -> bool {
@@ -701,6 +726,92 @@ impl GitService {
         }
 
         Ok(files)
+    }
+
+    pub fn staged_diff_summary(path: &str) -> Result<StagedDiffSummary, String> {
+        let repo = GitRepository::open(path)?;
+        let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+
+        let diff = repo
+            .diff_tree_to_index(head_tree.as_ref(), None, None)
+            .map_err(|e| e.message().to_string())?;
+
+        let mut total_lines_added = 0usize;
+        let mut total_lines_removed = 0usize;
+        let mut file_types = HashSet::new();
+        let mut has_test_changes = false;
+        let mut has_migration_changes = false;
+        let mut scope_hits: HashMap<String, usize> = HashMap::new();
+
+        let files_changed = diff.deltas().len();
+        for idx in 0..files_changed {
+            let Some(delta) = diff.get_delta(idx) else {
+                continue;
+            };
+
+            let file_path = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            if !file_path.is_empty() {
+                let normalized = file_path.replace('\\', "/").to_lowercase();
+
+                if normalized.contains("/test/")
+                    || normalized.contains("/tests/")
+                    || normalized.contains(".test.")
+                    || normalized.contains(".spec.")
+                {
+                    has_test_changes = true;
+                }
+
+                if normalized.contains("/migration/")
+                    || normalized.contains("/migrations/")
+                    || normalized.contains("migrate")
+                {
+                    has_migration_changes = true;
+                }
+
+                let scope = Self::infer_scope_from_path(&normalized).to_string();
+                let current = scope_hits.entry(scope).or_insert(0);
+                *current += 1;
+
+                if let Some(ext) = Path::new(&file_path).extension().and_then(|value| value.to_str()) {
+                    let cleaned = ext.trim().to_lowercase();
+                    if !cleaned.is_empty() {
+                        file_types.insert(format!(".{}", cleaned));
+                    }
+                }
+            }
+
+            if let Ok(Some(patch)) = git2::Patch::from_diff(&diff, idx) {
+                if let Ok((_, additions, deletions)) = patch.line_stats() {
+                    total_lines_added += additions;
+                    total_lines_removed += deletions;
+                }
+            }
+        }
+
+        let inferred_scope = scope_hits
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(scope, _)| scope)
+            .unwrap_or_else(|| "general".to_string());
+
+        let mut file_types_vec: Vec<String> = file_types.into_iter().collect();
+        file_types_vec.sort();
+
+        Ok(StagedDiffSummary {
+            total_lines_added,
+            total_lines_removed,
+            files_changed,
+            file_types: file_types_vec,
+            has_test_changes,
+            has_migration_changes,
+            inferred_scope,
+        })
     }
 
     pub fn get_empty_directories(path: &str, max_count: usize) -> Result<Vec<String>, String> {

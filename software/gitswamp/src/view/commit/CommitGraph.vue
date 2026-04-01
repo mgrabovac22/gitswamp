@@ -942,7 +942,7 @@ async function waitForCommitGrowth(previousCount: number, timeoutMs = 2400): Pro
 }
 
 async function jumpToEndStep() {
-  scrollGraphToBottom("auto");
+  scrollGraphToBottom("smooth");
   if (!props.hasMore || loadingToEnd.value) {
     return;
   }
@@ -953,7 +953,7 @@ async function jumpToEndStep() {
     emit("loadMore");
     await waitForCommitGrowth(previousCount);
     await nextTick();
-    scrollGraphToBottom("auto");
+    scrollGraphToBottom("smooth");
   } finally {
     loadingToEnd.value = false;
   }

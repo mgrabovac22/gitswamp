@@ -14,6 +14,10 @@ import {
   type AppPalettePreference,
   type ThemeModePreference,
 } from "@/shared/themePreferences";
+import {
+  getStoredCommitAnalyzerSettings,
+  updateCommitAnalyzerSettings,
+} from "@/shared/config/commitAnalyzerPreferences";
 
 const props = defineProps<{
   token: string | null;
@@ -41,6 +45,7 @@ const reducedMotion = ref(false);
 const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
+const commitAnalyzerEnabled = ref(true);
 
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
@@ -101,6 +106,8 @@ onMounted(() => {
   } else {
     notifyGitkeep.value = savedNotifyGitkeep !== "false";
   }
+
+  commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
   
   applySettings();
 });
@@ -132,6 +139,10 @@ watch([fontSize, compactMode, dummyMode, fullScreenOnStart, showAvatars, restore
 watch(themeMode, (value) => {
   applyThemeModePreference(value);
   storeThemeModePreference(value);
+});
+
+watch(commitAnalyzerEnabled, (value) => {
+  updateCommitAnalyzerSettings({ enabled: value });
 });
 
 watch(appPalette, (value) => {
@@ -403,6 +414,23 @@ function handleDelete() {
               <div
                 class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
                 :class="notifyGitkeep ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Commit Analyzer</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Realtime commit quality analysis near message counter (~1 MB RAM)</p>
+            </div>
+            <button
+              @click="commitAnalyzerEnabled = !commitAnalyzerEnabled"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="commitAnalyzerEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="commitAnalyzerEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
               />
             </button>
           </div>

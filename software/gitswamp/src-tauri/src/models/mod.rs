@@ -9,6 +9,7 @@ pub mod gitlab;
 pub mod ghost_branch_state;
 pub mod repository;
 pub mod stash;
+pub mod staged_diff_summary;
 pub mod tag;
 
 pub use commit::CommitInfo;
@@ -22,4 +23,5 @@ pub use gitlab::GitlabRepo;
 pub use ghost_branch_state::GhostBranchState;
 pub use repository::{RepoInfo, RemoteInfo};
 pub use stash::StashInfo;
+pub use staged_diff_summary::StagedDiffSummary;
 pub use tag::TagInfo;
