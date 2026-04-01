@@ -96,13 +96,31 @@ const gitlabSearchInput = ref<HTMLInputElement | null>(null);
 
 const showGrid = computed(() => activeSource.value === null);
 
+function normalizeHostInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.host.toLowerCase();
+  } catch {
+    const withoutProtocol = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    return (withoutProtocol.split("/")[0] || "").trim().toLowerCase();
+  }
+}
+
 function getProviderToken(provider: string): string | null {
   if (provider === "github") return props.token || props.providerTokens?.github || null;
   const stored = props.providerTokens?.[provider] || null;
-  if (provider === "gitlab-self" && stored && stored.includes("|")) {
-    const parts = stored.split("|");
-    gitlabDomain.value = parts[0];
-    return parts[1];
+  if (provider === "gitlab-self" && stored) {
+    const separatorIndex = stored.indexOf("|");
+    if (separatorIndex > 0) {
+      const rawDomain = stored.slice(0, separatorIndex).trim();
+      const token = stored.slice(separatorIndex + 1).trim();
+      gitlabDomain.value = normalizeHostInput(rawDomain);
+      return token || null;
+    }
   }
   return stored;
 }
@@ -142,12 +160,19 @@ async function saveToken() {
   if (!tokenInput.value.trim() || !activeSource.value) return;
   
   if (activeSource.value === "gitlab-self" && gitlabDomain.value.trim()) {
+    const normalizedDomain = normalizeHostInput(gitlabDomain.value);
+    if (!normalizedDomain) {
+      gitlabError.value = "Valid GitLab domain is required";
+      return;
+    }
+
     try {
       await invoke<string>("verify_gitlab_token", {
-        domain: gitlabDomain.value.trim(),
+        domain: normalizedDomain,
         token: tokenInput.value.trim(),
       });
-      emit("saveProviderToken", activeSource.value, `${gitlabDomain.value.trim()}|${tokenInput.value.trim()}`);
+      gitlabDomain.value = normalizedDomain;
+      emit("saveProviderToken", activeSource.value, `${normalizedDomain}|${tokenInput.value.trim()}`);
     } catch (e) {
       gitlabError.value = `Token verification failed: ${e}`;
       return;
@@ -235,15 +260,18 @@ function onGitlabSearch() {
 
 async function doGitlabSearch() {
   const token = getProviderToken(activeSource.value || "");
-  if (!token || !gitlabDomain.value) {
+  const normalizedDomain = normalizeHostInput(gitlabDomain.value);
+  if (!token || !normalizedDomain) {
     gitlabError.value = "Domain and token required";
     return;
   }
+
+  gitlabDomain.value = normalizedDomain;
   gitlabLoading.value = true;
   gitlabError.value = null;
   try {
     gitlabRepos.value = await invoke<GitlabRepo[]>("search_gitlab_repos", {
-      domain: gitlabDomain.value,
+      domain: normalizedDomain,
       token: token,
       query: gitlabSearch.value,
     });
@@ -261,19 +289,22 @@ function selectGitlabRepo(repo: GitlabRepo) {
 
 async function generateSshKey() {
   const token = getProviderToken(activeSource.value || "");
-  if (!token || !gitlabDomain.value) return;
+  const normalizedDomain = normalizeHostInput(gitlabDomain.value);
+  if (!token || !normalizedDomain) return;
+
+  gitlabDomain.value = normalizedDomain;
   
   gitlabError.value = null;
   try {
     const [_, pubKey] = await invoke<[string, string]>("generate_ssh_key", {
       email: "gitswamp@local",
-      keyName: `gitswamp_${gitlabDomain.value.split(".").join("_")}`,
+      keyName: `gitswamp_${normalizedDomain.split(".").join("_")}`,
     });
     gitlabPublicKey.value = pubKey;
     
     try {
       await invoke("add_gitlab_ssh_key", {
-        domain: gitlabDomain.value,
+        domain: normalizedDomain,
         token: token,
         title: "GitSwamp SSH Key",
         key: pubKey,

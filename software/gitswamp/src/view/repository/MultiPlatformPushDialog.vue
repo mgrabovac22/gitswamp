@@ -24,8 +24,10 @@ const availablePlatformsList = computed(() => {
         github: "GitHub",
         "github-enterprise": "GitHub Enterprise",
         gitlab: "GitLab",
+        "gitlab-self": "GitLab (Self-Hosted)",
         "gitlab-self-hosted": "GitLab (Self-Hosted)",
         bitbucket: "Bitbucket",
+        "bitbucket-dc": "Bitbucket DC",
         azure: "Azure DevOps",
       }
       return {

@@ -36,9 +36,9 @@ function onPushUsernameEnter() {
 <template>
   <div v-if="props.showPushUsernameDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="emit('update:showPushUsernameDialog', false)">
     <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
-      <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Git {{ props.pushPlatform === 'gitlab-self-hosted' ? 'GitLab' : props.pushPlatform === 'github-enterprise' ? 'GitHub Enterprise' : props.pushPlatform }} Credentials</h3>
+      <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Git {{ (props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'gitlab-self') ? 'GitLab' : props.pushPlatform === 'github-enterprise' ? 'GitHub Enterprise' : props.pushPlatform }} Credentials</h3>
 
-      <div v-if="props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'github-enterprise'" class="mb-4">
+      <div v-if="props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'gitlab-self' || props.pushPlatform === 'github-enterprise'" class="mb-4">
         <label for="push-domain" class="text-xs text-[var(--muted-foreground)] block mb-2">Domain (e.g., gitlab.company.com)</label>
         <input
           id="push-domain"
@@ -58,13 +58,13 @@ function onPushUsernameEnter() {
           :placeholder="`Your ${props.pushPlatform} username...`"
           class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
           @keyup.enter="onPushUsernameEnter"
-          :autofocus="!(props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'github-enterprise')"
+          :autofocus="!(props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'gitlab-self' || props.pushPlatform === 'github-enterprise')"
         />
       </div>
 
       <div class="flex justify-end gap-2">
         <button @click="emit('update:showPushUsernameDialog', false)" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
-        <button @click="emit('push')" :disabled="!props.pushUsername.trim() || (props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'github-enterprise') && !props.pushDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Push</button>
+        <button @click="emit('push')" :disabled="!props.pushUsername.trim() || (props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'gitlab-self' || props.pushPlatform === 'github-enterprise') && !props.pushDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Push</button>
       </div>
     </div>
   </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Folder, Plus, X, Home, Menu, HelpCircle } from "lucide-vue-next";
+import { Folder, Plus, X, Home, Menu, HelpCircle, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { RepoInfo } from "@/types";
 
@@ -40,8 +40,10 @@ const menuButton = ref<HTMLElement | null>(null);
 const menuPanel = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 const showHelpPanel = ref(false);
+const showAboutPanel = ref(false);
 const activeSection = ref<MenuSection>("file");
 const menuPanelStyle = ref<Record<string, string>>({});
+const APP_VERSION = "0.1.0";
 
 const sectionLabels: { id: MenuSection; label: string }[] = [
   { id: "file", label: "File" },
@@ -81,8 +83,13 @@ function openHelpPanel() {
   closeMenu();
 }
 
+function openAboutPanel() {
+  showAboutPanel.value = true;
+  closeMenu();
+}
+
 function openProjectGuide() {
-  openUrl("https://github.com/mgrabovac22/gitswamp/wiki").catch(() => {});
+  openUrl("https://github.com/mgrabovac22/gitswamp/blob/main/documentation/DOCUMENTATION_31_USER_GUIDE.md").catch(() => {});
 }
 
 function openIssueTracker() {
@@ -218,6 +225,12 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       run: openHelpPanel,
     },
     {
+      id: "help-about",
+      label: "About GitSwamp",
+      description: "Project summary, creator and technology stack.",
+      run: openAboutPanel,
+    },
+    {
       id: "help-guide",
       label: "Open Online Guide",
       description: "Open the project wiki in your browser.",
@@ -272,6 +285,7 @@ function onGlobalKeyDown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     closeMenu();
     showHelpPanel.value = false;
+    showAboutPanel.value = false;
   }
 }
 
@@ -433,6 +447,80 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open settings</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
             </div>
           </section>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="showAboutPanel"
+      class="fixed inset-0 z-[7120] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      @click.self="showAboutPanel = false"
+    >
+      <div class="w-[560px] max-w-[95vw] max-h-[88vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl">
+        <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <Info class="w-4 h-4 text-[var(--primary)]" />
+            <h3 class="text-sm font-semibold text-[var(--foreground)]">About GitSwamp</h3>
+          </div>
+          <button
+            class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+            @click="showAboutPanel = false"
+          >
+            <X class="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div class="px-4 py-4 space-y-4">
+          <section class="space-y-1">
+            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide">Summary</h4>
+            <p class="text-[11px] text-[var(--muted-foreground)] leading-5">
+              GitSwamp is a desktop Git client focused on visual history, branch operations, conflict workflows,
+              and practical everyday repository actions.
+            </p>
+          </section>
+
+          <section class="space-y-2">
+            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide">Project Info</h4>
+            <div class="grid grid-cols-[140px_1fr] gap-y-1 gap-x-2 text-[11px]">
+              <span class="text-[var(--muted-foreground)]">Version</span>
+              <span class="text-[var(--foreground)]">{{ APP_VERSION }}</span>
+              <span class="text-[var(--muted-foreground)]">Creator</span>
+              <span class="text-[var(--foreground)]">Marin Grabovac</span>
+              <span class="text-[var(--muted-foreground)]">Interface</span>
+              <span class="text-[var(--foreground)]">Vue 3 + TypeScript + Tailwind</span>
+              <span class="text-[var(--muted-foreground)]">Desktop Runtime</span>
+              <span class="text-[var(--foreground)]">Tauri 2</span>
+              <span class="text-[var(--muted-foreground)]">Backend Engine</span>
+              <span class="text-[var(--foreground)]">Rust (Git services + Tauri commands)</span>
+            </div>
+          </section>
+
+          <section class="space-y-2">
+            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide">Highlights</h4>
+            <ul class="space-y-1 text-[11px] text-[var(--muted-foreground)]">
+              <li>Commit graph and search navigation</li>
+              <li>Diff viewer with inline change emphasis</li>
+              <li>Branch, stash, tag and remote workflows</li>
+              <li>Integrated terminal and context actions</li>
+            </ul>
+          </section>
+
+          <div class="flex items-center gap-2 pt-1">
+            <button
+              class="px-2.5 py-1 text-[11px] rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] transition-colors"
+              @click="openProjectGuide"
+            >
+              Open Guide
+            </button>
+            <button
+              class="px-2.5 py-1 text-[11px] rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] transition-colors"
+              @click="openIssueTracker"
+            >
+              Issue Tracker
+            </button>
+          </div>
         </div>
       </div>
     </div>

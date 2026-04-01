@@ -256,24 +256,90 @@ async function resolveConflict(filePath: string, resolution: 'keep-modified' | '
   }
 }
 
+function normalizeHostInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.host.toLowerCase();
+  } catch {
+    const withoutProtocol = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    return (withoutProtocol.split("/")[0] || "").trim().toLowerCase();
+  }
+}
+
+function parseStoredGitlabSelfToken(): { domain: string; token: string } | null {
+  const raw = git.providerTokens.value["gitlab-self"];
+  if (!raw) return null;
+
+  const separatorIndex = raw.indexOf("|");
+  if (separatorIndex <= 0) return null;
+
+  const domain = normalizeHostInput(raw.slice(0, separatorIndex));
+  const token = raw.slice(separatorIndex + 1).trim();
+  if (!domain || !token) return null;
+
+  return { domain, token };
+}
+
+function remoteMatchesDomain(host: string, hostWithPort: string, domainRaw: string): boolean {
+  const normalizedDomain = normalizeHostInput(domainRaw);
+  const normalizedHost = normalizeHostInput(host);
+  const normalizedHostWithPort = normalizeHostInput(hostWithPort);
+
+  if (!normalizedDomain || !normalizedHost || !normalizedHostWithPort) {
+    return false;
+  }
+
+  if (normalizedDomain === normalizedHost || normalizedDomain === normalizedHostWithPort) {
+    return true;
+  }
+
+  const domainHostOnly = normalizedDomain.split(":")[0];
+  const hostOnly = normalizedHost.split(":")[0];
+  const hostWithPortOnly = normalizedHostWithPort.split(":")[0];
+  return domainHostOnly === hostOnly || domainHostOnly === hostWithPortOnly;
+}
+
 function detectAuthProviderFromOrigin(): "github" | "gitlab" | "gitlab-self" {
-  const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url?.toLowerCase() || "";
-  if (origin.includes("gitlab.com")) return "gitlab";
-  if (origin.includes("gitlab.")) return "gitlab-self";
+  const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url || "";
+  const originLower = origin.toLowerCase();
+  const parsed = parseRemoteHostAndPath(origin);
+
+  if ((parsed?.host || "") === "gitlab.com" || originLower.includes("gitlab.com")) {
+    return "gitlab";
+  }
+
+  if ((parsed?.host || "").includes("gitlab.") || originLower.includes("gitlab.")) {
+    return "gitlab-self";
+  }
+
+  const selfHostedToken = parseStoredGitlabSelfToken();
+  if (parsed && selfHostedToken && remoteMatchesDomain(parsed.host, parsed.hostWithPort, selfHostedToken.domain)) {
+    return "gitlab-self";
+  }
+
   return "github";
 }
 
 function parseAuthDomainFromOrigin(): string {
   const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url || "";
   const parsed = parseRemoteHostAndPath(origin);
-  if (parsed && parsed.host) return parsed.host;
+  if (parsed && parsed.hostWithPort) return parsed.hostWithPort;
 
   const noProto = origin.replace(/^https?:\/\//i, "");
   const noCreds = noProto.includes("@") ? noProto.split("@")[1] : noProto;
-  const firstSegment = noCreds.split("/")[0] || "";
-  // Handle scp-like URLs (git@host:owner/repo) or host:port by stripping trailing ":..."
-  const hostOnly = firstSegment.split(":")[0];
-  return hostOnly;
+  const firstSegment = (noCreds.split("/")[0] || "").trim();
+  if (!firstSegment) return "";
+
+  const parts = firstSegment.split(":");
+  if (parts.length >= 2 && /^\d+$/.test(parts[1])) {
+    return `${parts[0].toLowerCase()}:${parts[1]}`;
+  }
+
+  return parts[0].toLowerCase();
 }
 
 function normalizeBranchName(name: string): string {
@@ -298,14 +364,16 @@ function stripGitSuffix(path: string): string {
   return path.replace(/\.git$/i, "");
 }
 
-function parseRemoteHostAndPath(remoteUrl: string): { host: string; path: string } | null {
+function parseRemoteHostAndPath(remoteUrl: string): { host: string; hostWithPort: string; path: string } | null {
   const value = remoteUrl.trim();
   if (!value) return null;
 
   const scpLikeMatch = value.match(/^[^@]+@([^:]+):(.+)$/);
   if (scpLikeMatch) {
+    const host = scpLikeMatch[1].toLowerCase();
     return {
-      host: scpLikeMatch[1].toLowerCase(),
+      host,
+      hostWithPort: host,
       path: stripGitSuffix(scpLikeMatch[2].replace(/^\/+/, "")),
     };
   }
@@ -314,6 +382,7 @@ function parseRemoteHostAndPath(remoteUrl: string): { host: string; path: string
     const parsed = new URL(value);
     return {
       host: parsed.hostname.toLowerCase(),
+      hostWithPort: parsed.host.toLowerCase(),
       path: stripGitSuffix(parsed.pathname.replace(/^\/+/, "")),
     };
   } catch {
@@ -321,7 +390,7 @@ function parseRemoteHostAndPath(remoteUrl: string): { host: string; path: string
   }
 }
 
-function parseGithubRemote(remoteUrl: string): { host: string; owner: string; repo: string } | null {
+function parseGithubRemote(remoteUrl: string): { host: string; hostWithPort: string; owner: string; repo: string } | null {
   const parsed = parseRemoteHostAndPath(remoteUrl);
   if (!parsed) return null;
 
@@ -330,12 +399,13 @@ function parseGithubRemote(remoteUrl: string): { host: string; owner: string; re
 
   return {
     host: parsed.host,
+    hostWithPort: parsed.hostWithPort,
     owner: segments[segments.length - 2],
     repo: segments[segments.length - 1],
   };
 }
 
-function parseGitlabRemote(remoteUrl: string): { host: string; projectPath: string } | null {
+function parseGitlabRemote(remoteUrl: string): { host: string; hostWithPort: string; projectPath: string } | null {
   const parsed = parseRemoteHostAndPath(remoteUrl);
   if (!parsed) return null;
 
@@ -344,6 +414,7 @@ function parseGitlabRemote(remoteUrl: string): { host: string; projectPath: stri
 
   return {
     host: parsed.host,
+    hostWithPort: parsed.hostWithPort,
     projectPath: segments.join("/"),
   };
 }
@@ -352,23 +423,19 @@ function getPrimaryRemote(remotes: RemoteInfo[]): RemoteInfo | null {
   return remotes.find((remote) => remote.name === "origin") || remotes[0] || null;
 }
 
-function getGitlabTokenForHost(host: string): string | null {
+function getGitlabTokenForHost(host: string, hostWithPort: string = host): string | null {
   if (host === "gitlab.com") {
     return git.providerTokens.value.gitlab || null;
   }
 
-  const selfHosted = git.providerTokens.value["gitlab-self"];
-  if (selfHosted) {
-    const separatorIndex = selfHosted.indexOf("|");
-    if (separatorIndex > 0) {
-      const domain = selfHosted.slice(0, separatorIndex).toLowerCase();
-      const token = selfHosted.slice(separatorIndex + 1);
-      if (domain === host && token) {
-        return token;
-      }
-    } else {
-      return selfHosted;
-    }
+  const selfHostedToken = parseStoredGitlabSelfToken();
+  if (selfHostedToken && remoteMatchesDomain(host, hostWithPort, selfHostedToken.domain)) {
+    return selfHostedToken.token;
+  }
+
+  const selfHostedLegacy = git.providerTokens.value["gitlab-self"];
+  if (selfHostedLegacy && !selfHostedToken) {
+    return selfHostedLegacy;
   }
 
   return git.providerTokens.value.gitlab || null;
@@ -455,7 +522,7 @@ function getGithubApiContext(remoteUrl: string): GithubApiContext | null {
 
   const apiBase = parsed.host === "github.com"
     ? "https://api.github.com"
-    : `https://${parsed.host}/api/v3`;
+    : `https://${parsed.hostWithPort}/api/v3`;
 
   return {
     apiBase,
@@ -589,7 +656,7 @@ async function fetchOpenGitlabMergeRequestBranches(remoteUrl: string): Promise<s
   const parsed = parseGitlabRemote(remoteUrl);
   if (!parsed) return [];
 
-  const token = getGitlabTokenForHost(parsed.host) || "";
+  const token = getGitlabTokenForHost(parsed.host, parsed.hostWithPort) || "";
   const headers: Record<string, string> = {
     Accept: "application/json",
   };
@@ -599,7 +666,7 @@ async function fetchOpenGitlabMergeRequestBranches(remoteUrl: string): Promise<s
   }
 
   const payload = await fetchJsonWithTimeout(
-    `https://${parsed.host}/api/v4/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests?state=opened&per_page=100`,
+    `https://${parsed.hostWithPort}/api/v4/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests?state=opened&per_page=100`,
     headers,
   );
 
@@ -1306,7 +1373,7 @@ async function handlePush() {
 
 function handleMultiPlatformPush(platform: string) {
   // For GitHub/GitLab and self-hosted, ask for username and domain first
-  if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted') {
+  if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted' || platform === 'gitlab-self') {
     pushPlatform.value = platform;
     pushUsername.value = "";
     pushDomain.value = "";
@@ -1319,11 +1386,18 @@ function handleMultiPlatformPush(platform: string) {
 
 async function performPush(platform: string, username: string) {
   let repoName: string;
+  const needsDomain = platform === "gitlab-self-hosted" || platform === "gitlab-self" || platform === "github-enterprise";
   
   if (username) {
-    if (pushDomain.value) {
+    if (needsDomain) {
+      const normalizedDomain = normalizeHostInput(pushDomain.value);
+      if (!normalizedDomain) {
+        toast.error("Domain is required for this platform");
+        return;
+      }
+
       // For self-hosted instances: username/repo@domain.com
-      repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}@${pushDomain.value}`;
+      repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}@${normalizedDomain}`;
     } else {
       // For standard platforms: username/repo
       repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}`;
@@ -1351,12 +1425,13 @@ async function saveAuthToken() {
     } else if (authProvider.value === "gitlab") {
       await git.saveProviderToken("gitlab", token);
     } else {
-        const domainRaw = authDomainInput.value.trim();
-        if (!domainRaw) {
+        const domainRaw = authDomainInput.value;
+        const domainClean = normalizeHostInput(domainRaw);
+        if (!domainClean) {
           toast.error("Domain is required for self-hosted GitLab");
           return;
         }
-        const domainClean = domainRaw.replace(/^https?:\/\//i, "").replace(/\/+$/i, "");
+        authDomainInput.value = domainClean;
         await git.saveProviderToken("gitlab-self", `${domainClean}|${token}`);
     }
 
@@ -1385,8 +1460,13 @@ async function generateAndPushGitlabKey() {
       keyName,
     });
     const publicKey = generated[1];
-    const domainRaw = authDomainInput.value.trim();
-    const domainClean = domainRaw.replace(/^https?:\/\//i, "").replace(/\/+$/i, "");
+    const domainClean = normalizeHostInput(authDomainInput.value);
+    if (!domainClean) {
+      toast.error("Domain is required for self-hosted GitLab");
+      return;
+    }
+
+    authDomainInput.value = domainClean;
     await invoke("add_gitlab_ssh_key", {
       domain: domainClean,
       token: authTokenInput.value.trim(),

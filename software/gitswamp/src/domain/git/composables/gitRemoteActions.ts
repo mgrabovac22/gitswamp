@@ -231,7 +231,9 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     try {
       loadingToastId = toast.loading(`Loading: pushing to ${platform}...`);
       state.loading.value = true;
-      const token = state.providerTokens.value[platform];
+      const tokenKey = platform === "gitlab-self-hosted" ? "gitlab-self" : platform;
+      const backendPlatform = platform === "gitlab-self" ? "gitlab-self-hosted" : platform;
+      const token = state.providerTokens.value[tokenKey];
       if (!token) {
         toast.error(`No token configured for ${platform}`);
         return;
@@ -239,7 +241,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
 
       const result = await callTauri<string>("push_to_platform", {
         path: state.repoPath.value,
-        platform,
+        platform: backendPlatform,
         token,
         repoName,
       });

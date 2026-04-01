@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo } from "@/types";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
+import {
+  getCachedDiffText,
+  getCachedStructuredDiff,
+  pruneDiffViewerCaches,
+  setCachedDiffText,
+  setCachedStructuredDiff,
+} from "@/shared/config/diffViewCache";
 import { useToast } from "@/shared/notifications/useToast";
 import { useGit } from "@/domain/git/UseGit";
 import logoCrocGif from "@/assets/logo_croc.gif";
@@ -27,7 +34,7 @@ const loadingLetters = ["L", "o", "a", "d", "i", "n", "g"];
 const MAX_HIGHLIGHT_LINES = 6000;
 const MAX_HIGHLIGHT_CHARS = 450000;
 
-const diff = ref<FileDiff | null>(null);
+const diff = shallowRef<FileDiff | null>(null);
 const fileContent = ref<string>("");
 const editContent = ref<string>("");
 const loading = ref(true);
@@ -65,6 +72,41 @@ const MAX_HIGHLIGHT_CACHE_SIZE = 2000;
 
 let fileWatchInterval: ReturnType<typeof setInterval> | null = null;
 let lastFileHash = "";
+let fileWatchRequestInFlight = false;
+let fileContentLoadSequence = 0;
+let cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+function getFileContentCacheKey(): string | null {
+  if (props.commitSha) {
+    return `${props.repoPath}|${props.filePath}|commit:${props.commitSha}`;
+  }
+
+  if (props.staged) {
+    return `${props.repoPath}|${props.filePath}|staged`;
+  }
+
+  return null;
+}
+
+function getDiffCacheKey(): string | null {
+  return getFileContentCacheKey();
+}
+
+function hashDiffStructure(value: FileDiff): string {
+  return value.hunks
+    .map((hunk) => `${hunk.old_start}:${hunk.old_lines}:${hunk.new_start}:${hunk.new_lines}:${hunk.lines.length}`)
+    .join("|");
+}
+
+function estimateDiffChars(value: FileDiff): number {
+  let chars = 0;
+  for (const hunk of value.hunks) {
+    for (const line of hunk.lines) {
+      chars += line.content.length;
+    }
+  }
+  return chars;
+}
 
 function maintainHighlightCache() {
   if (highlightedLineCache.value.size > MAX_HIGHLIGHT_CACHE_SIZE) {
@@ -88,6 +130,17 @@ interface InlineDiffPair {
 
 const INLINE_PAIR_MIN_SCORE = 0.25;
 const INLINE_LCS_MAX_CELLS = 220000;
+const INLINE_PAIR_MAX_CELLS = 24000;
+const INLINE_PAIR_DIFF_LINE_LIMIT = 2400;
+const INLINE_PAIR_DIFF_CHAR_LIMIT = 260000;
+const LONG_LINE_PLAIN_TEXT_THRESHOLD = 4000;
+const PLAIN_TEXT_FAST_PATH_PATTERN = /\.(rtf|txt|log|csv|tsv|jsonl|lock|patch)$/i;
+const FILE_WATCH_INTERVAL_MS = 1800;
+const CACHE_CLEANUP_INTERVAL_MS = 12_000;
+const FULL_FILE_SIMPLIFY_LINE_LIMIT = 35000;
+const FULL_FILE_SIMPLIFY_CHAR_LIMIT = 1200000;
+
+const isPlainTextFastPath = computed(() => PLAIN_TEXT_FAST_PATH_PATTERN.test(props.filePath));
 
 function commonPrefixLength(a: string, b: string): number {
   const max = Math.min(a.length, b.length);
@@ -196,6 +249,11 @@ function collectInlineLinePairs(hunk: { lines: DiffLine[] }, deletionIndexes: nu
     return [];
   }
 
+  if (rows * cols > INLINE_PAIR_MAX_CELLS) {
+    const count = Math.min(rows, cols);
+    return Array.from({ length: count }, (_, idx) => [deletionIndexes[idx], additionIndexes[idx]] as [number, number]);
+  }
+
   const scores = buildInlineSimilarityMatrix(hunk, deletionIndexes, additionIndexes);
   const dp = buildInlinePairDp(scores);
   return backtrackInlinePairs(scores, dp, deletionIndexes, additionIndexes);
@@ -296,6 +354,7 @@ function backtrackLcsKeepMask(base: string, compare: string, dp: Uint32Array[]):
 watch(
   () => [props.filePath, props.staged, props.commitSha],
   () => {
+    fileContentLoadSequence += 1;
     currentHunkIndex.value = 0;
     reload();
   }
@@ -324,25 +383,40 @@ async function reload() {
   error.value = null;
   
   try {
-    if (props.commitSha) {
-      diff.value = await invoke<FileDiff>("get_commit_diff", {
-        path: props.repoPath,
-        sha: props.commitSha,
-        filePath: props.filePath,
-      });
+    const diffCacheKey = getDiffCacheKey();
+    const cachedDiff = diffCacheKey ? getCachedStructuredDiff(diffCacheKey) : null;
+
+    if (cachedDiff) {
+      diff.value = cachedDiff;
     } else {
-      diff.value = await invoke<FileDiff>("get_working_diff", {
-        path: props.repoPath,
-        filePath: props.filePath,
-        staged: props.staged ?? false,
-      });
+      if (props.commitSha) {
+        diff.value = await invoke<FileDiff>("get_commit_diff", {
+          path: props.repoPath,
+          sha: props.commitSha,
+          filePath: props.filePath,
+        });
+      } else {
+        diff.value = await invoke<FileDiff>("get_working_diff", {
+          path: props.repoPath,
+          filePath: props.filePath,
+          staged: props.staged ?? false,
+        });
+      }
+
+      if (diff.value && diffCacheKey) {
+        setCachedStructuredDiff(diffCacheKey, diff.value, estimateDiffChars(diff.value));
+      }
+    }
+
+    if (diff.value) {
+      lastFileHash = hashDiffStructure(diff.value);
     }
 
     highlightedLineCache.value.clear();
     
     // Don't load file content synchronously - do it lazily
     if (viewMode.value === "file-diff") {
-      await loadFileContentAsync();
+      void loadFileContentAsync();
     }
   } catch (e) {
     error.value = String(e);
@@ -351,40 +425,65 @@ async function reload() {
   }
 }
 
-async function loadFileContentAsync() {
+async function loadFileContentAsync(forceRefresh = false) {
   if (loadingFileContent.value) return;
   loadingFileContent.value = true;
+  const loadSequence = ++fileContentLoadSequence;
   
   try {
     // Use requestAnimationFrame to prevent blocking
     await new Promise(resolve => requestAnimationFrame(resolve));
+    if (loadSequence !== fileContentLoadSequence) return;
     
-    fileContent.value = await loadDisplayedFileContent();
+    const loadedContent = await loadDisplayedFileContent(forceRefresh);
+    if (loadSequence !== fileContentLoadSequence) return;
+    fileContent.value = loadedContent;
     
     // Allow UI to update
     await nextTick();
     await new Promise(resolve => requestAnimationFrame(resolve));
+    if (loadSequence !== fileContentLoadSequence) return;
   } catch (e) {
-    error.value = String(e);
+    if (loadSequence === fileContentLoadSequence) {
+      error.value = String(e);
+    }
   } finally {
-    loadingFileContent.value = false;
+    if (loadSequence === fileContentLoadSequence) {
+      loadingFileContent.value = false;
+    }
   }
 }
 
-async function loadDisplayedFileContent(): Promise<string> {
+async function loadDisplayedFileContent(forceRefresh = false): Promise<string> {
+  const cacheKey = getFileContentCacheKey();
+  if (cacheKey && !forceRefresh) {
+    const cached = getCachedDiffText(cacheKey);
+    if (cached !== null) {
+      return cached;
+    }
+  }
+
   if (props.commitSha) {
-    return invoke<string>("get_file_content", {
+    const content = await invoke<string>("get_file_content", {
       path: props.repoPath,
       filePath: props.filePath,
       sha: props.commitSha,
     });
+    if (cacheKey) {
+      setCachedDiffText(cacheKey, content);
+    }
+    return content;
   }
 
   if (props.staged) {
-    return invoke<string>("get_staged_file_content", {
+    const content = await invoke<string>("get_staged_file_content", {
       path: props.repoPath,
       filePath: props.filePath,
     });
+    if (cacheKey) {
+      setCachedDiffText(cacheKey, content);
+    }
+    return content;
   }
 
   return invoke<string>("get_file_content", {
@@ -457,7 +556,9 @@ function startFileWatch() {
   if (fileWatchInterval) return;
   
   fileWatchInterval = setInterval(async () => {
-    if (!isUnstaged.value || viewMode.value === "edit") return;
+    if (!isUnstaged.value || viewMode.value === "edit" || viewMode.value === "time-lapse") return;
+    if (loading.value || loadingFileContent.value || fileWatchRequestInFlight) return;
+    fileWatchRequestInFlight = true;
     
     try {
       const newDiff = await invoke<FileDiff>("get_working_diff", {
@@ -466,24 +567,20 @@ function startFileWatch() {
         staged: false,
       });
       
-      const newHash = JSON.stringify(
-        newDiff.hunks.map((hunk) => ({
-          oldStart: hunk.old_start,
-          newStart: hunk.new_start,
-          lines: hunk.lines.map((line) => [line.line_type, line.old_line_no, line.new_line_no, line.content]),
-        })),
-      );
+      const newHash = hashDiffStructure(newDiff);
       if (newHash !== lastFileHash) {
         lastFileHash = newHash;
         diff.value = newDiff;
         highlightedLineCache.value.clear();
         if (viewMode.value === "file-diff") {
-          fileContent.value = await loadDisplayedFileContent();
+          await loadFileContentAsync(true);
         }
       }
     } catch {
+    } finally {
+      fileWatchRequestInFlight = false;
     }
-  }, 1000);
+  }, FILE_WATCH_INTERVAL_MS);
 }
 
 function stopFileWatch() {
@@ -491,6 +588,7 @@ function stopFileWatch() {
     clearInterval(fileWatchInterval);
     fileWatchInterval = null;
   }
+  fileWatchRequestInFlight = false;
 }
 
 watch(isUnstaged, (val) => {
@@ -502,6 +600,11 @@ watch(isUnstaged, (val) => {
 }, { immediate: true });
 
 onMounted(() => {
+  pruneDiffViewerCaches();
+  cacheCleanupInterval = setInterval(() => {
+    pruneDiffViewerCaches();
+  }, CACHE_CLEANUP_INTERVAL_MS);
+
   reload();
   if (isUnstaged.value) {
     startFileWatch();
@@ -509,6 +612,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (cacheCleanupInterval) {
+    clearInterval(cacheCleanupInterval);
+    cacheCleanupInterval = null;
+  }
+
   stopFileWatch();
   stopTimeLapsePlayback();
 });
@@ -538,6 +646,18 @@ const fullFileLines = computed((): FullFileLine[] => {
   if (!diff.value || !fileContent.value) return [];
   
   const lines = fileContent.value.split('\n');
+  if (lines.length > FULL_FILE_SIMPLIFY_LINE_LIMIT || fileContent.value.length > FULL_FILE_SIMPLIFY_CHAR_LIMIT) {
+    return lines.map((content, idx) => ({
+      lineNo: idx + 1,
+      oldLineNo: idx + 1,
+      content,
+      type: 'context' as const,
+      hunkIdx: null,
+      hunkLineIdx: null,
+      diffLine: null,
+    }));
+  }
+
   const result: FullFileLine[] = [];
   
   const additionLines = new Map<number, { hunkIdx: number; hunkLineIdx: number; line: DiffLine }>();
@@ -631,6 +751,14 @@ const usePlainTextHighlighting = computed(() => {
   }
 
   return diffPayload.value.lines > MAX_HIGHLIGHT_LINES || diffPayload.value.chars > MAX_HIGHLIGHT_CHARS;
+});
+
+const inlineDiffEnabled = computed(() => {
+  if (isPlainTextFastPath.value || usePlainTextHighlighting.value) {
+    return false;
+  }
+
+  return diffPayload.value.lines <= INLINE_PAIR_DIFF_LINE_LIMIT && diffPayload.value.chars <= INLINE_PAIR_DIFF_CHAR_LIMIT;
 });
 
 const loadingLabel = computed(() => {
@@ -946,7 +1074,10 @@ function getHighlightedLine(lineText: string, key: string): string {
     return cached;
   }
 
-  const highlighted = usePlainTextHighlighting.value
+  const shouldUsePlainText = usePlainTextHighlighting.value
+    || isPlainTextFastPath.value
+    || lineText.length > LONG_LINE_PLAIN_TEXT_THRESHOLD;
+  const highlighted = shouldUsePlainText
     ? escapeHtml(lineText)
     : highlightCodeLine(lineText, props.filePath);
   highlightedLineCache.value.set(key, highlighted);
@@ -956,6 +1087,11 @@ function getHighlightedLine(lineText: string, key: string): string {
 
 function getHighlightedDiffLine(hunkIdx: number, lineIdx: number, line: DiffLine): string {
   const lineText = line.content.replace(/\n$/, "");
+  if (!inlineDiffEnabled.value) {
+    const key = `${hunkIdx}:${lineIdx}:${line.line_type}:${lineText}`;
+    return getHighlightedLine(lineText, key);
+  }
+
   const pair = inlineDiffPairs.value.get(`${hunkIdx}:${lineIdx}`);
   if (pair) {
     const key = `${hunkIdx}:${lineIdx}:${line.line_type}:inline:${lineText}:${pair.compareText}`;
@@ -990,7 +1126,7 @@ function getHighlightedFileLine(rowIdx: number, line: FullFileLine): string {
 
 const inlineDiffPairs = computed(() => {
   const pairs = new Map<string, InlineDiffPair>();
-  if (!diff.value) {
+  if (!diff.value || !inlineDiffEnabled.value) {
     return pairs;
   }
 
@@ -1111,115 +1247,119 @@ watch(usePlainTextHighlighting, () => {
       </div>
       
       <div class="flex items-center gap-2 flex-shrink-0">
-        <div class="flex bg-[var(--secondary)] rounded-md overflow-hidden">
-          <button
-            @click="viewMode = 'diff'"
-            :class="[
-              'px-2.5 py-1 text-xs font-medium transition-colors',
-              viewMode === 'diff' 
-                ? 'bg-[var(--primary)] text-white' 
-                : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
-            ]"
-            title="View diff hunks only"
-          >
-            Diff
-          </button>
-          <button
-            @click="viewMode = 'file-diff'"
-            :class="[
-              'px-2.5 py-1 text-xs font-medium transition-colors',
-              viewMode === 'file-diff' 
-                ? 'bg-[var(--primary)] text-white' 
-                : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
-            ]"
-            title="View whole file with changes"
-          >
-            <Eye class="w-3.5 h-3.5 inline mr-1" />
-            File
-          </button>
-          <button
-            @click="viewMode = 'time-lapse'"
-            :class="[
-              'px-2.5 py-1 text-xs font-medium transition-colors',
-              viewMode === 'time-lapse'
-                ? 'bg-[var(--primary)] text-white'
-                : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
-            ]"
-            title="Play visual history of this file"
-          >
-            <Play class="w-3.5 h-3.5 inline mr-1" />
-            Time-Lapse
-          </button>
-          <button
-            v-if="isWorkingChanges"
-            @click="viewMode = 'edit'"
-            :class="[
-              'px-2.5 py-1 text-xs font-medium transition-colors',
-              viewMode === 'edit' 
-                ? 'bg-[var(--primary)] text-white' 
-                : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
-            ]"
-            title="Edit file"
-          >
-            <Edit3 class="w-3.5 h-3.5 inline mr-1" />
-            Edit
-          </button>
+        <div class="flex items-center gap-1.5">
+          <template v-if="viewMode === 'edit'">
+            <button
+              @click="saveFile"
+              :disabled="!hasUnsavedChanges || saving"
+              class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-[var(--primary)] hover:opacity-90 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <Save class="w-3.5 h-3.5" />
+              Save
+            </button>
+            <button
+              @click="discardEditChanges"
+              :disabled="!hasUnsavedChanges"
+              class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <RotateCcw class="w-3.5 h-3.5" />
+              Discard
+            </button>
+          </template>
+
+          <div v-if="viewMode === 'diff' && diff && diff.hunks.length > 1" class="flex items-center gap-0.5">
+            <button
+              @click="navigateHunk('prev')"
+              :disabled="currentHunkIndex === 0"
+              class="p-1 rounded hover:bg-[var(--secondary)] disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <ChevronUp class="w-4 h-4" />
+            </button>
+            <span class="text-[10px] text-[var(--muted-foreground)] min-w-[2.5rem] text-center">
+              {{ currentHunkIndex + 1 }}/{{ diff.hunks.length }}
+            </span>
+            <button
+              @click="navigateHunk('next')"
+              :disabled="currentHunkIndex === diff.hunks.length - 1"
+              class="p-1 rounded hover:bg-[var(--secondary)] disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <ChevronDown class="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
-        <button
-          class="px-2 py-1 text-[11px] rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] transition-colors"
-          title="Find who knows this file best"
-          @click="runExpertAdvisor"
-        >
-          <Users class="w-3.5 h-3.5 inline mr-1" />
-          Expert
-        </button>
+        <div class="flex items-center gap-2">
+          <div class="flex bg-[var(--secondary)] rounded-md overflow-hidden">
+            <button
+              @click="viewMode = 'diff'"
+              :class="[
+                'px-2.5 py-1 text-xs font-medium transition-colors',
+                viewMode === 'diff' 
+                  ? 'bg-[var(--primary)] text-white' 
+                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
+              ]"
+              title="View diff hunks only"
+            >
+              Diff
+            </button>
+            <button
+              @click="viewMode = 'file-diff'"
+              :class="[
+                'px-2.5 py-1 text-xs font-medium transition-colors',
+                viewMode === 'file-diff' 
+                  ? 'bg-[var(--primary)] text-white' 
+                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
+              ]"
+              title="View whole file with changes"
+            >
+              <Eye class="w-3.5 h-3.5 inline mr-1" />
+              File
+            </button>
+            <button
+              @click="viewMode = 'time-lapse'"
+              :class="[
+                'px-2.5 py-1 text-xs font-medium transition-colors',
+                viewMode === 'time-lapse'
+                  ? 'bg-[var(--primary)] text-white'
+                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
+              ]"
+              title="Play visual history of this file"
+            >
+              <Play class="w-3.5 h-3.5 inline mr-1" />
+              Time-Lapse
+            </button>
+            <button
+              v-if="isWorkingChanges"
+              @click="viewMode = 'edit'"
+              :class="[
+                'px-2.5 py-1 text-xs font-medium transition-colors',
+                viewMode === 'edit' 
+                  ? 'bg-[var(--primary)] text-white' 
+                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
+              ]"
+              title="Edit file"
+            >
+              <Edit3 class="w-3.5 h-3.5 inline mr-1" />
+              Edit
+            </button>
+          </div>
 
-        <button
-          class="px-2 py-1 text-[11px] rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] transition-colors"
-          title="Share selected code as gist snippet"
-          @click="shareSelectionAsSnippet"
-        >
-          <Share2 class="w-3.5 h-3.5 inline mr-1" />
-          Share Snippet
-        </button>
+          <button
+            class="px-2 py-1 text-[11px] rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] transition-colors"
+            title="Find who knows this file best"
+            @click="runExpertAdvisor"
+          >
+            <Users class="w-3.5 h-3.5 inline mr-1" />
+            Expert
+          </button>
 
-        <template v-if="viewMode === 'edit'">
           <button
-            @click="saveFile"
-            :disabled="!hasUnsavedChanges || saving"
-            class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-[var(--primary)] hover:opacity-90 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            class="px-2 py-1 text-[11px] rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] transition-colors"
+            title="Share selected code as gist snippet"
+            @click="shareSelectionAsSnippet"
           >
-            <Save class="w-3.5 h-3.5" />
-            Save
-          </button>
-          <button
-            @click="discardEditChanges"
-            :disabled="!hasUnsavedChanges"
-            class="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <RotateCcw class="w-3.5 h-3.5" />
-            Discard
-          </button>
-        </template>
-
-        <div v-if="viewMode === 'diff' && diff && diff.hunks.length > 1" class="flex items-center gap-0.5">
-          <button
-            @click="navigateHunk('prev')"
-            :disabled="currentHunkIndex === 0"
-            class="p-1 rounded hover:bg-[var(--secondary)] disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <ChevronUp class="w-4 h-4" />
-          </button>
-          <span class="text-[10px] text-[var(--muted-foreground)] min-w-[2.5rem] text-center">
-            {{ currentHunkIndex + 1 }}/{{ diff.hunks.length }}
-          </span>
-          <button
-            @click="navigateHunk('next')"
-            :disabled="currentHunkIndex === diff.hunks.length - 1"
-            class="p-1 rounded hover:bg-[var(--secondary)] disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <ChevronDown class="w-4 h-4" />
+            <Share2 class="w-3.5 h-3.5 inline mr-1" />
+            Share Snippet
           </button>
         </div>
 
@@ -1527,30 +1667,26 @@ watch(usePlainTextHighlighting, () => {
   contain: layout style paint;
 }
 
-.diff-inline-add {
+:deep(.diff-inline-add) {
   background: color-mix(in srgb, var(--diff-sign-add) 55%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--diff-sign-add) 95%, transparent);
   border-radius: 2px;
   color: var(--diff-sign-add);
-  font-weight: 900;
-  font-style: italic;
+  font-weight: inherit;
+  font-style: normal;
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 88%, transparent), 0 0 3px color-mix(in srgb, var(--diff-sign-add) 35%, transparent);
-  text-decoration: underline;
-  text-decoration-thickness: 1.5px;
-  text-underline-offset: 1px;
+  text-decoration: none;
 }
 
-.diff-inline-del {
+:deep(.diff-inline-del) {
   background: color-mix(in srgb, var(--diff-sign-del) 55%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--diff-sign-del) 95%, transparent);
   border-radius: 2px;
   color: var(--diff-sign-del);
-  font-weight: 900;
-  font-style: italic;
+  font-weight: inherit;
+  font-style: normal;
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 88%, transparent), 0 0 3px color-mix(in srgb, var(--diff-sign-del) 35%, transparent);
-  text-decoration: underline;
-  text-decoration-thickness: 1.5px;
-  text-underline-offset: 1px;
+  text-decoration: none;
 }
 </style>
 
