@@ -2,7 +2,7 @@
 
 ## 1. Command Overview
 
-GitSwamp exposes 69 Tauri commands across 12 modules. All commands are asynchronous and use type-safe serialization.
+GitSwamp exposes Tauri commands organized across multiple modules. All commands are asynchronous and use type-safe serialization. Modules include: repository, commits, commit_files, branches, status, diff, stash, tags, clone_init, operations, credentials, conflicts, and ghost.
 
 ## 2. Repository Commands
 
@@ -889,7 +889,126 @@ invoke("add_gitlab_ssh_key", {
 }): Promise<void>
 ```
 
-## 13. Error Handling
+## 13. Ghost Branch Commands
+
+### ghost.rs
+
+Ghost branches are experimental/temporary branches that allow you to test changes without creating permanent commits.
+
+#### get_ghost_branch_state
+
+```typescript
+invoke("get_ghost_branch_state", {
+  path: string;
+}): Promise<GhostBranchState>
+
+// Response
+{
+  is_active: boolean;        // Is ghost branch currently active
+  changes: string[];         // List of changed files
+  commit_message?: string;   // Staged commit message if any
+}
+
+// Example
+const state = await invoke("get_ghost_branch_state", {
+  path: "/home/user/my-project"
+});
+```
+
+#### start_ghost_branch
+
+```typescript
+invoke("start_ghost_branch", {
+  path: string;
+}): Promise<GhostBranchState>
+
+// Activate experimental ghost branch mode
+// Example
+await invoke("start_ghost_branch", {
+  path: "/home/user/my-project"
+});
+```
+
+#### materialize_ghost_branch
+
+```typescript
+invoke("materialize_ghost_branch", {
+  path: string;
+  name: string;
+}): Promise<string>
+
+// Convert ghost branch to a real, permanent branch
+// Parameters
+{
+  path: string;   // Repository path
+  name: string;   // Name for the new permanent branch
+}
+
+// Returns: Branch name
+// Example
+const branchName = await invoke("materialize_ghost_branch", {
+  path: "/home/user/my-project",
+  name: "feature/experimental-ui"
+});
+```
+
+#### discard_ghost_branch
+
+```typescript
+invoke("discard_ghost_branch", {
+  path: string;
+}): Promise<string>
+
+// Discard all changes in the ghost branch without creating a real branch
+// Example
+await invoke("discard_ghost_branch", {
+  path: "/home/user/my-project"
+});
+```
+
+## 14. Conflicts Commands
+
+### conflicts.rs
+
+Analyze and identify problematic merge areas and conflict hotspots.
+
+#### get_conflict_hotspots
+
+```typescript
+invoke("get_conflict_hotspots", {
+  path: string;
+  max_count?: number;
+}): Promise<ConflictHotspot[]>
+
+// Response - Array of ConflictHotspot
+[
+  {
+    file_path: string;              // Path to file with conflicts
+    conflict_count: number;         // Number of times this file has conflicts
+    last_conflict_time: number;     // Unix timestamp of last conflict
+    involved_branches: string[];    // Branches that have conflicted here
+    risk_level: string;             // "low" | "medium" | "high"
+  },
+  // ... more hotspots
+]
+
+// Parameters
+{
+  path: string;        // Repository path
+  max_count?: number;  // Maximum hotspots to return (default: 300)
+}
+
+// Example
+const hotspots = await invoke("get_conflict_hotspots", {
+  path: "/home/user/my-project",
+  max_count: 50
+});
+hotspots.forEach(spot => {
+  console.log(`${spot.file_path}: ${spot.conflict_count} conflicts (${spot.risk_level} risk)`);
+});
+```
+
+## 15. Error Handling
 
 All commands can throw errors with descriptive messages:
 

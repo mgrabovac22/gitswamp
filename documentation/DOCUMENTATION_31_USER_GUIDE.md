@@ -109,6 +109,10 @@ Click the top-left hamburger icon to open the quick menu with 4 sections:
 
 **View:**
 - **Toggle Terminal** (Ctrl+`) - Show or hide integrated git terminal
+- **Visualize Commit History** (Alt+1) - Switch to Graph view (commit history visualization)
+- **Productivity Arena** (Alt+2) - View developer productivity metrics and activity
+- **Time Machine** (Alt+3) - Navigate through repository history frames
+- **Usual Conflict Suspects** (Alt+4) - View merge conflict hotspots (heatmap)
 - **Open Folder Explorer** (Alt+O) - Open repository folder in system explorer
 - **Open Settings** (Ctrl+,) - Open app settings dialog
 
@@ -143,6 +147,44 @@ Right panel shows selected commit:
 - **Message:** Full commit message
 - **Files:** List of changed files
 - **Stats:** Total insertions/deletions
+
+## 4.3 History View Modes
+
+GitSwamp provides multiple ways to visualize your repository history. Switch between them using the View menu or keyboard shortcuts:
+
+### Graph View (Alt+1) - Default
+The interactive commit history graph showing:
+- Branch structure and merges
+- Commit timeline
+- All commits in chronological order
+- Interactive commit selection and navigation
+
+### Productivity Arena (Alt+2)
+Visualize developer activity and metrics:
+- Commit frequency by contributor
+- Time-based activity patterns
+- File change statistics
+- Team productivity comparison
+- Activity heatmaps
+- Useful for performance analysis and sprint planning
+
+### Time Machine (Alt+3)
+Navigate through repository history frame-by-frame:
+- View repository state at specific commits
+- File snapshots at different points in history
+- Timeline-based scrubber for quick navigation
+- Compare file versions across time
+- Inspect legacy code without checking out
+- Useful for forensic analysis and understanding repository evolution
+
+### Usual Conflict Suspects (Alt+4)
+See merge conflict hotspots and risky areas:
+- Files with highest conflict frequency
+- Conflict risk assessment
+- Team collaboration conflict patterns
+- Time-based conflict trend analysis
+- Risk level indicators for problematic merges
+- Helps prevent conflicting changes
 
 ## 5. Managing Branches
 
@@ -387,6 +429,10 @@ If conflicts occur during pull/merge:
 | `Ctrl+Shift+O` | Open in VS Code | Edit → Open in VS Code |
 | `Ctrl+Shift+G` | Open Gist creator | File → Create a Gist |
 | `Alt+O` | Open in folder explorer | View → Open Folder Explorer |
+| `Alt+1` | Switch to Graph view (Commit history) | View → Visualize Commit History |
+| `Alt+2` | Switch to Productivity Arena | View → Productivity Arena |
+| `Alt+3` | Switch to Time Machine | View → Time Machine |
+| `Alt+4` | Switch to Conflict Heatmap | View → Usual Conflict Suspects |
 | `Ctrl+R` | Focus commit search | (Global) |
 
 **Note:** `Ctrl+`` means Ctrl + Backtick (key below Esc on most layouts).

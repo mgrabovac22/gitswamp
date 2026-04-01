@@ -52,189 +52,435 @@ src/
 
 ### 3.1 Component Overview
 
-**Total Components:** 19 (across src/view, src/shared/ui, src/shell)
+**Total Components:** 27 (across src/view, src/shared/ui, src/view/shell)
 
-#### Layout Components (4) - src/shell/
+#### Layout & Shell Components (5) - src/view/shell/
 
 1. **TitleBar.vue**
    - Custom window title bar (Tauri)
+   - Window control buttons (minimize, maximize, close)
+   - Logo display with dynamic theme support
    - Drag support for window movement
-   - Close/minimize/maximize buttons
-   - Custom styling
+   - Custom styling with light/dark theme toggle
 
 2. **AppHeader.vue**
-   - Top navigation bar
-   - Repository selector
-   - Navigation buttons
-   - Settings access
+   - Top navigation bar with app branding
+   - Primary action buttons: Pull, Push, Fetch
+   - Branch quick actions (Checkout, Ghost branch)
+   - Repository information display
+   - Loading state indicators for async operations
+   - Integrated BranchQuickActions menu
 
 3. **SettingsDialog.vue**
-   - User preferences modal
-   - Theme selection (light/dark)
-   - Font size adjustment
-   - Compact mode toggle
-   - Avatar display toggle
+   - User preferences modal with tabs
+   - Theme selection: Light/Dark/System modes with palette choices
+   - Font size adjustment (small/medium/large)
+   - View options: Compact mode, Avatar display, Motion preferences
+   - Diff view options: Line wrapping, line numbers
+   - Commit analyzer settings
+   - Session persistence options
+   - Fullscreen and session restore controls
 
 4. **TerminalPanel.vue**
-   - Terminal output display
-   - Command execution results
-   - Error messages
-   - Collapsible panel
+   - Integrated terminal for manual Git commands
+   - Command input with history
+   - Collapsible panel with toggle button
+   - Output display with syntax highlighting
+   - Error message display
+   - Clear button and refresh functionality
+   - Allow All Commands toggle for security control
+   - Real-time output streaming
 
-#### Repository Components (6) - src/view/repository/
+5. **BranchQuickActions.vue**
+   - Dropdown menu for quick branch operations
+   - Create new branch option
+   - Switch to ghost branch (experimental feature)
+   - Materialize ghost branch
+   - Discard ghost branch
+   - Loading state handling
 
-5. **LandingPage.vue**
-   - Welcome screen
-   - Open repository button
-   - Clone repository option
-   - Initialize repository option
-   - Recent repositories (if available)
+#### Repository Components (8) - src/view/repository/
 
-6. **RepositoryTabs.vue**
-   - Multi-tab interface
+6. **LandingPage.vue**
+   - Welcome screen displayed when no repository is open
+   - Open existing repository button with file browser
+   - Clone repository option with URL input
+   - Initialize new repository option
+   - Recent repositories list (if available)
+   - Visual GitSwamp branding and feature overview
+   - Quick access to online guide
+
+7. **RepositoryTabs.vue** (Menu System)
+   - Multi-tab interface for managing multiple repositories
    - Tab switching and close functionality
-   - Active tab indication
-   - **Hamburger menu (File, Edit, View, Help sections):**
-     - File: New Tab, Open Repository, Close Tab, Create Gist
-     - Edit: Copy Path, Refresh, Open in VS Code
-     - View: Toggle Terminal, Open in Folder Explorer, Settings
-     - Help: In-app Shortcuts (F1), Online Guide, Report Issue
-   - **Quick actions for each menu section**
-   - **Alt+O opens repository in system folder explorer**
+   - Active tab indication and labels
+   - **Comprehensive Hamburger Menu with 4 sections:**
+     - **File Menu:**
+       - New Tab (Ctrl+T)
+       - Open Repository (Ctrl+O)
+       - Close Current Tab (Ctrl+W)
+       - Create a Gist (Ctrl+Shift+G)
+     - **Edit Menu:**
+       - Copy Repository Path (Ctrl+Shift+C)
+       - Refresh Repository (Ctrl+Shift+R)
+       - Open in VS Code (Ctrl+Shift+O)
+     - **View Menu:**
+       - Toggle Terminal (Ctrl+`)
+       - Visualize Commit History/Graph (Alt+1)
+       - Productivity Arena (Alt+2)
+       - Time Machine (Alt+3)
+       - Usual Conflict Suspects/Heatmap (Alt+4)
+       - Open in Folder Explorer (Alt+O)
+       - Open Settings (Ctrl+,)
+     - **Help Menu:**
+       - Help and Shortcuts (F1)
+       - About GitSwamp
+       - Open Online Guide
+       - Report Issue
+   - Context-aware menu item disabling based on repo state
+   - Keyboard shortcut support
+   - Menu positioning relative to button
+   - ESC key closes menu and help panels
 
-7. **Sidebar.vue**
-   - Main navigation sidebar
-   - Branch list
-   - Stash list
-   - Tag list
-   - Scrollable sections
-   - Right-click context menu
+8. **RepositoryWorkspace.vue** (Main Content Area)
+   - Main workspace container for repository content
+   - Integrates all visualization and editing panels
+   - Manages layout: Sidebar, Graph/Panels, Details
+   - Handles multiple history view modes (graph, productivity, time-machine, conflict-heatmap, remote-insights, conflict-resolve)
+   - Terminal panel integration
+   - Diff viewer modal
+   - Conflict resolver modal
+   - Coordinates state between child components
 
-8. **SidebarSection.vue**
-   - Collapsible section component
-   - Expandable/collapsible header
-   - Dynamic content rendering
-   - Icon support
+9. **RepositorySidebar.vue**
+   - Main navigation sidebar for repository metadata
+   - Collapsible sections with icons:
+     - **Branches** - Local and remote branches
+     - **Stashes** - Saved work items
+     - **Tags** - Repository tags
+     - **Remotes** - Remote configurations
+     - **Issues** - GitHub/GitLab issues (if linked)
+     - **Pull Requests** - Open PRs from current branches
+   - Branch creation button
+   - Search functionality across sections
+   - Right-click context menus
+   - Section expanded/collapsed state persistence
 
-9. **CloneDialog.vue**
-   - Repository URL input
-   - Directory selection
-   - Clone progress indication
-   - GitHub/GitLab repository search
-   - Provider authentication
+10. **RepositorySidebarSection.vue**
+    - Reusable collapsible section component
+    - Icon display with section label
+    - Item count display
+    - Expand/collapse chevron icon
+    - Click handler for toggle events
+    - Smooth animations
 
-10. **InitDialog.vue**
-    - Directory selection
-    - Repository initialization
-    - Initial configuration
-    - Success confirmation
+11. **Repository Action & Auth Dialogs**
+    - **CloneDialog.vue**: Clone repository from URL
+      - Repository URL/HTTPS input
+      - Directory selection
+      - Clone progress indication
+      - GitHub/GitLab repository search
+      - Provider authentication
+    
+    - **InitDialog.vue**: Initialize new repository
+      - Directory selection
+      - Repository initialization
+      - Initial configuration
+      - Success confirmation
+    
+    - **GhostBranchDialog.vue**: Ghost branch operations
+      - Create experimental/ghost branch
+      - Materialize ghost branch to real branch
+      - Discard ghost changes
+      - Preview of ghost changes
+    
+    - **MultiPlatformPushDialog.vue**: Multi-remote push
+      - Select multiple remotes for push
+      - Configure push strategies
+      - Batch push operations
+    
+    - **RepositoryActionDialogs.vue**: Generic action dialogs
+      - Merge operations
+      - Rebase operations
+      - Cherry-pick operations
+      - Generic confirmation and parameter dialogs
+    
+    - **RepositoryAuthDialogs.vue**: Authentication
+      - Credential input (username/password)
+      - Token input dialogs
+      - SSH key management
+      - OAuth authentication flows
 
-#### Commit Visualization (3) - src/view/commit/
+12. **RemoteInsightsPanel.vue**
+    - GitHub/GitLab integration panel
+    - Pull request visualization and management
+    - Issue tracking and display
+    - Repository statistics
+    - Contributor information
+    - Activity timeline
+    - Links to create new PRs/issues
 
-11. **CommitGraph.vue** (Core Feature)
-    - Visual commit history rendering
-    - Lane-based graph layout
-    - Interactive commit selection
-    - Zooming and panning
-    - Branch visualization
-    - Responsive to size changes
-    - Pagination for large histories
+#### Commit Visualization & Analytics (5) - src/view/commit/
 
-12. **CommitDetails.vue**
-    - Commit information panel
-    - Author and timestamp
-    - Commit message display
-    - Files changed list
-    - Staging/unstaging interface
-    - Commit creation form
-    - Diff preview
+13. **CommitGraph.vue** (Core Feature)
+    - Interactive commit history visualization
+    - Lane-based graph rendering (branch flow visualization)
+    - Zoomable and pannable interface
+    - Branch merge/fork visualization
+    - Hover information on commits
+    - Row selection for viewing commit details
+    - Virtual scrolling for performance with large repositories
+    - Configurable row height (compact/normal modes)
+    - Keyboard navigation support
+    - Responsive to window resizing
 
-13. **FileItem.vue**
-    - Individual file entry
-    - File icon based on type
+14. **CommitDetails.vue**
+    - Collapsible details panel for selected commit
+    - Commit metadata: Author, Date, Email, Message
+    - Files changed in commit with statistics
+    - File change icons (added, modified, deleted, renamed)
+    - Quick file actions (view diff, stage, unstage)
+    - Staged vs Unstaged file grouping
+    - Commit message editing
+    - Copy operations (hash, author, message)
+    - Conflict status indicators
+
+15. **FileItem.vue**
+    - Individual file entry in commit or staging area
+    - File type icon based on extension
     - Change statistics (insertions/deletions)
-    - Status indicator
-    - Clickable for diff viewing
-    - Staged/unstaged indication
+    - Status indicator (added/modified/deleted/renamed)
+    - Hover state for interactivity
+    - Click to view diff viewer
+    - Context menu for file operations
 
-#### UI Components (6) - src/shared/ui/
+16. **CommitProductivityPanel.vue** (Analytics)
+    - Productivity metrics visualization
+    - Developer activity statistics
+    - Commit frequency analysis
+    - File change patterns
+    - Time-based productivity trends
+    - Contributor comparison charts
+    - Activity heatmap
+    - Export statistics functionality
 
-14. **AppButton.vue**
-    - Styled button component
-    - Multiple variants (primary, secondary, danger)
-    - Size options (sm, md, lg)
-    - Disabled state
+17. **CommitTimeMachinePanel.vue** (Time Navigation)
+    - Navigate through repository history frames
+    - File snapshots at different commits
+    - Timeline scrubber for quick navigation
+    - Show file content at specific commits
+    - Diff between historical versions
+    - Time-based filtering
+    - Commit selection from timeline
+    - Side-by-side version comparison
+
+18. **CommitConflictHeatmapPanel.vue** (Conflict Analytics)
+    - Merge conflict hotspot visualization
+    - Files with highest conflict frequency
+    - Conflict risk assessment
+    - Team collaboration conflict patterns
+    - Time-based conflict trends
+    - Risk level indicators
+    - Suggested conflict resolution strategies
+    - Historical conflict analysis
+
+#### UI Components (5) - src/shared/ui/
+
+19. **AppButton.vue**
+    - Styled button component with CVA variants
+    - Multiple style variants:
+      - default (primary colored)
+      - destructive (red/danger)
+      - outline (bordered)
+      - secondary (muted)
+      - ghost (no background)
+      - link (text with underline)
+    - Size options: sm, md (default), lg
+    - Disabled state with visual feedback
     - Loading state with spinner
-    - Icon support
+    - Icon support with proper spacing
+    - Focus visible states for accessibility
+    - Keyboard support (Enter/Space)
 
-15. **AppInput.vue**
+20. **AppInput.vue**
     - Styled text input component
+    - Supports multiple input types (text, password, email, etc.)
     - Placeholder support
     - Disabled state
-    - Error state with message
-    - Password field support
-    - Validation feedback
+    - Error state with visual indication
+    - Two-way binding with v-model
+    - Custom class support
+    - Validation-ready structure
+    - Accessible with proper labels
 
-16. **FileDiffViewer.vue** (Advanced)
-    - Side-by-side diff viewing
-    - Unified diff viewing
-    - Syntax highlighting
-    - Hunk-level operations
-    - Edit mode for file modification
-    - Scroll synchronization
-    - Line numbers
-    - Context line expansion
+21. **FileDiffViewer.vue** (Advanced)
+    - Complex diff viewing component
+    - Multiple view modes:
+      - Unified diff (traditional format)
+      - Side-by-side diff (left/right comparison)
+    - Syntax highlighting for 50+ languages
+    - Hunk-level operations (view/apply/revert)
+    - Edit mode for direct file modification
+    - Staged vs working directory diffs
+    - Scroll synchronization between sides (side-by-side mode)
+    - Line numbers with click highlighting
+    - Context line expansion (+/- buttons)
+    - Search and replace functionality
+    - Collaboration highlight (co-edited lines)
+    - Copy/paste operations
+    - Responsive to window resizing
+    - Virtual scrolling for large files
+    - Loading states with animated logo
 
-17. **ConflictResolver.vue**
-    - Merge conflict display
-    - Three-way merge view (original, current, incoming)
+22. **ConflictResolver.vue**
+    - Three-way merge conflict resolution
+    - Visual display: Current (ours) | Original | Incoming (theirs)
     - Conflict marker highlighting
-    - Resolution buttons (use theirs/ours/both)
     - Hunk-by-hunk resolution
-    - Preview of resolved content
+    - Resolution buttons per hunk:
+      - Use Ours (keep current branch version)
+      - Use Theirs (accept incoming version)
+      - Use Both (combine both versions)
+      - Manual edit mode
+    - Preview of final resolved content
+    - Real-time validation
+    - Save and commit on resolution
+    - Navigation between conflict hunks
+    - Statistics (hunks resolved/remaining)
+    - Embedded mode (inline in diff viewer)
 
-18. **GitCommitIcon.vue**
-    - Commit avatar/icon rendering
-    - Author gravatar integration
-    - Fallback initial display
-    - Tooltip with author info
+23. **ToastContainer.vue**
+    - Toast notification management
+    - Multiple toast support with queue
+    - Type-based styling:
+      - success (green with checkmark)
+      - error (red with X)
+      - info (blue with circle)
+      - warning (yellow with triangle)
+      - loading (spinner animation)
+    - Auto-dismiss with configurable duration
+    - Manual dismiss buttons
+    - Position management (top/bottom, center/side)
+    - Animated entry/exit transitions
+    - Action buttons support (undo, retry, etc.)
+    - Progress bar for auto-dismiss countdown
 
-19. **ToastContainer.vue**
-    - Toast notification rendering
-    - Multiple toast support
-    - Auto-dismiss functionality
-    - Position management
-    - Type-based styling (success/error/warning/info)
+### 3.2 History View Modes
 
-### 3.2 Component Communication
+GitSwamp provides 6 different history visualization modes, accessible from the **View** menu:
+
+#### 1. **Graph Mode** (Default) - Alt+1
+- Interactive commit history visualization
+- Lane-based graph rendering showing branch structure
+- Displays branches, merges, and commits chronologically
+- Primary view for most Git workflows
+- Supports zooming, panning, and navigation
+- Virtual scrolling for large repositories
+
+#### 2. **Productivity Arena** - Alt+2
+- Developer activity and metrics visualization
+- Displays productivity patterns across time
+- Shows commit frequency by contributor
+- Visualizes file change patterns
+- Time-based activity heatmaps
+- Team productivity comparison
+- Useful for performance analysis and sprint planning
+
+#### 3. **Time Machine** - Alt+3
+- Navigate through repository history frame-by-frame
+- View repository state at specific commits
+- File snapshots at different points in history
+- Timeline-based scrubber navigation
+- Diff between historical versions
+- Inspect legacy code without checking out
+- Useful for forensic analysis and understanding evolution
+
+#### 4. **Usual Conflict Suspects (Conflict Heatmap)** - Alt+4
+- Merge conflict hotspot visualization
+- Identifies files with highest conflict frequency
+- Conflict risk assessment and patterns
+- Team collaboration conflict analytics
+- Time-based conflict trend analysis
+- Suggests risky merge areas
+- Helps prevent problematic merges
+
+#### 5. **Remote Insights** - Remote sync
+- GitHub/GitLab integration panel
+- Pull request management and overview
+- Issue tracking and display
+- Repository statistics and metrics
+- Contributor information
+- Activity timelines
+- Direct links to repository web interface
+
+#### 6. **Conflict Resolve** - Automatic on conflict
+- Activated automatically when merge conflicts exist
+- Three-way merge visualization (ours | original | theirs)
+- Interactive conflict resolution interface
+- Hunk-by-hunk resolution controls
+- Real-time conflict status
+- Saves and commits on resolution
+
+### 3.3 Component Communication
 
 ```
 App.vue (Root)
     │
-    ├─> emits: repository-changed
-    ├─> emits: file-selected
-    └─> emits: commit-selected
-        │
-        ├─> TitleBar
-        ├─> AppHeader
-        │   └─ emits: open-settings
-        ├─> LandingPage or Main Content
-        │   ├─> Sidebar
-        │   │   └─ emits: branch-selected
-        │   └─> CommitGraph
-        │       ├─ emits: commit-clicked
-        │       └─> CommitDetails
-        │           ├─ emits: stage-file
-        │           ├─ emits: unstage-file
-        │           └─> FileItem
-        │               └─ emits: view-diff
-        │                   └─> FileDiffViewer
-        ├─> SettingsDialog (modal)
-        ├─> CloneDialog (modal)
-        ├─> InitDialog (modal)
-        ├─> ConflictResolver (when needed)
-        ├─> TerminalPanel
-        └─> ToastContainer
+    ├─> TitleBar
+    │   └─> Window controls
+    │
+    ├─> AppHeader
+    │   ├─> Pull/Push/Fetch buttons
+    │   └─> BranchQuickActions
+    │       ├─ Create Branch
+    │       ├─ Ghost Operations
+    │       └─ Branch Switching
+    │
+    ├─> RepositoryTabs
+    │   ├─ Tab management
+    │   └─ Hamburger Menu
+    │       ├─ File Actions (New Tab, Open, Close, Gist)
+    │       ├─ Edit Actions (Copy, Refresh, Open in VS Code)
+    │       ├─ View Actions (Terminal, History Modes, Explorer)
+    │       └─ Help Actions (Shortcuts, About, Issues)
+    │
+    ├─> RepositoryWorkspace (when repo open)
+    │   ├─> RepositorySidebar
+    │   │   ├─ RepositorySidebarSection (Branches)
+    │   │   ├─ RepositorySidebarSection (Stashes)
+    │   │   ├─ RepositorySidebarSection (Tags)
+    │   │   ├─ RepositorySidebarSection (Remotes)
+    │   │   ├─ RepositorySidebarSection (Issues)
+    │   │   └─ RepositorySidebarSection (Pull Requests)
+    │   │
+    │   ├─ CommitGraph (mode: graph)
+    │   ├─ CommitProductivityPanel (mode: productivity)
+    │   ├─ CommitTimeMachinePanel (mode: time-machine)
+    │   ├─ CommitConflictHeatmapPanel (mode: conflict-heatmap)
+    │   ├─ RemoteInsightsPanel (mode: remote-insights)
+    │   │
+    │   ├─> CommitDetails
+    │   │   └─> FileItem
+    │   │       └─ emits: view-diff
+    │   │           └─> FileDiffViewer (modal)
+    │   │
+    │   ├─> ConflictResolver (modal, mode: conflict-resolve)
+    │   │
+    │   └─> TerminalPanel (when enabled)
+    │
+    ├─> LandingPage (when no repo)
+    │   ├─ Open Repository
+    │   ├─ Clone Repository
+    │   └─ Initialize Repository
+    │
+    ├─> CloneDialog (modal)
+    ├─> InitDialog (modal)
+    ├─> GhostBranchDialog (modal)
+    ├─> MultiPlatformPushDialog (modal)
+    ├─> RepositoryActionDialogs (modal - merge/rebase/cherry-pick)
+    ├─> RepositoryAuthDialogs (modal - credentials/tokens)
+    ├─> SettingsDialog (modal)
+    └─> ToastContainer (global notifications)
 ```
 
 ## 4. Composables
