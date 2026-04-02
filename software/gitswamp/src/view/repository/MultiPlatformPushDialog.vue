@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from "vue"
 import { X, Github, GitBranch, Loader2 } from "lucide-vue-next"
+import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue"
+import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue"
 
 const props = defineProps<{
   visible: boolean
@@ -16,9 +18,22 @@ const emit = defineEmits<{
 
 const selectedPlatform = ref<string | null>(null)
 
+function platformIcon(platform: string) {
+  if (platform === "github" || platform === "github-enterprise") {
+    return Github
+  }
+  if (platform === "azure") {
+    return AzureDevOpsIcon
+  }
+  if (platform === "bitbucket" || platform === "bitbucket-dc") {
+    return BitbucketIcon
+  }
+  return GitBranch
+}
+
 const availablePlatformsList = computed(() => {
   return Object.entries(props.availablePlatforms)
-    .filter(([_, token]) => token !== null && token !== "")
+    .filter(([platform, token]) => token !== null && token !== "" && platform !== "azure-domain")
     .map(([platform]) => {
       const platformNames: Record<string, string> = {
         github: "GitHub",
@@ -33,7 +48,7 @@ const availablePlatformsList = computed(() => {
       return {
         id: platform,
         name: platformNames[platform] || platform,
-        icon: platform === "github" || platform === "github-enterprise" ? Github : GitBranch,
+        icon: platformIcon(platform),
       }
     })
 })

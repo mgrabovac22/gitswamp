@@ -25,6 +25,7 @@ const props = defineProps<{
   repoPath: string;
   commits: CommitInfo[];
   selected: CommitInfo | null;
+  selectedShas?: string[];
   searchQuery?: string;
   searchResults?: CommitInfo[] | null;
   hasWorkingChanges: boolean;
@@ -37,8 +38,13 @@ const props = defineProps<{
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
 }>();
 
+type CommitSelectPayload = {
+  commit: CommitInfo | null;
+  additive: boolean;
+};
+
 const emit = defineEmits<{
-  select: [commit: CommitInfo | null];
+  select: [payload: CommitSelectPayload];
   search: [query: string];
   clearSearch: [];
   selectWorkingChanges: [];
@@ -157,6 +163,27 @@ const searchResultShas = computed(() => searchResultList.value.map((commit) => c
 const searchResultCount = computed(() => searchResultShas.value.length);
 const searchMatchSet = computed(() => new Set(searchResultShas.value));
 const workingChangesBadgeLabel = computed(() => (compactWorkingLabel.value ? "● Working..." : "● Working Changes"));
+const selectedShaSet = computed(() => {
+  if (props.selectedShas && props.selectedShas.length > 0) {
+    return new Set(props.selectedShas);
+  }
+  if (props.selected?.sha) {
+    return new Set([props.selected.sha]);
+  }
+  return new Set<string>();
+});
+const hasCommitSelection = computed(() => selectedShaSet.value.size > 0);
+
+function isCommitSelected(sha: string): boolean {
+  return selectedShaSet.value.has(sha);
+}
+
+function onCommitClick(event: MouseEvent, commit: CommitInfo) {
+  emit("select", {
+    commit,
+    additive: event.ctrlKey || event.metaKey,
+  });
+}
 
 function updateCompactWorkingLabel() {
   compactWorkingLabel.value = globalThis.innerWidth < 1120;
@@ -400,7 +427,7 @@ function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "smooth"): bo
 function selectSearchCommit(sha: string, behavior: ScrollBehavior = "smooth"): boolean {
   const commit = activeCommits.value.find((item) => item.sha === sha);
   if (!commit) return false;
-  emit("select", commit);
+  emit("select", { commit, additive: false });
   scrollToCommitSha(sha, behavior);
   return true;
 }
@@ -1300,7 +1327,7 @@ onUnmounted(() => {
         <div
           v-if="hasWorkingChanges"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors"
-          :class="selected === null ? 'bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]'"
+          :class="!hasCommitSelection ? 'bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]'"
           :style="{ top: '0px', height: rowHeight + 'px' }"
           @click="emit('selectWorkingChanges')"
         >
@@ -1323,7 +1350,7 @@ onUnmounted(() => {
         <div
           v-if="hasConflicts"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors"
-          :class="selected === null ? 'bg-[#ef4444]/10' : 'hover:bg-[var(--secondary)]'"
+          :class="!hasCommitSelection ? 'bg-[#ef4444]/10' : 'hover:bg-[var(--secondary)]'"
           :style="{ top: ((hasWorkingChanges ? 1 : 0) * rowHeight) + 'px', height: rowHeight + 'px' }"
           @click="emit('selectConflicts')"
         >
@@ -1347,13 +1374,13 @@ onUnmounted(() => {
           v-for="item in visibleNodes"
           :key="item.node.commit.sha"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
-          :class="selected?.sha === item.node.commit.sha
+          :class="isCommitSelected(item.node.commit.sha)
             ? 'bg-[var(--primary)]/10'
             : isSearchMatch(item.node.commit.sha)
               ? 'search-hit-row hover:bg-[var(--primary)]/10'
               : 'hover:bg-[var(--secondary)]'"
           :style="{ top: (item.idx * rowHeight + wcOffset) + 'px', height: rowHeight + 'px' }"
-          @click="emit('select', item.node.commit)"
+          @click="onCommitClick($event, item.node.commit)"
           @contextmenu="onCtx($event, item.node.commit)"
           @dragover.prevent="onCommitRowDragOver($event, item.node.commit)"
           @drop.prevent="onCommitRowDrop($event, item.node.commit)"

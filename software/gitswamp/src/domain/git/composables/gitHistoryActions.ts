@@ -159,6 +159,7 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       ) ?? state.commits.value[0] ?? null;
 
       state.selectedCommit.value = selectedHead;
+      state.selectedCommits.value = selectedHead ? [selectedHead] : [];
       if (selectedHead) {
         state.selectedCommitFiles.value = await callTauri<CommitFileInfo[]>("get_commit_files", {
           path: state.repoPath.value,

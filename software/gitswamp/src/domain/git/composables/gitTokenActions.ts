@@ -18,6 +18,7 @@ export function createTokenActions(state: GitState) {
       "gitlab",
       "bitbucket",
       "azure",
+      "azure-domain",
       "github-enterprise",
       "gitlab-self",
       "bitbucket-dc",

@@ -151,6 +151,7 @@ export function createRefreshActions(state: GitState) {
   async function selectStash(stash: StashInfo | null) {
     state.selectedStash.value = stash;
     state.selectedCommit.value = null;
+    state.selectedCommits.value = [];
     state.selectedCommitFiles.value = [];
 
     if (!stash || !state.repoPath.value) {

@@ -41,6 +41,7 @@ import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo, StagedDiffS
 
 const props = defineProps<{
   commit: CommitInfo | null;
+  selectedCommits?: CommitInfo[];
   canAmendSelectedCommit?: boolean;
   stagedFiles: FileStatusInfo[];
   unstagedFiles: FileStatusInfo[];
@@ -119,8 +120,23 @@ function cancelDiscard() {
 }
 
 const activeTab = ref<"changes" | "info">("changes");
+const isMultiCommitSelection = computed(() => (props.selectedCommits?.length || 0) > 1);
+const primaryCommitShaForDiff = computed(() => {
+  if (props.commit?.sha) {
+    return props.commit.sha;
+  }
+  if (isMultiCommitSelection.value) {
+    return props.selectedCommits?.[0]?.sha || null;
+  }
+  return null;
+});
 
 watch(() => props.commit, (newVal) => {
+  if (isMultiCommitSelection.value) {
+    activeTab.value = "changes";
+    return;
+  }
+
   if (newVal) {
     activeTab.value = "info";
   } else {
@@ -130,6 +146,12 @@ watch(() => props.commit, (newVal) => {
 
 watch(() => props.selectedStash, (newVal) => {
   if (newVal) {
+    activeTab.value = "changes";
+  }
+});
+
+watch(() => isMultiCommitSelection.value, (isMulti) => {
+  if (isMulti) {
     activeTab.value = "changes";
   }
 });
@@ -925,8 +947,9 @@ function openTreeFile(path: string) {
   }
 
   const commitMeta = commitTreeMeta.value.get(normalized);
-  if (!commitMeta || !props.commit) return;
-  openDiff(normalized, props.commit.sha, false);
+  const targetSha = primaryCommitShaForDiff.value;
+  if (!commitMeta || !targetSha) return;
+  openDiff(normalized, targetSha, false);
 }
 
 function onCommit() {
@@ -945,6 +968,13 @@ function copyToClipboard(text: string) {
 
 function fileParts(path: string) {
   return splitFilePath(path);
+}
+
+function formatCommitHashes(shas?: string[]): string {
+  if (!shas || shas.length === 0) {
+    return "";
+  }
+  return shas.map((sha) => sha.slice(0, 7)).join(", ");
 }
 
 function mapEditorIds(ids: string[]): ExternalEditorOption[] {
@@ -1146,7 +1176,7 @@ onUnmounted(() => {
     <div class="border-b border-[var(--border)] flex-shrink-0 relative">
       <div class="h-9 flex">
         <button
-          v-if="(commit && !isWorkingChanges) || (isStash && selectedStash)"
+          v-if="!isMultiCommitSelection && ((commit && !isWorkingChanges) || (isStash && selectedStash))"
           @click="activeTab = 'info'"
           :class="[
             'flex-1 text-xs font-medium tracking-wide transition-colors',
@@ -1586,11 +1616,11 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-show="activeTab === 'changes' && !isWorkingChanges && commit" class="flex-1 flex flex-col overflow-hidden">
+    <div v-show="activeTab === 'changes' && !isWorkingChanges && (commit || isMultiCommitSelection)" class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto">
         <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)] border-b border-[var(--border)]">
           <div class="flex items-center gap-2 min-w-0">
-            <span class="font-medium">Changed files</span>
+            <span class="font-medium">{{ isMultiCommitSelection ? 'Merged changed files' : 'Changed files' }}</span>
             <span class="text-[10px] bg-[var(--primary)]/20 text-[var(--primary)] px-1.5 py-0.5 rounded-full">{{ commitFiles.length }}</span>
           </div>
 
@@ -1632,13 +1662,16 @@ onUnmounted(() => {
               v-for="f in commitFiles"
               :key="f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
-              @click="openDiff(f.path, commit!.sha, false)"
+              @click="openDiff(f.path, isMultiCommitSelection ? (f.commit_shas?.[0] || primaryCommitShaForDiff) : commit!.sha, false)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
                 <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
+                <div v-if="isMultiCommitSelection && f.commit_shas && f.commit_shas.length > 0" class="text-[10px] text-[var(--muted-foreground)] truncate">
+                  commits: {{ formatCommitHashes(f.commit_shas) }}
+                </div>
               </div>
               <Eye class="w-3 h-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity" />
               <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
@@ -1727,7 +1760,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-show="activeTab === 'info' && commit && !isWorkingChanges" class="flex-1 overflow-y-auto">
+    <div v-show="activeTab === 'info' && commit && !isWorkingChanges && !isMultiCommitSelection" class="flex-1 overflow-y-auto">
       <div v-if="commit" class="p-4 space-y-4">
         <div>
           <div class="flex items-center justify-between gap-2 mb-1.5">
@@ -2087,7 +2120,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="!commit && !isWorkingChanges && !(isStash && selectedStash)" class="flex-1 flex items-center justify-center">
+    <div v-if="!isMultiCommitSelection && !commit && !isWorkingChanges && !(isStash && selectedStash)" class="flex-1 flex items-center justify-center">
       <div class="text-center">
         <GitCommitIcon class="w-8 h-8 text-[var(--muted-foreground)] opacity-30 mx-auto mb-2" />
         <p class="text-xs text-[var(--muted-foreground)]">Select a commit to view details</p>

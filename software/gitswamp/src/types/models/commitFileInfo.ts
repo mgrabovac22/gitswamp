@@ -3,4 +3,5 @@ export interface CommitFileInfo {
   status: string
   additions: number
   deletions: number
+  commit_shas?: string[]
 }

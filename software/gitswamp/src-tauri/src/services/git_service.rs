@@ -5,12 +5,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
 use crate::constants::{
-    AUTH_USER_GITHUB, AUTH_USER_GITLAB, CONFLICT_END, CONFLICT_MID, CONFLICT_START,
-    DEFAULT_BRANCH, DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL, GITHUB_HOST,
+    AUTH_USER_BITBUCKET, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST, AZURE_LEGACY_HOST,
+    BITBUCKET_HOST, CONFLICT_END, CONFLICT_MID, CONFLICT_START, DEFAULT_BRANCH,
+    DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL, GITHUB_HOST,
 };
 use crate::models::{
-    BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot, FileStatusInfo, GhostBranchState,
-    GithubRepo, GitlabRepo, RepoInfo, StagedDiffSummary, StashInfo, TagInfo,
+    AzureRepo, BitbucketRepo, BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot,
+    FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, RepoInfo, StagedDiffSummary,
+    StashInfo, TagInfo,
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
@@ -1106,20 +1108,25 @@ impl GitService {
         if let Some(t) = token {
             let tok = t.to_string();
             callbacks.credentials(move |remote_url, username_from_url, allowed| {
+                let remote_url_lower = remote_url.to_lowercase();
+                let auth_user = if remote_url_lower.contains(GITHUB_HOST) {
+                    AUTH_USER_GITHUB
+                } else if remote_url_lower.contains(BITBUCKET_HOST) {
+                    AUTH_USER_BITBUCKET
+                } else if remote_url_lower.contains(AZURE_HOST)
+                    || remote_url_lower.contains(AZURE_LEGACY_HOST)
+                {
+                    "pat"
+                } else {
+                    AUTH_USER_GITLAB
+                };
+
                 if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-                    let user = if remote_url.contains(GITHUB_HOST) {
-                        AUTH_USER_GITHUB
-                    } else {
-                        username_from_url.unwrap_or(AUTH_USER_GITLAB)
-                    };
+                    let user = username_from_url.unwrap_or(auth_user);
                     return git2::Cred::userpass_plaintext(user, &tok);
                 }
                 if allowed.contains(git2::CredentialType::USERNAME) {
-                    let user = if remote_url.contains(GITHUB_HOST) {
-                        AUTH_USER_GITHUB
-                    } else {
-                        username_from_url.unwrap_or(AUTH_USER_GITLAB)
-                    };
+                    let user = username_from_url.unwrap_or(auth_user);
                     return git2::Cred::username(user);
                 }
                 git2::Cred::default()
@@ -1553,6 +1560,14 @@ impl GitService {
 
     pub fn search_gitlab_repos(domain: &str, token: &str, query: &str) -> Result<Vec<GitlabRepo>, String> {
         IntegrationService::search_gitlab_repos(domain, token, query)
+    }
+
+    pub fn search_bitbucket_repos(token: &str, query: &str) -> Result<Vec<BitbucketRepo>, String> {
+        IntegrationService::search_bitbucket_repos(token, query)
+    }
+
+    pub fn search_azure_repos(domain: &str, token: &str, query: &str) -> Result<Vec<AzureRepo>, String> {
+        IntegrationService::search_azure_repos(domain, token, query)
     }
 
     pub fn generate_ssh_key(email: &str, key_name: &str) -> Result<(String, String), String> {

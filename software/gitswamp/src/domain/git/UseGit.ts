@@ -216,6 +216,7 @@ export function useGit() {
     conflictFiles: state.conflictFiles,
     hasConflicts: state.hasConflicts,
     selectedCommit: state.selectedCommit,
+    selectedCommits: state.selectedCommits,
     selectedCommitFiles: state.selectedCommitFiles,
     selectedStash: state.selectedStash,
     selectedStashFiles: state.selectedStashFiles,

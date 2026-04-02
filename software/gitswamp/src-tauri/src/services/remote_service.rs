@@ -506,54 +506,68 @@ impl RemoteService {
         let branch_name = head.shorthand().unwrap_or("main").to_string();
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
 
-        let (owner, actual_repo_name, domain) = if repo_name.contains('@') {
-            let parts: Vec<&str> = repo_name.split('@').collect();
-            if parts.len() == 2 {
-                let name_parts: Vec<&str> = parts[0].split('/').collect();
-                if name_parts.len() == 2 {
-                    (
-                        name_parts[0].to_string(),
-                        name_parts[1].to_string(),
-                        Some(parts[1].to_string()),
-                    )
-                } else {
-                    return Err(
-                        "Invalid repo_name format. Use username/repo or username/repo@domain.com"
-                            .to_string(),
-                    );
-                }
-            } else {
-                return Err("Invalid repo_name format with @".to_string());
+        let (name_part, domain) = if let Some((left, right)) = repo_name.rsplit_once('@') {
+            let domain_part = right.trim().to_string();
+            if domain_part.is_empty() {
+                return Err("Invalid repo_name format with @domain".to_string());
             }
-        } else if repo_name.contains('/') {
-            let parts: Vec<&str> = repo_name.split('/').collect();
-            if parts.len() == 2 {
-                (parts[0].to_string(), parts[1].to_string(), None)
-            } else {
-                return Err("Invalid repo_name format".to_string());
-            }
+            (left.trim().to_string(), Some(domain_part))
         } else {
-            let repo_dir = Path::new(path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("repository")
-                .to_string();
-            ("user".to_string(), repo_dir, None)
+            (repo_name.trim().to_string(), None)
+        };
+
+        let parsed_name_parts: Vec<&str> = name_part
+            .split('/')
+            .map(|part| part.trim())
+            .filter(|part| !part.is_empty())
+            .collect();
+        let repo_name_part_count = parsed_name_parts.len();
+
+        let fallback_repo_name = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repository")
+            .to_string();
+
+        let owner = parsed_name_parts
+            .first()
+            .map(|value| (*value).to_string())
+            .unwrap_or_else(|| "user".to_string());
+        let actual_repo_name = if repo_name_part_count >= 2 {
+            parsed_name_parts
+                .last()
+                .map(|value| (*value).to_string())
+                .unwrap_or_else(|| fallback_repo_name.clone())
+        } else {
+            fallback_repo_name.clone()
+        };
+        let azure_project = if repo_name_part_count >= 3 {
+            Some(parsed_name_parts[repo_name_part_count - 2].to_string())
+        } else {
+            None
         };
 
         let enc_token = urlencoded(token);
 
         let remote_url = match platform {
-            PLATFORM_GITHUB => format!(
-                "{}{}:{}@{}/{}/{}.git",
-                HTTPS_SCHEME,
-                owner,
-                enc_token,
-                GITHUB_HOST,
-                owner,
-                actual_repo_name
-            ),
+            PLATFORM_GITHUB => {
+                if repo_name_part_count > 2 {
+                    return Err("Invalid repo_name format. Use username/repo for GitHub.".to_string());
+                }
+                format!(
+                    "{}{}:{}@{}/{}/{}.git",
+                    HTTPS_SCHEME,
+                    owner,
+                    enc_token,
+                    GITHUB_HOST,
+                    owner,
+                    actual_repo_name
+                )
+            }
             PLATFORM_GITHUB_ENTERPRISE => {
+                if repo_name_part_count > 2 {
+                    return Err("Invalid repo_name format. Use username/repo@domain for GitHub Enterprise.".to_string());
+                }
                 let domain =
                     domain.ok_or("GitHub Enterprise requires domain in format: username/repo@domain.com")?;
                 format!(
@@ -562,16 +576,24 @@ impl RemoteService {
                     owner, enc_token, domain, owner, actual_repo_name
                 )
             }
-            PLATFORM_GITLAB => format!(
-                "{}{}:{}@{}/{}/{}.git",
-                HTTPS_SCHEME,
-                AUTH_USER_GITLAB,
-                enc_token,
-                GITLAB_HOST,
-                owner,
-                actual_repo_name
-            ),
+            PLATFORM_GITLAB => {
+                if repo_name_part_count > 2 {
+                    return Err("Invalid repo_name format. Use username/repo for GitLab.".to_string());
+                }
+                format!(
+                    "{}{}:{}@{}/{}/{}.git",
+                    HTTPS_SCHEME,
+                    AUTH_USER_GITLAB,
+                    enc_token,
+                    GITLAB_HOST,
+                    owner,
+                    actual_repo_name
+                )
+            }
             PLATFORM_GITLAB_SELF_HOSTED => {
+                if repo_name_part_count > 2 {
+                    return Err("Invalid repo_name format. Use username/repo@domain for GitLab self-hosted.".to_string());
+                }
                 let domain =
                     domain.ok_or("GitLab self-hosted requires domain in format: username/repo@domain.com")?;
                 format!(
@@ -581,23 +603,50 @@ impl RemoteService {
                     enc_token, domain, owner, actual_repo_name
                 )
             }
-            PLATFORM_BITBUCKET => format!(
-                "{}{}:{}@{}/{}/{}.git",
-                HTTPS_SCHEME,
-                AUTH_USER_BITBUCKET,
-                enc_token,
-                BITBUCKET_HOST,
-                owner,
-                actual_repo_name
-            ),
-            PLATFORM_AZURE => format!(
-                "{}:{}@{}/{}/project/_git/{}",
-                HTTPS_SCHEME,
-                enc_token,
-                AZURE_HOST,
-                owner,
-                actual_repo_name
-            ),
+            PLATFORM_BITBUCKET => {
+                if repo_name_part_count > 2 {
+                    return Err("Invalid repo_name format. Use workspace/repo for Bitbucket.".to_string());
+                }
+                format!(
+                    "{}{}:{}@{}/{}/{}.git",
+                    HTTPS_SCHEME,
+                    AUTH_USER_BITBUCKET,
+                    enc_token,
+                    BITBUCKET_HOST,
+                    owner,
+                    actual_repo_name
+                )
+            }
+            PLATFORM_AZURE => {
+                let project = azure_project.unwrap_or_else(|| "project".to_string());
+                let domain_value = domain
+                    .unwrap_or_else(|| AZURE_HOST.to_string())
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_string();
+                let domain_host = domain_value
+                    .strip_prefix("https://")
+                    .or_else(|| domain_value.strip_prefix("http://"))
+                    .unwrap_or(&domain_value)
+                    .split('/')
+                    .next()
+                    .unwrap_or(AZURE_HOST)
+                    .trim();
+
+                if domain_host.is_empty() {
+                    return Err("Azure host domain cannot be empty.".to_string());
+                }
+
+                format!(
+                    "{}:{}@{}/{}/{}/_git/{}",
+                    HTTPS_SCHEME,
+                    enc_token,
+                    domain_host,
+                    owner,
+                    project,
+                    actual_repo_name
+                )
+            }
             _ => return Err(format!("Unknown platform: {platform}")),
         };
 

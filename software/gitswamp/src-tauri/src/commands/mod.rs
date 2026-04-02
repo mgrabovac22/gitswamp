@@ -11,3 +11,4 @@ pub mod stash;
 pub mod tags;
 pub mod credentials;
 pub mod ghost;
+pub mod logs;

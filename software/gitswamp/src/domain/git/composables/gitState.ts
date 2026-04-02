@@ -20,6 +20,7 @@ export function createGitState() {
   const branches = ref<BranchInfo[]>([]);
   const fileStatuses = ref<FileStatusInfo[]>([]);
   const selectedCommit = ref<CommitInfo | null>(null);
+  const selectedCommits = ref<CommitInfo[]>([]);
   const selectedCommitFiles = ref<CommitFileInfo[]>([]);
   const selectedStash = ref<StashInfo | null>(null);
   const selectedStashFiles = ref<CommitFileInfo[]>([]);
@@ -66,6 +67,7 @@ export function createGitState() {
     branches,
     fileStatuses,
     selectedCommit,
+    selectedCommits,
     selectedCommitFiles,
     selectedStash,
     selectedStashFiles,

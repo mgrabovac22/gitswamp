@@ -9,6 +9,8 @@ import {
   Loader2,
   ArrowLeft,
 } from "lucide-vue-next";
+import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
+import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
 
 const props = defineProps<{
   visible: boolean;
@@ -27,9 +29,9 @@ const sources = [
   { id: "github-enterprise", label: "GitHub Enterprise", icon: Github, color: "#6e7681", desc: "Enterprise server" },
   { id: "gitlab", label: "GitLab", icon: GitBranch, color: "#fc6d26", desc: "Push to GitLab" },
   { id: "gitlab-self", label: "GitLab Self-Hosted", icon: GitBranch, color: "#e24329", desc: "Self-managed" },
-  { id: "bitbucket", label: "Bitbucket", icon: GitBranch, color: "#0052cc", desc: "Push to Bitbucket" },
-  { id: "bitbucket-dc", label: "Bitbucket DC", icon: GitBranch, color: "#2684ff", desc: "Data Center" },
-  { id: "azure", label: "Azure DevOps", icon: GitBranch, color: "#0078d4", desc: "Push to Azure" },
+  { id: "bitbucket", label: "Bitbucket", icon: BitbucketIcon, color: "#0052cc", desc: "Push to Bitbucket" },
+  { id: "bitbucket-dc", label: "Bitbucket DC", icon: BitbucketIcon, color: "#2684ff", desc: "Data Center" },
+  { id: "azure", label: "Azure DevOps", icon: AzureDevOpsIcon, color: "#0078d4", desc: "Push to Azure" },
 ] as const;
 
 const providerNames: Record<string, string> = {
@@ -51,7 +53,7 @@ const licenseOptions = [
 
 const activeSource = ref<string | null>(null);
 const repoName = ref("");
-const initPath = ref("C:\\Repozitoriji");
+const initPath = ref(String.raw`C:\Repozitoriji`);
 const branchName = ref("main");
 const gitignoreTemplate = ref("None");
 const licenseTemplate = ref("None");

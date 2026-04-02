@@ -13,7 +13,9 @@ import {
   ArrowLeft,
   Key,
 } from "lucide-vue-next";
-import type { GithubRepo, GitlabRepo } from "@/types";
+import type { AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo } from "@/types";
+import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
+import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
 
 const props = defineProps<{
   visible: boolean;
@@ -34,9 +36,9 @@ const sources = [
   { id: "github-enterprise", label: "GitHub Enterprise", icon: Github, color: "#6e7681", desc: "Enterprise server" },
   { id: "gitlab", label: "GitLab", icon: GitBranch, color: "#fc6d26", desc: "GitLab.com repos" },
   { id: "gitlab-self", label: "GitLab Self-Hosted", icon: GitBranch, color: "#e24329", desc: "Self-managed instance" },
-  { id: "bitbucket", label: "Bitbucket", icon: GitBranch, color: "#0052cc", desc: "Bitbucket.org repos" },
-  { id: "bitbucket-dc", label: "Bitbucket DC", icon: GitBranch, color: "#2684ff", desc: "Data Center repos" },
-  { id: "azure", label: "Azure DevOps", icon: GitBranch, color: "#0078d4", desc: "Azure repos" },
+  { id: "bitbucket", label: "Bitbucket", icon: BitbucketIcon, color: "#0052cc", desc: "Bitbucket.org repos" },
+  { id: "bitbucket-dc", label: "Bitbucket DC", icon: BitbucketIcon, color: "#2684ff", desc: "Data Center repos" },
+  { id: "azure", label: "Azure DevOps", icon: AzureDevOpsIcon, color: "#0078d4", desc: "Azure repos" },
 ] as const;
 
 const providerNames: Record<string, string> = {
@@ -64,9 +66,9 @@ const tokenInstructions: Record<string, string> = {
   "github-enterprise": "Go to your GitHub Enterprise → Settings → Developer settings → Personal access tokens.",
   "gitlab": "Go to GitLab → Preferences → Access Tokens → Create a token with 'read_api' and 'read_repository' scopes.",
   "gitlab-self": "Go to your GitLab instance → Preferences → Access Tokens.",
-  "bitbucket": "Go to Bitbucket → Personal settings → App passwords → Create with 'Repositories: Read' permission.",
+  "bitbucket": "Go to Bitbucket → Personal settings → Access tokens/App passwords → Create with read repository scope.",
   "bitbucket-dc": "Go to your Bitbucket DC → Manage account → HTTP access tokens → Create token.",
-  "azure": "Go to Azure DevOps → User settings → Personal access tokens → New Token with 'Code: Read' scope.",
+  "azure": "Go to Azure DevOps → User settings → Personal access tokens → New Token with 'Code: Read' scope. Host example: dev.azure.com/myorg",
 };
 
 const activeSource = ref<string | null>(null);
@@ -79,6 +81,7 @@ const cloneError = ref<string | null>(null);
 const tokenInput = ref("");
 const showTokenInput = ref(false);
 const gitlabDomain = ref(""); // For self-hosted GitLab
+const azureDomain = ref("");
 
 const githubSearch = ref("");
 const githubRepos = ref<GithubRepo[]>([]);
@@ -92,7 +95,16 @@ const gitlabLoading = ref(false);
 const gitlabError = ref<string | null>(null);
 const gitlabSshKeyGenerated = ref(false);
 const gitlabPublicKey = ref("");
-const gitlabSearchInput = ref<HTMLInputElement | null>(null);
+
+const bitbucketSearch = ref("");
+const bitbucketRepos = ref<BitbucketRepo[]>([]);
+const bitbucketLoading = ref(false);
+const bitbucketError = ref<string | null>(null);
+
+const azureSearch = ref("");
+const azureRepos = ref<AzureRepo[]>([]);
+const azureLoading = ref(false);
+const azureError = ref<string | null>(null);
 
 const showGrid = computed(() => activeSource.value === null);
 
@@ -108,6 +120,41 @@ function normalizeHostInput(value: string): string {
     const withoutProtocol = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
     return (withoutProtocol.split("/")[0] || "").trim().toLowerCase();
   }
+}
+
+function normalizeAzureDomainInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    const host = parsed.host.toLowerCase();
+    const pathSegments = parsed.pathname.split("/");
+    const firstPathSegment = pathSegments.find((segment) => segment.length > 0) || "";
+    if (host === "dev.azure.com") {
+      const organization = firstPathSegment;
+      return organization ? `${host}/${organization.toLowerCase()}` : host;
+    }
+    return host;
+  } catch {
+    const withoutProtocol = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    const firstPart = withoutProtocol.split("/");
+    const hostPart = firstPart.find((segment) => segment.trim().length > 0) || "";
+    if (!hostPart) return "";
+    const hostPartLower = hostPart.toLowerCase();
+    if (hostPartLower === "dev.azure.com") {
+      const orgPart = firstPart.find((segment, index) => index > 0 && segment.trim().length > 0) || "";
+      return orgPart
+        ? `${hostPartLower}/${orgPart.toLowerCase()}`
+        : hostPartLower;
+    }
+    return hostPartLower;
+  }
+}
+
+function getStoredAzureDomain(): string {
+  return normalizeAzureDomainInput(props.providerTokens?.["azure-domain"] || "");
 }
 
 function getProviderToken(provider: string): string | null {
@@ -126,12 +173,24 @@ function getProviderToken(provider: string): string | null {
 }
 
 function isProviderConnected(provider: string): boolean {
-  return !!getProviderToken(provider);
+  const token = getProviderToken(provider);
+  if (!token) return false;
+  if (provider === "gitlab-self") {
+    return !!normalizeHostInput(gitlabDomain.value);
+  }
+  if (provider === "azure") {
+    return !!normalizeAzureDomainInput(azureDomain.value || getStoredAzureDomain());
+  }
+  return true;
 }
 
 function isProviderFullySupported(provider: string): boolean {
-  // Clone supports URL, GitHub, and GitLab (all variants)
-  return provider === "url" || provider === "github" || provider === "github-enterprise" || provider === "gitlab" || provider === "gitlab-self";
+  return provider === "url"
+    || provider === "github"
+    || provider === "gitlab"
+    || provider === "gitlab-self"
+    || provider === "bitbucket"
+    || provider === "azure";
 }
 
 const needsConnection = computed(() => {
@@ -158,7 +217,7 @@ function startTokenConnect() {
 
 async function saveToken() {
   if (!tokenInput.value.trim() || !activeSource.value) return;
-  
+
   if (activeSource.value === "gitlab-self" && gitlabDomain.value.trim()) {
     const normalizedDomain = normalizeHostInput(gitlabDomain.value);
     if (!normalizedDomain) {
@@ -177,10 +236,20 @@ async function saveToken() {
       gitlabError.value = `Token verification failed: ${e}`;
       return;
     }
+  } else if (activeSource.value === "azure") {
+    const normalizedAzureDomain = normalizeAzureDomainInput(azureDomain.value);
+    if (!normalizedAzureDomain) {
+      azureError.value = "Valid Azure host domain is required (e.g. dev.azure.com/myorg)";
+      return;
+    }
+
+    emit("saveProviderToken", "azure", tokenInput.value.trim());
+    emit("saveProviderToken", "azure-domain", normalizedAzureDomain);
+    azureDomain.value = normalizedAzureDomain;
   } else {
     emit("saveProviderToken", activeSource.value, tokenInput.value.trim());
   }
-  
+
   showTokenInput.value = false;
   tokenInput.value = "";
 }
@@ -232,7 +301,8 @@ function onGithubSearch() {
 }
 
 async function doGithubSearch() {
-  if (!props.token) {
+  const token = getProviderToken("github");
+  if (!token) {
     githubError.value = "No GitHub token. Add one in Settings first.";
     return;
   }
@@ -240,7 +310,7 @@ async function doGithubSearch() {
   githubError.value = null;
   try {
     githubRepos.value = await invoke<GithubRepo[]>("search_github_repos", {
-      token: props.token,
+      token,
       query: githubSearch.value,
     });
   } catch (e) {
@@ -259,8 +329,9 @@ function onGitlabSearch() {
 }
 
 async function doGitlabSearch() {
-  const token = getProviderToken(activeSource.value || "");
-  const normalizedDomain = normalizeHostInput(gitlabDomain.value);
+  const source = activeSource.value || "gitlab";
+  const token = getProviderToken(source);
+  const normalizedDomain = source === "gitlab" ? "gitlab.com" : normalizeHostInput(gitlabDomain.value);
   if (!token || !normalizedDomain) {
     gitlabError.value = "Domain and token required";
     return;
@@ -284,6 +355,75 @@ async function doGitlabSearch() {
 }
 
 function selectGitlabRepo(repo: GitlabRepo) {
+  cloneUrl.value = repo.clone_url_https;
+}
+
+function onBitbucketSearch() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    void doBitbucketSearch();
+  }, 400);
+}
+
+async function doBitbucketSearch() {
+  const token = getProviderToken("bitbucket");
+  if (!token) {
+    bitbucketError.value = "Bitbucket token required";
+    return;
+  }
+
+  bitbucketLoading.value = true;
+  bitbucketError.value = null;
+  try {
+    bitbucketRepos.value = await invoke<BitbucketRepo[]>("search_bitbucket_repos", {
+      token,
+      query: bitbucketSearch.value,
+    });
+  } catch (e) {
+    bitbucketError.value = String(e);
+    bitbucketRepos.value = [];
+  } finally {
+    bitbucketLoading.value = false;
+  }
+}
+
+function selectBitbucketRepo(repo: BitbucketRepo) {
+  cloneUrl.value = repo.clone_url_https;
+}
+
+function onAzureSearch() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    void doAzureSearch();
+  }, 400);
+}
+
+async function doAzureSearch() {
+  const token = getProviderToken("azure");
+  const domain = normalizeAzureDomainInput(azureDomain.value || getStoredAzureDomain());
+  if (!token || !domain) {
+    azureError.value = "Azure host domain and token required";
+    return;
+  }
+
+  azureDomain.value = domain;
+  azureLoading.value = true;
+  azureError.value = null;
+  try {
+    azureRepos.value = await invoke<AzureRepo[]>("search_azure_repos", {
+      domain,
+      token,
+      query: azureSearch.value,
+    });
+  } catch (e) {
+    azureError.value = String(e);
+    azureRepos.value = [];
+  } finally {
+    azureLoading.value = false;
+  }
+}
+
+function selectAzureRepo(repo: AzureRepo) {
   cloneUrl.value = repo.clone_url_https;
 }
 
@@ -325,31 +465,64 @@ async function generateSshKey() {
 }
 
 watch(activeSource, (src) => {
-  if (src === "github" && githubRepos.value.length === 0 && props.token) {
+  if (src === "azure" && !azureDomain.value) {
+    azureDomain.value = getStoredAzureDomain();
+  }
+
+  if (src === "github" && githubRepos.value.length === 0 && isProviderConnected("github")) {
     doGithubSearch();
   }
-  if (src === "gitlab-self" && !needsConnection.value && gitlabRepos.value.length === 0) {
+  if ((src === "gitlab" || src === "gitlab-self") && !needsConnection.value && gitlabRepos.value.length === 0) {
     doGitlabSearch();
   }
-  if (src !== "gitlab-self") {
+  if (src === "bitbucket" && !needsConnection.value && bitbucketRepos.value.length === 0) {
+    doBitbucketSearch();
+  }
+  if (src === "azure" && !needsConnection.value && azureRepos.value.length === 0) {
+    doAzureSearch();
+  }
+
+  if (src !== "gitlab" && src !== "gitlab-self") {
     gitlabRepos.value = [];
     gitlabSearch.value = "";
     gitlabPublicKey.value = "";
     gitlabSshKeyGenerated.value = false;
   }
+
+  if (src !== "bitbucket") {
+    bitbucketRepos.value = [];
+    bitbucketSearch.value = "";
+    bitbucketError.value = null;
+  }
+
+  if (src !== "azure") {
+    azureRepos.value = [];
+    azureSearch.value = "";
+    azureError.value = null;
+  }
 });
 
 watch(needsConnection, (needs) => {
-  if (!needs && activeSource.value === "gitlab-self" && gitlabRepos.value.length === 0) {
+  if (!needs && (activeSource.value === "gitlab" || activeSource.value === "gitlab-self") && gitlabRepos.value.length === 0) {
     doGitlabSearch();
+  }
+  if (!needs && activeSource.value === "bitbucket" && bitbucketRepos.value.length === 0) {
+    doBitbucketSearch();
+  }
+  if (!needs && activeSource.value === "azure" && azureRepos.value.length === 0) {
+    doAzureSearch();
   }
 });
 
 const isUrlMode = computed(() => activeSource.value === "url");
 const isGithubMode = computed(() => activeSource.value === "github");
+const isGitlabMode = computed(() => activeSource.value === "gitlab" || activeSource.value === "gitlab-self");
 const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
+const isBitbucketMode = computed(() => activeSource.value === "bitbucket");
+const isAzureMode = computed(() => activeSource.value === "azure");
+const gitlabConnectionName = computed(() => (isGitlabSelfMode.value ? gitlabDomain.value : "gitlab.com"));
 
-const unimplementedProviders = new Set(["github-enterprise", "gitlab", "bitbucket", "bitbucket-dc", "azure"]);
+const unimplementedProviders = new Set(["github-enterprise", "bitbucket-dc"]);
 const isUnimplemented = computed(() => !!activeSource.value && unimplementedProviders.has(activeSource.value));
 </script>
 
@@ -441,7 +614,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             <div v-if="githubError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ githubError }}</div>
 
             <div class="flex-1 overflow-y-auto min-h-0 border border-[var(--border)] rounded-lg bg-[var(--background)]">
-              <div v-if="!token" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)] p-4 text-center">
+              <div v-if="!isProviderConnected('github')" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)] p-4 text-center">
                 No GitHub token configured.<br/>Go to Settings and add a Personal Access Token first.
               </div>
               <div v-else-if="!githubRepos.length && !githubLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
@@ -476,14 +649,14 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             </div>
           </template>
 
-          <template v-if="isGitlabSelfMode">
+          <template v-if="isGitlabMode">
             <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#e24329]/20">
                 <GitBranch class="w-8 h-8 text-[#e24329]" />
               </div>
-              <div class="text-sm text-[var(--foreground)] font-medium">Connect to GitLab Self-Hosted</div>
+              <div class="text-sm text-[var(--foreground)] font-medium">Connect to {{ isGitlabSelfMode ? 'GitLab Self-Hosted' : 'GitLab.com' }}</div>
               <p class="text-[10px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed">
-                Enter your GitLab instance domain and personal access token
+                {{ isGitlabSelfMode ? 'Enter your GitLab instance domain and personal access token' : 'Enter your GitLab personal access token' }}
               </p>
               <button @click="startTokenConnect" class="px-4 py-2 bg-[var(--primary)] text-white text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
                 <Key class="w-3.5 h-3.5" />
@@ -492,7 +665,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             </div>
 
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
-              <div class="flex items-center gap-3 flex-shrink-0">
+              <div v-if="isGitlabSelfMode" class="flex items-center gap-3 flex-shrink-0">
                 <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Domain</label>
                 <input
                   v-model="gitlabDomain"
@@ -514,10 +687,10 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
               <div v-if="gitlabError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ gitlabError }}</div>
               <div class="flex justify-end gap-2 mt-2">
                 <button @click="showTokenInput = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
-                <button @click="saveToken" :disabled="!tokenInput.trim() || !gitlabDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Connect</button>
+                <button @click="saveToken" :disabled="!tokenInput.trim() || (isGitlabSelfMode && !gitlabDomain.trim())" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Connect</button>
               </div>
               <p class="text-[9px] text-[var(--muted-foreground)] px-2">
-                Go to your GitLab → User Settings → Access Tokens → Create token with 'read_api' and 'read_repository' scopes.
+                {{ tokenInstructions[activeSource || 'gitlab'] }}
               </p>
             </div>
 
@@ -526,7 +699,6 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
                 <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
                 <div class="flex-1 relative">
                   <input
-                    ref="gitlabSearchInput"
                     v-model="gitlabSearch"
                     @input="onGitlabSearch"
                     placeholder="Search your repositories..."
@@ -538,18 +710,18 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
               <div class="flex items-center gap-2 px-2 flex-shrink-0">
                 <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
-                <span class="text-[10px] text-[#10b981]">Connected to {{ gitlabDomain }}</span>
-                <button v-if="!gitlabSshKeyGenerated && !gitlabPublicKey" @click="generateSshKey" class="ml-auto text-[10px] text-[var(--primary)] hover:underline flex items-center gap-1">
+                <span class="text-[10px] text-[#10b981]">Connected to {{ gitlabConnectionName }}</span>
+                <button v-if="isGitlabSelfMode && !gitlabSshKeyGenerated && !gitlabPublicKey" @click="generateSshKey" class="ml-auto text-[10px] text-[var(--primary)] hover:underline flex items-center gap-1">
                   <Key class="w-3 h-3" />
                   Generate SSH Key
                 </button>
-                <span v-else-if="gitlabSshKeyGenerated" class="ml-auto text-[10px] text-[#10b981] flex items-center gap-1">
+                <span v-else-if="isGitlabSelfMode && gitlabSshKeyGenerated" class="ml-auto text-[10px] text-[#10b981] flex items-center gap-1">
                   <Key class="w-3 h-3" />
                   SSH Key Added to GitLab
                 </span>
               </div>
 
-              <div v-if="gitlabPublicKey && !gitlabSshKeyGenerated" class="px-2 flex-shrink-0 space-y-1">
+              <div v-if="isGitlabSelfMode && gitlabPublicKey && !gitlabSshKeyGenerated" class="px-2 flex-shrink-0 space-y-1">
                 <div class="text-[10px] text-[var(--muted-foreground)]">Add this SSH key to your GitLab settings:</div>
                 <div class="relative">
                   <textarea
@@ -600,6 +772,188 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             </template>
           </template>
 
+          <template v-if="isBitbucketMode">
+            <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
+              <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#0052cc]/20">
+                <BitbucketIcon class="w-8 h-8 text-[#0052cc]" />
+              </div>
+              <div class="text-sm text-[var(--foreground)] font-medium">Connect to Bitbucket</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed">
+                {{ tokenInstructions.bitbucket }}
+              </p>
+              <button @click="startTokenConnect" class="px-4 py-2 bg-[var(--primary)] text-white text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
+                <Key class="w-3.5 h-3.5" />
+                Connect to Bitbucket
+              </button>
+            </div>
+
+            <div v-if="needsConnection && showTokenInput" class="space-y-3">
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</label>
+                <input
+                  v-model="tokenInput"
+                  type="password"
+                  placeholder="Bitbucket access token..."
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  @keyup.enter="saveToken"
+                  autofocus
+                />
+              </div>
+              <div v-if="bitbucketError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ bitbucketError }}</div>
+              <div class="flex justify-end gap-2 mt-2">
+                <button @click="showTokenInput = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+                <button @click="saveToken" :disabled="!tokenInput.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Connect</button>
+              </div>
+              <p class="text-[9px] text-[var(--muted-foreground)] px-2">{{ tokenInstructions.bitbucket }}</p>
+            </div>
+
+            <template v-if="!needsConnection">
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
+                <div class="flex-1 relative">
+                  <input
+                    v-model="bitbucketSearch"
+                    @input="onBitbucketSearch"
+                    placeholder="Search your repositories..."
+                    class="w-full px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
+                  <Loader2 v-if="bitbucketLoading" class="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-[var(--muted-foreground)]" />
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 px-2 flex-shrink-0">
+                <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
+                <span class="text-[10px] text-[#10b981]">Connected to Bitbucket</span>
+              </div>
+
+              <div v-if="bitbucketError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ bitbucketError }}</div>
+
+              <div class="flex-1 overflow-y-auto min-h-0 border border-[var(--border)] rounded-lg bg-[var(--background)]">
+                <div v-if="!bitbucketRepos.length && !bitbucketLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
+                  {{ bitbucketSearch ? 'No repos found' : 'Loading your repositories...' }}
+                </div>
+                <button
+                  v-for="repo in bitbucketRepos"
+                  :key="repo.full_name"
+                  @click="selectBitbucketRepo(repo)"
+                  :class="[
+                    'w-full text-left px-3 py-2.5 border-b border-[var(--border)] hover:bg-[var(--primary)]/10 transition-colors',
+                    cloneUrl === repo.clone_url_https ? 'bg-[var(--primary)]/15' : ''
+                  ]"
+                >
+                  <div class="flex items-center gap-2">
+                    <Lock v-if="repo.is_private" class="w-3 h-3 text-[#f59e0b] flex-shrink-0" />
+                    <BitbucketIcon v-else class="w-3 h-3 text-[#0052cc] flex-shrink-0" />
+                    <span class="text-xs text-[var(--foreground)] font-medium truncate">{{ repo.full_name }}</span>
+                  </div>
+                  <p v-if="repo.description" class="text-[10px] text-[var(--muted-foreground)] truncate mt-0.5 pl-5">{{ repo.description }}</p>
+                </button>
+              </div>
+
+              <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
+                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
+                <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
+                  {{ cloneUrl }}
+                </div>
+              </div>
+            </template>
+          </template>
+
+          <template v-if="isAzureMode">
+            <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
+              <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#0078d4]/20">
+                <AzureDevOpsIcon class="w-8 h-8 text-[#0078d4]" />
+              </div>
+              <div class="text-sm text-[var(--foreground)] font-medium">Connect to Azure DevOps</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed">
+                Enter your host domain and token (example host: dev.azure.com/myorg)
+              </p>
+              <button @click="startTokenConnect" class="px-4 py-2 bg-[var(--primary)] text-white text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
+                <Key class="w-3.5 h-3.5" />
+                Connect to Azure
+              </button>
+            </div>
+
+            <div v-if="needsConnection && showTokenInput" class="space-y-3">
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Host Domain</label>
+                <input
+                  v-model="azureDomain"
+                  placeholder="dev.azure.com/myorg"
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  autofocus
+                />
+              </div>
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</label>
+                <input
+                  v-model="tokenInput"
+                  type="password"
+                  placeholder="Azure DevOps PAT..."
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  @keyup.enter="saveToken"
+                />
+              </div>
+              <div v-if="azureError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ azureError }}</div>
+              <div class="flex justify-end gap-2 mt-2">
+                <button @click="showTokenInput = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+                <button @click="saveToken" :disabled="!tokenInput.trim() || !azureDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Connect</button>
+              </div>
+              <p class="text-[9px] text-[var(--muted-foreground)] px-2">{{ tokenInstructions.azure }}</p>
+            </div>
+
+            <template v-if="!needsConnection">
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
+                <div class="flex-1 relative">
+                  <input
+                    v-model="azureSearch"
+                    @input="onAzureSearch"
+                    placeholder="Search your repositories..."
+                    class="w-full px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
+                  <Loader2 v-if="azureLoading" class="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-[var(--muted-foreground)]" />
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 px-2 flex-shrink-0">
+                <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
+                <span class="text-[10px] text-[#10b981]">Connected to {{ azureDomain }}</span>
+              </div>
+
+              <div v-if="azureError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ azureError }}</div>
+
+              <div class="flex-1 overflow-y-auto min-h-0 border border-[var(--border)] rounded-lg bg-[var(--background)]">
+                <div v-if="!azureRepos.length && !azureLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
+                  {{ azureSearch ? 'No repos found' : 'Loading your repositories...' }}
+                </div>
+                <button
+                  v-for="repo in azureRepos"
+                  :key="repo.full_name"
+                  @click="selectAzureRepo(repo)"
+                  :class="[
+                    'w-full text-left px-3 py-2.5 border-b border-[var(--border)] hover:bg-[var(--primary)]/10 transition-colors',
+                    cloneUrl === repo.clone_url_https ? 'bg-[var(--primary)]/15' : ''
+                  ]"
+                >
+                  <div class="flex items-center gap-2">
+                    <Lock v-if="repo.is_private" class="w-3 h-3 text-[#f59e0b] flex-shrink-0" />
+                    <AzureDevOpsIcon v-else class="w-3 h-3 text-[#0078d4] flex-shrink-0" />
+                    <span class="text-xs text-[var(--foreground)] font-medium truncate">{{ repo.full_name }}</span>
+                  </div>
+                  <p v-if="repo.description" class="text-[10px] text-[var(--muted-foreground)] truncate mt-0.5 pl-5">{{ repo.description }}</p>
+                </button>
+              </div>
+
+              <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
+                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
+                <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
+                  {{ cloneUrl }}
+                </div>
+              </div>
+            </template>
+          </template>
+
           <template v-if="isUnimplemented">
             <div class="flex flex-col items-center justify-center py-12 gap-4">
               <div class="w-20 h-20 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '15' }">
@@ -619,7 +973,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             </div>
           </template>
 
-          <template v-if="!isUrlMode && !isGithubMode && !isGitlabSelfMode && !isUnimplemented && activeSource">
+          <template v-if="!isUrlMode && !isGithubMode && !isGitlabMode && !isBitbucketMode && !isAzureMode && !isUnimplemented && activeSource">
             <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '20' }">
                 <component :is="sources.find(s => s.id === activeSource)?.icon" class="w-8 h-8" :style="{ color: sources.find(s => s.id === activeSource)?.color }" />

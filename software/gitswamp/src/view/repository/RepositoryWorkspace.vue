@@ -15,6 +15,7 @@ import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types"
 
 type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
+type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 
 const props = defineProps<{
   git: any;
@@ -53,7 +54,7 @@ const emit = defineEmits<{
   conflictResolved: [];
   openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean }];
   openConflictResolver: [filePath: string];
-  selectCommit: [commit: CommitInfo | null];
+  selectCommit: [payload: CommitSelectionPayload];
   selectWorkingChanges: [];
   selectConflicts: [];
   selectStash: [stash: StashInfo];
@@ -82,13 +83,16 @@ const hasWorkingChanges = computed(
 );
 
 const hasConflicts = computed(() => props.git.hasConflicts.value);
+const selectedCommitCount = computed(() => props.git.selectedCommits.value.length);
 
 const showDetailsPanel = computed(
   () => props.historyViewMode === "graph"
-    && (props.viewingWorkingChanges || props.viewingStash || props.git.selectedCommit.value !== null),
+    && (props.viewingWorkingChanges || props.viewingStash || selectedCommitCount.value > 0 || props.git.selectedCommit.value !== null),
 );
 
 const canAmendSelectedCommit = computed(() => {
+  if (selectedCommitCount.value !== 1) return false;
+
   const selected = props.git.selectedCommit.value;
   const branch = props.git.currentBranch.value;
   if (!selected || !branch) return false;
@@ -227,7 +231,7 @@ async function handleJumpToSearchResult(sha: string) {
 
   const target = props.git.commits.value.find((commit: CommitInfo) => commit.sha === sha) ?? null;
   if (target) {
-    emit("selectCommit", target);
+    emit("selectCommit", { commit: target, additive: false });
   }
 }
 
@@ -323,6 +327,7 @@ function handleRefreshState() {
           :repo-path="props.git.repoPath.value"
           :commits="props.git.displayedCommits.value"
           :selected="props.git.selectedCommit.value"
+          :selected-shas="props.git.selectedCommits.value.map((commit: CommitInfo) => commit.sha)"
           :search-query="props.git.searchQuery.value"
           :search-results="props.git.searchResults.value"
           :has-working-changes="hasWorkingChanges"
@@ -440,6 +445,7 @@ function handleRefreshState() {
           <CommitDetails
             v-show="!props.detailsPanelCollapsed"
             :commit="props.git.selectedCommit.value"
+            :selected-commits="props.git.selectedCommits.value"
             :can-amend-selected-commit="canAmendSelectedCommit"
             :staged-files="props.git.stagedFiles.value"
             :unstaged-files="props.git.unstagedFiles.value"

@@ -90,6 +90,16 @@ pub fn search_gitlab_repos(domain: String, token: String, query: String) -> Resu
 }
 
 #[tauri::command]
+pub fn search_bitbucket_repos(token: String, query: String) -> Result<Vec<crate::models::BitbucketRepo>, String> {
+    crate::services::git_service::GitService::search_bitbucket_repos(&token, &query)
+}
+
+#[tauri::command]
+pub fn search_azure_repos(domain: String, token: String, query: String) -> Result<Vec<crate::models::AzureRepo>, String> {
+    crate::services::git_service::GitService::search_azure_repos(&domain, &token, &query)
+}
+
+#[tauri::command]
 pub fn generate_ssh_key(email: String, key_name: String) -> Result<(String, String), String> {
     crate::services::git_service::GitService::generate_ssh_key(&email, &key_name)
 }

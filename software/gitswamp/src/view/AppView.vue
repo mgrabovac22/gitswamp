@@ -26,7 +26,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
-import type { RepoInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
+import type { RepoInfo, CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 const git = useGit();
 const toast = useToast();
@@ -92,6 +92,7 @@ interface Tab {
 
 type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
+type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 
 const tabs = ref<Tab[]>([
   { id: "landing", repo: null, label: "Start", path: "" },
@@ -154,12 +155,13 @@ let pullRequestFetchSequence = 0;
 let pullRequestFetchTimer: ReturnType<typeof setTimeout> | null = null;
 
 const showAuthRequiredDialog = ref(false);
-const authProvider = ref<"github" | "gitlab" | "gitlab-self">("github");
+const authProvider = ref<"github" | "gitlab" | "gitlab-self" | "bitbucket" | "azure">("github");
 const authTokenInput = ref("");
 const authDomainInput = ref("");
 const authEmailInput = ref("");
 const authKeyNameInput = ref("gitswamp");
 const authSubmitting = ref(false);
+let multiCommitFilesRunToken = 0;
 
 function normalizeLogMessage(value: string): string {
   const flattened = value.replace(/\s+/g, " ").trim();
@@ -181,6 +183,11 @@ function appendLog(target: "app" | "user" | "error", message: string) {
   if (bucket.value.length > MAX_LOG_ROWS) {
     bucket.value.splice(0, bucket.value.length - MAX_LOG_ROWS);
   }
+
+  invoke("append_app_log", {
+    channel: target,
+    message: row,
+  }).catch(() => {});
 }
 
 function openLogsPanel() {
@@ -302,6 +309,37 @@ function normalizeHostInput(value: string): string {
   }
 }
 
+function normalizeAzureDomainInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    const host = parsed.host.toLowerCase();
+    const pathSegments = parsed.pathname.split("/");
+    const firstPathSegment = pathSegments.find((segment) => segment.length > 0) || "";
+    if (host === "dev.azure.com") {
+      const organization = firstPathSegment;
+      return organization ? `${host}/${organization.toLowerCase()}` : host;
+    }
+    return host;
+  } catch {
+    const withoutProtocol = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    const parts = withoutProtocol.split("/");
+    const hostPart = parts.find((segment) => segment.trim().length > 0) || "";
+    if (!hostPart) return "";
+    const hostPartLower = hostPart.toLowerCase();
+    if (hostPartLower === "dev.azure.com") {
+      const orgPart = parts.find((segment, index) => index > 0 && segment.trim().length > 0) || "";
+      return orgPart
+        ? `${hostPartLower}/${orgPart.toLowerCase()}`
+        : hostPartLower;
+    }
+    return hostPartLower;
+  }
+}
+
 function parseStoredGitlabSelfToken(): { domain: string; token: string } | null {
   const raw = git.providerTokens.value["gitlab-self"];
   if (!raw) return null;
@@ -335,10 +373,18 @@ function remoteMatchesDomain(host: string, hostWithPort: string, domainRaw: stri
   return domainHostOnly === hostOnly || domainHostOnly === hostWithPortOnly;
 }
 
-function detectAuthProviderFromOrigin(): "github" | "gitlab" | "gitlab-self" {
+function detectAuthProviderFromOrigin(): "github" | "gitlab" | "gitlab-self" | "bitbucket" | "azure" {
   const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url || "";
   const originLower = origin.toLowerCase();
   const parsed = parseRemoteHostAndPath(origin);
+
+  if ((parsed?.host || "") === "bitbucket.org" || originLower.includes("bitbucket.org") || (parsed?.host || "").includes("bitbucket.")) {
+    return "bitbucket";
+  }
+
+  if ((parsed?.host || "") === "dev.azure.com" || originLower.includes("dev.azure.com") || (parsed?.host || "").endsWith("visualstudio.com")) {
+    return "azure";
+  }
 
   if ((parsed?.host || "") === "gitlab.com" || originLower.includes("gitlab.com")) {
     return "gitlab";
@@ -354,6 +400,24 @@ function detectAuthProviderFromOrigin(): "github" | "gitlab" | "gitlab-self" {
   }
 
   return "github";
+}
+
+function parseAzureDomainFromOrigin(): string {
+  const origin = git.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url || "";
+  const parsed = parseRemoteHostAndPath(origin);
+  if (!parsed) return "";
+
+  if (parsed.host === "dev.azure.com") {
+    const pathSegments = parsed.path.split("/");
+    const firstPath = pathSegments.find((segment) => segment.length > 0) || "";
+    return firstPath ? `${parsed.host}/${firstPath}` : parsed.host;
+  }
+
+  if (parsed.host.endsWith("visualstudio.com")) {
+    return parsed.host;
+  }
+
+  return "";
 }
 
 function parseAuthDomainFromOrigin(): string {
@@ -956,7 +1020,13 @@ function isAuthenticationRequiredError(message: string | null | undefined): bool
 function maybeShowAuthDialogFromGitError() {
   if (!isAuthenticationRequiredError(git.error.value)) return;
   authProvider.value = detectAuthProviderFromOrigin();
-  authDomainInput.value = authProvider.value === "gitlab-self" ? parseAuthDomainFromOrigin() : "";
+  if (authProvider.value === "gitlab-self") {
+    authDomainInput.value = parseAuthDomainFromOrigin();
+  } else if (authProvider.value === "azure") {
+    authDomainInput.value = parseAzureDomainFromOrigin();
+  } else {
+    authDomainInput.value = "";
+  }
   authTokenInput.value = "";
   showAuthRequiredDialog.value = true;
 }
@@ -1031,6 +1101,8 @@ function setHistoryViewMode(mode: HistoryViewMode) {
     viewingWorkingChanges.value = false;
     viewingStash.value = false;
     git.selectedCommit.value = null;
+    git.selectedCommits.value = [];
+    git.selectedCommitFiles.value = [];
     git.clearStashSelection();
   }
 
@@ -1305,6 +1377,9 @@ watch(
     git.providerTokens.value.github || git.githubToken.value || "",
     git.providerTokens.value.gitlab || "",
     git.providerTokens.value["gitlab-self"] || "",
+    git.providerTokens.value.bitbucket || "",
+    git.providerTokens.value.azure || "",
+    git.providerTokens.value["azure-domain"] || "",
   ],
   () => {
     scheduleOpenPullRequestRefresh();
@@ -1313,9 +1388,16 @@ watch(
 );
 
 watch(() => git.selectedCommit.value, (commit) => {
+  if (git.selectedCommits.value.length > 1) {
+    return;
+  }
+
   if (commit) {
     viewingWorkingChanges.value = false;
+    git.selectedCommits.value = [commit];
     git.getCommitFiles(commit.sha);
+  } else if (git.selectedCommits.value.length <= 1) {
+    git.selectedCommits.value = [];
   }
 });
 
@@ -1368,6 +1450,8 @@ async function openRepo(path: string) {
         tab.path = repo.path;
       }
       addToRecent(repo);
+      git.selectedCommits.value = [];
+      git.selectedCommitFiles.value = [];
       if (git.stagedFiles.value.length > 0 || git.unstagedFiles.value.length > 0) {
         viewingWorkingChanges.value = true;
         git.selectedCommit.value = null;
@@ -1453,8 +1537,8 @@ async function handlePush() {
 }
 
 function handleMultiPlatformPush(platform: string) {
-  // For GitHub/GitLab and self-hosted, ask for username and domain first
-  if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted' || platform === 'gitlab-self') {
+  // For hosted platforms, ask for owner/workspace first. Azure additionally needs host domain.
+  if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted' || platform === 'gitlab-self' || platform === 'bitbucket' || platform === 'azure') {
     pushPlatform.value = platform;
     pushUsername.value = "";
     pushDomain.value = "";
@@ -1467,7 +1551,7 @@ function handleMultiPlatformPush(platform: string) {
 
 async function performPush(platform: string, username: string) {
   let repoName: string;
-  const needsDomain = platform === "gitlab-self-hosted" || platform === "gitlab-self" || platform === "github-enterprise";
+  const needsDomain = platform === "gitlab-self-hosted" || platform === "gitlab-self" || platform === "github-enterprise" || platform === "azure";
   
   if (username) {
     if (needsDomain) {
@@ -1505,6 +1589,18 @@ async function saveAuthToken() {
       await git.saveProviderToken("github", token);
     } else if (authProvider.value === "gitlab") {
       await git.saveProviderToken("gitlab", token);
+    } else if (authProvider.value === "bitbucket") {
+      await git.saveProviderToken("bitbucket", token);
+    } else if (authProvider.value === "azure") {
+      const domainRaw = authDomainInput.value;
+      const domainClean = normalizeAzureDomainInput(domainRaw);
+      if (!domainClean) {
+        toast.error("Host domain is required for Azure DevOps");
+        return;
+      }
+      authDomainInput.value = domainClean;
+      await git.saveProviderToken("azure", token);
+      await git.saveProviderToken("azure-domain", domainClean);
     } else {
         const domainRaw = authDomainInput.value;
         const domainClean = normalizeHostInput(domainRaw);
@@ -1585,10 +1681,118 @@ function clearRecent() {
   recentRepos.value = [];
 }
 
-function onSelectCommit(commit: CommitInfo | null) {
+function normalizeCommitSelectionPayload(payload: CommitSelectionPayload): { commit: CommitInfo | null; additive: boolean } {
+  if (payload && typeof payload === "object" && "commit" in payload) {
+    return {
+      commit: payload.commit,
+      additive: !!payload.additive,
+    };
+  }
+
+  return {
+    commit: (payload as CommitInfo | null) || null,
+    additive: false,
+  };
+}
+
+function mergeCommitFileStatus(currentStatus: string, nextStatus: string): string {
+  const priority: Record<string, number> = {
+    conflicted: 6,
+    deleted: 5,
+    renamed: 4,
+    modified: 3,
+    added: 2,
+    new: 2,
+  };
+
+  const current = priority[currentStatus] || 1;
+  const next = priority[nextStatus] || 1;
+  return next >= current ? nextStatus : currentStatus;
+}
+
+async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
+  if (!git.repoPath.value || commits.length <= 1) {
+    return;
+  }
+
+  const runToken = ++multiCommitFilesRunToken;
+  const sorted = [...commits].sort((a, b) => b.timestamp - a.timestamp);
+
+  const responses = await Promise.all(
+    sorted.map(async (commit) => {
+      try {
+        const files = await invoke<CommitFileInfo[]>("get_commit_files", {
+          path: git.repoPath.value,
+          sha: commit.sha,
+        });
+        return { sha: commit.sha, files };
+      } catch {
+        return { sha: commit.sha, files: [] as CommitFileInfo[] };
+      }
+    }),
+  );
+
+  if (runToken !== multiCommitFilesRunToken) {
+    return;
+  }
+
+  const byPath = new Map<string, CommitFileInfo>();
+  for (const response of responses) {
+    for (const file of response.files) {
+      const existing = byPath.get(file.path);
+      if (!existing) {
+        byPath.set(file.path, {
+          ...file,
+          commit_shas: [response.sha],
+        });
+        continue;
+      }
+
+      existing.additions += file.additions;
+      existing.deletions += file.deletions;
+      existing.status = mergeCommitFileStatus(existing.status, file.status);
+
+      const hashes = existing.commit_shas || [];
+      if (!hashes.includes(response.sha)) {
+        hashes.push(response.sha);
+      }
+      existing.commit_shas = hashes;
+    }
+  }
+
+  git.selectedCommitFiles.value = Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function onSelectCommit(payload: CommitSelectionPayload) {
+  const { commit, additive } = normalizeCommitSelectionPayload(payload);
   viewingWorkingChanges.value = false;
   viewingStash.value = false;
-  git.selectedCommit.value = commit;
+
+  let nextSelection: CommitInfo[] = [];
+  if (additive && commit) {
+    const alreadySelected = git.selectedCommits.value.some((item) => item.sha === commit.sha);
+    if (alreadySelected) {
+      nextSelection = git.selectedCommits.value.filter((item) => item.sha !== commit.sha);
+    } else {
+      nextSelection = [...git.selectedCommits.value, commit];
+    }
+  } else if (commit) {
+    nextSelection = [commit];
+  }
+
+  git.selectedCommits.value = nextSelection;
+  git.selectedCommit.value = nextSelection.length === 1 ? nextSelection[0] : null;
+
+  if (nextSelection.length === 0) {
+    multiCommitFilesRunToken += 1;
+    git.selectedCommitFiles.value = [];
+  } else if (nextSelection.length === 1) {
+    multiCommitFilesRunToken += 1;
+    await git.getCommitFiles(nextSelection[0].sha);
+  } else {
+    await loadAggregatedSelectedCommitFiles(nextSelection);
+  }
+
   git.clearStashSelection();
   detailsPanelCollapsed.value = false;
 }
@@ -1605,6 +1809,8 @@ function selectWorkingChangesState() {
   viewingWorkingChanges.value = true;
   viewingStash.value = false;
   git.selectedCommit.value = null;
+  git.selectedCommits.value = [];
+  git.selectedCommitFiles.value = [];
   git.clearStashSelection();
   detailsPanelCollapsed.value = false;
 }
@@ -1613,6 +1819,8 @@ function onSelectStash(stash: StashInfo) {
   viewingWorkingChanges.value = false;
   viewingStash.value = true;
   git.selectedCommit.value = null;
+  git.selectedCommits.value = [];
+  git.selectedCommitFiles.value = [];
   git.selectStash(stash);
   detailsPanelCollapsed.value = false;
 }

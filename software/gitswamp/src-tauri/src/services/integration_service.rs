@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::os::windows::process::CommandExt;
 
 use crate::constants::{
-    API_GITHUB_LIST_REPOS, API_GITHUB_SEARCH_REPOS, API_GITLAB_BASE_PATH,
-    API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT,
+    API_AZURE_REPOS_PATH, API_BITBUCKET_LIST_REPOS, API_GITHUB_LIST_REPOS,
+    API_GITHUB_SEARCH_REPOS, API_GITLAB_BASE_PATH, API_GITLAB_USER_KEYS_PATH,
+    API_GITLAB_USER_PATH, APP_USER_AGENT, AZURE_HOST, AZURE_LEGACY_HOST,
     GITHUB_ACCEPT_HEADER, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
 };
-use crate::models::{GithubRepo, GitlabRepo};
+use crate::models::{AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo};
 use crate::services::helpers::urlencoded;
 
 #[cfg(windows)]
@@ -18,6 +19,106 @@ use crate::constants::CREATE_NO_WINDOW;
 pub struct IntegrationService;
 
 impl IntegrationService {
+    fn base64_encode(data: &[u8]) -> String {
+        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut result = String::new();
+        for chunk in data.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+            let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+            let triple = (b0 << 16) | (b1 << 8) | b2;
+            result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+            result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+            if chunk.len() > 1 {
+                result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+            } else {
+                result.push('=');
+            }
+            if chunk.len() > 2 {
+                result.push(CHARS[(triple & 0x3F) as usize] as char);
+            } else {
+                result.push('=');
+            }
+        }
+        result
+    }
+
+    fn basic_auth_header(username: &str, password: &str) -> String {
+        let payload = format!("{}:{}", username, password);
+        let encoded = Self::base64_encode(payload.as_bytes());
+        format!("Basic {}", encoded)
+    }
+
+    fn azure_api_base_url(domain: &str) -> Result<String, String> {
+        let trimmed = domain.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            return Err("Azure host domain is required (for example: dev.azure.com/myorg)".to_string());
+        }
+
+        let without_scheme = trimmed
+            .strip_prefix("https://")
+            .or_else(|| trimmed.strip_prefix("http://"))
+            .unwrap_or(trimmed);
+
+        let mut split = without_scheme.splitn(2, '/');
+        let host = split
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        let raw_path = split.next().unwrap_or_default().trim_matches('/');
+
+        if host.is_empty() {
+            return Err("Azure host domain is required (for example: dev.azure.com/myorg)".to_string());
+        }
+
+        if host == AZURE_HOST {
+            let organization = raw_path
+                .split('/')
+                .next()
+                .unwrap_or_default()
+                .trim();
+            if organization.is_empty() {
+                return Err("Azure DevOps URL must include organization, for example: dev.azure.com/myorg".to_string());
+            }
+
+            return Ok(format!("{}{}/{}", HTTPS_SCHEME, host, organization));
+        }
+
+        if host.ends_with(AZURE_LEGACY_HOST) {
+            return Ok(format!("{}{}", HTTPS_SCHEME, host));
+        }
+
+        if raw_path.is_empty() {
+            Ok(format!("{}{}", HTTPS_SCHEME, host))
+        } else {
+            Ok(format!("{}{}/{}", HTTPS_SCHEME, host, raw_path))
+        }
+    }
+
+    fn extract_bitbucket_clone_urls(item: &serde_json::Value) -> (Option<String>, Option<String>) {
+        let mut https_url: Option<String> = None;
+        let mut ssh_url: Option<String> = None;
+
+        if let Some(clones) = item["links"]["clone"].as_array() {
+            for clone in clones {
+                let clone_name = clone["name"].as_str().unwrap_or_default().to_lowercase();
+                let href = clone["href"].as_str().unwrap_or_default().to_string();
+                if href.trim().is_empty() {
+                    continue;
+                }
+
+                if clone_name == "https" && https_url.is_none() {
+                    https_url = Some(href);
+                } else if clone_name == "ssh" && ssh_url.is_none() {
+                    ssh_url = Some(href);
+                }
+            }
+        }
+
+        (https_url, ssh_url)
+    }
+
     pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
         let url = if query.is_empty() {
             API_GITHUB_LIST_REPOS.to_string()
@@ -98,6 +199,103 @@ impl IntegrationService {
                 })
             })
             .collect();
+        Ok(repos)
+    }
+
+    pub fn search_bitbucket_repos(token: &str, query: &str) -> Result<Vec<BitbucketRepo>, String> {
+        let mut url = API_BITBUCKET_LIST_REPOS.to_string();
+        if !query.trim().is_empty() {
+            url.push_str("&q=name~\"");
+            url.push_str(&urlencoded(query.trim()));
+            url.push('"');
+        }
+
+        let resp = ureq::get(&url)
+            .set("Authorization", &format!("Bearer {}", token))
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("Bitbucket API error: {}", e))?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let items = body["values"].as_array().cloned().unwrap_or_default();
+        let repos = items
+            .iter()
+            .filter_map(|item| {
+                let (clone_url_https, clone_url_ssh) = Self::extract_bitbucket_clone_urls(item);
+                Some(BitbucketRepo {
+                    full_name: item["full_name"].as_str()?.to_string(),
+                    clone_url_ssh: clone_url_ssh.unwrap_or_default(),
+                    clone_url_https: clone_url_https?,
+                    description: item["description"].as_str().unwrap_or("").to_string(),
+                    is_private: item["is_private"].as_bool().unwrap_or(true),
+                    stars: 0,
+                })
+            })
+            .collect();
+
+        Ok(repos)
+    }
+
+    pub fn search_azure_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Vec<AzureRepo>, String> {
+        let base_url = Self::azure_api_base_url(domain)?;
+        let url = format!("{}{}", base_url, API_AZURE_REPOS_PATH);
+        let query_lower = query.trim().to_lowercase();
+
+        let resp = ureq::get(&url)
+            .set("Authorization", &Self::basic_auth_header("pat", token))
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("Azure DevOps API error: {}", e))?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let items = body["value"].as_array().cloned().unwrap_or_default();
+        let repos = items
+            .iter()
+            .filter_map(|item| {
+                let repo_name = item["name"].as_str()?.to_string();
+                let project_name = item["project"]["name"].as_str().unwrap_or("").to_string();
+                let full_name = if project_name.is_empty() {
+                    repo_name.clone()
+                } else {
+                    format!("{}/{}", project_name, repo_name)
+                };
+
+                let desc = item["description"].as_str().unwrap_or("").to_string();
+                if !query_lower.is_empty() {
+                    let haystack = format!("{} {} {}", full_name, repo_name, desc).to_lowercase();
+                    if !haystack.contains(&query_lower) {
+                        return None;
+                    }
+                }
+
+                let visibility = item["project"]["visibility"]
+                    .as_str()
+                    .unwrap_or("private")
+                    .to_lowercase();
+
+                Some(AzureRepo {
+                    full_name,
+                    clone_url_ssh: item["sshUrl"].as_str().unwrap_or("").to_string(),
+                    clone_url_https: item["remoteUrl"].as_str()?.to_string(),
+                    description: desc,
+                    is_private: visibility != "public",
+                    stars: 0,
+                })
+            })
+            .collect();
+
         Ok(repos)
     }
 
