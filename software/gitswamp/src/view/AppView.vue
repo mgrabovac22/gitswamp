@@ -23,6 +23,7 @@ import { useToast } from "@/shared/notifications/useToast";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
@@ -65,14 +66,7 @@ if (savedShowDiffLineNumbers === "false") {
   document.documentElement.classList.add("hide-diff-line-numbers");
 }
 
-const STARTUP_FULLSCREEN_KEY = "gitswamp-fullscreen-on-start";
 const RESTORE_SESSION_KEY = "gitswamp-restore-session";
-
-function shouldStartMaximized(): boolean {
-  const saved = localStorage.getItem(STARTUP_FULLSCREEN_KEY);
-  if (saved === null) return true;
-  return saved !== "false";
-}
 
 function shouldRestoreSession(): boolean {
   const saved = localStorage.getItem(RESTORE_SESSION_KEY);
@@ -93,6 +87,20 @@ interface Tab {
 type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
+
+interface CloneProgressEventPayload {
+  url: string;
+  destination: string;
+  phase: string;
+  percent: number;
+  message: string;
+  received_objects: number;
+  total_objects: number;
+  indexed_objects: number;
+  received_bytes: number;
+  indexed_deltas: number;
+  total_deltas: number;
+}
 
 const tabs = ref<Tab[]>([
   { id: "landing", repo: null, label: "Start", path: "" },
@@ -162,6 +170,7 @@ const authEmailInput = ref("");
 const authKeyNameInput = ref("gitswamp");
 const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
+let singleCommitLoadSha: string | null = null;
 
 function normalizeLogMessage(value: string): string {
   const flattened = value.replace(/\s+/g, " ").trim();
@@ -1307,12 +1316,10 @@ onMounted(() => {
     }
   }
 
-  if (shouldStartMaximized()) {
+  appWindow.maximize().catch(() => {});
+  setTimeout(() => {
     appWindow.maximize().catch(() => {});
-    setTimeout(() => {
-      appWindow.maximize().catch(() => {});
-    }, 120);
-  }
+  }, 120);
 
 });
 
@@ -1395,7 +1402,8 @@ watch(() => git.selectedCommit.value, (commit) => {
   if (commit) {
     viewingWorkingChanges.value = false;
     git.selectedCommits.value = [commit];
-    git.getCommitFiles(commit.sha);
+    git.selectedCommitFiles.value = [];
+    void loadSingleSelectedCommitFiles(commit);
   } else if (git.selectedCommits.value.length <= 1) {
     git.selectedCommits.value = [];
   }
@@ -1479,22 +1487,62 @@ async function browseAndOpen() {
   } catch {}
 }
 
+function formatCloneProgressDetail(payload: CloneProgressEventPayload): string {
+  if (payload.total_objects > 0) {
+    const completedObjects = Math.max(payload.received_objects, payload.indexed_objects);
+    const transferredMb = (payload.received_bytes / (1024 * 1024)).toFixed(1);
+    return `${payload.phase}: ${completedObjects}/${payload.total_objects} objects | ${transferredMb} MB`;
+  }
+
+  return payload.message || "Preparing clone...";
+}
+
 async function handleClone(url: string, path: string, shallow: boolean, done?: (ok: boolean, error?: string) => void) {
+  const progressToastId = toast.progress("Cloning repository...", 0, "Preparing clone...");
+  const normalizedUrl = url.trim().toLowerCase();
+  let unlistenCloneProgress: UnlistenFn | null = null;
+
   try {
-    toast.info("Cloning repository...");
+    unlistenCloneProgress = await listen<CloneProgressEventPayload>("clone-progress", (event) => {
+      const payload = event.payload;
+      if (!payload || payload.url.trim().toLowerCase() !== normalizedUrl) {
+        return;
+      }
+
+      toast.update(progressToastId, {
+        message: "Cloning repository...",
+        detail: formatCloneProgressDetail(payload),
+        progress: payload.percent,
+      });
+    });
+
     const clonedPath = await git.cloneRepo(url, path, shallow);
     if (!clonedPath) {
+      toast.remove(progressToastId);
       done?.(false, git.error.value || "Clone failed.");
       toast.error("Clone failed: " + (git.error.value || "Unknown error"));
       return;
     }
+    toast.update(progressToastId, {
+      message: "Cloning repository...",
+      detail: "Clone completed.",
+      progress: 100,
+    });
+    setTimeout(() => {
+      toast.remove(progressToastId);
+    }, 1100);
     showCloneDialog.value = false;
     await openRepo(clonedPath);
     done?.(true);
     toast.success("Repository cloned successfully");
   } catch (e) {
+    toast.remove(progressToastId);
     done?.(false, String(e));
     toast.error("Clone failed: " + String(e));
+  } finally {
+    if (unlistenCloneProgress) {
+      unlistenCloneProgress();
+    }
   }
 }
 
@@ -1763,6 +1811,47 @@ async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
   git.selectedCommitFiles.value = Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
 }
 
+async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
+  if (!git.repoPath.value) {
+    git.selectedCommitFiles.value = [];
+    return;
+  }
+
+  if (singleCommitLoadSha === commit.sha) {
+    return;
+  }
+
+  singleCommitLoadSha = commit.sha;
+  const runToken = ++multiCommitFilesRunToken;
+  let files: CommitFileInfo[] = [];
+
+  try {
+    try {
+      files = await invoke<CommitFileInfo[]>("get_commit_files", {
+        path: git.repoPath.value,
+        sha: commit.sha,
+      });
+    } catch {
+      files = [];
+    }
+
+    if (runToken !== multiCommitFilesRunToken) {
+      return;
+    }
+
+    const stillSelected = git.selectedCommits.value.length === 1 && git.selectedCommits.value[0]?.sha === commit.sha;
+    if (!stillSelected) {
+      return;
+    }
+
+    git.selectedCommitFiles.value = files;
+  } finally {
+    if (singleCommitLoadSha === commit.sha) {
+      singleCommitLoadSha = null;
+    }
+  }
+}
+
 async function onSelectCommit(payload: CommitSelectionPayload) {
   const { commit, additive } = normalizeCommitSelectionPayload(payload);
   viewingWorkingChanges.value = false;
@@ -1787,8 +1876,8 @@ async function onSelectCommit(payload: CommitSelectionPayload) {
     multiCommitFilesRunToken += 1;
     git.selectedCommitFiles.value = [];
   } else if (nextSelection.length === 1) {
-    multiCommitFilesRunToken += 1;
-    await git.getCommitFiles(nextSelection[0].sha);
+    git.selectedCommitFiles.value = [];
+    await loadSingleSelectedCommitFiles(nextSelection[0]);
   } else {
     await loadAggregatedSelectedCommitFiles(nextSelection);
   }
@@ -1806,6 +1895,7 @@ function onSelectConflicts() {
 }
 
 function selectWorkingChangesState() {
+  multiCommitFilesRunToken += 1;
   viewingWorkingChanges.value = true;
   viewingStash.value = false;
   git.selectedCommit.value = null;
@@ -1816,6 +1906,7 @@ function selectWorkingChangesState() {
 }
 
 function onSelectStash(stash: StashInfo) {
+  multiCommitFilesRunToken += 1;
   viewingWorkingChanges.value = false;
   viewingStash.value = true;
   git.selectedCommit.value = null;

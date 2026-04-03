@@ -172,7 +172,7 @@ src/
     - Item count display
     - Expand/collapse chevron icon
     - Click handler for toggle events
-    - Smooth animations
+    - auto animations
 
 11. **Repository Action & Auth Dialogs**
     - **CloneDialog.vue**: Clone repository from URL

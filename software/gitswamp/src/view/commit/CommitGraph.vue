@@ -416,7 +416,7 @@ function isSearchMatch(sha: string): boolean {
   return searchMatchSet.value.has(sha);
 }
 
-function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "smooth"): boolean {
+function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "auto"): boolean {
   const idx = activeCommits.value.findIndex((commit) => commit.sha === sha);
   if (idx < 0 || !scrollContainer.value) return false;
   const top = Math.max(0, idx * rowHeight.value + wcOffset.value - rowHeight.value * 2);
@@ -424,7 +424,7 @@ function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "smooth"): bo
   return true;
 }
 
-function selectSearchCommit(sha: string, behavior: ScrollBehavior = "smooth"): boolean {
+function selectSearchCommit(sha: string, behavior: ScrollBehavior = "auto"): boolean {
   const commit = activeCommits.value.find((item) => item.sha === sha);
   if (!commit) return false;
   emit("select", { commit, additive: false });
@@ -432,7 +432,7 @@ function selectSearchCommit(sha: string, behavior: ScrollBehavior = "smooth"): b
   return true;
 }
 
-function focusSearchResultAt(index: number, behavior: ScrollBehavior = "smooth") {
+function focusSearchResultAt(index: number, behavior: ScrollBehavior = "auto") {
   const total = searchResultCount.value;
   if (total === 0) return;
   const normalized = ((index % total) + total) % total;
@@ -734,7 +734,7 @@ function onBranchDragStart(event: DragEvent, ref: DisplayRef) {
   dragBranch.value = { name: ref.name, remote: !!ref.remote && !ref.local };
   dropTargetBranch.value = null;
   if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.effectAllowed = "copy";
     event.dataTransfer.setData("text/plain", ref.name);
   }
 }
@@ -744,17 +744,39 @@ function onBranchDragEnd() {
   dropTargetBranch.value = null;
 }
 
+function canDropOnBranchName(targetBranch: string): boolean {
+  const dragged = dragBranch.value;
+  if (!dragged) return false;
+  return dragged.name !== targetBranch;
+}
+
+function setDropEffect(event: DragEvent, canDrop: boolean) {
+  if (!event.dataTransfer) return;
+  event.dataTransfer.dropEffect = canDrop ? "copy" : "none";
+}
+
 function onBranchDragOver(event: DragEvent, ref: DisplayRef) {
   if (ref.kind !== "branch") return;
-  event.preventDefault();
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = "move";
+
+  const canDrop = canDropOnBranchName(ref.name);
+  setDropEffect(event, canDrop);
+  if (!canDrop) {
+    if (dropTargetBranch.value === ref.name) {
+      dropTargetBranch.value = null;
+    }
+    return;
   }
+
+  event.preventDefault();
   dropTargetBranch.value = ref.name;
 }
 
 function onBranchDrop(event: DragEvent, ref: DisplayRef) {
   if (ref.kind !== "branch") return;
+  if (!canDropOnBranchName(ref.name)) {
+    onBranchDragEnd();
+    return;
+  }
   event.preventDefault();
   const dragged = dragBranch.value;
   dropTargetBranch.value = null;
@@ -772,11 +794,21 @@ function preferredDropTarget(commit: CommitInfo): DisplayRef | null {
 
 function onBranchColumnDragOver(event: DragEvent, commit: CommitInfo) {
   const target = preferredDropTarget(commit);
-  if (!target) return;
-  event.preventDefault();
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = "move";
+  if (!target) {
+    dropTargetBranch.value = null;
+    return;
   }
+
+  const canDrop = canDropOnBranchName(target.name);
+  setDropEffect(event, canDrop);
+  if (!canDrop) {
+    if (dropTargetBranch.value === target.name) {
+      dropTargetBranch.value = null;
+    }
+    return;
+  }
+
+  event.preventDefault();
   dropTargetBranch.value = target.name;
 }
 
@@ -791,7 +823,10 @@ function onBranchColumnDragLeave(event: DragEvent) {
 
 function onBranchColumnDrop(event: DragEvent, commit: CommitInfo) {
   const target = preferredDropTarget(commit);
-  if (!target) return;
+  if (!target || !canDropOnBranchName(target.name)) {
+    onBranchDragEnd();
+    return;
+  }
   event.preventDefault();
   const dragged = dragBranch.value;
   onBranchDragEnd();
@@ -812,9 +847,8 @@ function onCommitRowDrop(event: DragEvent, commit: CommitInfo) {
 function onGraphDragOver(event: DragEvent) {
   if (!dragBranch.value) return;
   event.preventDefault();
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = "move";
-  }
+  const canDrop = !!dropTargetBranch.value && canDropOnBranchName(dropTargetBranch.value);
+  setDropEffect(event, canDrop);
 }
 
 function onGraphDrop(event: DragEvent) {
@@ -986,7 +1020,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select" || tag === "option";
 }
 
-function scrollGraphToTop(behavior: ScrollBehavior = "smooth") {
+function scrollGraphToTop(behavior: ScrollBehavior = "auto") {
   if (!scrollContainer.value) return;
   scrollContainer.value.scrollTo({ top: 0, behavior });
 }
@@ -1009,7 +1043,7 @@ async function waitForCommitGrowth(previousCount: number, timeoutMs = 2400): Pro
 }
 
 async function jumpToEndStep() {
-  scrollGraphToBottom("smooth");
+  scrollGraphToBottom("auto");
   if (!props.hasMore || loadingToEnd.value) {
     return;
   }
@@ -1020,7 +1054,7 @@ async function jumpToEndStep() {
     emit("loadMore");
     await waitForCommitGrowth(previousCount);
     await nextTick();
-    scrollGraphToBottom("smooth");
+    scrollGraphToBottom("auto");
   } finally {
     loadingToEnd.value = false;
   }
@@ -1037,7 +1071,7 @@ function onGlobalGraphKeyDown(event: KeyboardEvent) {
 
   if (event.key === "Home") {
     event.preventDefault();
-    scrollGraphToTop("smooth");
+    scrollGraphToTop("auto");
     return;
   }
 
@@ -1174,7 +1208,7 @@ onUnmounted(() => {
           v-if="!isSearchActive"
           class="ml-1 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
           title="Jump to top (Home)"
-          @click="scrollGraphToTop('smooth')"
+          @click="scrollGraphToTop('auto')"
         >
           Home
         </button>
@@ -1221,7 +1255,7 @@ onUnmounted(() => {
           v-if="isSearchActive"
           class="ml-2 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
           title="Jump to top (Home)"
-          @click="scrollGraphToTop('smooth')"
+          @click="scrollGraphToTop('auto')"
         >
           Home
         </button>
@@ -1388,7 +1422,7 @@ onUnmounted(() => {
           <div
             class="flex-shrink-0 flex items-center justify-start gap-0.5 px-1 relative"
             :class="{
-              'branch-drop-zone': !!preferredDropTarget(item.node.commit),
+              'branch-drop-zone': !!dragBranch && !!preferredDropTarget(item.node.commit),
               'branch-drop-target': dropTargetBranch === preferredDropTarget(item.node.commit)?.name,
             }"
             :style="{ width: BRANCH_COL + 'px' }"
@@ -1400,8 +1434,10 @@ onUnmounted(() => {
           >
             <template v-if="topDisplayRef(item.node.commit)">
               <span
-                class="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold truncate max-w-[110px] cursor-pointer shadow-sm"
+                class="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold truncate max-w-[110px] shadow-sm"
                 :class="{
+                  'branch-draggable': topDisplayRef(item.node.commit)?.kind === 'branch',
+                  'branch-dragging': topDisplayRef(item.node.commit)?.kind === 'branch' && dragBranch?.name === topDisplayRef(item.node.commit)?.name,
                   'current-branch-badge': topDisplayRef(item.node.commit)?.kind === 'branch'
                     && topDisplayRef(item.node.commit)?.local
                     && topDisplayRef(item.node.commit)?.name === currentBranch
@@ -1479,7 +1515,11 @@ onUnmounted(() => {
                 v-for="mr in displayRefs(item.node.commit)"
                 :key="mr.key"
                 class="w-full text-left px-2 py-1.5 text-[9px] hover:bg-[var(--primary)]/15 transition-colors truncate flex items-center gap-1.5 group"
-                :class="{ 'font-bold': mr.kind === 'branch' && mr.local && mr.name === currentBranch }"
+                :class="{
+                  'font-bold': mr.kind === 'branch' && mr.local && mr.name === currentBranch,
+                  'branch-draggable': mr.kind === 'branch',
+                  'branch-dragging': mr.kind === 'branch' && dragBranch?.name === mr.name,
+                }"
                 :style="mr.kind === 'tag' ? { color: '#f59e0b' } : { color: item.node.color }"
                 :draggable="mr.kind === 'branch'"
                 @dblclick.stop="onRefDblClick(mr, item.node.commit)"
@@ -1879,6 +1919,19 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--primary) 14%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 55%, transparent);
   border-radius: 0.4rem;
+  cursor: copy;
+}
+
+.branch-draggable {
+  cursor: grab;
+}
+
+.branch-draggable:active {
+  cursor: grabbing;
+}
+
+.branch-dragging {
+  opacity: 0.72;
 }
 
 .working-node {

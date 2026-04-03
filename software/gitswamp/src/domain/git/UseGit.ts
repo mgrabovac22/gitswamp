@@ -81,7 +81,6 @@ const stash = createStashActions(
   {
     refreshStatus: refresh.refreshStatus,
     refreshStashes: refresh.refreshStashes,
-    refreshCommits: refresh.refreshCommits,
   },
   toast,
 );

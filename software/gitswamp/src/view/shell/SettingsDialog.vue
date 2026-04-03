@@ -38,7 +38,6 @@ const appPalette = ref<AppPalettePreference>("default");
 const fontSize = ref<"small" | "medium" | "large">("medium");
 const compactMode = ref(false);
 const dummyMode = ref(false);
-const fullScreenOnStart = ref(true);
 const showAvatars = ref(true);
 const restoreSession = ref(true);
 const reducedMotion = ref(false);
@@ -75,10 +74,6 @@ onMounted(() => {
   const savedDummyMode = localStorage.getItem("gitswamp-dummy-mode");
   if (savedDummyMode) {
     dummyMode.value = savedDummyMode === "true";
-  }
-  const savedFullscreenOnStart = localStorage.getItem("gitswamp-fullscreen-on-start");
-  if (savedFullscreenOnStart !== null) {
-    fullScreenOnStart.value = savedFullscreenOnStart === "true";
   }
   const savedAvatars = localStorage.getItem("gitswamp-show-avatars");
   if (savedAvatars !== null) {
@@ -122,12 +117,11 @@ function applySettings() {
   document.documentElement.classList.toggle("hide-diff-line-numbers", !showDiffLineNumbers.value);
 }
 
-watch([fontSize, compactMode, dummyMode, fullScreenOnStart, showAvatars, restoreSession, reducedMotion, wrapDiffLines, showDiffLineNumbers, notifyGitkeep], () => {
+watch([fontSize, compactMode, dummyMode, showAvatars, restoreSession, reducedMotion, wrapDiffLines, showDiffLineNumbers, notifyGitkeep], () => {
   applySettings();
   localStorage.setItem("gitswamp-font-size", fontSize.value);
   localStorage.setItem("gitswamp-compact-mode", String(compactMode.value));
   localStorage.setItem("gitswamp-dummy-mode", String(dummyMode.value));
-  localStorage.setItem("gitswamp-fullscreen-on-start", String(fullScreenOnStart.value));
   localStorage.setItem("gitswamp-show-avatars", String(showAvatars.value));
   localStorage.setItem("gitswamp-restore-session", String(restoreSession.value));
   localStorage.setItem("gitswamp-reduced-motion", String(reducedMotion.value));
@@ -295,23 +289,6 @@ function handleDelete() {
               <div
                 class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
                 :class="dummyMode ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
-              />
-            </button>
-          </div>
-
-          <div class="flex items-center justify-between py-2">
-            <div>
-              <div class="text-xs font-medium text-[var(--foreground)] block">Full Screen on Start</div>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Starts maximized and keeps taskbar visible</p>
-            </div>
-            <button
-              @click="fullScreenOnStart = !fullScreenOnStart"
-              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
-              :class="fullScreenOnStart ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
-            >
-              <div
-                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
-                :class="fullScreenOnStart ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
               />
             </button>
           </div>

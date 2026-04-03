@@ -6,7 +6,6 @@ import type { GitState } from "./gitState";
 type RefreshDeps = {
   refreshStatus: () => Promise<void>;
   refreshStashes: () => Promise<void>;
-  refreshCommits: () => Promise<void>;
 };
 
 export function createStashActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
@@ -34,7 +33,7 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
         message: message || null,
       });
       state.terminalOutput.value.push("$ git stash push" + (message ? ' -m "' + message + '"' : "") + "\n" + result);
-      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes(), refresh.refreshCommits()]);
+      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
       toast.success("Stash created.", 2500);
     } catch (e) {
       state.error.value = String(e);
@@ -65,7 +64,7 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
     try {
       const result = await callTauri<string>("stash_pop", { path: state.repoPath.value, index });
       state.terminalOutput.value.push("$ git stash pop stash@{" + index + "}\n" + result);
-      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes(), refresh.refreshCommits()]);
+      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
       toast.success(`stash@{${index}} popped.`, 2500);
     } catch (e) {
       state.error.value = String(e);

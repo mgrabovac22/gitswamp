@@ -600,6 +600,32 @@ function parentRefs(commit: CommitInfo): string[] {
   return commit.parent_shas.map((s) => s.substring(0, 7));
 }
 
+function displayIdentityInitial(name?: string): string {
+  const initial = (name || "").trim().charAt(0).toUpperCase();
+  return initial || "?";
+}
+
+function isCherryPickedCommit(commit: CommitInfo): boolean {
+  const message = commit.message.toLowerCase();
+  return message.includes("cherry picked from commit") || message.includes("(cherry picked from commit");
+}
+
+function shouldShowCommitter(commit: CommitInfo): boolean {
+  const committerName = (commit.committer_name || "").trim();
+  const committerEmail = (commit.committer_email || "").trim();
+  if (!committerName && !committerEmail) {
+    return false;
+  }
+
+  if (isCherryPickedCommit(commit)) {
+    return true;
+  }
+
+  const authorName = (commit.author_name || "").trim();
+  const authorEmail = (commit.author_email || "").trim();
+  return committerName !== authorName || committerEmail !== authorEmail;
+}
+
 function branchRefs(commit: CommitInfo): string[] {
   const refs = commit.refs.filter((r) => !r.includes("->"));
   const withoutHead = refs.filter((r) => r !== "HEAD");
@@ -1844,13 +1870,27 @@ onUnmounted(() => {
 
         <div class="h-px bg-[var(--border)]" />
 
-        <div class="flex items-center gap-3">
-          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-            {{ commit.author_name.charAt(0).toUpperCase() }}
+        <div class="space-y-2.5">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+              {{ displayIdentityInitial(commit.author_name) }}
+            </div>
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Author</div>
+              <div class="text-sm text-[var(--foreground)] font-medium">{{ commit.author_name }}</div>
+              <div class="text-[10px] text-[var(--muted-foreground)]">{{ commit.author_email }}</div>
+            </div>
           </div>
-          <div>
-            <div class="text-sm text-[var(--foreground)] font-medium">{{ commit.author_name }}</div>
-            <div class="text-[10px] text-[var(--muted-foreground)]">{{ commit.author_email }}</div>
+
+          <div v-if="shouldShowCommitter(commit)" class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--chart-2)] to-[var(--primary)] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+              {{ displayIdentityInitial(commit.committer_name) }}
+            </div>
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Committer</div>
+              <div class="text-sm text-[var(--foreground)] font-medium">{{ commit.committer_name || 'Unknown' }}</div>
+              <div class="text-[10px] text-[var(--muted-foreground)]">{{ commit.committer_email || '—' }}</div>
+            </div>
           </div>
         </div>
 

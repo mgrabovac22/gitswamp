@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useToast, type Toast, type ToastAction } from "@/shared/notifications/useToast";
-import { CheckCircle, XCircle, Info, AlertTriangle, X } from "lucide-vue-next";
+import { CheckCircle, XCircle, Info, AlertTriangle, Loader2, X } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
 
 const { toasts, remove } = useToast();
@@ -12,6 +12,7 @@ const icons = {
   info: Info,
   warning: AlertTriangle,
   loading: Info,
+  progress: Loader2,
 };
 
 const colors = {
@@ -44,6 +45,12 @@ const colors = {
     borderColor: "color-mix(in srgb, var(--chart-2) 55%, transparent)",
     textColor: "var(--card-foreground)",
     icon: "var(--chart-2)",
+  },
+  progress: {
+    backgroundColor: "color-mix(in srgb, var(--card) 90%, var(--primary) 10%)",
+    borderColor: "color-mix(in srgb, var(--primary) 55%, transparent)",
+    textColor: "var(--card-foreground)",
+    icon: "var(--primary)",
   },
 };
 
@@ -119,10 +126,25 @@ function actionButtonStyle(style?: ToastAction["style"]): Record<string, string>
             v-else
             :is="icons[toast.type]"
             class="w-5 h-5 flex-shrink-0 mt-0.5"
+            :class="toast.type === 'progress' ? 'animate-spin' : ''"
             :style="{ color: colors[toast.type].icon }"
           />
           <div class="flex-1 min-w-0">
             <p class="text-sm">{{ toast.message }}</p>
+            <p v-if="toast.detail" class="text-[11px] text-[var(--muted-foreground)] mt-1">
+              {{ toast.detail }}
+            </p>
+            <div v-if="toast.type === 'progress'" class="mt-2">
+              <div class="h-1.5 rounded-full bg-[var(--muted)]/70 overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-[var(--primary)] transition-[width] duration-200 ease-out"
+                  :style="{ width: `${Math.max(0, Math.min(100, toast.progress ?? 0))}%` }"
+                />
+              </div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-1 text-right tabular-nums">
+                {{ Math.round(toast.progress ?? 0) }}%
+              </p>
+            </div>
             <div v-if="toast.actions?.length" class="mt-2 flex flex-wrap gap-1.5">
               <button
                 v-for="(action, idx) in toast.actions"

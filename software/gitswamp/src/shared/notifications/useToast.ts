@@ -1,11 +1,15 @@
 import { ref } from "vue";
 
+export type ToastType = "success" | "error" | "info" | "warning" | "loading" | "progress";
+
 export interface Toast {
   id: number;
-  type: "success" | "error" | "info" | "warning" | "loading";
+  type: ToastType;
   message: string;
   duration?: number;
   actions?: ToastAction[];
+  progress?: number;
+  detail?: string;
 }
 
 export interface ToastAction {
@@ -17,9 +21,27 @@ export interface ToastAction {
 const toasts = ref<Toast[]>([]);
 let nextId = 1;
 
-function addToast(type: Toast["type"], message: string, duration = 7000, actions?: ToastAction[]) {
+function clampProgress(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function addToast(
+  type: Toast["type"],
+  message: string,
+  duration = 7000,
+  actions?: ToastAction[],
+  meta?: Pick<Partial<Toast>, "progress" | "detail">
+) {
   const id = nextId++;
-  toasts.value.push({ id, type, message, duration, actions });
+  toasts.value.push({
+    id,
+    type,
+    message,
+    duration,
+    actions,
+    progress: meta?.progress,
+    detail: meta?.detail,
+  });
   
   if (duration > 0) {
     setTimeout(() => {
@@ -61,6 +83,32 @@ function loading(message: string) {
   return addToast("loading", message, 0);
 }
 
+function progress(message: string, value = 0, detail?: string) {
+  return addToast("progress", message, 0, undefined, {
+    progress: clampProgress(value),
+    detail,
+  });
+}
+
+function update(id: number, updates: Partial<Omit<Toast, "id">>): boolean {
+  const index = toasts.value.findIndex((toast) => toast.id === id);
+  if (index === -1) {
+    return false;
+  }
+
+  const merged: Toast = {
+    ...toasts.value[index],
+    ...updates,
+  };
+
+  if (typeof merged.progress === "number") {
+    merged.progress = clampProgress(merged.progress);
+  }
+
+  toasts.value[index] = merged;
+  return true;
+}
+
 export function useToast() {
   return {
     toasts,
@@ -69,6 +117,8 @@ export function useToast() {
     info,
     warning,
     loading,
+    progress,
+    update,
     action,
     remove: removeToast,
   };

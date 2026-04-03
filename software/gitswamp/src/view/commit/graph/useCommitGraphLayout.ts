@@ -91,7 +91,7 @@ function reserveParentLaneHints(commit: CommitInfo, lane: number, laneHintsBySha
   return maxAssignedLane;
 }
 
-function buildGraphModel(commits: CommitInfo[], currentBranch: string) {
+function buildGraphModel(commits: CommitInfo[]) {
   if (!commits.length) {
     return {
       nodes: [] as GraphNode[],
@@ -106,9 +106,6 @@ function buildGraphModel(commits: CommitInfo[], currentBranch: string) {
 
   const laneHintsBySha = new Map<string, number>();
   const branchLaneMap = new Map<string, number>();
-  if (currentBranch.trim()) {
-    branchLaneMap.set(currentBranch.trim(), 0);
-  }
 
   const nodes: GraphNode[] = [];
   let maxLane = 0;
@@ -211,7 +208,7 @@ export function useCommitGraphLayout(
   scrollTop: Ref<number>,
   viewportHeight: Ref<number>,
 ) {
-  const graph = computed(() => buildGraphModel(props.commits, props.currentBranch));
+  const graph = computed(() => buildGraphModel(props.commits));
 
   const stashNodes = computed(() => {
     if (!props.stashes?.length) return [];
@@ -235,12 +232,6 @@ export function useCommitGraphLayout(
       .filter(Boolean) as (StashInfo & { parentIdx: number; lane: number; offsetIdx: number })[];
   });
 
-  const wcLane = computed(() => {
-    if (!props.hasWorkingChanges) return 0;
-    const currentBranchLane = graph.value.branchLanes.get(props.currentBranch) ?? 0;
-    return currentBranchLane;
-  });
-
   const headCommitIndex = computed(() => {
     for (let i = 0; i < props.commits.length; i++) {
       const refs = mergedRefs(props.commits[i]);
@@ -248,6 +239,22 @@ export function useCommitGraphLayout(
         return i;
       }
     }
+    return 0;
+  });
+
+  const wcLane = computed(() => {
+    if (!props.hasWorkingChanges) return 0;
+
+    const currentBranchLane = graph.value.branchLanes.get(props.currentBranch);
+    if (currentBranchLane !== undefined) {
+      return currentBranchLane;
+    }
+
+    const headNode = graph.value.nodes[headCommitIndex.value];
+    if (headNode) {
+      return headNode.lane;
+    }
+
     return 0;
   });
 
@@ -640,8 +647,8 @@ export function useCommitGraphLayout(
 
   function wcEdge(): string {
     const x = laneX(wcLane.value);
-    const startY = rowHeight.value / 2 + 7;
-    const endY = ry(headCommitIndex.value) - 10;
+    const startY = rowHeight.value / 2 + 8;
+    const endY = Math.max(startY + 2, ry(headCommitIndex.value) - (NODE_RADIUS + 2));
     return "M " + x + " " + startY + " L " + x + " " + endY;
   }
 
@@ -662,15 +669,19 @@ export function useCommitGraphLayout(
         + " Q " + endX + " " + turnY + " " + endX + " " + (turnY + r)
         + " L " + endX + " " + endY;
     }
+    const startY = conflictY + 7;
     const x2 = laneX(wcLane.value) - 7;
-    const y2 = ry(headCommitIndex.value) - 10;
-    const r = Math.min(CORNER_R, Math.abs(conflictX - x2) / 2, Math.abs(conflictY - y2) / 4);
-    const turnY = conflictY - Math.max(10, rowHeight.value * 0.35);
-    return "M " + conflictX + " " + conflictY
-      + " L " + conflictX + " " + (turnY + r)
+    const y2 = Math.max(startY + 6, ry(headCommitIndex.value) - (NODE_RADIUS + 2));
+    const turnY = Math.min(
+      y2 - Math.max(6, rowHeight.value * 0.22),
+      startY + Math.max(10, rowHeight.value * 0.4),
+    );
+    const r = Math.min(CORNER_R, Math.abs(conflictX - x2) / 2, Math.max(1, Math.abs(y2 - turnY) / 2));
+    return "M " + conflictX + " " + startY
+      + " L " + conflictX + " " + (turnY - r)
       + " Q " + conflictX + " " + turnY + " " + (conflictX - r) + " " + turnY
       + " L " + (x2 + r) + " " + turnY
-      + " Q " + x2 + " " + turnY + " " + x2 + " " + (turnY - r)
+      + " Q " + x2 + " " + turnY + " " + x2 + " " + (turnY + r)
       + " L " + x2 + " " + y2;
   }
 

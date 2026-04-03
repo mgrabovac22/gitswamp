@@ -792,7 +792,7 @@ onUnmounted(() => {
 
             <div class="mt-4 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/50 p-3">
               <div class="text-[10px] uppercase tracking-[0.14em] text-[var(--muted-foreground)] mb-1">Selective Rollback Command</div>
-              <div class="font-mono text-xs text-[var(--foreground)] break-all">{{ rollbackCommand }}</div>
+              <div class="font-mono text-xs text-[var(--foreground)] break-all select-text">{{ rollbackCommand }}</div>
               <div class="mt-2.5 flex flex-wrap items-center gap-2">
                 <select
                   v-model="selectedFilePath"
@@ -888,7 +888,7 @@ onUnmounted(() => {
               Loading file snapshot...
             </div>
             <div v-else-if="explorerFileError" class="text-xs text-[var(--destructive)]">{{ explorerFileError }}</div>
-            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview">{{ selectedExplorerFileContent }}</pre>
+            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text">{{ selectedExplorerFileContent }}</pre>
             <div v-else class="text-xs text-[var(--muted-foreground)]">No file selected.</div>
           </article>
         </div>

@@ -7,6 +7,8 @@ pub struct CommitInfo {
     pub message: String,
     pub author_name: String,
     pub author_email: String,
+    pub committer_name: String,
+    pub committer_email: String,
     pub timestamp: i64,
     pub time_ago: String,
     pub parent_shas: Vec<String>,

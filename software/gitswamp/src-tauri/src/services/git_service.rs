@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
@@ -22,6 +22,21 @@ use crate::services::remote_service::RemoteService;
 use crate::services::stash_service::StashService;
 
 pub struct GitService;
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct CloneProgressUpdate {
+    pub url: String,
+    pub destination: String,
+    pub phase: String,
+    pub percent: u8,
+    pub message: String,
+    pub received_objects: usize,
+    pub total_objects: usize,
+    pub indexed_objects: usize,
+    pub received_bytes: usize,
+    pub indexed_deltas: usize,
+    pub total_deltas: usize,
+}
 
 const GHOST_ACTIVE_KEY: &str = "gitswamp.ghost.active";
 const GHOST_BASE_KEY: &str = "gitswamp.ghost.base";
@@ -428,6 +443,8 @@ impl GitService {
                 message: commit.message().unwrap_or("").trim().to_string(),
                 author_name: commit.author().name().unwrap_or("Unknown").to_string(),
                 author_email: commit.author().email().unwrap_or("").to_string(),
+                committer_name: commit.committer().name().unwrap_or("Unknown").to_string(),
+                committer_email: commit.committer().email().unwrap_or("").to_string(),
                 timestamp,
                 time_ago: time_ago(now, timestamp),
                 parent_shas,
@@ -1098,13 +1115,106 @@ impl GitService {
         Ok(format!("Tag '{}' created.", name))
     }
 
-    pub fn clone_repo(url: &str, path: &str, shallow: bool, token: Option<&str>) -> Result<String, String> {
+    pub fn clone_repo_with_progress<F>(
+        url: &str,
+        path: &str,
+        shallow: bool,
+        token: Option<&str>,
+        mut progress: F,
+    ) -> Result<String, String>
+    where
+        F: FnMut(CloneProgressUpdate),
+    {
         let repo_name = url.split('/').last().unwrap_or("repo").trim_end_matches(".git");
         let dest = Path::new(path).join(repo_name);
 
         let clone_url = url.to_string();
+        let destination = dest.to_string_lossy().to_string();
+
+        progress(CloneProgressUpdate {
+            url: clone_url.clone(),
+            destination: destination.clone(),
+            phase: "preparing".to_string(),
+            percent: 0,
+            message: "Preparing clone...".to_string(),
+            received_objects: 0,
+            total_objects: 0,
+            indexed_objects: 0,
+            received_bytes: 0,
+            indexed_deltas: 0,
+            total_deltas: 0,
+        });
+
+        let progress_url = clone_url.clone();
+        let progress_destination = destination.clone();
+        let mut last_emit = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
 
         let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.transfer_progress(move |stats| {
+            let total_objects = stats.total_objects();
+            let received_objects = stats.received_objects();
+            let indexed_objects = stats.indexed_objects();
+            let received_bytes = stats.received_bytes();
+            let indexed_deltas = stats.indexed_deltas();
+            let total_deltas = stats.total_deltas();
+
+            let now = Instant::now();
+            let completed = total_objects > 0 && indexed_objects >= total_objects;
+            if !completed && now.duration_since(last_emit) < Duration::from_millis(120) {
+                return true;
+            }
+            last_emit = now;
+
+            let phase = if total_objects == 0 || received_objects < total_objects {
+                "receiving"
+            } else if indexed_objects < total_objects {
+                "indexing"
+            } else {
+                "finalizing"
+            };
+
+            let mut percent = if total_objects > 0 {
+                (((received_objects.max(indexed_objects)) as f64 / total_objects as f64) * 100.0)
+                    .round()
+                    .clamp(0.0, 100.0) as u8
+            } else {
+                0
+            };
+
+            if phase != "finalizing" {
+                percent = percent.min(99);
+            }
+
+            let message = if total_objects > 0 {
+                format!(
+                    "{} objects: {}/{}",
+                    phase,
+                    received_objects.max(indexed_objects),
+                    total_objects
+                )
+            } else {
+                "Receiving objects...".to_string()
+            };
+
+            progress(CloneProgressUpdate {
+                url: progress_url.clone(),
+                destination: progress_destination.clone(),
+                phase: phase.to_string(),
+                percent,
+                message,
+                received_objects,
+                total_objects,
+                indexed_objects,
+                received_bytes,
+                indexed_deltas,
+                total_deltas,
+            });
+
+            true
+        });
+
         if let Some(t) = token {
             let tok = t.to_string();
             callbacks.credentials(move |remote_url, username_from_url, allowed| {
@@ -1144,7 +1254,7 @@ impl GitService {
         builder
             .clone(&clone_url, &dest)
             .map_err(|e| e.message().to_string())?;
-        Ok(dest.to_string_lossy().to_string())
+        Ok(destination)
     }
 
     pub fn init_repo(path: &str, branch_name: Option<&str>) -> Result<String, String> {
@@ -1253,6 +1363,8 @@ impl GitService {
                 message,
                 author_name,
                 author_email,
+                committer_name: commit.committer().name().unwrap_or("Unknown").to_string(),
+                committer_email: commit.committer().email().unwrap_or("").to_string(),
                 timestamp,
                 time_ago: time_ago(now, timestamp),
                 parent_shas,
@@ -1332,6 +1444,7 @@ impl GitService {
         };
         repo.branch(name, &commit, false)
             .map_err(|e| e.message().to_string())?;
+
         Ok(())
     }
 

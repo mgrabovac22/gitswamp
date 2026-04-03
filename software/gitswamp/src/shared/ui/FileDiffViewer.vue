@@ -63,6 +63,21 @@ const timeLapsePlaying = ref(false);
 const timeLapseFrameIndex = ref(0);
 let timeLapseTimer: ReturnType<typeof setInterval> | null = null;
 const TIME_LAPSE_MAX_FRAMES = 22;
+const DEFAULT_TIME_LAPSE_COMMIT_WINDOW = 100;
+const MIN_TIME_LAPSE_COMMIT_WINDOW = 20;
+const MAX_TIME_LAPSE_COMMIT_WINDOW = 2000;
+const timeLapseCommitWindowOptions = [50, 75, 100, 150, 200, 300, 500, 800, 1000] as const;
+const timeLapseCommitWindow = ref(DEFAULT_TIME_LAPSE_COMMIT_WINDOW);
+
+const timeLapseCommitWindowSafe = computed(() => {
+  const raw = Number(timeLapseCommitWindow.value);
+  if (!Number.isFinite(raw)) {
+    return DEFAULT_TIME_LAPSE_COMMIT_WINDOW;
+  }
+
+  const rounded = Math.round(raw);
+  return Math.min(MAX_TIME_LAPSE_COMMIT_WINDOW, Math.max(MIN_TIME_LAPSE_COMMIT_WINDOW, rounded));
+});
 
 // Virtualization state
 const scrollTop = ref(0);
@@ -411,6 +426,11 @@ watch(viewMode, (mode) => {
   }
 });
 
+watch(timeLapseCommitWindowSafe, () => {
+  if (viewMode.value !== "time-lapse") return;
+  void loadTimeLapseFrames();
+});
+
 async function reload() {
   if (viewMode.value === "edit") return;
 
@@ -666,7 +686,7 @@ function navigateHunk(dir: "prev" | "next") {
     currentHunkIndex.value++;
   }
   const el = document.getElementById(`hunk-${currentHunkIndex.value}`);
-  el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  el?.scrollIntoView({ behavior: "auto", block: "start" });
 }
 
 interface FullFileLine {
@@ -1031,7 +1051,7 @@ async function loadTimeLapseFrames() {
   try {
     const commits = await invoke<CommitInfo[]>("get_commits", {
       path: props.repoPath,
-      maxCount: 180,
+      maxCount: timeLapseCommitWindowSafe.value,
     });
 
     const normalizedPath = normalizeCommitFilePath(props.filePath);
@@ -1684,7 +1704,7 @@ watch(usePlainTextHighlighting, () => {
           v-if="usePlainTextHighlighting"
           class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
         >
-          Large diff mode: syntax coloring is simplified to keep scrolling smooth.
+          Large diff mode: syntax coloring is simplified to keep scrolling auto.
         </div>
 
         <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
@@ -1718,7 +1738,7 @@ watch(usePlainTextHighlighting, () => {
                   {{ linePrefix(line.line_type) }}
                 </div>
                 <pre 
-                  class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-x-auto"
+                  class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-x-auto select-text"
                   :class="line.line_type === 'addition' ? 'text-[var(--diff-add-fg)]' : line.line_type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
                 ><code class="hljs bg-transparent" v-html="getHighlightedDiffLine(hunkIdx, lineIdx, line)"></code></pre>
               </div>
@@ -1781,7 +1801,7 @@ watch(usePlainTextHighlighting, () => {
               {{ linePrefix(item.line.type) }}
             </div>
             <pre 
-              class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[20px] m-0"
+              class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[20px] m-0 select-text"
               :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
             ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line)"></code></pre>
           </div>
@@ -1803,8 +1823,20 @@ watch(usePlainTextHighlighting, () => {
 
       <div v-else-if="viewMode === 'time-lapse'" class="h-full flex flex-col overflow-hidden">
         <div class="px-3 py-2 border-b border-[var(--diff-border)] bg-[var(--secondary)]/40 flex items-center justify-between gap-2">
-          <div class="text-[11px] text-[var(--muted-foreground)]">
-            File evolution timeline (recent frames)
+          <div class="flex items-center gap-2 flex-wrap min-w-0">
+            <div class="text-[11px] text-[var(--muted-foreground)]">
+              File evolution timeline (recent frames)
+            </div>
+            <label class="flex items-center gap-1 text-[10px] text-[var(--muted-foreground)]">
+              Commits back
+              <select
+                v-model.number="timeLapseCommitWindow"
+                class="h-6 px-1.5 rounded border border-[var(--diff-border)] bg-[var(--card)] text-[var(--foreground)] text-[10px] focus:outline-none"
+                title="How many commits back to scan"
+              >
+                <option v-for="count in timeLapseCommitWindowOptions" :key="count" :value="count">{{ count }}</option>
+              </select>
+            </label>
           </div>
           <div class="flex items-center gap-1">
             <button
@@ -1879,12 +1911,12 @@ watch(usePlainTextHighlighting, () => {
                 >
                   {{ linePrefix(line.type) }}
                 </div>
-                <pre class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden m-0"><code class="hljs bg-transparent">{{ line.content }}</code></pre>
+                <pre class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden m-0 select-text"><code class="hljs bg-transparent">{{ line.content }}</code></pre>
               </div>
             </div>
           </div>
           <div class="px-3 py-1.5 border-t border-[var(--diff-border)] bg-[var(--secondary)]/40 text-[10px] text-[var(--muted-foreground)]">
-            Frame {{ Math.min(timeLapseFrameIndex + 1, timeLapseFrames.length) }} / {{ timeLapseFrames.length }}
+            Frame {{ Math.min(timeLapseFrameIndex + 1, timeLapseFrames.length) }} / {{ timeLapseFrames.length }} • scanned last {{ timeLapseCommitWindowSafe }} commits
           </div>
         </div>
       </div>

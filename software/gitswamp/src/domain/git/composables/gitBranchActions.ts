@@ -80,27 +80,33 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
   async function mergeBranchIntoCurrent(sourceBranch: string, sourceRemote = false, targetBranch?: string) {
     if (!state.repoPath.value) return;
-    const current = state.repoInfo.value?.current_branch || targetBranch || "";
-    if (!current) {
+    const current = state.repoInfo.value?.current_branch || "";
+    const target = (targetBranch || current).trim();
+    if (!target) {
       toast.error("No active branch to merge into.");
       return;
     }
     const sourceRef = sourceRemote ? `origin/${sourceBranch}` : sourceBranch;
     let loadingToastId: number | null = null;
     try {
-      loadingToastId = toast.loading(`Loading: merging ${sourceRef}...`);
+      loadingToastId = toast.loading(`Loading: merging ${sourceRef} into ${target}...`);
       state.loading.value = true;
+
+      if (current && current !== target) {
+        await callTauri("checkout_branch", { path: state.repoPath.value, branchName: target });
+      }
+
       const result = await callTauri<string>("run_git_command", {
         path: state.repoPath.value,
         args: ["merge", sourceRef],
       });
-      state.terminalOutput.value.push(`$ git merge ${sourceRef}\n` + (result || "(done)"));
+      state.terminalOutput.value.push(`$ git checkout ${target}\n$ git merge ${sourceRef}\n` + (result || "(done)"));
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
-      toast.success(`Merged ${sourceRef} into ${current}`);
+      toast.success(`Merged ${sourceRef} into ${target}`);
     } catch (e) {
       state.error.value = String(e);
-      state.terminalOutput.value.push(`$ git merge ${sourceRef}\nError: ${e}`);
+      state.terminalOutput.value.push(`$ git checkout ${target}\n$ git merge ${sourceRef}\nError: ${e}`);
       toast.error("Merge failed: " + String(e));
     } finally {
       state.loading.value = false;

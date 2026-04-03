@@ -1,8 +1,24 @@
 use crate::services::git_service::GitService;
+use tauri::{AppHandle, Emitter};
+
+const CLONE_PROGRESS_EVENT: &str = "clone-progress";
 
 #[tauri::command]
-pub fn clone_repo(url: String, path: String, shallow: bool, token: Option<String>) -> Result<String, String> {
-    GitService::clone_repo(&url, &path, shallow, token.as_deref())
+pub async fn clone_repo(
+    app: AppHandle,
+    url: String,
+    path: String,
+    shallow: bool,
+    token: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let app_handle = app;
+        GitService::clone_repo_with_progress(&url, &path, shallow, token.as_deref(), |progress| {
+            let _ = app_handle.emit(CLONE_PROGRESS_EVENT, &progress);
+        })
+    })
+    .await
+    .map_err(|e| format!("Clone task failed: {e}"))?
 }
 
 #[tauri::command]

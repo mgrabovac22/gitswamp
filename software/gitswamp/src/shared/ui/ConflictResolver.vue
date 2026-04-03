@@ -481,7 +481,7 @@ watch(() => props.filePath, () => {
               <div class="mb-6">
                 <div class="text-xs font-semibold text-[#f59e0b] mb-2">PREVIEW (First 50 lines):</div>
                 <div class="bg-[var(--background)] border border-[var(--border)] rounded p-3 font-mono text-[11px] max-h-64 overflow-y-auto">
-                  <pre class="whitespace-pre-wrap text-[#8b949e]">{{ displayContent.split('\n').slice(0, 50).join('\n') }}</pre>
+                  <pre class="whitespace-pre-wrap text-[#8b949e] select-text">{{ displayContent.split('\n').slice(0, 50).join('\n') }}</pre>
                   <div v-if="displayContent.split('\n').length > 50" class="text-xs text-[#f59e0b] mt-2 p-2 bg-[#f59e0b]/10 rounded">
                     ... and {{ displayContent.split('\n').length - 50 }} more lines
                   </div>
@@ -613,7 +613,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextBeforeStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours-context-before', hunkIdx, idx, line)"></code></pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666] select-text"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours-context-before', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -637,7 +637,7 @@ watch(() => props.filePath, () => {
                         {{ hunk.oursStartLine + lineIdx }}
                       </div>
                       <pre 
-                        class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto"
+                        class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto select-text"
                         :class="selections[hunkIdx].oursSelected[lineIdx] ? 'text-[#aff5b4] bg-[#238636]/20' : 'text-[#8b949e]'"
                       ><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
@@ -649,7 +649,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextAfterStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours-context-after', hunkIdx, idx, line)"></code></pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666] select-text"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('ours-context-after', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -673,7 +673,7 @@ watch(() => props.filePath, () => {
                       <div class="w-6 flex-shrink-0 text-right pr-1 text-[#484f58] select-none text-[10px] border-r border-[var(--border)]/30">
                         {{ lineIdx + 1 }}
                       </div>
-                      <pre class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto text-[#999]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('base', hunkIdx, lineIdx, line)"></code></pre>
+                      <pre class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto text-[#999] select-text"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('base', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
                     <div v-if="hunk.baseLines.length === 0" class="px-4 py-4 text-xs text-[var(--muted-foreground)] italic">
                       (no content)
@@ -694,7 +694,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextBeforeStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs-context-before', hunkIdx, idx, line)"></code></pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666] select-text"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs-context-before', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -718,7 +718,7 @@ watch(() => props.filePath, () => {
                         {{ hunk.theirsStartLine + lineIdx }}
                       </div>
                       <pre 
-                        class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto"
+                        class="flex-1 px-2 py-1 whitespace-pre-wrap word-break overflow-x-auto select-text"
                         :class="selections[hunkIdx].theirsSelected[lineIdx] ? 'text-[#a5d6ff] bg-[#1f6feb]/20' : 'text-[#8b949e]'"
                       ><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
@@ -730,7 +730,7 @@ watch(() => props.filePath, () => {
                           {{ hunk.contextAfterStartLine + idx }}
                         </div>
                         <div class="w-7 flex-shrink-0"></div>
-                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666]"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs-context-after', hunkIdx, idx, line)"></code></pre>
+                        <pre class="flex-1 px-2 py-0.5 whitespace-pre-wrap text-[#666] select-text"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('theirs-context-after', hunkIdx, idx, line)"></code></pre>
                       </div>
                     </div>
 
@@ -752,7 +752,7 @@ watch(() => props.filePath, () => {
                     class="p-2"
                   >
                     <div v-for="(line, lineIdx) in [...hunk.oursLines.filter((_, i) => selections[hunkIdx].oursSelected[i]), ...hunk.theirsLines.filter((_, i) => selections[hunkIdx].theirsSelected[i])]" :key="'res-' + lineIdx" class="px-2 py-0.5 border-l-2 border-[#3fb950] text-[#aff5b4]">
-                      <pre class="whitespace-pre-wrap"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('result', hunkIdx, lineIdx, line)"></code></pre>
+                      <pre class="whitespace-pre-wrap select-text"><code class="hljs bg-transparent" v-html="getHighlightedConflictLine('result', hunkIdx, lineIdx, line)"></code></pre>
                     </div>
                   </div>
                   <div v-else class="px-3 py-3 text-xs text-[#f59e0b]">
