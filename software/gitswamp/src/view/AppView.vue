@@ -2174,7 +2174,7 @@ const openReposList = computed(() =>
 </script>
 
 <template>
-  <div class="h-screen w-screen flex flex-col bg-[var(--background)] overflow-hidden">
+  <div class="h-screen w-screen flex flex-col bg-[var(--background)] overflow-hidden overscroll-none">
     <TitleBar />
     <RepositoryTabs
       :tabs="tabs"
