@@ -8,7 +8,7 @@ use commands::branches::{checkout_branch, create_branch, delete_branch, get_bran
 use commands::clone_init::{clone_repo, init_repo, search_commits};
 use commands::commit_files::get_commit_files;
 use commands::commits::{get_author_deletion_stats, get_commit_tree_paths, get_commits};
-use commands::conflicts::get_conflict_hotspots;
+use commands::conflicts::{get_conflict_hotspots, get_conflict_pairs, get_repository_tree_paths, get_merge_preflight_risk};
 use commands::credentials::{delete_token, load_token, save_token, save_provider_token, load_provider_token, delete_provider_token};
 use commands::diff::{get_working_diff, get_commit_diff, get_file_content, get_staged_file_content, get_staged_diff_summary, save_file_content, revert_hunk, has_conflict_markers};
 use commands::ghost::{discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch};
@@ -38,6 +38,9 @@ pub fn run() {
             get_author_deletion_stats,
             get_commit_tree_paths,
             get_conflict_hotspots,
+            get_conflict_pairs,
+            get_repository_tree_paths,
+            get_merge_preflight_risk,
             get_branches,
             checkout_branch,
             create_branch,

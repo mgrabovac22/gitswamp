@@ -11,8 +11,8 @@ use crate::constants::{
 };
 use crate::models::{
     AzureRepo, BitbucketRepo, BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot,
-    FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, RepoInfo, StagedDiffSummary,
-    StashInfo, TagInfo,
+    ConflictPair, FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, MergeRiskPreflight,
+    RepoInfo, StagedDiffSummary, StashInfo, TagInfo,
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
@@ -113,6 +113,67 @@ impl GitService {
             name,
             ".git" | "node_modules" | "target" | "dist" | "build" | ".idea" | ".vscode"
         )
+    }
+
+    fn lookback_cutoff_seconds(lookback_months: Option<u32>) -> Option<i64> {
+        let months = lookback_months?;
+        if months == 0 {
+            return None;
+        }
+
+        let seconds = (months as i64)
+            .saturating_mul(30)
+            .saturating_mul(24)
+            .saturating_mul(3600);
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        Some(now.saturating_sub(seconds))
+    }
+
+    fn is_in_lookback(timestamp: i64, cutoff: Option<i64>) -> bool {
+        match cutoff {
+            Some(min_ts) => timestamp >= min_ts,
+            None => true,
+        }
+    }
+
+    fn collect_diff_paths(diff: &git2::Diff) -> HashSet<String> {
+        let mut paths = HashSet::new();
+
+        for delta in diff.deltas() {
+            let candidate = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path());
+
+            let Some(path) = candidate else {
+                continue;
+            };
+
+            let normalized = Self::normalize_relative_path(path);
+            if !normalized.is_empty() {
+                paths.insert(normalized);
+            }
+        }
+
+        paths
+    }
+
+    fn merge_risk_level(score: usize) -> String {
+        if score >= 170 {
+            return "critical".to_string();
+        }
+        if score >= 95 {
+            return "high".to_string();
+        }
+        if score >= 45 {
+            return "moderate".to_string();
+        }
+        "low".to_string()
     }
 
     fn read_repo_config(repo: &Repository, key: &str) -> Option<String> {
@@ -460,15 +521,19 @@ impl GitService {
         max_count: usize,
     ) -> Result<Vec<(String, usize, usize)>, String> {
         let repo = GitRepository::open(path)?;
-        let commits = Self::commits(path, max_count)?;
+        if max_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
+        revwalk.push_head().map_err(|e| e.message().to_string())?;
+        revwalk
+            .set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+            .map_err(|e| e.message().to_string())?;
+
         let mut by_author: HashMap<String, (usize, usize)> = HashMap::new();
 
-        for commit in commits {
-            let oid = match git2::Oid::from_str(&commit.sha) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-
+        for oid in revwalk.flatten().take(max_count) {
             let commit_object = match repo.find_commit(oid) {
                 Ok(value) => value,
                 Err(_) => continue,
@@ -493,24 +558,20 @@ impl GitService {
                 Err(_) => continue,
             };
 
-            let mut deletion_sum = 0usize;
-            let delta_count = diff.deltas().len();
-            for idx in 0..delta_count {
-                if let Ok(Some(patch)) = git2::Patch::from_diff(&diff, idx) {
-                    if let Ok((_, _, deletions)) = patch.line_stats() {
-                        deletion_sum += deletions;
-                    }
-                }
-            }
+            let deletion_sum = match diff.stats() {
+                Ok(stats) => stats.deletions(),
+                Err(_) => 0,
+            };
 
             if deletion_sum == 0 {
                 continue;
             }
 
-            let author = if commit.author_name.trim().is_empty() {
+            let author = commit_object.author().name().unwrap_or("Unknown").trim().to_string();
+            let author = if author.is_empty() {
                 "Unknown".to_string()
             } else {
-                commit.author_name
+                author
             };
 
             let entry = by_author.entry(author).or_insert((0, 0));
@@ -532,15 +593,31 @@ impl GitService {
         Ok(rows)
     }
 
-    pub fn conflict_hotspots(path: &str, max_count: usize) -> Result<Vec<ConflictHotspot>, String> {
-        let scan_limit = max_count.saturating_mul(5).max(max_count);
+    pub fn conflict_hotspots(
+        path: &str,
+        max_count: usize,
+        lookback_months: Option<u32>,
+    ) -> Result<Vec<ConflictHotspot>, String> {
+        if max_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let scan_limit = if max_count > 5000 {
+            max_count
+        } else {
+            max_count.saturating_mul(8).max(800)
+        };
         let commits = Self::commits(path, scan_limit)?;
+        let cutoff = Self::lookback_cutoff_seconds(lookback_months);
 
         let mut by_path: HashMap<String, (usize, usize, usize)> = HashMap::new();
         let mut inspected_merges = 0usize;
 
         for commit in commits {
             if commit.parent_shas.len() < 2 {
+                continue;
+            }
+            if !Self::is_in_lookback(commit.timestamp, cutoff) {
                 continue;
             }
             if inspected_merges >= max_count {
@@ -555,9 +632,14 @@ impl GitService {
                 Err(_) => continue,
             };
 
+            let mut seen_paths = HashSet::new();
+
             for file in files {
                 let file_path = file.path.trim();
                 if file_path.is_empty() {
+                    continue;
+                }
+                if !seen_paths.insert(file_path.to_string()) {
                     continue;
                 }
 
@@ -578,6 +660,7 @@ impl GitService {
                 score,
                 merge_touches,
                 conflict_mentions,
+                collision_index: conflict_mentions,
             })
             .collect();
 
@@ -590,6 +673,297 @@ impl GitService {
         });
 
         Ok(hotspots)
+    }
+
+    pub fn conflict_pairs(
+        path: &str,
+        max_count: usize,
+        lookback_months: Option<u32>,
+    ) -> Result<Vec<ConflictPair>, String> {
+        if max_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let scan_limit = if max_count > 5000 {
+            max_count
+        } else {
+            max_count.saturating_mul(8).max(800)
+        };
+
+        let commits = Self::commits(path, scan_limit)?;
+        let cutoff = Self::lookback_cutoff_seconds(lookback_months);
+        let mut by_pair: HashMap<(String, String), (usize, usize, usize)> = HashMap::new();
+        let mut inspected_merges = 0usize;
+
+        for commit in commits {
+            if commit.parent_shas.len() < 2 {
+                continue;
+            }
+            if !Self::is_in_lookback(commit.timestamp, cutoff) {
+                continue;
+            }
+            if inspected_merges >= max_count {
+                break;
+            }
+
+            inspected_merges += 1;
+            let mentions_conflict = commit.message.to_lowercase().contains("conflict");
+            let files = match Self::commit_files(path, &commit.sha) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let mut unique_paths: Vec<String> = files
+                .into_iter()
+                .map(|file| file.path.trim().to_string())
+                .filter(|path_value| !path_value.is_empty())
+                .collect();
+
+            unique_paths.sort();
+            unique_paths.dedup();
+
+            if unique_paths.len() > 40 {
+                unique_paths.truncate(40);
+            }
+
+            if unique_paths.len() < 2 {
+                continue;
+            }
+
+            for left_idx in 0..unique_paths.len() {
+                for right_idx in (left_idx + 1)..unique_paths.len() {
+                    let left = unique_paths[left_idx].clone();
+                    let right = unique_paths[right_idx].clone();
+                    let entry = by_pair.entry((left, right)).or_insert((0, 0, 0));
+
+                    entry.0 += 1;
+                    entry.1 += 1;
+                    if mentions_conflict {
+                        entry.0 += 2;
+                        entry.2 += 1;
+                    }
+                }
+            }
+        }
+
+        let mut pairs: Vec<ConflictPair> = by_pair
+            .into_iter()
+            .map(|((left_path, right_path), (score, co_touches, conflict_touches))| ConflictPair {
+                left_path,
+                right_path,
+                co_touches,
+                conflict_touches,
+                score,
+            })
+            .collect();
+
+        pairs.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| b.conflict_touches.cmp(&a.conflict_touches))
+                .then_with(|| b.co_touches.cmp(&a.co_touches))
+                .then_with(|| a.left_path.cmp(&b.left_path))
+                .then_with(|| a.right_path.cmp(&b.right_path))
+        });
+
+        if pairs.len() > 250 {
+            pairs.truncate(250);
+        }
+
+        Ok(pairs)
+    }
+
+    pub fn repository_tree_paths(path: &str, max_count: usize) -> Result<Vec<String>, String> {
+        if max_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let repo_root = Path::new(path)
+            .canonicalize()
+            .map_err(|e| format!("Failed to access repository root: {}", e))?;
+
+        let mut stack = vec![repo_root.clone()];
+        let mut files = Vec::new();
+
+        while let Some(current) = stack.pop() {
+            if files.len() >= max_count {
+                break;
+            }
+
+            let entries = match std::fs::read_dir(&current) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            for entry in entries {
+                let entry = match entry {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+
+                let file_type = match entry.file_type() {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if Self::should_skip_empty_scan_dir(&name) {
+                        continue;
+                    }
+                    stack.push(entry.path());
+                    continue;
+                }
+
+                if !file_type.is_file() {
+                    continue;
+                }
+
+                if let Ok(relative) = entry.path().strip_prefix(&repo_root) {
+                    let normalized = Self::normalize_relative_path(relative);
+                    if !normalized.is_empty() {
+                        files.push(normalized);
+                    }
+                }
+
+                if files.len() >= max_count {
+                    break;
+                }
+            }
+        }
+
+        files.sort();
+        Ok(files)
+    }
+
+    fn resolve_branch_oid(repo: &Repository, branch_name: &str, remote: bool) -> Result<git2::Oid, String> {
+        let trimmed = branch_name.trim();
+        if trimmed.is_empty() {
+            return Err("Branch name cannot be empty.".to_string());
+        }
+
+        let mut candidates: Vec<String> = Vec::new();
+        if trimmed.starts_with("refs/") {
+            candidates.push(trimmed.to_string());
+        }
+
+        if remote {
+            let without_origin = trimmed.strip_prefix("origin/").unwrap_or(trimmed);
+            candidates.push(format!("refs/remotes/origin/{}", without_origin));
+            candidates.push(format!("origin/{}", without_origin));
+        }
+
+        let local_name = trimmed.strip_prefix("refs/heads/").unwrap_or(trimmed);
+        candidates.push(format!("refs/heads/{}", local_name));
+        candidates.push(local_name.to_string());
+
+        let mut seen = HashSet::new();
+        for candidate in candidates {
+            if !seen.insert(candidate.clone()) {
+                continue;
+            }
+
+            let object = match repo.revparse_single(&candidate) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            if let Ok(commit) = object.peel_to_commit() {
+                return Ok(commit.id());
+            }
+        }
+
+        Err(format!("Could not resolve branch reference: {}", trimmed))
+    }
+
+    pub fn merge_preflight_risk(
+        path: &str,
+        source_branch: &str,
+        source_remote: bool,
+        target_branch: &str,
+        max_count: usize,
+        lookback_months: Option<u32>,
+    ) -> Result<MergeRiskPreflight, String> {
+        let repo = GitRepository::open(path)?;
+
+        let source_oid = Self::resolve_branch_oid(&repo, source_branch, source_remote)?;
+        let target_oid = Self::resolve_branch_oid(&repo, target_branch, false)?;
+
+        let source_commit = repo.find_commit(source_oid).map_err(|e| e.message().to_string())?;
+        let target_commit = repo.find_commit(target_oid).map_err(|e| e.message().to_string())?;
+        let base_oid = repo
+            .merge_base(source_oid, target_oid)
+            .map_err(|e| format!("Could not compute merge-base: {}", e.message()))?;
+        let base_commit = repo.find_commit(base_oid).map_err(|e| e.message().to_string())?;
+
+        let source_tree = source_commit.tree().map_err(|e| e.message().to_string())?;
+        let target_tree = target_commit.tree().map_err(|e| e.message().to_string())?;
+        let base_tree = base_commit.tree().map_err(|e| e.message().to_string())?;
+
+        let source_diff = repo
+            .diff_tree_to_tree(Some(&base_tree), Some(&source_tree), None)
+            .map_err(|e| e.message().to_string())?;
+        let target_diff = repo
+            .diff_tree_to_tree(Some(&base_tree), Some(&target_tree), None)
+            .map_err(|e| e.message().to_string())?;
+
+        let source_paths = Self::collect_diff_paths(&source_diff);
+        let target_paths = Self::collect_diff_paths(&target_diff);
+
+        let shared_paths: HashSet<String> = source_paths
+            .intersection(&target_paths)
+            .cloned()
+            .collect();
+
+        let hotspots = Self::conflict_hotspots(path, max_count, lookback_months)?;
+        let hotspots_by_path: HashMap<String, ConflictHotspot> = hotspots
+            .into_iter()
+            .map(|item| (item.path.clone(), item))
+            .collect();
+
+        let mut suspect_files: Vec<ConflictHotspot> = shared_paths
+            .iter()
+            .filter_map(|path_value| hotspots_by_path.get(path_value).cloned())
+            .collect();
+
+        suspect_files.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| b.merge_touches.cmp(&a.merge_touches))
+                .then_with(|| b.collision_index.cmp(&a.collision_index))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+
+        if suspect_files.len() > 20 {
+            suspect_files.truncate(20);
+        }
+
+        let shared_count = shared_paths.len();
+        let suspect_score_sum: usize = suspect_files.iter().map(|item| item.score).sum();
+        let overlap_density_bonus = if source_paths.is_empty() {
+            0
+        } else {
+            (shared_count.saturating_mul(100) / source_paths.len()).min(35)
+        };
+        let risk_score = suspect_score_sum
+            .saturating_add(shared_count.saturating_mul(3))
+            .saturating_add(overlap_density_bonus);
+
+        Ok(MergeRiskPreflight {
+            source_ref: if source_remote {
+                format!("origin/{}", source_branch.trim().trim_start_matches("origin/"))
+            } else {
+                source_branch.trim().to_string()
+            },
+            target_ref: target_branch.trim().to_string(),
+            lookback_months,
+            inspected_merges: max_count,
+            risk_level: Self::merge_risk_level(risk_score),
+            risk_score,
+            shared_change_count: shared_count,
+            suspect_count: suspect_files.len(),
+            suspect_files,
+        })
     }
 
     pub fn commit_tree_paths(path: &str, sha: &str) -> Result<Vec<String>, String> {

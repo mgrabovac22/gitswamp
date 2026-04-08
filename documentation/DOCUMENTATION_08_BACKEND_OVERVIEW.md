@@ -21,11 +21,12 @@ GitSwamp's backend is built with Rust and Tauri, providing type-safe, high-perfo
 ```
 src-tauri/
 ├── src/
-│   ├── commands/                  # Tauri command handlers (12 modules)
+│   ├── commands/                  # Tauri command handlers (active modules)
 │   │   ├── mod.rs                # Module exports
 │   │   ├── repository.rs         # Repository metadata
 │   │   ├── commits.rs            # Commit history
 │   │   ├── commit_files.rs       # Files in commits
+│   │   ├── conflicts.rs          # Conflict analytics and preflight
 │   │   ├── branches.rs           # Branch operations
 │   │   ├── status.rs             # Working directory status
 │   │   ├── diff.rs               # Diff generation
@@ -33,15 +34,18 @@ src-tauri/
 │   │   ├── tags.rs               # Tag operations
 │   │   ├── clone_init.rs         # Repo creation
 │   │   ├── operations.rs         # Advanced operations
-│   │   └── credentials.rs        # Token management
+│   │   ├── ghost.rs              # Ghost branch workflow
+│   │   ├── credentials.rs        # Token management
+│   │   └── logs.rs               # Application logs
 │   │
-│   ├── models/                    # Data models (10 structs)
+│   ├── models/                    # Data models (core + analytics)
 │   │   ├── mod.rs
 │   │   ├── commit.rs
 │   │   ├── branch.rs
 │   │   ├── file_status.rs
 │   │   ├── repository.rs
 │   │   ├── commit_file.rs
+│   │   ├── conflict_hotspot.rs   # Conflict hotspot/pair/preflight models
 │   │   ├── stash.rs
 │   │   ├── tag.rs
 │   │   ├── diff.rs
@@ -501,6 +505,38 @@ Credentials are:
 - Async/await for non-blocking operations
 - Blocking task pool for CPU-intensive work
 - Efficient serialization with serde
+
+## 13. Commit Intelligence Backend Module Placement (2026-04 Update)
+
+This section defines where backend logic for Conflict, Productivity, and Time Machine features must live.
+
+### 13.1 Backend Module Ownership
+
+| Layer | Module File | Responsibility |
+|------|-------------|----------------|
+| Tauri command entry | `src-tauri/src/commands/conflicts.rs` | Exposes conflict analytics commands (`get_conflict_hotspots`, `get_conflict_pairs`, `get_repository_tree_paths`, `get_merge_preflight_risk`) |
+| Tauri command entry | `src-tauri/src/commands/commits.rs` | Exposes history and analytics support commands (`get_commits`, `get_author_deletion_stats`, `get_commit_tree_paths`) |
+| Command registration | `src-tauri/src/lib.rs` | Registers all invoke handlers and keeps command surface centralized |
+| Service execution | `src-tauri/src/services/git_service.rs` | Heavy git2/libgit2 operations, scoring, filtering, preflight merge analysis, tree path extraction, deletion statistics |
+| Data contracts | `src-tauri/src/models/conflict_hotspot.rs` | `ConflictHotspot`, `ConflictPair`, `MergeRiskPreflight` payload contracts |
+| Model export surface | `src-tauri/src/models/mod.rs` | Canonical model exports used by command modules |
+
+### 13.2 Placement Rules (Backend)
+
+1. `commands/*` files must remain thin wrappers: parse input, spawn blocking task, return typed result.
+2. Analytics computation and repository traversal must stay in `services/git_service.rs`.
+3. New payload structs must be added under `models/` and re-exported in `models/mod.rs`.
+4. New Tauri commands must be wired in `lib.rs` invoke handler list.
+5. Performance-sensitive loops (history scans, diff stats) should run in blocking runtime and avoid repeated repository reopen.
+
+### 13.3 Frontend-to-Backend Bridge for Updated Panels
+
+| Frontend panel | Required backend commands |
+|---------------|---------------------------|
+| Conflict suspects panel | `get_conflict_hotspots`, `get_conflict_pairs`, `get_repository_tree_paths` |
+| Merge flow pre-check | `get_merge_preflight_risk` |
+| Productivity arena | `get_commits`, `get_author_deletion_stats`, `get_conflict_hotspots` |
+| Time Machine | `get_commits`, `get_commit_files`, `get_commit_tree_paths`, `get_file_content` |
 
 ---
 

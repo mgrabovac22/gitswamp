@@ -52,8 +52,15 @@ const selectedExplorerFileContent = ref("");
 const explorerFileLoading = ref(false);
 const explorerFileError = ref("");
 const panelScrollContainer = ref<HTMLElement | null>(null);
+
+const commitFilesCache = new Map<string, CommitFileInfo[]>();
+const commitTreeCache = new Map<string, string[]>();
+const fileContentCache = new Map<string, string>();
+
 let autoplayTimer: number | null = null;
+let snapshotScheduleTimer: number | null = null;
 let snapshotRunToken = 0;
+let explorerRunToken = 0;
 let pendingAutoplayScrollRestore = false;
 let lastAutoplayScrollTop = 0;
 
@@ -294,6 +301,7 @@ function clampIndex(index: number): number {
 }
 
 function moveFrame(step: number) {
+  capturePanelScrollPosition();
   selectedIndex.value = clampIndex(selectedIndex.value + step);
 }
 
@@ -332,8 +340,7 @@ function toggleAutoplayDirection() {
   autoPlayDirection.value = autoPlayDirection.value === 1 ? -1 : 1;
 }
 
-function captureAutoplayScrollPosition() {
-  if (!autoPlay.value) return;
+function capturePanelScrollPosition() {
   const container = panelScrollContainer.value;
   if (!container) return;
 
@@ -361,13 +368,20 @@ function clearAutoplayTimer() {
   }
 }
 
+function clearSnapshotScheduleTimer() {
+  if (snapshotScheduleTimer !== null) {
+    globalThis.clearTimeout(snapshotScheduleTimer);
+    snapshotScheduleTimer = null;
+  }
+}
+
 function advanceAutoplayFrame() {
   if (historyCommits.value.length === 0) {
     stopAutoplay();
     return;
   }
 
-  captureAutoplayScrollPosition();
+  capturePanelScrollPosition();
 
   if (autoPlayDirection.value === 1) {
     if (selectedIndex.value >= historyCommits.value.length - 1) {
@@ -400,6 +414,14 @@ function startAutoplay() {
   }, 1200);
 }
 
+function scheduleSnapshotLoad() {
+  clearSnapshotScheduleTimer();
+  const delay = autoPlay.value ? 220 : 60;
+  snapshotScheduleTimer = globalThis.setTimeout(() => {
+    void loadSnapshotData();
+  }, delay);
+}
+
 async function copyRollbackCommand() {
   if (!rollbackCommand.value) return;
   try {
@@ -416,29 +438,46 @@ function resetExplorerSelection() {
   explorerFileLoading.value = false;
 }
 
-async function loadExplorerFile(path: string) {
-  if (!props.repoPath || !selectedCommit.value) return;
+async function loadExplorerFile(path: string, shaOverride?: string) {
+  if (!props.repoPath) return;
+
+  const sha = shaOverride ?? selectedCommit.value?.sha;
+  if (!sha) return;
+
+  explorerRunToken += 1;
+  const runToken = explorerRunToken;
+  const cacheKey = `${props.repoPath}::${sha}::${path}`;
+
   selectedExplorerFilePath.value = path;
-  selectedExplorerFileContent.value = "";
   explorerFileError.value = "";
+
+  const cachedContent = fileContentCache.get(cacheKey);
+  if (cachedContent !== undefined) {
+    selectedExplorerFileContent.value = cachedContent;
+    explorerFileLoading.value = false;
+    return;
+  }
+
   explorerFileLoading.value = true;
 
   try {
     const content = await invoke<string>("get_file_content", {
       path: props.repoPath,
       filePath: path,
-      sha: selectedCommit.value.sha,
+      sha,
     });
-    if (selectedExplorerFilePath.value !== path) {
+    if (runToken !== explorerRunToken || selectedExplorerFilePath.value !== path) {
       return;
     }
+
+    fileContentCache.set(cacheKey, content);
     selectedExplorerFileContent.value = content;
   } catch {
-    if (selectedExplorerFilePath.value === path) {
+    if (runToken === explorerRunToken && selectedExplorerFilePath.value === path) {
       explorerFileError.value = "Could not preview this file snapshot.";
     }
   } finally {
-    if (selectedExplorerFilePath.value === path) {
+    if (runToken === explorerRunToken && selectedExplorerFilePath.value === path) {
       explorerFileLoading.value = false;
     }
   }
@@ -460,11 +499,60 @@ async function openEntry(entry: SnapshotEntry) {
   await loadExplorerFile(entry.path);
 }
 
+function snapshotCacheKey(sha: string): string {
+  return `${props.repoPath}::${sha}`;
+}
+
+function pathExistsInSnapshot(path: string): boolean {
+  if (!path) return false;
+  return snapshotPaths.value.includes(path);
+}
+
+function directoryExistsInSnapshot(path: string): boolean {
+  if (!path) return true;
+  return snapshotPaths.value.some((entry) => entry === path || entry.startsWith(`${path}/`));
+}
+
+async function syncExplorerPreviewForCommit(sha: string) {
+  if (!directoryExistsInSnapshot(currentDirectory.value)) {
+    currentDirectory.value = "";
+  }
+
+  const preferredPath =
+    (pathExistsInSnapshot(selectedExplorerFilePath.value) && selectedExplorerFilePath.value)
+    || (pathExistsInSnapshot(selectedFilePath.value) && selectedFilePath.value)
+    || snapshotPaths.value[0]
+    || "";
+
+  if (!preferredPath) {
+    selectedExplorerFilePath.value = "";
+    selectedExplorerFileContent.value = "";
+    explorerFileError.value = "";
+    explorerFileLoading.value = false;
+    return;
+  }
+
+  selectedExplorerFilePath.value = preferredPath;
+
+  if (autoPlay.value) {
+    const cachedContent = fileContentCache.get(`${props.repoPath}::${sha}::${preferredPath}`);
+    if (cachedContent !== undefined) {
+      selectedExplorerFileContent.value = cachedContent;
+      explorerFileError.value = "";
+    }
+    explorerFileLoading.value = false;
+    return;
+  }
+
+  await loadExplorerFile(preferredPath, sha);
+}
+
 async function loadSnapshotData() {
   snapshotRunToken += 1;
   const runToken = snapshotRunToken;
 
-  if (!props.repoPath || !selectedCommit.value) {
+  const commit = selectedCommit.value;
+  if (!props.repoPath || !commit) {
     if (runToken === snapshotRunToken) {
       selectedFiles.value = [];
       snapshotPaths.value = [];
@@ -479,22 +567,49 @@ async function loadSnapshotData() {
     return;
   }
 
-  filesLoading.value = true;
-  treeLoading.value = true;
+  const cacheKey = snapshotCacheKey(commit.sha);
+  const cachedFiles = commitFilesCache.get(cacheKey);
+  const cachedTree = commitTreeCache.get(cacheKey);
+
   filesError.value = "";
   treeError.value = "";
-  selectedFilePath.value = "";
-  resetExplorerSelection();
+
+  if (cachedFiles) {
+    selectedFiles.value = cachedFiles;
+    if (!cachedFiles.some((item) => item.path === selectedFilePath.value)) {
+      selectedFilePath.value = cachedFiles[0]?.path || "";
+    }
+    filesLoading.value = false;
+  } else {
+    filesLoading.value = true;
+  }
+
+  if (cachedTree) {
+    snapshotPaths.value = cachedTree;
+    treeLoading.value = false;
+  } else {
+    treeLoading.value = true;
+  }
+
+  if (cachedFiles && cachedTree) {
+    await syncExplorerPreviewForCommit(commit.sha);
+    await restoreAutoplayScrollIfNeeded();
+    return;
+  }
 
   const [filesResult, treeResult] = await Promise.allSettled([
-    invoke<CommitFileInfo[]>("get_commit_files", {
-      path: props.repoPath,
-      sha: selectedCommit.value.sha,
-    }),
-    invoke<string[]>("get_commit_tree_paths", {
-      path: props.repoPath,
-      sha: selectedCommit.value.sha,
-    }),
+    cachedFiles
+      ? Promise.resolve(cachedFiles)
+      : invoke<CommitFileInfo[]>("get_commit_files", {
+        path: props.repoPath,
+        sha: commit.sha,
+      }),
+    cachedTree
+      ? Promise.resolve(cachedTree)
+      : invoke<string[]>("get_commit_tree_paths", {
+        path: props.repoPath,
+        sha: commit.sha,
+      }),
   ]);
 
   if (runToken !== snapshotRunToken) {
@@ -503,26 +618,24 @@ async function loadSnapshotData() {
 
   if (filesResult.status === "fulfilled") {
     selectedFiles.value = filesResult.value;
-    selectedFilePath.value = filesResult.value[0]?.path || "";
+    commitFilesCache.set(cacheKey, filesResult.value);
+    if (!filesResult.value.some((item) => item.path === selectedFilePath.value)) {
+      selectedFilePath.value = filesResult.value[0]?.path || "";
+    }
   } else {
-    selectedFiles.value = [];
-    selectedFilePath.value = "";
     filesError.value = "Could not load commit snapshot files.";
   }
 
   if (treeResult.status === "fulfilled") {
     snapshotPaths.value = treeResult.value;
-    const firstPath = treeResult.value[0] || "";
-    if (firstPath) {
-      await loadExplorerFile(firstPath);
-    }
+    commitTreeCache.set(cacheKey, treeResult.value);
   } else {
-    snapshotPaths.value = [];
     treeError.value = "Could not load directory snapshot for this commit.";
   }
 
   filesLoading.value = false;
   treeLoading.value = false;
+  await syncExplorerPreviewForCommit(commit.sha);
   await restoreAutoplayScrollIfNeeded();
 }
 
@@ -568,7 +681,12 @@ watch(
   () => props.repoPath,
   () => {
     stopAutoplay();
+    clearSnapshotScheduleTimer();
+    commitFilesCache.clear();
+    commitTreeCache.clear();
+    fileContentCache.clear();
     selectedIndex.value = 0;
+    resetExplorerSelection();
     void loadFullHistory();
   },
   { immediate: true },
@@ -630,6 +748,7 @@ watch(
       startAutoplay();
     } else {
       clearAutoplayTimer();
+      scheduleSnapshotLoad();
     }
   },
 );
@@ -646,12 +765,13 @@ watch(
 watch(
   () => selectedCommit.value?.sha,
   () => {
-    void loadSnapshotData();
+    scheduleSnapshotLoad();
   },
 );
 
 onUnmounted(() => {
   stopAutoplay();
+  clearSnapshotScheduleTimer();
 });
 </script>
 
@@ -806,14 +926,13 @@ onUnmounted(() => {
             </div>
           </article>
 
-          <article class="tm-card">
+          <article class="tm-card tm-subcard-shell">
             <div class="flex items-center justify-between gap-2 mb-2.5">
               <h3 class="text-sm font-semibold text-[var(--foreground)]">Snapshot file changes</h3>
               <div class="text-[11px] text-[var(--primary)]">+{{ totalAdditions }} / -{{ totalDeletions }}</div>
             </div>
 
-            <div v-if="filesLoading" class="text-xs text-[var(--muted-foreground)]">Loading snapshot files...</div>
-            <div v-else-if="filesError" class="text-xs text-[var(--destructive)]">{{ filesError }}</div>
+            <div v-if="filesError && selectedFiles.length === 0" class="text-xs text-[var(--destructive)]">{{ filesError }}</div>
             <div v-else-if="selectedFiles.length === 0" class="text-xs text-[var(--muted-foreground)]">No changed files in this snapshot.</div>
             <div v-else class="space-y-2 max-h-[360px] overflow-y-auto pr-1">
               <div
@@ -830,6 +949,11 @@ onUnmounted(() => {
                   <span>{{ file.status }}</span>
                 </div>
               </div>
+            </div>
+
+            <div v-if="filesLoading" class="tm-subcard-overlay">
+              <img :src="logoCrocLoading" alt="Loading snapshot files" class="mini-loader-logo" />
+              <div class="text-[11px] text-[var(--foreground)] font-semibold">Loading snapshot files</div>
             </div>
           </article>
         </section>
@@ -855,12 +979,8 @@ onUnmounted(() => {
         </div>
 
         <div class="grid grid-cols-1 xl:grid-cols-[0.85fr_1.15fr] gap-3">
-          <article class="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45 p-2.5">
-            <div v-if="treeLoading" class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
-              <img :src="logoCrocLoading" alt="Loading tree" class="mini-loader-logo" />
-              Loading snapshot directory tree...
-            </div>
-            <div v-else-if="treeError" class="text-xs text-[var(--destructive)]">{{ treeError }}</div>
+          <article class="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45 p-2.5 tm-subcard-shell">
+            <div v-if="treeError && directoryEntries.length === 0" class="text-xs text-[var(--destructive)]">{{ treeError }}</div>
             <div v-else-if="directoryEntries.length === 0" class="text-xs text-[var(--muted-foreground)]">No entries in this directory.</div>
             <div v-else class="max-h-[300px] overflow-y-auto space-y-1 pr-1">
               <button
@@ -877,19 +997,25 @@ onUnmounted(() => {
                 <span v-if="entry.type === 'file'" class="entry-lang">{{ entryVisual(entry).label }}</span>
               </button>
             </div>
+
+            <div v-if="treeLoading" class="tm-subcard-overlay">
+              <img :src="logoCrocLoading" alt="Loading tree" class="mini-loader-logo" />
+              <div class="text-[11px] text-[var(--foreground)] font-semibold">Loading snapshot tree</div>
+            </div>
           </article>
 
-          <article class="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45 p-2.5">
+          <article class="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45 p-2.5 tm-subcard-shell">
             <div class="text-[11px] text-[var(--muted-foreground)] mb-2">
               {{ selectedExplorerFilePath ? selectedExplorerFilePath : "Select a file to preview snapshot content" }}
             </div>
-            <div v-if="explorerFileLoading" class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
-              <img :src="logoCrocLoading" alt="Loading file" class="mini-loader-logo" />
-              Loading file snapshot...
-            </div>
-            <div v-else-if="explorerFileError" class="text-xs text-[var(--destructive)]">{{ explorerFileError }}</div>
+            <div v-if="explorerFileError && !selectedExplorerFileContent" class="text-xs text-[var(--destructive)]">{{ explorerFileError }}</div>
             <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text">{{ selectedExplorerFileContent }}</pre>
             <div v-else class="text-xs text-[var(--muted-foreground)]">No file selected.</div>
+
+            <div v-if="explorerFileLoading" class="tm-subcard-overlay">
+              <img :src="logoCrocLoading" alt="Loading file" class="mini-loader-logo" />
+              <div class="text-[11px] text-[var(--foreground)] font-semibold">Loading file snapshot</div>
+            </div>
           </article>
         </div>
       </section>
@@ -915,6 +1041,24 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--card) 90%, transparent);
   padding: 1rem;
+}
+
+.tm-subcard-shell {
+  position: relative;
+  overflow: hidden;
+}
+
+.tm-subcard-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  background: color-mix(in srgb, var(--background) 76%, transparent);
+  backdrop-filter: blur(1.5px);
 }
 
 .timeline-slider {

@@ -801,6 +801,45 @@ Components use proper semantic HTML elements:
 - `aria-expanded` for collapsibles
 - Keyboard navigation support
 
+## 13. Commit Intelligence Module Placement (2026-04 Update)
+
+This section defines where the updated analytics modules belong and what each module owns.
+
+### 13.1 Frontend Module Map (Required Locations)
+
+| Layer | Module File | Responsibility |
+|------|-------------|----------------|
+| History panel UI | `src/view/commit/CommitConflictHeatmapPanel.vue` | Conflict suspects UI, repository tree heatmap, conflict pair analytics, per-section loaders, caching and stream orchestration |
+| History panel UI | `src/view/commit/CommitProductivityPanel.vue` | Productivity metrics, diagnostics cards, per-section loader overlays, stream-level async loading |
+| History panel UI | `src/view/commit/CommitTimeMachinePanel.vue` | Timeline scrubber, autoplay navigation, snapshot explorer, no-flicker frame transitions with cached snapshots |
+| Graph layout helper | `src/view/commit/graph/useCommitGraphLayout.ts` | Commit graph lane/path layout including conflict node/edge alignment behavior |
+| Domain action orchestration | `src/domain/git/composables/gitBranchActions.ts` | Merge workflow orchestration, merge preflight risk check, confirmation and toast messaging |
+| Frontend data model | `src/types/models/conflictHotspot.ts` | Conflict hotspot contract (including collision index fields used by heatmap/tree) |
+| Frontend data model | `src/types/models/conflictAnalytics.ts` | Risk pair model and merge preflight model contracts |
+| Frontend model export | `src/types/models/index.ts` | Canonical exports so panels import from one stable entry point |
+
+### 13.2 Placement Rules (Where New Code Should Go)
+
+1. Panel-specific rendering logic must stay inside the matching panel under `src/view/commit/`.
+2. Cross-panel Git actions (merge, checkout, branch workflows) must stay in `src/domain/git/composables/`.
+3. Shared DTO/type contracts must stay in `src/types/models/` and be re-exported in `src/types/models/index.ts`.
+4. Pure graph math and lane calculations must stay in `src/view/commit/graph/`.
+5. UI-only helpers can live in panel-local functions; domain or reusable helpers must not be embedded in unrelated view files.
+
+### 13.3 Loading and Performance Contract
+
+For the commit intelligence views, use these frontend rules:
+
+1. Each visual section owns its loader overlay (do not use one global blocking loader for the whole panel).
+2. Keep previous successful data visible until replacement data is ready, then swap atomically.
+3. Use stream tokens (run-token pattern) to discard stale async results.
+4. Cache by key:
+  - Conflict hotspots/pairs by `repo + commitWindow`
+  - Conflict tree paths by `repo`
+  - Time Machine snapshot files/tree by `repo + commitSha`
+  - Time Machine file preview by `repo + commitSha + filePath`
+5. Autoplay in Time Machine must schedule snapshot loads with small delay to avoid flicker during rapid frame changes.
+
 ---
 
 **Related Documentation:**

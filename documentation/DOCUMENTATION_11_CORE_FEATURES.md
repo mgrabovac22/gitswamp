@@ -685,6 +685,45 @@ async function checkoutCommit(commitId: string) {
 
 **Backend Command:** `invoke("open_path_with_tool", { path, tool })`
 
+## 11. Commit Intelligence Modules (Conflict + Productivity + Time Machine)
+
+This section documents updated module ownership and where each module must live.
+
+### 11.1 Frontend Ownership Map
+
+| Feature Area | Module File | Must Own |
+|-------------|-------------|----------|
+| Conflict suspects panel | `src/view/commit/CommitConflictHeatmapPanel.vue` | Hotspots stream, pairs stream, repository tree stream, per-element loaders, conflict diagnostics cards |
+| Productivity arena | `src/view/commit/CommitProductivityPanel.vue` | Stream-based metrics blocks, diagnostics section, per-element loaders, section-level performance caching |
+| Time machine | `src/view/commit/CommitTimeMachinePanel.vue` | Timeline stepping/autoplay, snapshot explorer, cached commit snapshots, smooth no-flicker transitions |
+| Merge preflight bridge | `src/domain/git/composables/gitBranchActions.ts` | Merge-risk pre-check orchestration and user confirmation prompt flow |
+| Shared analytics models | `src/types/models/conflictHotspot.ts`, `src/types/models/conflictAnalytics.ts` | Typed contracts shared between panels and Tauri payloads |
+
+### 11.2 Backend Ownership Map
+
+| Feature Area | Module File | Must Own |
+|-------------|-------------|----------|
+| Conflict command surface | `src-tauri/src/commands/conflicts.rs` | Tauri commands for hotspots, pairs, repo tree paths, merge preflight risk |
+| Productivity support commands | `src-tauri/src/commands/commits.rs` | Commits, author deletion stats, commit tree paths |
+| Heavy analytics logic | `src-tauri/src/services/git_service.rs` | Scoring, filtering windows, conflict pairing, preflight computation, deletion-stat optimization |
+| Analytics payload contracts | `src-tauri/src/models/conflict_hotspot.rs` | `ConflictHotspot`, `ConflictPair`, `MergeRiskPreflight` |
+| Command registration | `src-tauri/src/lib.rs` | `invoke_handler` registration for all above commands |
+
+### 11.3 Placement and Change Rules
+
+1. Keep UI rendering and section loader behavior in panel files under `src/view/commit/`.
+2. Keep cross-feature branch/merge orchestration in `src/domain/git/composables/`.
+3. Keep backend command handlers thin; move heavy compute to `src-tauri/src/services/git_service.rs`.
+4. Add or change payload shape only in model files under `src-tauri/src/models/` and `src/types/models/`.
+5. Wire every new command in `src-tauri/src/lib.rs` and update `DOCUMENTATION_09_COMMANDS_REFERENCE.md` in the same change.
+
+### 11.4 Performance Baseline for These Features
+
+1. Use per-stream or per-section loading (avoid full-panel hard blocking unless absolutely required).
+2. Cache by stable keys (`repo`, `repo + window`, `repo + sha`, `repo + sha + filePath`).
+3. Use stale-run tokens for async stream safety.
+4. Time Machine autoplay must use scheduled snapshot refresh to reduce frame flicker.
+
 ---
 
 **Related Documentation:**

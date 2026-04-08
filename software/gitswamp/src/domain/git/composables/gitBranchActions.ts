@@ -1,4 +1,4 @@
-import type { RepoInfo } from "@/types";
+import type { RepoInfo, MergeRiskPreflight } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
 
 import { callTauri } from "./gitCall";
@@ -10,7 +10,48 @@ type RefreshDeps = {
   refreshStatus: () => Promise<void>;
 };
 
+function buildPreflightMessage(report: MergeRiskPreflight): string {
+  const samples = report.suspect_files
+    .slice(0, 5)
+    .map((item) => `- ${item.path}`)
+    .join("\n");
+
+  return [
+    `Merge pre-check flagged ${report.risk_level.toUpperCase()} risk for ${report.source_ref} -> ${report.target_ref}.`,
+    `Shared changed files: ${report.shared_change_count}`,
+    `Suspect files: ${report.suspect_count}`,
+    "",
+    "Top suspects:",
+    samples || "- no suspect files",
+    "",
+    "Continue merge?",
+  ].join("\n");
+}
+
 export function createBranchActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
+  async function fetchMergePreflight(
+    sourceBranch: string,
+    sourceRemote: boolean,
+    targetBranch: string,
+  ): Promise<MergeRiskPreflight | null> {
+    if (!state.repoPath.value) {
+      return null;
+    }
+
+    try {
+      return await callTauri<MergeRiskPreflight>("get_merge_preflight_risk", {
+        path: state.repoPath.value,
+        sourceBranch,
+        sourceRemote,
+        targetBranch,
+        maxCount: 500,
+        lookbackMonths: 6,
+      });
+    } catch {
+      return null;
+    }
+  }
+
   async function checkoutBranch(branchName: string) {
     if (!state.repoPath.value) return;
     if (state.hasConflicts.value) {
@@ -87,6 +128,25 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       return;
     }
     const sourceRef = sourceRemote ? `origin/${sourceBranch}` : sourceBranch;
+
+    const preflight = await fetchMergePreflight(sourceBranch, sourceRemote, target);
+    if (preflight && preflight.risk_level !== "low" && preflight.suspect_count > 0) {
+      const confirmed = typeof globalThis.confirm === "function"
+        ? globalThis.confirm(buildPreflightMessage(preflight))
+        : true;
+
+      if (!confirmed) {
+        toast.info("Merge cancelled after risk pre-check.");
+        return;
+      }
+
+      toast.warning(
+        `Proceeding with ${preflight.risk_level} merge risk (${preflight.suspect_count} suspect files).`,
+      );
+    } else if (preflight && preflight.suspect_count > 0) {
+      toast.info(`Pre-check: ${preflight.suspect_count} suspect files detected for this merge path.`);
+    }
+
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading(`Loading: merging ${sourceRef} into ${target}...`);

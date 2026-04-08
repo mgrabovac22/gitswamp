@@ -19,7 +19,7 @@ pub use commit_file::CommitFileInfo;
 pub use branch::BranchInfo;
 pub use diff::{DiffLine, DiffHunk, FileDiff};
 pub use file_status::FileStatusInfo;
-pub use conflict_hotspot::ConflictHotspot;
+pub use conflict_hotspot::{ConflictHotspot, ConflictPair, MergeRiskPreflight};
 pub use github::GithubRepo;
 pub use gitlab::GitlabRepo;
 pub use bitbucket::BitbucketRepo;

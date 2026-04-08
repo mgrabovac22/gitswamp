@@ -2,12 +2,13 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
-import type { CommitInfo } from "@/types";
+import type { CommitInfo, ConflictHotspot } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
 const PREVIEW_HISTORY_LIMIT = 300;
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const loadingLetters = ["L", "o", "a", "d", "i", "n", "g"];
+const REGRESSION_SIGNAL_RE = /\b(regression|regress|bug|fix|hotfix|rollback|revert)\b/i;
+const loadingLetters = "LOADING".split("");
 
 const props = defineProps<{
   repoPath: string;
@@ -37,12 +38,24 @@ const historyError = ref("");
 const bugKillers = ref<BugKillerRow[]>([]);
 const bugKillerLoading = ref(false);
 const bugKillerError = ref("");
+const conflictHotspots = ref<ConflictHotspot[]>([]);
+const conflictLoading = ref(false);
+const conflictError = ref("");
 const loadAllHistory = ref(false);
 const selectedAuthor = ref("all");
+
+const commitCache = new Map<string, CommitInfo[]>();
+const killerCache = new Map<string, BugKillerRow[]>();
+const conflictCache = new Map<string, ConflictHotspot[]>();
+
 let loadRunToken = 0;
 
 const activeHistoryLimit = computed(() =>
   loadAllHistory.value ? FULL_HISTORY_LIMIT : PREVIEW_HISTORY_LIMIT,
+);
+
+const firstArenaError = computed(
+  () => historyError.value || bugKillerError.value || conflictError.value,
 );
 
 function dayKeyFromDate(date: Date): string {
@@ -225,6 +238,23 @@ const weekendCommitRatio = computed(() => {
   return Math.round((weekendCommits.value / totalCommits.value) * 100);
 });
 
+const offHoursCommits = computed(() => {
+  let total = 0;
+  for (const commit of filteredHistoryCommits.value) {
+    const value = Math.abs(commit.timestamp) < 1000000000000 ? commit.timestamp * 1000 : commit.timestamp;
+    const hour = new Date(value).getHours();
+    if (hour < 8 || hour >= 19) {
+      total += 1;
+    }
+  }
+  return total;
+});
+
+const offHoursCommitRatio = computed(() => {
+  if (totalCommits.value === 0) return 0;
+  return Math.round((offHoursCommits.value / totalCommits.value) * 100);
+});
+
 const hourlyCounts = computed(() => {
   const values = Array.from({ length: 24 }, () => 0);
   for (const commit of filteredHistoryCommits.value) {
@@ -269,6 +299,21 @@ const topWeekday = computed(() => {
   return WEEKDAY_LABELS[index];
 });
 
+const top3DayLoadShare = computed(() => {
+  if (totalCommits.value === 0) return 0;
+  const dailyLoads = Array.from(commitsPerDay.value.values()).sort((a, b) => b - a);
+  const topLoad = dailyLoads.slice(0, 3).reduce((sum, count) => sum + count, 0);
+  return Math.round((topLoad / totalCommits.value) * 100);
+});
+
+const throughputVolatility = computed(() => {
+  const dailyLoads = Array.from(commitsPerDay.value.values());
+  if (dailyLoads.length === 0) return 0;
+  const average = dailyLoads.reduce((sum, count) => sum + count, 0) / dailyLoads.length;
+  const variance = dailyLoads.reduce((sum, count) => sum + (count - average) ** 2, 0) / dailyLoads.length;
+  return Math.round(Math.sqrt(variance) * 10) / 10;
+});
+
 const authorCommitCounts = computed(() => {
   const byAuthor = new Map<string, number>();
   for (const commit of filteredHistoryCommits.value) {
@@ -293,6 +338,29 @@ const topContributor = computed(() => {
     name: selected,
     commits: maxValue,
   };
+});
+
+const topContributorShare = computed(() => {
+  if (totalCommits.value === 0) return 0;
+  return Math.round((topContributor.value.commits / totalCommits.value) * 100);
+});
+
+const contributionBalanceScore = computed(() => {
+  const values = Array.from(authorCommitCounts.value.values());
+  if (values.length <= 1) return 100;
+
+  const total = values.reduce((sum, count) => sum + count, 0);
+  if (total <= 0) return 100;
+
+  let entropy = 0;
+  for (const count of values) {
+    const p = count / total;
+    entropy += -p * Math.log2(p);
+  }
+
+  const maxEntropy = Math.log2(values.length);
+  if (maxEntropy <= 0) return 100;
+  return Math.round((entropy / maxEntropy) * 100);
 });
 
 const heatCells = computed<HeatCell[]>(() => {
@@ -366,10 +434,21 @@ const displayedBugKillers = computed(() => {
   return bugKillers.value.filter((row) => row.author === selectedAuthor.value);
 });
 
-const topBugKiller = computed(() => displayedBugKillers.value[0] ?? null);
+const leaderboardRows = computed(() => displayedBugKillers.value.slice(0, 8));
+
+const topBugKiller = computed(() => leaderboardRows.value[0] ?? null);
 const maxKillerDeletes = computed(() => {
-  const maxValue = displayedBugKillers.value.reduce((max, row) => Math.max(max, row.deletions), 0);
+  const maxValue = leaderboardRows.value.reduce((max, row) => Math.max(max, row.deletions), 0);
   return maxValue <= 0 ? 1 : maxValue;
+});
+
+const totalDeletedLines = computed(() =>
+  displayedBugKillers.value.reduce((sum, row) => sum + row.deletions, 0),
+);
+
+const deletionsPerCommit = computed(() => {
+  if (totalCommits.value === 0) return 0;
+  return Math.round(totalDeletedLines.value / totalCommits.value);
 });
 
 const productivityRank = computed(() => {
@@ -388,6 +467,118 @@ const arenaHealthScore = computed(() => {
   return Math.min(100, streakPart + mergePart + activityPart);
 });
 
+const regressionSignalCommits = computed(() =>
+  filteredHistoryCommits.value.filter((commit) => REGRESSION_SIGNAL_RE.test(commit.message || "")).length,
+);
+
+const regressionSignalRate = computed(() => {
+  if (totalCommits.value === 0) return 0;
+  return Math.round((regressionSignalCommits.value / totalCommits.value) * 100);
+});
+
+const totalConflictMentions = computed(() =>
+  conflictHotspots.value.reduce((sum, item) => sum + item.conflict_mentions, 0),
+);
+
+const totalConflictMergeTouches = computed(() =>
+  conflictHotspots.value.reduce((sum, item) => sum + item.merge_touches, 0),
+);
+
+const conflictMentionDensity = computed(() => {
+  if (totalConflictMergeTouches.value === 0) return 0;
+  return Math.round((totalConflictMentions.value / totalConflictMergeTouches.value) * 100);
+});
+
+const highRiskConflictFiles = computed(() => {
+  if (conflictHotspots.value.length === 0) return 0;
+  const maxScore = conflictHotspots.value.reduce((best, item) => Math.max(best, item.score), 0);
+  const threshold = maxScore * 0.65;
+  return conflictHotspots.value.filter((item) => item.score >= threshold).length;
+});
+
+const collaborationIntensityScore = computed(() => {
+  const authorPart = Math.min(35, uniqueAuthors.value * 6);
+  const mergePart = Math.min(35, mergeCommitRatio.value);
+  const activityPart = Math.min(30, Math.round(averageCommitsPerDay.value * 9));
+  return Math.min(100, authorPart + mergePart + activityPart);
+});
+
+const bottleneckScore = computed(() => {
+  const burstPart = Math.min(35, Math.round(top3DayLoadShare.value * 0.35));
+  const ownershipPart = Math.min(30, Math.round(topContributorShare.value * 0.3));
+  const offHoursPart = Math.min(20, Math.round(offHoursCommitRatio.value * 0.2));
+  const volatilityPart = Math.min(15, Math.round(throughputVolatility.value * 3));
+  return Math.min(100, burstPart + ownershipPart + offHoursPart + volatilityPart);
+});
+
+const stabilityRiskScore = computed(() => {
+  const regressionPart = Math.min(35, Math.round(regressionSignalRate.value * 0.6));
+  const conflictPart = Math.min(35, Math.round(conflictMentionDensity.value * 0.8));
+  const bottleneckPart = Math.min(30, Math.round(bottleneckScore.value * 0.3));
+  return Math.min(100, regressionPart + conflictPart + bottleneckPart);
+});
+
+const mergePerActiveDay = computed(() => {
+  if (activeDays.value === 0) return 0;
+  return Math.round((mergeCommits.value / activeDays.value) * 100) / 100;
+});
+
+const busFactorRisk = computed(() => Math.min(100, topContributorShare.value));
+
+const recoveryPressure = computed(() =>
+  Math.min(100, Math.round(regressionSignalRate.value * 0.55 + conflictMentionDensity.value * 0.45)),
+);
+
+const contextSwitchPressure = computed(() =>
+  Math.min(100, Math.round(offHoursCommitRatio.value * 0.42 + top3DayLoadShare.value * 0.58)),
+);
+
+function scoreBand(score: number): string {
+  if (score >= 75) return "Critical";
+  if (score >= 55) return "High";
+  if (score >= 30) return "Moderate";
+  return "Low";
+}
+
+function scoreBandStyle(score: number): Record<string, string> {
+  if (score >= 75) {
+    return {
+      borderColor: "rgba(239, 68, 68, 0.72)",
+      color: "rgba(254, 202, 202, 1)",
+      background: "rgba(127, 29, 29, 0.45)",
+    };
+  }
+
+  if (score >= 55) {
+    return {
+      borderColor: "rgba(251, 146, 60, 0.62)",
+      color: "rgba(254, 215, 170, 1)",
+      background: "rgba(124, 45, 18, 0.38)",
+    };
+  }
+
+  if (score >= 30) {
+    return {
+      borderColor: "rgba(250, 204, 21, 0.55)",
+      color: "rgba(254, 243, 199, 1)",
+      background: "rgba(113, 63, 18, 0.34)",
+    };
+  }
+
+  return {
+    borderColor: "rgba(74, 222, 128, 0.45)",
+    color: "rgba(187, 247, 208, 1)",
+    background: "rgba(20, 83, 45, 0.34)",
+  };
+}
+
+function scoreMeterStyle(score: number): Record<string, string> {
+  return {
+    width: `${Math.max(4, Math.min(100, Math.round(score)))}%`,
+    background: `color-mix(in srgb, var(--primary) ${Math.min(90, 25 + Math.round(score * 0.6))}%, var(--chart-2))`,
+  };
+}
+
 function normalizeBugKillerRows(rows: AuthorDeletionTuple[]): BugKillerRow[] {
   return rows
     .map(([author, deletions, commits]) => ({
@@ -395,8 +586,7 @@ function normalizeBugKillerRows(rows: AuthorDeletionTuple[]): BugKillerRow[] {
       deletions: Number(deletions) || 0,
       commits: Number(commits) || 0,
     }))
-    .filter((row) => row.deletions > 0)
-    .slice(0, 8);
+    .filter((row) => row.deletions > 0);
 }
 
 async function loadArenaData() {
@@ -405,55 +595,129 @@ async function loadArenaData() {
   const maxCount = activeHistoryLimit.value;
 
   if (!props.repoPath) {
-    historyCommits.value = [];
-    bugKillers.value = [];
+    resetArenaState();
+    return;
+  }
+
+  startArenaLoading();
+
+  void loadCommitsForRun(runToken, maxCount);
+  void loadBugKillerStatsForRun(runToken, maxCount);
+  void loadConflictSignalsForRun(runToken, maxCount);
+}
+
+function resetArenaState() {
+  historyCommits.value = [];
+  bugKillers.value = [];
+  conflictHotspots.value = [];
+  historyLoading.value = false;
+  bugKillerLoading.value = false;
+  conflictLoading.value = false;
+  historyError.value = "";
+  bugKillerError.value = "";
+  conflictError.value = "";
+}
+
+function startArenaLoading() {
+  historyLoading.value = true;
+  bugKillerLoading.value = true;
+  conflictLoading.value = true;
+  historyError.value = "";
+  bugKillerError.value = "";
+  conflictError.value = "";
+}
+
+function isRunActive(runToken: number): boolean {
+  return runToken === loadRunToken;
+}
+
+async function loadCommitsForRun(runToken: number, maxCount: number) {
+  const cacheKey = `${props.repoPath}::${maxCount}`;
+
+  const cachedCommits = commitCache.get(cacheKey);
+  if (cachedCommits) {
+    historyCommits.value = cachedCommits;
     historyLoading.value = false;
-    bugKillerLoading.value = false;
     historyError.value = "";
+    return;
+  }
+
+  try {
+    const commits = await invoke<CommitInfo[]>("get_commits", {
+      path: props.repoPath,
+      maxCount,
+    });
+    if (!isRunActive(runToken)) return;
+    historyCommits.value = commits;
+    commitCache.set(cacheKey, commits);
+  } catch {
+    if (!isRunActive(runToken)) return;
+    historyCommits.value = [];
+    historyError.value = "Could not load full commit history.";
+  } finally {
+    if (isRunActive(runToken)) {
+      historyLoading.value = false;
+    }
+  }
+}
+
+async function loadBugKillerStatsForRun(runToken: number, maxCount: number) {
+  const cacheKey = `${props.repoPath}::${maxCount}`;
+
+  const cachedRows = killerCache.get(cacheKey);
+  if (cachedRows) {
+    bugKillers.value = cachedRows;
+    bugKillerLoading.value = false;
     bugKillerError.value = "";
     return;
   }
 
-  historyLoading.value = true;
-  bugKillerLoading.value = true;
-  historyError.value = "";
-  bugKillerError.value = "";
-
-  const commitsPromise = invoke<CommitInfo[]>("get_commits", {
-    path: props.repoPath,
-    maxCount,
-  });
-
-  const killerPromise = invoke<AuthorDeletionTuple[]>("get_author_deletion_stats", {
-    path: props.repoPath,
-    maxCount,
-  });
-
   try {
-    const commits = await commitsPromise;
-    if (runToken !== loadRunToken) return;
-    historyCommits.value = commits;
+    const killerRows = await invoke<AuthorDeletionTuple[]>("get_author_deletion_stats", {
+      path: props.repoPath,
+      maxCount,
+    });
+    if (!isRunActive(runToken)) return;
+    const normalizedRows = normalizeBugKillerRows(killerRows);
+    bugKillers.value = normalizedRows;
+    killerCache.set(cacheKey, normalizedRows);
   } catch {
-    if (runToken !== loadRunToken) return;
-    historyCommits.value = [];
-    historyError.value = "Could not load full commit history.";
-  } finally {
-    if (runToken === loadRunToken) {
-      historyLoading.value = false;
-    }
-  }
-
-  try {
-    const killerRows = await killerPromise;
-    if (runToken !== loadRunToken) return;
-    bugKillers.value = normalizeBugKillerRows(killerRows);
-  } catch {
-    if (runToken !== loadRunToken) return;
+    if (!isRunActive(runToken)) return;
     bugKillers.value = [];
     bugKillerError.value = "Could not load full-history deletion stats.";
   } finally {
-    if (runToken === loadRunToken) {
+    if (isRunActive(runToken)) {
       bugKillerLoading.value = false;
+    }
+  }
+}
+
+async function loadConflictSignalsForRun(runToken: number, maxCount: number) {
+  const cacheKey = `${props.repoPath}::${maxCount}`;
+
+  const cachedRows = conflictCache.get(cacheKey);
+  if (cachedRows) {
+    conflictHotspots.value = cachedRows;
+    conflictLoading.value = false;
+    conflictError.value = "";
+    return;
+  }
+
+  try {
+    const conflictRows = await invoke<ConflictHotspot[]>("get_conflict_hotspots", {
+      path: props.repoPath,
+      maxCount,
+    });
+    if (!isRunActive(runToken)) return;
+    conflictHotspots.value = conflictRows;
+    conflictCache.set(cacheKey, conflictRows);
+  } catch {
+    if (!isRunActive(runToken)) return;
+    conflictHotspots.value = [];
+    conflictError.value = "Could not load collaboration conflict pressure signals.";
+  } finally {
+    if (isRunActive(runToken)) {
+      conflictLoading.value = false;
     }
   }
 }
@@ -513,7 +777,7 @@ watch(uniqueAuthorNames, (authorNames) => {
             <button
               v-if="!loadAllHistory"
               class="arena-load-all"
-              :disabled="historyLoading || bugKillerLoading"
+              :disabled="historyLoading || bugKillerLoading || conflictLoading"
               @click="enableLoadAllHistory"
             >
               Load all
@@ -530,45 +794,18 @@ watch(uniqueAuthorNames, (authorNames) => {
         </div>
       </section>
 
-      <section
-        v-if="historyLoading"
-        class="rounded-lg border border-[var(--border)] bg-[var(--card)]/92 p-6 flex flex-col items-center justify-center gap-2 min-h-[220px]"
-      >
-        <img :src="logoCrocLoading" alt="Loading productivity arena" class="arena-loader-logo" />
-        <div class="arena-loader-wave" aria-label="Loading">
-          <span
-            v-for="(letter, idx) in loadingLetters"
-            :key="`arena-load-${idx}`"
-            class="arena-loader-letter"
-            :style="{ animationDelay: `${idx * 0.06}s` }"
-          >
-            {{ letter }}
-          </span>
-        </div>
-        <p class="text-xs text-[var(--muted-foreground)]">
-          {{ loadAllHistory ? "Crunching full history stats..." : `Crunching latest ${PREVIEW_HISTORY_LIMIT} commits...` }}
+      <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/78 px-4 py-2.5 space-y-2">
+        <p class="text-[11px] text-[var(--muted-foreground)]">
+          {{
+            selectedAuthor === "all"
+              ? (loadAllHistory ? "Showing full loaded history." : `Showing latest ${PREVIEW_HISTORY_LIMIT} commits.`)
+              : `Filtered by ${selectedAuthor}.`
+          }}
         </p>
+        <p v-if="firstArenaError" class="text-xs text-[var(--destructive)]">{{ firstArenaError }}</p>
       </section>
 
-      <section
-        v-else-if="historyError"
-        class="rounded-lg border border-[var(--destructive)]/35 bg-[var(--destructive)]/12 p-4 text-sm text-[var(--destructive)]"
-      >
-        {{ historyError }}
-      </section>
-
-      <template v-else>
-        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/78 px-4 py-2.5">
-          <p class="text-[11px] text-[var(--muted-foreground)]">
-            {{
-              selectedAuthor === "all"
-                ? (loadAllHistory ? "Showing full loaded history." : `Showing latest ${PREVIEW_HISTORY_LIMIT} commits.`)
-                : `Filtered by ${selectedAuthor}.`
-            }}
-          </p>
-        </section>
-
-        <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+      <section class="section-shell grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           <article class="metric-card">
             <div class="metric-label">Current streak</div>
             <div class="metric-value">{{ currentStreak }}</div>
@@ -589,9 +826,23 @@ watch(uniqueAuthorNames, (authorNames) => {
             <div class="metric-value">{{ arenaHealthScore }}%</div>
             <div class="metric-foot">streak + merge + activity score</div>
           </article>
-        </section>
+        <div v-if="historyLoading" class="section-loader-overlay">
+          <img :src="logoCrocLoading" alt="Loading headline metrics" class="section-loader-logo" />
+          <div class="section-loader-text">Loading headline metrics</div>
+          <div class="loader-wave" aria-hidden="true">
+            <span
+              v-for="(letter, index) in loadingLetters"
+              :key="`headline-loader-${index}`"
+              class="loader-letter"
+              :style="{ animationDelay: `${index * 0.08}s` }"
+            >
+              {{ letter }}
+            </span>
+          </div>
+        </div>
+      </section>
 
-        <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+      <section class="section-shell grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
           <article class="metric-card compact">
             <div class="metric-label">Unique authors</div>
             <div class="metric-mini">{{ uniqueAuthors }}</div>
@@ -612,9 +863,171 @@ watch(uniqueAuthorNames, (authorNames) => {
             <div class="metric-label">Top weekday</div>
             <div class="metric-mini">{{ topWeekday }}</div>
           </article>
+        <div v-if="historyLoading" class="section-loader-overlay">
+          <img :src="logoCrocLoading" alt="Loading team metrics" class="section-loader-logo" />
+          <div class="section-loader-text">Loading team metrics</div>
+          <div class="loader-wave" aria-hidden="true">
+            <span
+              v-for="(letter, index) in loadingLetters"
+              :key="`team-loader-${index}`"
+              class="loader-letter"
+              :style="{ animationDelay: `${index * 0.08}s` }"
+            >
+              {{ letter }}
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid grid-cols-1 xl:grid-cols-3 gap-3">
+          <article class="section-shell focus-card">
+            <div class="focus-kicker">Flow Metrics</div>
+            <h3 class="focus-title">Commit rhythm and change volume</h3>
+            <div class="focus-metrics-grid">
+              <div class="focus-metric">
+                <div class="focus-metric-label">Commits/day</div>
+                <div class="focus-metric-value">{{ averageCommitsPerDay }}</div>
+              </div>
+              <div class="focus-metric">
+                <div class="focus-metric-label">Deleted lines</div>
+                <div class="focus-metric-value">{{ totalDeletedLines }}</div>
+              </div>
+              <div class="focus-metric">
+                <div class="focus-metric-label">Delete intensity</div>
+                <div class="focus-metric-value">{{ deletionsPerCommit }}</div>
+              </div>
+              <div class="focus-metric">
+                <div class="focus-metric-label">Balance score</div>
+                <div class="focus-metric-value">{{ contributionBalanceScore }}%</div>
+              </div>
+            </div>
+            <div class="focus-foot">
+              Top contributor share: {{ topContributorShare }}%
+            </div>
+            <div v-if="historyLoading || bugKillerLoading" class="section-loader-overlay section-loader-overlay-card">
+              <img :src="logoCrocLoading" alt="Loading flow metrics" class="section-loader-logo" />
+              <div class="section-loader-text">Loading flow metrics</div>
+              <div class="loader-wave" aria-hidden="true">
+                <span
+                  v-for="(letter, index) in loadingLetters"
+                  :key="`flow-loader-${index}`"
+                  class="loader-letter"
+                  :style="{ animationDelay: `${index * 0.08}s` }"
+                >
+                  {{ letter }}
+                </span>
+              </div>
+            </div>
+          </article>
+
+          <article class="section-shell focus-card">
+            <div class="focus-kicker">Delivery Pressure</div>
+            <h3 class="focus-title">Cycle pressure model</h3>
+            <div class="focus-score-row">
+              <span class="focus-score-label">Bottleneck index</span>
+              <span class="score-pill" :style="scoreBandStyle(bottleneckScore)">{{ scoreBand(bottleneckScore) }}</span>
+              <span class="focus-score-value">{{ bottleneckScore }}%</span>
+            </div>
+            <div class="focus-meter"><div class="focus-meter-fill" :style="scoreMeterStyle(bottleneckScore)" /></div>
+            <div class="focus-list">
+              <div>Top 3 day load share: <strong>{{ top3DayLoadShare }}%</strong></div>
+              <div>Off-hours commits: <strong>{{ offHoursCommitRatio }}%</strong></div>
+              <div>Throughput volatility: <strong>{{ throughputVolatility }}</strong></div>
+              <div>Ownership concentration: <strong>{{ topContributorShare }}%</strong></div>
+            </div>
+            <div v-if="historyLoading" class="section-loader-overlay section-loader-overlay-card">
+              <img :src="logoCrocLoading" alt="Loading delivery pressure" class="section-loader-logo" />
+              <div class="section-loader-text">Loading delivery pressure</div>
+              <div class="loader-wave" aria-hidden="true">
+                <span
+                  v-for="(letter, index) in loadingLetters"
+                  :key="`pressure-loader-${index}`"
+                  class="loader-letter"
+                  :style="{ animationDelay: `${index * 0.08}s` }"
+                >
+                  {{ letter }}
+                </span>
+              </div>
+            </div>
+          </article>
+
+          <article class="section-shell focus-card">
+            <div class="focus-kicker">Stability Pulse</div>
+            <h3 class="focus-title">Intensity connected to regression signals</h3>
+            <div class="focus-score-row">
+              <span class="focus-score-label">Stability risk</span>
+              <span class="score-pill" :style="scoreBandStyle(stabilityRiskScore)">{{ scoreBand(stabilityRiskScore) }}</span>
+              <span class="focus-score-value">{{ stabilityRiskScore }}%</span>
+            </div>
+            <div class="focus-meter"><div class="focus-meter-fill" :style="scoreMeterStyle(stabilityRiskScore)" /></div>
+            <div class="focus-list">
+              <div>Collaboration intensity: <strong>{{ collaborationIntensityScore }}%</strong></div>
+              <div>Regression-signal commits: <strong>{{ regressionSignalCommits }} ({{ regressionSignalRate }}%)</strong></div>
+              <div>Conflict mention density: <strong>{{ conflictMentionDensity }}%</strong></div>
+              <div>High-risk conflict files: <strong>{{ highRiskConflictFiles }}</strong></div>
+            </div>
+            <div v-if="conflictError" class="focus-foot text-[var(--destructive)]">{{ conflictError }}</div>
+            <div v-if="historyLoading || conflictLoading" class="section-loader-overlay section-loader-overlay-card">
+              <img :src="logoCrocLoading" alt="Loading stability pulse" class="section-loader-logo" />
+              <div class="section-loader-text">Loading stability pulse</div>
+              <div class="loader-wave" aria-hidden="true">
+                <span
+                  v-for="(letter, index) in loadingLetters"
+                  :key="`stability-loader-${index}`"
+                  class="loader-letter"
+                  :style="{ animationDelay: `${index * 0.08}s` }"
+                >
+                  {{ letter }}
+                </span>
+              </div>
+            </div>
+          </article>
         </section>
 
-        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
+      <section class="section-shell rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h3 class="text-sm font-semibold text-[var(--foreground)]">Engineering Diagnostics</h3>
+            <span class="text-[10px] text-[var(--muted-foreground)]">Signals for process improvement</span>
+          </div>
+          <div class="grid grid-cols-2 xl:grid-cols-4 gap-3">
+            <div class="momentum-card">
+              <div class="momentum-label">Bus factor risk</div>
+              <div class="momentum-value">{{ busFactorRisk }}%</div>
+              <div class="momentum-sub">ownership concentration</div>
+            </div>
+            <div class="momentum-card">
+              <div class="momentum-label">Merge/day</div>
+              <div class="momentum-value">{{ mergePerActiveDay }}</div>
+              <div class="momentum-sub">integration density</div>
+            </div>
+            <div class="momentum-card">
+              <div class="momentum-label">Recovery pressure</div>
+              <div class="momentum-value">{{ recoveryPressure }}%</div>
+              <div class="momentum-sub">regression + conflict blend</div>
+            </div>
+            <div class="momentum-card">
+              <div class="momentum-label">Context switch pressure</div>
+              <div class="momentum-value">{{ contextSwitchPressure }}%</div>
+              <div class="momentum-sub">bursts + off-hours work</div>
+            </div>
+          </div>
+        <div v-if="historyLoading || conflictLoading" class="section-loader-overlay">
+          <img :src="logoCrocLoading" alt="Loading diagnostics" class="section-loader-logo" />
+          <div class="section-loader-text">Loading diagnostics</div>
+          <div class="loader-wave" aria-hidden="true">
+            <span
+              v-for="(letter, index) in loadingLetters"
+              :key="`diagnostics-loader-${index}`"
+              class="loader-letter"
+              :style="{ animationDelay: `${index * 0.08}s` }"
+            >
+              {{ letter }}
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-shell rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
           <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h3 class="text-sm font-semibold text-[var(--foreground)]">Consistency and Momentum</h3>
             <span class="text-[10px] text-[var(--muted-foreground)]">{{ repoAgeDays }} day repository age</span>
@@ -639,9 +1052,23 @@ watch(uniqueAuthorNames, (authorNames) => {
               <div class="momentum-sub">{{ hottestDay.day || "n/a" }}</div>
             </div>
           </div>
-        </section>
+        <div v-if="historyLoading" class="section-loader-overlay">
+          <img :src="logoCrocLoading" alt="Loading consistency metrics" class="section-loader-logo" />
+          <div class="section-loader-text">Loading consistency metrics</div>
+          <div class="loader-wave" aria-hidden="true">
+            <span
+              v-for="(letter, index) in loadingLetters"
+              :key="`momentum-loader-${index}`"
+              class="loader-letter"
+              :style="{ animationDelay: `${index * 0.08}s` }"
+            >
+              {{ letter }}
+            </span>
+          </div>
+        </div>
+      </section>
 
-        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
+      <section class="section-shell rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
           <div class="flex items-center justify-between mb-3">
             <h3 class="text-sm font-semibold text-[var(--foreground)]">Activity Heat Map</h3>
             <span class="text-[10px] text-[var(--muted-foreground)]">Last 12 months</span>
@@ -664,20 +1091,30 @@ watch(uniqueAuthorNames, (authorNames) => {
               </div>
             </div>
           </div>
-        </section>
+        <div v-if="historyLoading" class="section-loader-overlay">
+          <img :src="logoCrocLoading" alt="Loading activity heatmap" class="section-loader-logo" />
+          <div class="section-loader-text">Loading activity heatmap</div>
+          <div class="loader-wave" aria-hidden="true">
+            <span
+              v-for="(letter, index) in loadingLetters"
+              :key="`heat-loader-${index}`"
+              class="loader-letter"
+              :style="{ animationDelay: `${index * 0.08}s` }"
+            >
+              {{ letter }}
+            </span>
+          </div>
+        </div>
+      </section>
 
-        <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
+      <section class="section-shell rounded-lg border border-[var(--border)] bg-[var(--card)]/90 p-4">
           <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h3 class="text-sm font-semibold text-[var(--foreground)]">Bug Killer Leaderboard</h3>
             <span class="text-[10px] text-[var(--muted-foreground)]">Deletion stats across loaded history window</span>
           </div>
 
-          <div v-if="bugKillerLoading" class="flex items-center gap-2 text-xs text-[var(--primary)]">
-            <img :src="logoCrocLoading" alt="Loading deletions" class="mini-loader-logo" />
-            {{ loadAllHistory ? "Loading full-history deletion stats..." : `Loading latest ${PREVIEW_HISTORY_LIMIT} commit stats...` }}
-          </div>
-          <div v-else-if="bugKillerError" class="text-xs text-[var(--destructive)]">{{ bugKillerError }}</div>
-          <div v-else-if="displayedBugKillers.length === 0" class="text-xs text-[var(--muted-foreground)]">No deletion-heavy commits found yet.</div>
+          <div v-if="bugKillerError" class="text-xs text-[var(--destructive)]">{{ bugKillerError }}</div>
+          <div v-else-if="leaderboardRows.length === 0" class="text-xs text-[var(--muted-foreground)]">No deletion-heavy commits found yet.</div>
           <div v-else class="space-y-2">
             <div class="rounded-md border border-[var(--primary)]/30 bg-[var(--secondary)]/80 px-3 py-2.5">
               <div class="text-[10px] uppercase tracking-[0.14em] text-[var(--primary)]">Top Slayer</div>
@@ -686,7 +1123,7 @@ watch(uniqueAuthorNames, (authorNames) => {
             </div>
 
             <div
-              v-for="row in displayedBugKillers"
+              v-for="row in leaderboardRows"
               :key="row.author"
               class="rounded-md border border-[var(--border)] bg-[var(--secondary)]/70 px-3 py-2"
             >
@@ -702,8 +1139,21 @@ watch(uniqueAuthorNames, (authorNames) => {
               </div>
             </div>
           </div>
-        </section>
-      </template>
+        <div v-if="bugKillerLoading" class="section-loader-overlay">
+          <img :src="logoCrocLoading" alt="Loading deletion leaderboard" class="section-loader-logo" />
+          <div class="section-loader-text">Loading bug killer leaderboard</div>
+          <div class="loader-wave" aria-hidden="true">
+            <span
+              v-for="(letter, index) in loadingLetters"
+              :key="`leaderboard-loader-${index}`"
+              class="loader-letter"
+              :style="{ animationDelay: `${index * 0.08}s` }"
+            >
+              {{ letter }}
+            </span>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -792,6 +1242,158 @@ watch(uniqueAuthorNames, (authorNames) => {
   color: var(--muted-foreground);
 }
 
+.focus-card {
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  padding: 0.85rem;
+}
+
+.focus-kicker {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.focus-title {
+  margin-top: 0.26rem;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.focus-metrics-grid {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.focus-metric {
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, var(--secondary) 74%, transparent);
+  padding: 0.45rem 0.5rem;
+}
+
+.focus-metric-label {
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+
+.focus-metric-value {
+  margin-top: 0.2rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.focus-score-row {
+  margin-top: 0.55rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.focus-score-label {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.focus-score-value {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.score-pill {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 0.12rem 0.45rem;
+}
+
+.focus-meter {
+  margin-top: 0.45rem;
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--secondary) 80%, transparent);
+}
+
+.focus-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.focus-list {
+  margin-top: 0.58rem;
+  display: grid;
+  gap: 0.24rem;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.focus-foot {
+  margin-top: 0.52rem;
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+
+.section-shell {
+  position: relative;
+  overflow: hidden;
+}
+
+.section-loader-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 18;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--background) 82%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.section-loader-overlay-card {
+  border-radius: 0.55rem;
+}
+
+.section-loader-logo {
+  width: 50px;
+  height: 50px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--primary) 36%, transparent));
+}
+
+.section-loader-text {
+  margin-top: 0.35rem;
+  font-size: 11px;
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.loader-wave {
+  margin-top: 0.18rem;
+  display: inline-flex;
+  gap: 1px;
+}
+
+.loader-letter {
+  font-size: 10px;
+  color: var(--primary);
+  font-weight: 800;
+  text-transform: uppercase;
+  animation: productivity-loader-wave 1.08s ease-in-out infinite;
+}
+
 .arena-close {
   width: 28px;
   height: 28px;
@@ -843,32 +1445,6 @@ watch(uniqueAuthorNames, (authorNames) => {
   color: var(--foreground);
   border-color: color-mix(in srgb, var(--destructive) 62%, var(--border));
   background: color-mix(in srgb, var(--destructive) 14%, var(--secondary));
-}
-
-.arena-loader-logo {
-  width: 54px;
-  height: 54px;
-  object-fit: contain;
-  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--primary) 35%, transparent));
-}
-
-.mini-loader-logo {
-  width: 18px;
-  height: 18px;
-  object-fit: contain;
-}
-
-.arena-loader-wave {
-  display: inline-flex;
-  gap: 0.5px;
-}
-
-.arena-loader-letter {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--primary);
-  text-transform: uppercase;
-  animation: arena-loader-bounce 1s ease-in-out infinite;
 }
 
 .arena-author-filter {
@@ -931,13 +1507,14 @@ watch(uniqueAuthorNames, (authorNames) => {
   transform: scale(1.07);
 }
 
-@keyframes arena-loader-bounce {
+@keyframes productivity-loader-wave {
   0%,
   50%,
   100% {
     transform: translateY(0);
-    opacity: 0.5;
+    opacity: 0.45;
   }
+
   25% {
     transform: translateY(-3px);
     opacity: 1;

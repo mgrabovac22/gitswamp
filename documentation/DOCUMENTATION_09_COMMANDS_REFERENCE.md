@@ -966,47 +966,120 @@ await invoke("discard_ghost_branch", {
 });
 ```
 
-## 14. Conflicts Commands
+## 14. Conflict, Productivity, and Time-Machine Commands
 
 ### conflicts.rs
 
-Analyze and identify problematic merge areas and conflict hotspots.
+These commands power conflict suspects, conflict pairs, repository tree heatmap, and merge preflight checks.
 
 #### get_conflict_hotspots
 
 ```typescript
 invoke("get_conflict_hotspots", {
   path: string;
-  max_count?: number;
+  maxCount?: number;       // Frontend style (maps to max_count)
+  lookbackMonths?: number; // Frontend style (maps to lookback_months)
 }): Promise<ConflictHotspot[]>
 
-// Response - Array of ConflictHotspot
+// Response
 [
   {
-    file_path: string;              // Path to file with conflicts
-    conflict_count: number;         // Number of times this file has conflicts
-    last_conflict_time: number;     // Unix timestamp of last conflict
-    involved_branches: string[];    // Branches that have conflicted here
-    risk_level: string;             // "low" | "medium" | "high"
-  },
-  // ... more hotspots
+    path: string;               // file path
+    merge_touches: number;      // merges touching file
+    conflict_mentions: number;  // conflict-related mentions
+    score: number;              // hotspot score
+    collision_index: number;    // compounded risk indicator
+  }
 ]
-
-// Parameters
-{
-  path: string;        // Repository path
-  max_count?: number;  // Maximum hotspots to return (default: 300)
-}
-
-// Example
-const hotspots = await invoke("get_conflict_hotspots", {
-  path: "/home/user/my-project",
-  max_count: 50
-});
-hotspots.forEach(spot => {
-  console.log(`${spot.file_path}: ${spot.conflict_count} conflicts (${spot.risk_level} risk)`);
-});
 ```
+
+#### get_conflict_pairs
+
+```typescript
+invoke("get_conflict_pairs", {
+  path: string;
+  maxCount?: number;
+  lookbackMonths?: number;
+}): Promise<ConflictPair[]>
+
+// Response
+[
+  {
+    left_path: string;
+    right_path: string;
+    co_touches: number;
+    conflict_touches: number;
+    score: number;
+  }
+]
+```
+
+#### get_repository_tree_paths
+
+```typescript
+invoke("get_repository_tree_paths", {
+  path: string;
+  maxCount?: number;
+}): Promise<string[]>
+
+// Returns normalized repository-relative paths for building tree UI.
+```
+
+#### get_merge_preflight_risk
+
+```typescript
+invoke("get_merge_preflight_risk", {
+  path: string;
+  sourceBranch: string;
+  sourceRemote?: boolean;
+  targetBranch: string;
+  maxCount?: number;
+  lookbackMonths?: number;
+}): Promise<MergeRiskPreflight>
+
+// Response
+{
+  source_ref: string;
+  target_ref: string;
+  shared_change_count: number;
+  suspect_count: number;
+  risk_level: "low" | "moderate" | "high" | "critical";
+  suspect_files: Array<{
+    path: string;
+    score: number;
+    collision_index: number;
+  }>;
+}
+```
+
+### commits.rs (analytics/time-machine support)
+
+#### get_author_deletion_stats
+
+```typescript
+invoke("get_author_deletion_stats", {
+  path: string;
+  maxCount?: number;
+}): Promise<[string, number, number][]>
+
+// Tuple format per row:
+// [authorName, deletedLines, commitCount]
+```
+
+#### get_commit_tree_paths
+
+```typescript
+invoke("get_commit_tree_paths", {
+  path: string;
+  sha: string;
+}): Promise<string[]>
+
+// Returns file paths visible at that commit snapshot.
+```
+
+### Parameter Naming Note
+
+Rust command handlers use `snake_case` parameter names while frontend invoke calls may use `camelCase` keys. Keep frontend examples aligned with current UI usage (camelCase), and keep backend signatures in Rust as snake_case.
 
 ## 15. Error Handling
 
@@ -1030,7 +1103,7 @@ try {
 }
 ```
 
-## 14. Type Definitions
+## 16. Type Definitions
 
 All commands are fully type-safe with TypeScript definitions available in `src/types/index.ts`.
 

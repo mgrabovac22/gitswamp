@@ -175,6 +175,8 @@ Navigate through repository history frame-by-frame:
 - Timeline-based scrubber for quick navigation
 - Compare file versions across time
 - Inspect legacy code without checking out
+- Smooth autoplay and arrow-step transitions (reduced visual flicker)
+- Snapshot panels keep context and update progressively with section loaders
 - Useful for forensic analysis and understanding repository evolution
 
 ### Usual Conflict Suspects (Alt+4)
@@ -182,8 +184,9 @@ See merge conflict hotspots and risky areas:
 - Files with highest conflict frequency
 - Conflict risk assessment
 - Team collaboration conflict patterns
-- Time-based conflict trend analysis
-- Risk level indicators for problematic merges
+- Repository tree view with folder collapse/expand
+- File-level risk coloring and directory risk roll-up based on child hotspots
+- Conflict pair diagnostics (which file pairs often collide together)
 - Helps prevent conflicting changes
 
 ## 5. Managing Branches

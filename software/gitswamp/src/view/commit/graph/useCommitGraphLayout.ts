@@ -670,19 +670,8 @@ export function useCommitGraphLayout(
         + " L " + endX + " " + endY;
     }
     const startY = conflictY + 7;
-    const x2 = laneX(wcLane.value) - 7;
-    const y2 = Math.max(startY + 6, ry(headCommitIndex.value) - (NODE_RADIUS + 2));
-    const turnY = Math.min(
-      y2 - Math.max(6, rowHeight.value * 0.22),
-      startY + Math.max(10, rowHeight.value * 0.4),
-    );
-    const r = Math.min(CORNER_R, Math.abs(conflictX - x2) / 2, Math.max(1, Math.abs(y2 - turnY) / 2));
-    return "M " + conflictX + " " + startY
-      + " L " + conflictX + " " + (turnY - r)
-      + " Q " + conflictX + " " + turnY + " " + (conflictX - r) + " " + turnY
-      + " L " + (x2 + r) + " " + turnY
-      + " Q " + x2 + " " + turnY + " " + x2 + " " + (turnY + r)
-      + " L " + x2 + " " + y2;
+    const endY = Math.max(startY + 6, ry(headCommitIndex.value) - (NODE_RADIUS + 2));
+    return "M " + conflictX + " " + startY + " L " + conflictX + " " + endY;
   }
 
   function conflictSpineEdge(): string {

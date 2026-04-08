@@ -3,4 +3,5 @@ export interface ConflictHotspot {
   score: number
   merge_touches: number
   conflict_mentions: number
+  collision_index: number
 }
