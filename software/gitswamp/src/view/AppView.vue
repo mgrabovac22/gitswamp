@@ -130,6 +130,10 @@ const showAnnotatedTagDialog = ref(false);
 const annotatedTagSha = ref("");
 const annotatedTagName = ref("");
 const annotatedTagMessage = ref("");
+const showRebaseConflictDialog = ref(false);
+const rebaseConflictSource = ref("");
+const rebaseConflictTarget = ref("");
+const rebaseConflictBusy = ref(false);
 
 const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
@@ -1937,6 +1941,106 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
   );
 }
 
+function handleRequestRebase(payload: { source: string; sourceRemote: boolean; target: string }) {
+  if (!payload.source || !payload.target || payload.source === payload.target) return;
+  toast.action(
+    "warning",
+    `Rebase ${payload.sourceRemote ? "origin/" + payload.source : payload.source} onto ${payload.target}?`,
+    [
+      {
+        label: "Rebase",
+        style: "primary",
+        onClick: () => {
+          void startRequestedRebase(payload);
+        },
+      },
+      {
+        label: "Cancel",
+        style: "neutral",
+        onClick: () => {},
+      },
+    ],
+    18000,
+  );
+}
+
+function openRebaseConflictDialog(source: string, target: string) {
+  rebaseConflictSource.value = source;
+  rebaseConflictTarget.value = target;
+  showRebaseConflictDialog.value = true;
+}
+
+function closeRebaseConflictDialog(force = false) {
+  if (!force && rebaseConflictBusy.value) {
+    return;
+  }
+
+  showRebaseConflictDialog.value = false;
+  rebaseConflictSource.value = "";
+  rebaseConflictTarget.value = "";
+}
+
+async function startRequestedRebase(payload: { source: string; sourceRemote: boolean; target: string }) {
+  const sourceLabel = payload.sourceRemote ? `origin/${payload.source}` : payload.source;
+  const status = await git.rebaseBranchOnto(payload.source, payload.sourceRemote, payload.target);
+  if (status === "conflict") {
+    openRebaseConflictDialog(sourceLabel, payload.target);
+    return;
+  }
+
+  if (status === "ok") {
+    closeRebaseConflictDialog(true);
+  }
+}
+
+async function handleRebaseConflictContinue() {
+  if (rebaseConflictBusy.value) {
+    return;
+  }
+
+  rebaseConflictBusy.value = true;
+  try {
+    const status = await git.rebaseContinue();
+    if (status === "ok") {
+      closeRebaseConflictDialog(true);
+    }
+  } finally {
+    rebaseConflictBusy.value = false;
+  }
+}
+
+async function handleRebaseConflictSkip() {
+  if (rebaseConflictBusy.value) {
+    return;
+  }
+
+  rebaseConflictBusy.value = true;
+  try {
+    const status = await git.rebaseSkip();
+    if (status === "ok") {
+      closeRebaseConflictDialog(true);
+    }
+  } finally {
+    rebaseConflictBusy.value = false;
+  }
+}
+
+async function handleRebaseConflictAbort() {
+  if (rebaseConflictBusy.value) {
+    return;
+  }
+
+  rebaseConflictBusy.value = true;
+  try {
+    const status = await git.rebaseAbort();
+    if (status === "ok") {
+      closeRebaseConflictDialog(true);
+    }
+  } finally {
+    rebaseConflictBusy.value = false;
+  }
+}
+
 async function handleCheckoutRemoteBranch(name: string) {
   const localBranch = git.localBranches.value.find(b => b.name === name);
   if (localBranch) {
@@ -2115,6 +2219,7 @@ const isAnyDialogOpen = computed(() =>
   showRenameDialog.value ||
   showAnnotatedTagDialog.value ||
   showTagDialog.value ||
+  showRebaseConflictDialog.value ||
   showMultiPlatformPushDialog.value ||
   showPushUsernameDialog.value ||
   showAuthRequiredDialog.value ||
@@ -2269,6 +2374,7 @@ const openReposList = computed(() =>
         @create-issue="createRemoteIssue($event)"
         @create-pull-request="createRemotePullRequest($event)"
         @request-merge="handleRequestMerge($event)"
+        @request-rebase="handleRequestRebase($event)"
         @checkout-remote-branch="handleCheckoutRemoteBranch($event)"
         @pull="handlePull"
         @push="handlePush"
@@ -2306,6 +2412,10 @@ const openReposList = computed(() =>
       :show-rename-dialog="showRenameDialog"
       :rename-branch-old="renameBranchOld"
       :rename-branch-new="renameBranchNew"
+      :show-rebase-conflict-dialog="showRebaseConflictDialog"
+      :rebase-conflict-source="rebaseConflictSource"
+      :rebase-conflict-target="rebaseConflictTarget"
+      :rebase-conflict-busy="rebaseConflictBusy"
       @update:new-branch-name="newBranchName = $event"
       @update:stash-message="stashMessage = $event"
       @update:tag-name="tagName = $event"
@@ -2325,6 +2435,10 @@ const openReposList = computed(() =>
       @submit:edit-message="submitEditMessage()"
       @close:rename="showRenameDialog = false"
       @submit:rename="submitRenameBranch()"
+      @close:rebase-conflict="closeRebaseConflictDialog()"
+      @submit:rebase-continue="handleRebaseConflictContinue()"
+      @submit:rebase-skip="handleRebaseConflictSkip()"
+      @submit:rebase-abort="handleRebaseConflictAbort()"
     />
 
     <CloneDialog

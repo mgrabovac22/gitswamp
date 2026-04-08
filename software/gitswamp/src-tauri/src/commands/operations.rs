@@ -65,6 +65,31 @@ pub fn reset_to_commit(path: String, sha: String, mode: String) -> Result<String
 }
 
 #[tauri::command]
+pub fn rebase_branch_onto(
+    path: String,
+    source_branch: String,
+    source_remote: bool,
+    target_branch: String,
+) -> Result<String, String> {
+    GitService::rebase_branch_onto(&path, &source_branch, source_remote, &target_branch)
+}
+
+#[tauri::command]
+pub fn rebase_continue(path: String) -> Result<String, String> {
+    GitService::rebase_continue(&path)
+}
+
+#[tauri::command]
+pub fn rebase_abort(path: String) -> Result<String, String> {
+    GitService::rebase_abort(&path)
+}
+
+#[tauri::command]
+pub fn rebase_skip(path: String) -> Result<String, String> {
+    GitService::rebase_skip(&path)
+}
+
+#[tauri::command]
 pub fn checkout_commit(path: String, sha: String) -> Result<String, String> {
     GitService::checkout_commit(&path, &sha)
 }

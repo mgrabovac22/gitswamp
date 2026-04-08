@@ -65,6 +65,7 @@ const emit = defineEmits<{
   createIssue: [payload: { title: string; description: string }];
   createPullRequest: [payload: { title: string; description: string; sourceBranch: string; targetBranch: string }];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
+  requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   checkoutRemoteBranch: [name: string];
   pull: [];
   push: [];
@@ -372,6 +373,7 @@ function handleRefreshState() {
           @stash-drop="props.git.stashDrop($event)"
           @select-stash="emit('selectStash', $event)"
           @request-merge="emit('requestMerge', $event)"
+          @request-rebase="emit('requestRebase', $event)"
           @time-machine-blame="emit('timeMachineBlame', $event)"
           @jump-to-search-result="handleJumpToSearchResult($event)"
         />

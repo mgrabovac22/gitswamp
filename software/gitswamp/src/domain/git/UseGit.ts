@@ -262,6 +262,10 @@ export function useGit() {
     deleteBranch: deleteBranchWithGhostGuard,
     renameBranch: branches.renameBranch,
     mergeBranchIntoCurrent: branches.mergeBranchIntoCurrent,
+    rebaseBranchOnto: branches.rebaseBranchOnto,
+    rebaseContinue: branches.rebaseContinue,
+    rebaseSkip: branches.rebaseSkip,
+    rebaseAbort: branches.rebaseAbort,
 
     pull: remote.pull,
     push: remote.push,

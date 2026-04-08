@@ -10,6 +10,28 @@ type RefreshDeps = {
   refreshStatus: () => Promise<void>;
 };
 
+type RebaseExecutionState = "ok" | "conflict" | "error";
+
+const REBASE_CONFLICT_MARKER = "REBASE_CONFLICT:";
+
+function isRebaseConflictMessage(value: unknown): boolean {
+  let text = "";
+  if (typeof value === "string") {
+    text = value;
+  } else if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    text = String(value);
+  } else if (value && typeof value === "object" && "message" in value) {
+    const maybeMessage = (value as { message?: unknown }).message;
+    if (typeof maybeMessage === "string") {
+      text = maybeMessage;
+    }
+  }
+
+  const normalized = text.toLowerCase();
+  return normalized.includes(REBASE_CONFLICT_MARKER.toLowerCase())
+    || (normalized.includes("rebase") && normalized.includes("conflict"));
+}
+
 function buildPreflightMessage(report: MergeRiskPreflight): string {
   const samples = report.suspect_files
     .slice(0, 5)
@@ -176,11 +198,131 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
+  async function rebaseBranchOnto(
+    sourceBranch: string,
+    sourceRemote = false,
+    targetBranch?: string,
+  ): Promise<RebaseExecutionState> {
+    if (!state.repoPath.value) return "error";
+    const source = sourceBranch.trim();
+    const current = state.repoInfo.value?.current_branch || "";
+    const target = (targetBranch || current).trim();
+    if (!source) {
+      toast.error("No source branch to rebase.");
+      return "error";
+    }
+    if (!target) {
+      toast.error("No target branch to rebase onto.");
+      return "error";
+    }
+    if (source === target) {
+      toast.info("Source and target branches are the same.");
+      return "error" as RebaseExecutionState;
+    }
+
+    const sourceRef = sourceRemote ? `origin/${source}` : source;
+    let loadingToastId: number | null = null;
+    try {
+      loadingToastId = toast.loading(`Loading: rebasing ${sourceRef} onto ${target}...`);
+      state.loading.value = true;
+
+      const result = await callTauri<string>("rebase_branch_onto", {
+        path: state.repoPath.value,
+        sourceBranch: source,
+        sourceRemote,
+        targetBranch: target,
+      });
+
+      state.terminalOutput.value.push(`$ git checkout ${source}\n$ git rebase ${target}\n` + (result || "(done)"));
+      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+      toast.success(`Rebased ${source} onto ${target}`);
+      return "ok" as RebaseExecutionState;
+    } catch (e) {
+      state.error.value = String(e);
+      state.terminalOutput.value.push(`$ git checkout ${source}\n$ git rebase ${target}\nError: ${e}`);
+      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+
+      if (isRebaseConflictMessage(e)) {
+        toast.warning("Rebase paused due to conflicts. Resolve files, then Continue/Skip/Abort.");
+        return "conflict" as RebaseExecutionState;
+      }
+
+      toast.error("Rebase failed: " + String(e));
+      return "error" as RebaseExecutionState;
+    } finally {
+      state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
+    }
+  }
+
+  async function runRebaseFollowUpAction(
+    command: "rebase_continue" | "rebase_skip" | "rebase_abort",
+    title: string,
+    terminalCommand: string,
+  ): Promise<RebaseExecutionState> {
+    if (!state.repoPath.value) {
+      return "error";
+    }
+
+    let loadingToastId: number | null = null;
+    try {
+      loadingToastId = toast.loading(`Loading: ${title.toLowerCase()}...`);
+      state.loading.value = true;
+
+      const result = await callTauri<string>(command, { path: state.repoPath.value });
+      state.terminalOutput.value.push(`$ ${terminalCommand}\n` + (result || "(done)"));
+
+      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+      toast.success(result || title);
+      return "ok";
+    } catch (e) {
+      state.error.value = String(e);
+      state.terminalOutput.value.push(`$ ${terminalCommand}\nError: ${e}`);
+
+      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+
+      if (isRebaseConflictMessage(e)) {
+        toast.warning("Rebase still has conflicts. Resolve files, then Continue/Skip/Abort.");
+        return "conflict";
+      }
+
+      toast.error(`${title} failed: ` + String(e));
+      return "error";
+    } finally {
+      state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
+    }
+  }
+
+  async function rebaseContinue() {
+    return runRebaseFollowUpAction("rebase_continue", "Rebase continue", "git rebase --continue");
+  }
+
+  async function rebaseSkip() {
+    return runRebaseFollowUpAction("rebase_skip", "Rebase skip", "git rebase --skip");
+  }
+
+  async function rebaseAbort() {
+    return runRebaseFollowUpAction("rebase_abort", "Rebase abort", "git rebase --abort");
+  }
+
   return {
     checkoutBranch,
     createBranch,
     deleteBranch,
     renameBranch,
     mergeBranchIntoCurrent,
+    rebaseBranchOnto,
+    rebaseContinue,
+    rebaseSkip,
+    rebaseAbort,
   };
 }

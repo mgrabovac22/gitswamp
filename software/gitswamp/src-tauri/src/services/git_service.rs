@@ -41,6 +41,12 @@ pub struct CloneProgressUpdate {
 const GHOST_ACTIVE_KEY: &str = "gitswamp.ghost.active";
 const GHOST_BASE_KEY: &str = "gitswamp.ghost.base";
 const GHOST_BRANCH_KEY: &str = "gitswamp.ghost.branch";
+const REBASE_CONFLICT_PREFIX: &str = "REBASE_CONFLICT:";
+
+enum RebaseRunState {
+    Completed,
+    Conflicts,
+}
 
 impl GitService {
     fn resolve_worktree_file_size(repo_root: &Path, repo_relative_path: &str) -> Option<u64> {
@@ -247,6 +253,140 @@ impl GitService {
             .statuses(Some(&mut opts))
             .map_err(|e| e.message().to_string())?;
         Ok(statuses.is_empty())
+    }
+
+    fn rebase_conflict_error(message: &str) -> String {
+        format!("{} {}", REBASE_CONFLICT_PREFIX, message)
+    }
+
+    fn rebase_signature(repo: &Repository) -> Result<git2::Signature<'_>, String> {
+        repo.signature()
+            .or_else(|_| git2::Signature::now(DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL))
+            .map_err(|e| e.message().to_string())
+    }
+
+    fn branch_annotated_commit<'repo>(
+        repo: &'repo Repository,
+        ref_name: &str,
+    ) -> Result<git2::AnnotatedCommit<'repo>, String> {
+        let reference = repo
+            .find_reference(ref_name)
+            .map_err(|e| e.message().to_string())?;
+        repo.reference_to_annotated_commit(&reference)
+            .map_err(|e| e.message().to_string())
+    }
+
+    fn resolve_target_annotated_commit<'repo>(
+        repo: &'repo Repository,
+        target_branch: &str,
+    ) -> Result<git2::AnnotatedCommit<'repo>, String> {
+        let trimmed = target_branch.trim();
+        if trimmed.is_empty() {
+            return Err("Target branch cannot be empty.".to_string());
+        }
+
+        if trimmed.starts_with("refs/") {
+            return Self::branch_annotated_commit(repo, trimmed)
+                .map_err(|_| format!("Target ref '{}' was not found.", trimmed));
+        }
+
+        let local_ref = format!("refs/heads/{}", trimmed);
+        if let Ok(commit) = Self::branch_annotated_commit(repo, &local_ref) {
+            return Ok(commit);
+        }
+
+        let remote_ref = format!("refs/remotes/origin/{}", trimmed);
+        if let Ok(commit) = Self::branch_annotated_commit(repo, &remote_ref) {
+            return Ok(commit);
+        }
+
+        if let Ok(object) = repo.revparse_single(trimmed) {
+            return repo
+                .find_annotated_commit(object.id())
+                .map_err(|e| e.message().to_string());
+        }
+
+        Err(format!(
+            "Target branch '{}' was not found locally or on origin.",
+            trimmed
+        ))
+    }
+
+    fn ensure_local_branch_from_origin(repo: &Repository, branch_name: &str) -> Result<(), String> {
+        if repo.find_branch(branch_name, BranchType::Local).is_ok() {
+            return Ok(());
+        }
+
+        let remote_ref_name = format!("refs/remotes/origin/{}", branch_name);
+        let remote_ref = repo
+            .find_reference(&remote_ref_name)
+            .map_err(|_| format!("Remote branch 'origin/{}' was not found.", branch_name))?;
+
+        let target_oid = remote_ref
+            .target()
+            .ok_or_else(|| format!("Remote branch 'origin/{}' has no target commit.", branch_name))?;
+        let target_commit = repo
+            .find_commit(target_oid)
+            .map_err(|e| e.message().to_string())?;
+
+        repo.branch(branch_name, &target_commit, false)
+            .map_err(|e| e.message().to_string())?;
+        Ok(())
+    }
+
+    fn finish_rebase(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<(), String> {
+        let sig = Self::rebase_signature(repo)?;
+        rebase.finish(Some(&sig)).map_err(|e| e.message().to_string())?;
+        repo.cleanup_state().map_err(|e| e.message().to_string())?;
+        Ok(())
+    }
+
+    fn rebase_step_is_noop(repo: &Repository) -> Result<bool, String> {
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Ok(false);
+        }
+
+        let index_tree = index
+            .write_tree_to(repo)
+            .map_err(|e| e.message().to_string())?;
+        let head_commit = repo
+            .head()
+            .map_err(|e| e.message().to_string())?
+            .peel_to_commit()
+            .map_err(|e| e.message().to_string())?;
+        let head_tree = head_commit.tree().map_err(|e| e.message().to_string())?;
+
+        Ok(index_tree == head_tree.id())
+    }
+
+    fn commit_rebase_step(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<(), String> {
+        if Self::rebase_step_is_noop(repo)? {
+            return Ok(());
+        }
+
+        let sig = Self::rebase_signature(repo)?;
+        match rebase.commit(None, &sig, None) {
+            Ok(_) => Ok(()),
+            Err(e) if e.code() == git2::ErrorCode::Applied => Ok(()),
+            Err(e) => Err(e.message().to_string()),
+        }
+    }
+
+    fn advance_rebase_operations(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<RebaseRunState, String> {
+        while let Some(step) = rebase.next() {
+            step.map_err(|e| e.message().to_string())?;
+
+            let index = repo.index().map_err(|e| e.message().to_string())?;
+            if index.has_conflicts() {
+                return Ok(RebaseRunState::Conflicts);
+            }
+
+            Self::commit_rebase_step(repo, rebase)?;
+        }
+
+        Self::finish_rebase(repo, rebase)?;
+        Ok(RebaseRunState::Completed)
     }
 
     fn unique_ghost_branch_name(repo: &Repository, base_branch: &str) -> String {
@@ -1466,6 +1606,123 @@ impl GitService {
         repo.reset(&commit, reset_type, None)
             .map_err(|e| e.message().to_string())?;
         Ok(format!("Reset ({}) to {}.", mode, &sha[..7.min(sha.len())]))
+    }
+
+    pub fn rebase_branch_onto(
+        path: &str,
+        source_branch: &str,
+        source_remote: bool,
+        target_branch: &str,
+    ) -> Result<String, String> {
+        let source = source_branch.trim();
+        let target = target_branch.trim();
+
+        if source.is_empty() {
+            return Err("Source branch cannot be empty.".to_string());
+        }
+        if target.is_empty() {
+            return Err("Target branch cannot be empty.".to_string());
+        }
+        if source == target {
+            return Err("Source and target branches are the same.".to_string());
+        }
+
+        let repo = GitRepository::open(path)?;
+        if source_remote {
+            Self::ensure_local_branch_from_origin(&repo, source)?;
+        }
+        drop(repo);
+
+        Self::checkout_branch(path, source)?;
+
+        let repo = GitRepository::open(path)?;
+        let target_annotated = Self::resolve_target_annotated_commit(&repo, target)?;
+        let mut rebase = repo
+            .rebase(None, Some(&target_annotated), None, None)
+            .map_err(|e| e.message().to_string())?;
+
+        match Self::advance_rebase_operations(&repo, &mut rebase)? {
+            RebaseRunState::Completed => Ok(format!("Rebased '{}' onto '{}'.", source, target)),
+            RebaseRunState::Conflicts => Err(Self::rebase_conflict_error(
+                "Rebase has conflicts. Resolve files, then use Continue, Skip, or Abort.",
+            )),
+        }
+    }
+
+    pub fn rebase_continue(path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        let mut rebase = repo
+            .open_rebase(None)
+            .map_err(|_| "No active rebase operation.".to_string())?;
+
+        let index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Err(Self::rebase_conflict_error(
+                "Resolve all rebase conflicts before continuing.",
+            ));
+        }
+
+        if rebase.operation_current().is_some() {
+            Self::commit_rebase_step(&repo, &mut rebase)?;
+        }
+
+        match Self::advance_rebase_operations(&repo, &mut rebase)? {
+            RebaseRunState::Completed => Ok("Rebase continue completed.".to_string()),
+            RebaseRunState::Conflicts => Err(Self::rebase_conflict_error(
+                "Rebase stopped on another conflicting patch.",
+            )),
+        }
+    }
+
+    pub fn rebase_abort(path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        let mut rebase = repo
+            .open_rebase(None)
+            .map_err(|_| "No active rebase operation.".to_string())?;
+
+        rebase.abort().map_err(|e| e.message().to_string())?;
+        let _ = repo.cleanup_state();
+        Ok("Rebase aborted.".to_string())
+    }
+
+    pub fn rebase_skip(path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        let mut rebase = repo
+            .open_rebase(None)
+            .map_err(|_| "No active rebase operation.".to_string())?;
+
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+            .map_err(|e| e.message().to_string())?;
+
+        let current_before = rebase.operation_current();
+        match rebase.next() {
+            Some(Ok(_)) => {
+                if current_before == rebase.operation_current() {
+                    return Err("Unable to advance rebase operation while skipping.".to_string());
+                }
+
+                let index = repo.index().map_err(|e| e.message().to_string())?;
+                if index.has_conflicts() {
+                    return Err(Self::rebase_conflict_error(
+                        "Skip moved to the next patch, but it also has conflicts.",
+                    ));
+                }
+
+                Self::commit_rebase_step(&repo, &mut rebase)?;
+            }
+            Some(Err(e)) => return Err(e.message().to_string()),
+            None => {
+                Self::finish_rebase(&repo, &mut rebase)?;
+                return Ok("Rebase finished after skipping the current patch.".to_string());
+            }
+        }
+
+        match Self::advance_rebase_operations(&repo, &mut rebase)? {
+            RebaseRunState::Completed => Ok("Skipped current patch and continued rebase.".to_string()),
+            RebaseRunState::Conflicts => Err(Self::rebase_conflict_error(
+                "Rebase stopped on another conflicting patch.",
+            )),
+        }
     }
 
     pub fn checkout_commit(path: &str, sha: &str) -> Result<String, String> {

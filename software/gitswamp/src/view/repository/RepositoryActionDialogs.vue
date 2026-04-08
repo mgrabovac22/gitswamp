@@ -14,6 +14,10 @@ const props = defineProps<{
   showRenameDialog: boolean;
   renameBranchOld: string;
   renameBranchNew: string;
+  showRebaseConflictDialog: boolean;
+  rebaseConflictSource: string;
+  rebaseConflictTarget: string;
+  rebaseConflictBusy: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -36,6 +40,10 @@ const emit = defineEmits<{
   "submit:editMessage": [];
   "close:rename": [];
   "submit:rename": [];
+  "close:rebaseConflict": [];
+  "submit:rebaseContinue": [];
+  "submit:rebaseSkip": [];
+  "submit:rebaseAbort": [];
 }>();
 </script>
 
@@ -150,6 +158,49 @@ const emit = defineEmits<{
       <div class="flex justify-end gap-2">
         <button @click="emit('close:rename')" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
         <button @click="emit('submit:rename')" :disabled="!props.renameBranchNew.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Rename</button>
+      </div>
+    </div>
+  </div>
+
+  <div
+    v-if="props.showRebaseConflictDialog"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+    @click.self="!props.rebaseConflictBusy && emit('close:rebaseConflict')"
+  >
+    <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-[520px] max-w-[92vw] shadow-2xl">
+      <h3 class="text-sm font-semibold text-[var(--foreground)] mb-2">Rebase Conflict</h3>
+      <p class="text-xs text-[var(--muted-foreground)] leading-relaxed mb-2">
+        Rebase paused while applying
+        <span class="text-[var(--foreground)] font-medium">{{ props.rebaseConflictSource }}</span>
+        onto
+        <span class="text-[var(--foreground)] font-medium">{{ props.rebaseConflictTarget }}</span>.
+      </p>
+      <p class="text-xs text-[var(--muted-foreground)] leading-relaxed mb-4">
+        Resolve conflicts in files, then choose Continue. Use Skip to drop the current patch, or Abort to cancel the rebase and restore the previous state.
+      </p>
+
+      <div class="flex items-center justify-end gap-2">
+        <button
+          @click="emit('submit:rebaseAbort')"
+          :disabled="props.rebaseConflictBusy"
+          class="px-3 py-1.5 text-xs rounded border border-[#ef4444]/40 text-[#ef4444] hover:bg-[#ef4444]/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Abort
+        </button>
+        <button
+          @click="emit('submit:rebaseSkip')"
+          :disabled="props.rebaseConflictBusy"
+          class="px-3 py-1.5 text-xs rounded border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--secondary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Skip
+        </button>
+        <button
+          @click="emit('submit:rebaseContinue')"
+          :disabled="props.rebaseConflictBusy"
+          class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Continue
+        </button>
       </div>
     </div>
   </div>

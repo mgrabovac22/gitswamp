@@ -78,6 +78,7 @@ const emit = defineEmits<{
   stashDrop: [index: number];
   selectStash: [stash: StashInfo];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
+  requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
 }>();
@@ -618,6 +619,19 @@ function canMergeRefIntoCurrent(ref: DisplayRef): boolean {
   return true;
 }
 
+function canRebaseRefOntoCurrent(ref: DisplayRef): boolean {
+  if (ref.kind !== "branch") return false;
+  if (!props.currentBranch.trim()) return false;
+  if (ref.local && ref.name === props.currentBranch) return false;
+  return true;
+}
+
+function canRebaseCurrentOntoRef(ref: DisplayRef): boolean {
+  if (ref.kind !== "branch") return false;
+  if (!props.currentBranch.trim()) return false;
+  return ref.name !== props.currentBranch;
+}
+
 function onStashContextMenu(event: MouseEvent, stash: StashInfo & { parentIdx: number; lane: number; offsetIdx: number }) {
   event.preventDefault();
   event.stopPropagation();
@@ -719,6 +733,12 @@ function refAction(action: string) {
       break;
     case "merge-into-current":
       emit("requestMerge", { source: r.name, sourceRemote: !!r.remote && !r.local, target: props.currentBranch });
+      break;
+    case "rebase-onto-current":
+      emit("requestRebase", { source: r.name, sourceRemote: !!r.remote && !r.local, target: props.currentBranch });
+      break;
+    case "rebase-current-onto-selected":
+      emit("requestRebase", { source: props.currentBranch, sourceRemote: false, target: r.name });
       break;
     case "checkout-and-isolate":
       checkoutAndIsolateRef(r);
@@ -934,10 +954,12 @@ function applyShaContextAction(action: string, sha: string): boolean {
   }
 }
 
-function applyBranchContextAction(action: string, branch: string): boolean {
+function applyBranchContextAction(action: string, branch: string, sourceRemote = false): boolean {
   switch (action) {
     case "set-upstream": emit("setUpstream", branch, "origin/" + branch); return true;
     case "checkout-branch": emit("checkoutBranch", branch); return true;
+    case "rebase-onto-current": emit("requestRebase", { source: branch, sourceRemote, target: props.currentBranch }); return true;
+    case "rebase-current-onto-selected": emit("requestRebase", { source: props.currentBranch, sourceRemote: false, target: branch }); return true;
     case "rename-branch": emit("renameBranch", branch); return true;
     case "delete-branch": emit("deleteBranch", branch); return true;
     case "delete-remote-branch": emit("deleteRemoteBranch", branch); return true;
@@ -972,7 +994,7 @@ function ctxAction(action: string) {
 
   if (applyShaContextAction(action, sha)) return;
   if (branch) {
-    applyBranchContextAction(action, branch);
+    applyBranchContextAction(action, branch, !!branchRef?.remote && !branchRef?.local);
   }
 }
 
@@ -1733,6 +1755,8 @@ onUnmounted(() => {
             <button v-if="!refCtxRef.local" class="ctx-item" @click="refAction('checkout-remote')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout remote branch</span><span class="ctx-sub">Create/switch to origin/{{ refCtxRef.name }}</span></button>
             <button class="ctx-item" @click="refAction('checkout-and-isolate')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to this branch and isolate its connected commits</span></button>
             <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
+            <button v-if="canRebaseRefOntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('rebase-onto-current')"><span class="ctx-icon">↕</span><span class="ctx-main">Rebase onto {{ currentBranch }}</span><span class="ctx-sub">Checkout {{ refCtxRef.name }} and rebase it onto {{ currentBranch }}</span></button>
+            <button v-if="canRebaseCurrentOntoRef(refCtxRef)" class="ctx-item" @click="refAction('rebase-current-onto-selected')"><span class="ctx-icon">⇅</span><span class="ctx-main">Rebase {{ currentBranch }} onto {{ refCtxRef.name }}</span><span class="ctx-sub">Keep selected branch as base and move current branch on top</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('delete-local')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local branch</span><span class="ctx-sub">Delete {{ refCtxRef.name }} from local repository</span></button>
             <button v-if="refCtxRef.remote" class="ctx-item" @click="refAction('delete-remote')"><span class="ctx-icon">🛰</span><span class="ctx-main">Delete remote branch</span><span class="ctx-sub">Delete origin/{{ refCtxRef.name }} on remote</span></button>
             <button class="ctx-item" @click="refAction('copy-name')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy branch name</span><span class="ctx-sub">Copy name to clipboard</span></button>
@@ -1803,6 +1827,8 @@ onUnmounted(() => {
             <button class="ctx-item" @click="ctxAction('set-upstream')"><span class="ctx-icon">🔗</span><span class="ctx-main">Set upstream</span><span class="ctx-sub">Link local branch to origin/{{ ctxBranchName() }}</span></button>
             <button class="ctx-item" @click="ctxAction('checkout-branch')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout branch</span><span class="ctx-sub">Switch working tree to {{ ctxBranchName() }}</span></button>
             <button class="ctx-item" @click="ctxAction('checkout-isolate-branch')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to {{ ctxBranchName() }} and isolate related commits</span></button>
+            <button v-if="ctxBranchName() !== currentBranch && currentBranch" class="ctx-item" @click="ctxAction('rebase-onto-current')"><span class="ctx-icon">↕</span><span class="ctx-main">Rebase onto {{ currentBranch }}</span><span class="ctx-sub">Checkout {{ ctxBranchName() }} and rebase it onto {{ currentBranch }}</span></button>
+            <button v-if="ctxBranchName() !== currentBranch && currentBranch" class="ctx-item" @click="ctxAction('rebase-current-onto-selected')"><span class="ctx-icon">⇅</span><span class="ctx-main">Rebase {{ currentBranch }} onto {{ ctxBranchName() }}</span><span class="ctx-sub">Keep selected branch as base and move current branch on top</span></button>
           </div>
           <div class="border-t border-[var(--border)] my-1" />
         </template>
