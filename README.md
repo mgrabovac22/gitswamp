@@ -367,3 +367,37 @@ This comprehensive documentation package contains **11 main document files** org
 ---
 
 For the complete navigation, start with **[DOCUMENTATION_00_INDEX.md](./documentation/DOCUMENTATION_00_INDEX.md)**
+
+Screens:
+<img width="1919" height="1034" alt="image" src="https://github.com/user-attachments/assets/cd00f31b-bea8-4ab0-abf6-fb03a183a645" />
+
+<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/ed8475a5-41db-4da4-8798-262420185577" />
+
+<img width="1919" height="1032" alt="image" src="https://github.com/user-attachments/assets/0430cd74-1de6-4c7a-a20f-e970439c69b1" />
+
+<img width="1919" height="1033" alt="image" src="https://github.com/user-attachments/assets/7f4bae21-6d6b-4c85-bad9-315de055ee80" />
+
+<img width="1919" height="1034" alt="image" src="https://github.com/user-attachments/assets/3d80028e-96d5-4920-92c5-484b69cfce68" />
+
+<img width="1919" height="1032" alt="image" src="https://github.com/user-attachments/assets/7dee11d2-45e3-44b2-adf8-a505f365389a" />
+
+<img width="1919" height="1030" alt="image" src="https://github.com/user-attachments/assets/2793bb39-783b-4197-8abb-7006c527ba0f" />
+
+<img width="1919" height="1032" alt="image" src="https://github.com/user-attachments/assets/915f9b07-00b8-46ac-92f0-5df2b2efe4ef" />
+
+<img width="1919" height="1032" alt="image" src="https://github.com/user-attachments/assets/9ff95a9e-65a8-4af4-b169-24ae3c916498" />
+
+<img width="1919" height="1030" alt="image" src="https://github.com/user-attachments/assets/f5948e1b-1896-4e5e-bbbe-bb5af4e0e693" />
+
+<img width="1919" height="1029" alt="image" src="https://github.com/user-attachments/assets/39d034a7-29c8-49dd-a6cc-bec5e0b87dfc" />
+
+
+
+
+
+
+
+
+
+
+
