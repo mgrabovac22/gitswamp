@@ -776,7 +776,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="panelScrollContainer" class="flex-1 min-h-0 overflow-y-auto time-machine-surface">
+  <div ref="panelScrollContainer" class="flex-1 min-h-0 overflow-y-auto time-machine-surface tm-scroll-root">
     <div class="p-4 md:p-5 space-y-4">
       <section class="tm-card">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -934,7 +934,7 @@ onUnmounted(() => {
 
             <div v-if="filesError && selectedFiles.length === 0" class="text-xs text-[var(--destructive)]">{{ filesError }}</div>
             <div v-else-if="selectedFiles.length === 0" class="text-xs text-[var(--muted-foreground)]">No changed files in this snapshot.</div>
-            <div v-else class="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+            <div v-else class="space-y-2 max-h-[360px] overflow-y-auto pr-1 tm-inner-scroll">
               <div
                 v-for="file in selectedFiles"
                 :key="file.path"
@@ -982,7 +982,7 @@ onUnmounted(() => {
           <article class="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45 p-2.5 tm-subcard-shell">
             <div v-if="treeError && directoryEntries.length === 0" class="text-xs text-[var(--destructive)]">{{ treeError }}</div>
             <div v-else-if="directoryEntries.length === 0" class="text-xs text-[var(--muted-foreground)]">No entries in this directory.</div>
-            <div v-else class="max-h-[300px] overflow-y-auto space-y-1 pr-1">
+            <div v-else class="max-h-[300px] overflow-y-auto space-y-1 pr-1 tm-inner-scroll">
               <button
                 v-for="entry in directoryEntries"
                 :key="entry.path"
@@ -1009,7 +1009,7 @@ onUnmounted(() => {
               {{ selectedExplorerFilePath ? selectedExplorerFilePath : "Select a file to preview snapshot content" }}
             </div>
             <div v-if="explorerFileError && !selectedExplorerFileContent" class="text-xs text-[var(--destructive)]">{{ explorerFileError }}</div>
-            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text">{{ selectedExplorerFileContent }}</pre>
+            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text tm-inner-scroll">{{ selectedExplorerFileContent }}</pre>
             <div v-else class="text-xs text-[var(--muted-foreground)]">No file selected.</div>
 
             <div v-if="explorerFileLoading" class="tm-subcard-overlay">
@@ -1034,6 +1034,13 @@ onUnmounted(() => {
     radial-gradient(circle at 14% 16%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 42%),
     radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--chart-2) 14%, transparent), transparent 40%),
     linear-gradient(165deg, color-mix(in srgb, var(--background) 96%, black 4%) 0%, var(--background) 52%, color-mix(in srgb, var(--card) 70%, var(--background) 30%) 100%);
+}
+
+.tm-scroll-root {
+  scroll-behavior: auto;
+  scrollbar-gutter: stable;
+  contain: layout paint style;
+  will-change: scroll-position;
 }
 
 .tm-card {
@@ -1254,5 +1261,22 @@ onUnmounted(() => {
   font-size: 11px;
   line-height: 1.5;
   white-space: pre;
+}
+
+:global(html.gitswamp-linux) .time-machine-surface {
+  background: linear-gradient(180deg, var(--background) 0%, color-mix(in srgb, var(--card) 62%, var(--background) 38%) 100%);
+}
+
+:global(html.gitswamp-linux) .tm-subcard-overlay {
+  backdrop-filter: none;
+}
+
+:global(html.gitswamp-linux) .tm-loader-letter {
+  animation: none;
+}
+
+:global(html.gitswamp-linux) .tm-inner-scroll {
+  max-height: none !important;
+  overflow-y: visible !important;
 }
 </style>

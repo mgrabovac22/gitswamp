@@ -724,7 +724,7 @@ watch(
 </script>
 
 <template>
-  <div class="flex-1 min-h-0 overflow-y-auto bg-[var(--background)]">
+  <div class="flex-1 min-h-0 overflow-y-auto bg-[var(--background)] conflict-surface">
     <div class="p-4 md:p-5 space-y-4">
       <section class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -1021,6 +1021,13 @@ watch(
 </template>
 
 <style scoped>
+.conflict-surface {
+  scroll-behavior: auto;
+  scrollbar-gutter: stable;
+  contain: layout paint style;
+  will-change: scroll-position;
+}
+
 .window-selector {
   display: inline-flex;
   align-items: center;
@@ -1303,14 +1310,14 @@ watch(
 }
 
 .tree-risk-badge.tree-risk-moderate {
-  color: rgba(180, 83, 9, 1);
-  background: rgba(251, 191, 36, 0.2);
-  border: 1px solid rgba(251, 191, 36, 0.48);
+  color: rgba(255, 247, 214, 1);
+  background: rgba(146, 64, 14, 0.64);
+  border: 1px solid rgba(251, 191, 36, 0.66);
 }
 
 .tree-risk-badge.tree-risk-high {
-  color: rgba(252, 165, 165, 1);
-  background: rgba(185, 28, 28, 0.26);
+  color: rgba(255, 241, 242, 1);
+  background: rgba(127, 29, 29, 0.86);
   border: 1px solid rgba(248, 113, 113, 0.6);
 }
 
@@ -1321,9 +1328,9 @@ watch(
 }
 
 .tree-risk-badge.tree-file-risk-moderate {
-  color: rgba(180, 83, 9, 1);
-  background: rgba(245, 158, 11, 0.22);
-  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: rgba(255, 247, 214, 1);
+  background: rgba(146, 64, 14, 0.64);
+  border: 1px solid rgba(245, 158, 11, 0.68);
 }
 
 .tree-risk-badge.tree-file-risk-high {
@@ -1350,5 +1357,20 @@ watch(
     transform: translateY(-3px);
     opacity: 1;
   }
+}
+
+:global(html.gitswamp-linux) .panel-loader-overlay {
+  backdrop-filter: none;
+}
+
+:global(html.gitswamp-linux) .loader-letter {
+  animation: none;
+}
+
+:global(html.gitswamp-linux) .hotspot-scroll,
+:global(html.gitswamp-linux) .repo-tree-list,
+:global(html.gitswamp-linux) .pairs-scroll {
+  max-height: none !important;
+  overflow-y: visible !important;
 }
 </style>

@@ -747,7 +747,7 @@ watch(uniqueAuthorNames, (authorNames) => {
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto min-h-0 relative productivity-surface">
+  <div class="flex-1 overflow-y-auto min-h-0 relative productivity-surface productivity-scroll-root">
     <div class="absolute inset-0 pointer-events-none productivity-radial" />
     <div class="relative z-10 p-4 md:p-5 space-y-4">
       <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 backdrop-blur-sm p-4">
@@ -1166,6 +1166,13 @@ watch(uniqueAuthorNames, (authorNames) => {
     linear-gradient(145deg, color-mix(in srgb, var(--background) 94%, black 6%) 0%, var(--background) 52%, color-mix(in srgb, var(--card) 72%, var(--background) 28%) 100%);
 }
 
+.productivity-scroll-root {
+  scroll-behavior: auto;
+  scrollbar-gutter: stable;
+  contain: layout paint style;
+  will-change: scroll-position;
+}
+
 .productivity-radial {
   background-image: repeating-linear-gradient(
     125deg,
@@ -1505,6 +1512,26 @@ watch(uniqueAuthorNames, (authorNames) => {
 
 .heatmap-cell:hover {
   transform: scale(1.07);
+}
+
+:global(html.gitswamp-linux) .productivity-surface {
+  background: linear-gradient(180deg, var(--background) 0%, color-mix(in srgb, var(--card) 60%, var(--background) 40%) 100%);
+}
+
+:global(html.gitswamp-linux) .productivity-radial {
+  display: none;
+}
+
+:global(html.gitswamp-linux) .section-loader-overlay {
+  backdrop-filter: none;
+}
+
+:global(html.gitswamp-linux) .heatmap-cell {
+  transition: none;
+}
+
+:global(html.gitswamp-linux) .loader-letter {
+  animation: none;
 }
 
 @keyframes productivity-loader-wave {

@@ -1288,8 +1288,14 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
 }
 
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
+const linuxRuntimeClass = "gitswamp-linux";
+const isLinuxRuntime = /linux/i.test(navigator.userAgent) || /linux/i.test(navigator.platform);
 
 onMounted(() => {
+  if (isLinuxRuntime) {
+    document.documentElement.classList.add(linuxRuntimeClass);
+  }
+
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
   appendLog("app", "Application started.");
 
@@ -1328,6 +1334,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (isLinuxRuntime) {
+    document.documentElement.classList.remove(linuxRuntimeClass);
+  }
+
   globalThis.removeEventListener("keydown", handleGlobalShortcuts);
   pullRequestFetchSequence++;
   if (pullRequestFetchTimer) {
