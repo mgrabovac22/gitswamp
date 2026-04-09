@@ -1,9 +1,23 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::constants::{CONFLICT_END, CONFLICT_MID, CONFLICT_START};
-use crate::models::FileDiff;
+use crate::models::{FileBlameLine, FileDiff};
 use crate::repositories::git_repository::GitRepository;
 use crate::services::helpers::extract_file_diff;
+
+const UNCOMMITTED_SHA: &str = "0000000000000000000000000000000000000000";
+
+#[derive(Clone)]
+struct BlameCommitMeta {
+    commit_sha: String,
+    short_sha: String,
+    author: String,
+    author_email: String,
+    summary: String,
+    author_time: i64,
+    is_uncommitted: bool,
+}
 
 pub struct DiffService;
 
@@ -77,6 +91,108 @@ impl DiffService {
         }
 
         String::from_utf8(blob.content().to_vec()).map_err(|_| "File is not valid UTF-8".to_string())
+    }
+
+    pub fn get_file_blame(path: &str, file_path: &str, sha: Option<&str>) -> Result<Vec<FileBlameLine>, String> {
+        let repo = GitRepository::open(path)?;
+        let mut blame_options = git2::BlameOptions::new();
+
+        if let Some(commit_sha) = sha {
+            let oid = git2::Oid::from_str(commit_sha).map_err(|e| e.message().to_string())?;
+            blame_options.newest_commit(oid);
+        }
+
+        let blame = repo
+            .blame_file(Path::new(file_path), Some(&mut blame_options))
+            .map_err(|e| e.message().to_string())?;
+
+        let file_content = Self::get_file_content(path, file_path, sha)?;
+        let file_lines: Vec<String> = file_content.split('\n').map(|line| line.to_string()).collect();
+
+        let mut commit_meta_cache: HashMap<String, BlameCommitMeta> = HashMap::new();
+        let mut result: Vec<FileBlameLine> = Vec::new();
+
+        for hunk in blame.iter() {
+            let final_start = hunk.final_start_line() as u32;
+            let lines_in_hunk = hunk.lines_in_hunk() as u32;
+            let commit_id = hunk.final_commit_id();
+            let commit_sha = commit_id.to_string();
+
+            let meta = if let Some(cached) = commit_meta_cache.get(&commit_sha) {
+                cached.clone()
+            } else {
+                let computed = Self::build_blame_commit_meta(&repo, &commit_sha, commit_id, hunk.final_signature())?;
+                commit_meta_cache.insert(commit_sha.clone(), computed.clone());
+                computed
+            };
+
+            for offset in 0..lines_in_hunk {
+                let line_no = final_start + offset;
+                let line_index = line_no.saturating_sub(1) as usize;
+                let code = file_lines.get(line_index).cloned().unwrap_or_default();
+
+                result.push(FileBlameLine {
+                    line_no,
+                    commit_sha: meta.commit_sha.clone(),
+                    short_sha: meta.short_sha.clone(),
+                    author: meta.author.clone(),
+                    author_email: meta.author_email.clone(),
+                    summary: meta.summary.clone(),
+                    author_time: meta.author_time,
+                    is_uncommitted: meta.is_uncommitted,
+                    code,
+                });
+            }
+        }
+
+        result.sort_by_key(|entry| entry.line_no);
+        Ok(result)
+    }
+
+    fn build_blame_commit_meta(
+        repo: &git2::Repository,
+        commit_sha: &str,
+        commit_id: git2::Oid,
+        signature: git2::Signature<'_>,
+    ) -> Result<BlameCommitMeta, String> {
+        let signature_name = signature.name().unwrap_or("Unknown").to_string();
+        let signature_email = signature.email().unwrap_or("").to_string();
+        let signature_time = signature.when().seconds();
+
+        if commit_sha == UNCOMMITTED_SHA {
+            return Ok(BlameCommitMeta {
+                commit_sha: commit_sha.to_string(),
+                short_sha: "LOCAL".to_string(),
+                author: signature_name,
+                author_email: signature_email,
+                summary: "Uncommitted changes".to_string(),
+                author_time: signature_time,
+                is_uncommitted: true,
+            });
+        }
+
+        if let Ok(commit) = repo.find_commit(commit_id) {
+            let author = commit.author();
+            return Ok(BlameCommitMeta {
+                commit_sha: commit_sha.to_string(),
+                short_sha: commit_sha.chars().take(8).collect(),
+                author: author.name().unwrap_or("Unknown").to_string(),
+                author_email: author.email().unwrap_or("").to_string(),
+                summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+                author_time: author.when().seconds(),
+                is_uncommitted: false,
+            });
+        }
+
+        Ok(BlameCommitMeta {
+            commit_sha: commit_sha.to_string(),
+            short_sha: commit_sha.chars().take(8).collect(),
+            author: signature_name,
+            author_email: signature_email,
+            summary: "(commit metadata unavailable)".to_string(),
+            author_time: signature_time,
+            is_uncommitted: false,
+        })
     }
 
     pub fn has_conflict_markers(path: &str, file_path: &str) -> Result<bool, String> {

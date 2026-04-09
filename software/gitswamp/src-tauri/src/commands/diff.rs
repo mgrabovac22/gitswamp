@@ -1,4 +1,4 @@
-use crate::models::{FileDiff, StagedDiffSummary};
+use crate::models::{FileBlameLine, FileDiff, StagedDiffSummary};
 use crate::services::git_service::GitService;
 
 #[tauri::command]
@@ -25,6 +25,13 @@ pub async fn get_file_content(path: String, file_path: String, sha: Option<Strin
 #[tauri::command]
 pub async fn get_staged_file_content(path: String, file_path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || GitService::get_staged_file_content(&path, &file_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_file_blame(path: String, file_path: String, sha: Option<String>) -> Result<Vec<FileBlameLine>, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::get_file_blame(&path, &file_path, sha.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }

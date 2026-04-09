@@ -2358,6 +2358,10 @@ impl GitService {
         DiffService::get_staged_file_content(path, file_path)
     }
 
+    pub fn get_file_blame(path: &str, file_path: &str, sha: Option<&str>) -> Result<Vec<crate::models::FileBlameLine>, String> {
+        DiffService::get_file_blame(path, file_path, sha)
+    }
+
     pub fn has_conflict_markers(path: &str, file_path: &str) -> Result<bool, String> {
         DiffService::has_conflict_markers(path, file_path)
     }

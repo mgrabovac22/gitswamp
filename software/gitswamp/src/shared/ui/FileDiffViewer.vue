@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users } from "lucide-vue-next";
-import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo } from "@/types";
+import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2 } from "lucide-vue-next";
+import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 import {
   getCachedDiffText,
@@ -28,7 +28,7 @@ const emit = defineEmits<{
   refresh: [];
 }>();
 
-type ViewMode = "diff" | "file-diff" | "edit" | "time-lapse";
+type ViewMode = "diff" | "split-diff" | "file-diff" | "edit" | "time-lapse";
 const viewMode = ref<ViewMode>("diff");
 const loadingLetters = ["L", "o", "a", "d", "i", "n", "g"];
 const MAX_HIGHLIGHT_LINES = 6000;
@@ -40,6 +40,12 @@ const editContent = ref<string>("");
 const loading = ref(true);
 const loadingFileContent = ref(false);
 const error = ref<string | null>(null);
+const showBlamePanel = ref(false);
+const blameLoading = ref(false);
+const blameError = ref<string | null>(null);
+const blameLines = ref<FileBlameLine[]>([]);
+const blameCache = ref(new Map<string, FileBlameLine[]>());
+const splitPaneRefs = ref(new Map<string, HTMLElement>());
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
@@ -108,6 +114,15 @@ function getDiffCacheKey(): string | null {
   return getFileContentCacheKey();
 }
 
+function getBlameCacheKey(): string {
+  if (props.commitSha) {
+    return `${props.repoPath}|${props.filePath}|blame:commit:${props.commitSha}`;
+  }
+
+  const mode = props.staged ? "staged" : "working";
+  return `${props.repoPath}|${props.filePath}|blame:${mode}`;
+}
+
 function hashDiffStructure(value: FileDiff): string {
   return value.hunks
     .map((hunk) => `${hunk.old_start}:${hunk.old_lines}:${hunk.new_start}:${hunk.new_lines}:${hunk.lines.length}`)
@@ -139,6 +154,8 @@ function maintainHighlightCache() {
 const isWorkingChanges = computed(() => !props.commitSha);
 const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
 const fileNameParts = computed(() => splitFilePath(props.filePath));
+const blameSupportedView = computed(() => viewMode.value === "diff" || viewMode.value === "split-diff");
+const blamePanelVisible = computed(() => showBlamePanel.value && blameSupportedView.value);
 
 interface InlineDiffPair {
   compareText: string;
@@ -402,6 +419,10 @@ watch(
   () => {
     fileContentLoadSequence += 1;
     currentHunkIndex.value = 0;
+    blameError.value = null;
+    if (showBlamePanel.value) {
+      void loadFileBlame(true);
+    }
     reload();
   }
 );
@@ -411,8 +432,15 @@ watch(viewMode, (mode) => {
     stopTimeLapsePlayback();
   }
 
-  if (mode === "diff" || mode === "file-diff") {
+  if (mode !== "diff" && mode !== "split-diff") {
+    showBlamePanel.value = false;
+  }
+
+  if (mode === "diff" || mode === "split-diff" || mode === "file-diff") {
     resetDiffColoringBudget();
+    if (showBlamePanel.value) {
+      void loadFileBlame();
+    }
   }
 
   if (mode === "edit") {
@@ -429,6 +457,14 @@ watch(viewMode, (mode) => {
 watch(timeLapseCommitWindowSafe, () => {
   if (viewMode.value !== "time-lapse") return;
   void loadTimeLapseFrames();
+});
+
+watch(blamePanelVisible, (visible) => {
+  if (!visible) {
+    return;
+  }
+
+  void loadFileBlame();
 });
 
 async function reload() {
@@ -470,6 +506,10 @@ async function reload() {
     }
 
     highlightedLineCache.value.clear();
+
+    if (blamePanelVisible.value) {
+      void loadFileBlame();
+    }
     
     // Don't load file content synchronously - do it lazily
     if (viewMode.value === "file-diff") {
@@ -548,6 +588,174 @@ async function loadDisplayedFileContent(forceRefresh = false): Promise<string> {
     filePath: props.filePath,
     sha: null,
   });
+}
+
+async function loadFileBlame(forceRefresh = false) {
+  if (!blamePanelVisible.value || diff.value?.is_binary) {
+    return;
+  }
+  if (blameLoading.value) {
+    return;
+  }
+
+  blameLoading.value = true;
+  blameError.value = null;
+
+  try {
+    const blameCacheKey = getBlameCacheKey();
+    if (!forceRefresh) {
+      const cached = blameCache.value.get(blameCacheKey);
+      if (cached) {
+        blameLines.value = cached;
+        return;
+      }
+    }
+
+    const lines = await invoke<FileBlameLine[]>("get_file_blame", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      sha: props.commitSha ?? null,
+    });
+
+    blameLines.value = lines;
+    blameCache.value.set(blameCacheKey, lines);
+  } catch (e) {
+    blameLines.value = [];
+    blameError.value = String(e);
+  } finally {
+    blameLoading.value = false;
+  }
+}
+
+function toggleBlamePanel() {
+  if (!blameSupportedView.value || diff.value?.is_binary) {
+    return;
+  }
+
+  showBlamePanel.value = !showBlamePanel.value;
+}
+
+function refreshBlame() {
+  void loadFileBlame(true);
+}
+
+function formatBlameTimestamp(timestamp: number): string {
+  if (!timestamp) {
+    return "Unknown time";
+  }
+
+  const value = Math.abs(timestamp) < 1000000000000 ? timestamp * 1000 : timestamp;
+  return new Date(value).toLocaleString();
+}
+
+interface InlineBlameEntry {
+  entry: FileBlameLine;
+  showHeader: boolean;
+  groupSize: number;
+}
+
+const inlineBlameByLine = computed(() => {
+  const sorted = [...blameLines.value].sort((a, b) => a.line_no - b.line_no);
+  const map = new Map<number, InlineBlameEntry>();
+  if (sorted.length === 0) {
+    return map;
+  }
+
+  let groupStart = 0;
+  const finalizeGroup = (startIdx: number, endIdx: number) => {
+    const size = endIdx - startIdx + 1;
+    for (let idx = startIdx; idx <= endIdx; idx += 1) {
+      const line = sorted[idx];
+      map.set(line.line_no, {
+        entry: line,
+        showHeader: idx === startIdx,
+        groupSize: size,
+      });
+    }
+  };
+
+  for (let idx = 1; idx <= sorted.length; idx += 1) {
+    const previous = sorted[idx - 1];
+    const current = sorted[idx];
+    const sameGroup = !!current
+      && current.line_no === previous.line_no + 1
+      && current.author === previous.author
+      && current.author_time === previous.author_time
+      && current.commit_sha === previous.commit_sha;
+
+    if (!sameGroup) {
+      finalizeGroup(groupStart, idx - 1);
+      groupStart = idx;
+    }
+  }
+
+  return map;
+});
+
+function getInlineBlame(lineNo: number | null): InlineBlameEntry | null {
+  if (!lineNo || !showBlamePanel.value) {
+    return null;
+  }
+
+  return inlineBlameByLine.value.get(lineNo) || null;
+}
+
+function getDiffRowBlameLineNo(line: DiffLine): number | null {
+  return line.new_line_no ?? null;
+}
+
+function getSplitRowBlameLineNo(row: SplitDiffRow): number | null {
+  return row.newLineNo ?? null;
+}
+
+function splitPaneKey(hunkIdx: number, side: "old" | "new"): string {
+  return `${hunkIdx}:${side}`;
+}
+
+function resolveSplitPaneElement(el: unknown): HTMLElement | null {
+  if (el instanceof HTMLElement) {
+    return el;
+  }
+
+  if (el && typeof el === "object" && "$el" in el) {
+    const maybeElement = (el as { $el?: unknown }).$el;
+    if (maybeElement instanceof HTMLElement) {
+      return maybeElement;
+    }
+  }
+
+  return null;
+}
+
+function setSplitPaneRef(hunkIdx: number, side: "old" | "new", el: unknown) {
+  const key = splitPaneKey(hunkIdx, side);
+  const element = resolveSplitPaneElement(el);
+
+  if (!element) {
+    splitPaneRefs.value.delete(key);
+    return;
+  }
+
+  splitPaneRefs.value.set(key, element);
+}
+
+let splitScrollSyncLock = false;
+
+function onSplitPaneScroll(hunkIdx: number, side: "old" | "new", event: Event) {
+  if (splitScrollSyncLock) {
+    return;
+  }
+
+  const source = event.target as HTMLElement;
+  const partnerKey = splitPaneKey(hunkIdx, side === "old" ? "new" : "old");
+  const partner = splitPaneRefs.value.get(partnerKey);
+  if (!partner) {
+    return;
+  }
+
+  splitScrollSyncLock = true;
+  partner.scrollLeft = source.scrollLeft;
+  splitScrollSyncLock = false;
 }
 
 async function loadFileForEdit() {
@@ -629,6 +837,9 @@ function startFileWatch() {
         lastFileHash = newHash;
         diff.value = newDiff;
         highlightedLineCache.value.clear();
+        if (blamePanelVisible.value) {
+          await loadFileBlame(true);
+        }
         if (viewMode.value === "file-diff") {
           await loadFileContentAsync(true);
         }
@@ -688,6 +899,138 @@ function navigateHunk(dir: "prev" | "next") {
   const el = document.getElementById(`hunk-${currentHunkIndex.value}`);
   el?.scrollIntoView({ behavior: "auto", block: "start" });
 }
+
+interface DiffLineRef {
+  hunkIdx: number;
+  lineIdx: number;
+  line: DiffLine;
+}
+
+interface SplitDiffRow {
+  oldLineNo: number | null;
+  newLineNo: number | null;
+  oldType: "context" | "deletion" | "empty";
+  newType: "context" | "addition" | "empty";
+  oldContent: string;
+  newContent: string;
+  oldRef: DiffLineRef | null;
+  newRef: DiffLineRef | null;
+}
+
+function normalizeDiffLineContent(line: DiffLine): string {
+  return line.content.replace(/\n$/, "");
+}
+
+function toDiffLineRef(hunkIdx: number, lineIdx: number, line: DiffLine): DiffLineRef {
+  return {
+    hunkIdx,
+    lineIdx,
+    line,
+  };
+}
+
+function collectContiguousDiffRefs(
+  lines: DiffLine[],
+  hunkIdx: number,
+  startIndex: number,
+  expectedType: "addition" | "deletion",
+): { refs: DiffLineRef[]; nextIndex: number } {
+  const refs: DiffLineRef[] = [];
+  let cursor = startIndex;
+
+  while (cursor < lines.length && lines[cursor].line_type === expectedType) {
+    refs.push(toDiffLineRef(hunkIdx, cursor, lines[cursor]));
+    cursor += 1;
+  }
+
+  return { refs, nextIndex: cursor };
+}
+
+function appendSplitContextRow(rows: SplitDiffRow[], ref: DiffLineRef) {
+  const content = normalizeDiffLineContent(ref.line);
+  rows.push({
+    oldLineNo: ref.line.old_line_no,
+    newLineNo: ref.line.new_line_no,
+    oldType: "context",
+    newType: "context",
+    oldContent: content,
+    newContent: content,
+    oldRef: ref,
+    newRef: ref,
+  });
+}
+
+function appendSplitPairedRows(rows: SplitDiffRow[], deletions: DiffLineRef[], additions: DiffLineRef[]) {
+  const pairCount = Math.max(deletions.length, additions.length);
+
+  for (let pairIdx = 0; pairIdx < pairCount; pairIdx += 1) {
+    const deletion = deletions[pairIdx] || null;
+    const addition = additions[pairIdx] || null;
+
+    rows.push({
+      oldLineNo: deletion?.line.old_line_no ?? null,
+      newLineNo: addition?.line.new_line_no ?? null,
+      oldType: deletion ? "deletion" : "empty",
+      newType: addition ? "addition" : "empty",
+      oldContent: deletion ? normalizeDiffLineContent(deletion.line) : "",
+      newContent: addition ? normalizeDiffLineContent(addition.line) : "",
+      oldRef: deletion,
+      newRef: addition,
+    });
+  }
+}
+
+function appendSplitAdditionRows(rows: SplitDiffRow[], additions: DiffLineRef[]) {
+  for (const addition of additions) {
+    rows.push({
+      oldLineNo: null,
+      newLineNo: addition.line.new_line_no,
+      oldType: "empty",
+      newType: "addition",
+      oldContent: "",
+      newContent: normalizeDiffLineContent(addition.line),
+      oldRef: null,
+      newRef: addition,
+    });
+  }
+}
+
+function buildSplitDiffRows(hunk: { lines: DiffLine[] }, hunkIdx: number): SplitDiffRow[] {
+  const rows: SplitDiffRow[] = [];
+  let lineIdx = 0;
+
+  while (lineIdx < hunk.lines.length) {
+    const line = hunk.lines[lineIdx];
+
+    if (line.line_type === "context") {
+      appendSplitContextRow(rows, toDiffLineRef(hunkIdx, lineIdx, line));
+      lineIdx += 1;
+      continue;
+    }
+
+    if (line.line_type === "deletion") {
+      const deletionBlock = collectContiguousDiffRefs(hunk.lines, hunkIdx, lineIdx, "deletion");
+      const additionBlock = collectContiguousDiffRefs(hunk.lines, hunkIdx, deletionBlock.nextIndex, "addition");
+      appendSplitPairedRows(rows, deletionBlock.refs, additionBlock.refs);
+      lineIdx = additionBlock.nextIndex;
+      continue;
+    }
+
+    const additionBlock = collectContiguousDiffRefs(hunk.lines, hunkIdx, lineIdx, "addition");
+    appendSplitAdditionRows(rows, additionBlock.refs);
+    lineIdx = additionBlock.nextIndex;
+  }
+
+  return rows;
+}
+
+const splitDiffRowsByHunk = computed(() => {
+  if (!diff.value) {
+    return [] as SplitDiffRow[][];
+  }
+
+  return diff.value.hunks.map((hunk, hunkIdx) => buildSplitDiffRows(hunk, hunkIdx));
+});
 
 interface FullFileLine {
   lineNo: number;
@@ -1252,6 +1595,49 @@ function lineClass(type: string): string {
   }
 }
 
+function splitCellClass(type: "context" | "addition" | "deletion" | "empty"): string {
+  switch (type) {
+    case "addition":
+      return "bg-[var(--diff-add-bg)] text-[var(--diff-add-fg)]";
+    case "deletion":
+      return "bg-[var(--diff-del-bg)] text-[var(--diff-del-fg)]";
+    case "empty":
+      return "opacity-45 text-[var(--muted-foreground)]";
+    default:
+      return "text-[var(--diff-text)]";
+  }
+}
+
+function getSplitCellHtml(row: SplitDiffRow, side: "old" | "new"): string {
+  const ref = side === "old" ? row.oldRef : row.newRef;
+  const content = side === "old" ? row.oldContent : row.newContent;
+
+  if (!ref || !content) {
+    return "";
+  }
+
+  if (ref.line.line_type === "addition" || ref.line.line_type === "deletion") {
+    return getHighlightedDiffLine(ref.hunkIdx, ref.lineIdx, ref.line);
+  }
+
+  return getHighlightedLine(content, `split:${side}:${ref.hunkIdx}:${ref.lineIdx}:${content}`);
+}
+
+function formatInlineBlameHeader(blame: InlineBlameEntry): string {
+  const shaLabel = blame.entry.is_uncommitted ? "LOCAL" : blame.entry.short_sha;
+  const authorLabel = (blame.entry.author || "Unknown").trim();
+  return `${shaLabel} ${authorLabel}`.trim();
+}
+
+function formatInlineBlameMeta(blame: InlineBlameEntry): string {
+  const when = formatBlameTimestamp(blame.entry.author_time);
+  if (blame.groupSize > 1) {
+    return `${when} • ${blame.groupSize} lines`;
+  }
+
+  return when;
+}
+
 function linePrefix(type: string): string {
   switch (type) {
     case "addition": return "+";
@@ -1561,7 +1947,7 @@ watch(usePlainTextHighlighting, () => {
             </button>
           </template>
 
-          <div v-if="viewMode === 'diff' && diff && diff.hunks.length > 1" class="flex items-center gap-0.5">
+          <div v-if="(viewMode === 'diff' || viewMode === 'split-diff') && diff && diff.hunks.length > 1" class="flex items-center gap-0.5">
             <button
               @click="navigateHunk('prev')"
               :disabled="currentHunkIndex === 0"
@@ -1587,56 +1973,80 @@ watch(usePlainTextHighlighting, () => {
             <button
               @click="viewMode = 'diff'"
               :class="[
-                'px-2.5 py-1 text-xs font-medium transition-colors',
+                'px-2 py-1.5 transition-colors',
                 viewMode === 'diff' 
                   ? 'bg-[var(--primary)] text-white' 
                   : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
               ]"
-              title="View diff hunks only"
+              title="Diff view"
             >
-              Diff
+              <FileText class="w-3.5 h-3.5" />
+            </button>
+            <button
+              @click="viewMode = 'split-diff'"
+              :class="[
+                'px-2 py-1.5 transition-colors',
+                viewMode === 'split-diff' 
+                  ? 'bg-[var(--primary)] text-white' 
+                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
+              ]"
+              title="Split view"
+            >
+              <Columns2 class="w-3.5 h-3.5" />
             </button>
             <button
               @click="viewMode = 'file-diff'"
               :class="[
-                'px-2.5 py-1 text-xs font-medium transition-colors',
+                'px-2 py-1.5 transition-colors',
                 viewMode === 'file-diff' 
                   ? 'bg-[var(--primary)] text-white' 
                   : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
               ]"
-              title="View whole file with changes"
+              title="File view"
             >
-              <Eye class="w-3.5 h-3.5 inline mr-1" />
-              File
+              <Eye class="w-3.5 h-3.5" />
             </button>
             <button
               @click="viewMode = 'time-lapse'"
               :class="[
-                'px-2.5 py-1 text-xs font-medium transition-colors',
+                'px-2 py-1.5 transition-colors',
                 viewMode === 'time-lapse'
                   ? 'bg-[var(--primary)] text-white'
                   : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
               ]"
               title="Play visual history of this file"
             >
-              <Play class="w-3.5 h-3.5 inline mr-1" />
-              Time-Lapse
+              <Play class="w-3.5 h-3.5" />
             </button>
             <button
               v-if="isWorkingChanges"
               @click="viewMode = 'edit'"
               :class="[
-                'px-2.5 py-1 text-xs font-medium transition-colors',
+                'px-2 py-1.5 transition-colors',
                 viewMode === 'edit' 
                   ? 'bg-[var(--primary)] text-white' 
                   : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
               ]"
               title="Edit file"
             >
-              <Edit3 class="w-3.5 h-3.5 inline mr-1" />
-              Edit
+              <Edit3 class="w-3.5 h-3.5" />
             </button>
           </div>
+
+          <button
+            @click="toggleBlamePanel"
+            :disabled="!blameSupportedView || !!diff?.is_binary"
+            :class="[
+              'px-2 py-1 text-[11px] rounded border transition-colors',
+              showBlamePanel
+                ? 'border-[var(--primary)] bg-[var(--primary)] text-white'
+                : 'border-[var(--diff-border)] bg-[var(--secondary)] text-[var(--foreground)] hover:opacity-85',
+              (!blameSupportedView || !!diff?.is_binary) ? 'opacity-50 cursor-not-allowed hover:opacity-50' : ''
+            ]"
+            title="Toggle blame panel"
+          >
+            Blame
+          </button>
 
           <button
             class="px-2 py-1 text-[11px] rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--foreground)] transition-colors"
@@ -1666,7 +2076,8 @@ watch(usePlainTextHighlighting, () => {
       </div>
     </div>
 
-    <div class="flex-1 overflow-auto bg-[var(--diff-bg)] font-mono text-[13px] leading-[1.5]">
+    <div class="flex-1 min-h-0 flex bg-[var(--diff-bg)] font-mono text-[13px] leading-[1.5]">
+      <div class="flex-1 min-w-0 overflow-auto">
       <div v-if="loading" class="flex items-center justify-center h-full">
         <div class="diff-loader-shell">
           <img :src="logoCrocGif" alt="Loading" class="diff-loader-logo" />
@@ -1701,6 +2112,21 @@ watch(usePlainTextHighlighting, () => {
         </div>
 
         <div
+          v-if="showBlamePanel && blameLoading"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+        >
+          Loading blame data...
+        </div>
+
+        <div
+          v-if="showBlamePanel && !blameLoading && blameError"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-red-500/10 text-red-300 flex items-center gap-2"
+        >
+          <span class="truncate">Blame error: {{ blameError }}</span>
+          <button @click="refreshBlame" class="text-[var(--diff-link)] hover:underline">Retry</button>
+        </div>
+
+        <div
           v-if="usePlainTextHighlighting"
           class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
         >
@@ -1725,24 +2151,161 @@ watch(usePlainTextHighlighting, () => {
           <div>
             <template v-for="(line, lineIdx) in hunk.lines" :key="lineIdx">
               <div :class="['flex', lineClass(line.line_type)]">
+                <div
+                  v-if="showBlamePanel"
+                  class="w-[230px] flex-shrink-0 px-2 py-0.5 border-r border-[var(--diff-border)] bg-[var(--secondary)]/35 overflow-hidden"
+                >
+                  <template v-if="getInlineBlame(getDiffRowBlameLineNo(line))?.showHeader">
+                    <div class="text-[10px] font-medium text-[var(--foreground)] truncate">
+                      {{ formatInlineBlameHeader(getInlineBlame(getDiffRowBlameLineNo(line))!) }}
+                    </div>
+                    <div class="text-[10px] text-[var(--muted-foreground)] truncate">
+                      {{ formatInlineBlameMeta(getInlineBlame(getDiffRowBlameLineNo(line))!) }}
+                    </div>
+                  </template>
+                </div>
                 <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
                   {{ line.old_line_no ?? '' }}
                 </div>
                 <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px]">
                   {{ line.new_line_no ?? '' }}
                 </div>
-                <div 
+                <div
                   class="w-5 flex-shrink-0 text-center select-none font-bold"
                   :class="line.line_type === 'addition' ? 'text-[var(--diff-sign-add)]' : line.line_type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
                 >
                   {{ linePrefix(line.line_type) }}
                 </div>
-                <pre 
+                <pre
                   class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-x-auto select-text"
                   :class="line.line_type === 'addition' ? 'text-[var(--diff-add-fg)]' : line.line_type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
                 ><code class="hljs bg-transparent" v-html="getHighlightedDiffLine(hunkIdx, lineIdx, line)"></code></pre>
               </div>
             </template>
+          </div>
+        </template>
+
+        <div v-if="diff.hunks.length === 0" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
+          No changes in this file
+        </div>
+      </div>
+
+      <div v-else-if="viewMode === 'split-diff' && diff" class="min-w-fit">
+        <div
+          v-if="rawDiffFallbackActive"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+        >
+          {{ rawDiffFallbackReason || 'Coloring exceeded 5 seconds. Showing regular Git diff.' }}
+        </div>
+
+        <div
+          v-if="showBlamePanel && blameLoading"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+        >
+          Loading blame data...
+        </div>
+
+        <div
+          v-if="showBlamePanel && !blameLoading && blameError"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-red-500/10 text-red-300 flex items-center gap-2"
+        >
+          <span class="truncate">Blame error: {{ blameError }}</span>
+          <button @click="refreshBlame" class="text-[var(--diff-link)] hover:underline">Retry</button>
+        </div>
+
+        <div
+          v-if="usePlainTextHighlighting"
+          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+        >
+          Large diff mode: syntax coloring is simplified to keep scrolling auto.
+        </div>
+
+        <div
+          :class="[
+            'split-column-head grid border-b border-[var(--diff-border)] bg-[var(--secondary)]/70 text-[10px] uppercase tracking-[0.06em] text-[var(--muted-foreground)]',
+            showBlamePanel ? 'grid-cols-[230px_minmax(0,1fr)_minmax(0,1fr)]' : 'grid-cols-2'
+          ]"
+        >
+          <div v-if="showBlamePanel" class="px-2 py-1.5 border-r border-[var(--diff-border)]">Blame</div>
+          <div class="px-3 py-1.5 border-r border-[var(--diff-border)]">Previous Version</div>
+          <div class="px-3 py-1.5">New Version</div>
+        </div>
+
+        <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
+          <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[var(--diff-hunk-bg)] px-3 py-1.5 sticky top-0 z-10 border-y border-[var(--diff-border)]">
+            <span class="text-xs text-[var(--diff-link)]">
+              @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
+            </span>
+            <button
+              v-if="isWorkingChanges"
+              @click="revertHunk(hunkIdx)"
+              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+            >
+              <Undo2 class="w-3 h-3" />
+              Revert Hunk
+            </button>
+          </div>
+
+          <div
+            :class="[
+              'border-b border-[var(--diff-border)] grid',
+              showBlamePanel ? 'grid-cols-[230px_minmax(0,1fr)_minmax(0,1fr)]' : 'grid-cols-2'
+            ]"
+          >
+            <div v-if="showBlamePanel" class="border-r border-[var(--diff-border)] bg-[var(--secondary)]/25">
+              <div
+                v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
+                :key="`${hunkIdx}-blame-${rowIdx}`"
+                class="min-h-[20px] px-2 py-0.5 overflow-hidden"
+              >
+                <template v-if="getInlineBlame(getSplitRowBlameLineNo(row))?.showHeader">
+                  <div class="text-[10px] font-medium text-[var(--foreground)] truncate">
+                    {{ formatInlineBlameHeader(getInlineBlame(getSplitRowBlameLineNo(row))!) }}
+                  </div>
+                  <div class="text-[10px] text-[var(--muted-foreground)] truncate">
+                    {{ formatInlineBlameMeta(getInlineBlame(getSplitRowBlameLineNo(row))!) }}
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <div
+              class="border-r border-[var(--diff-border)] overflow-x-auto overflow-y-hidden"
+              :ref="(el) => setSplitPaneRef(hunkIdx, 'old', el)"
+              @scroll="onSplitPaneScroll(hunkIdx, 'old', $event)"
+            >
+              <div class="min-w-max">
+                <div
+                  v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
+                  :key="`${hunkIdx}-old-${rowIdx}`"
+                  :class="['flex min-h-[20px]', splitCellClass(row.oldType)]"
+                >
+                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+                    {{ row.oldLineNo ?? '' }}
+                  </div>
+                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[20px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'old')"></code></pre>
+                </div>
+              </div>
+            </div>
+
+            <div
+              class="overflow-x-auto overflow-y-hidden"
+              :ref="(el) => setSplitPaneRef(hunkIdx, 'new', el)"
+              @scroll="onSplitPaneScroll(hunkIdx, 'new', $event)"
+            >
+              <div class="min-w-max">
+                <div
+                  v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
+                  :key="`${hunkIdx}-new-${rowIdx}`"
+                  :class="['flex min-h-[20px]', splitCellClass(row.newType)]"
+                >
+                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+                    {{ row.newLineNo ?? '' }}
+                  </div>
+                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[20px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'new')"></code></pre>
+                </div>
+              </div>
+            </div>
           </div>
         </template>
 
@@ -1919,6 +2482,8 @@ watch(usePlainTextHighlighting, () => {
             Frame {{ Math.min(timeLapseFrameIndex + 1, timeLapseFrames.length) }} / {{ timeLapseFrames.length }} • scanned last {{ timeLapseCommitWindowSafe }} commits
           </div>
         </div>
+      </div>
+
       </div>
     </div>
   </div>
