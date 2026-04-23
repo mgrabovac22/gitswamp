@@ -88,15 +88,38 @@ const timeLapseCommitWindowSafe = computed(() => {
 // Virtualization state
 const scrollTop = ref(0);
 const containerHeight = ref(400);
-const LINE_HEIGHT = 20; // pixels per line
+const LINE_HEIGHT = 18; // pixels per line
 const OVERSCAN = 10;
-const MAX_HIGHLIGHT_CACHE_SIZE = 2000;
+const DEFAULT_MAX_HIGHLIGHT_CACHE_SIZE = 2000;
+const MEMORY_SAVER_MAX_HIGHLIGHT_CACHE_SIZE = 900;
+const DEFAULT_MAX_BLAME_CACHE_ENTRIES = 36;
+const MEMORY_SAVER_MAX_BLAME_CACHE_ENTRIES = 14;
 
 let fileWatchInterval: ReturnType<typeof setInterval> | null = null;
 let lastFileHash = "";
 let fileWatchRequestInFlight = false;
 let fileContentLoadSequence = 0;
 let cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+function isMemorySaverModeEnabled(): boolean {
+  return localStorage.getItem("gitswamp-memory-saver-mode") === "true";
+}
+
+function currentHighlightCacheLimit(): number {
+  return isMemorySaverModeEnabled()
+    ? MEMORY_SAVER_MAX_HIGHLIGHT_CACHE_SIZE
+    : DEFAULT_MAX_HIGHLIGHT_CACHE_SIZE;
+}
+
+function currentBlameCacheLimit(): number {
+  return isMemorySaverModeEnabled()
+    ? MEMORY_SAVER_MAX_BLAME_CACHE_ENTRIES
+    : DEFAULT_MAX_BLAME_CACHE_ENTRIES;
+}
+
+function isBlameByDefaultEnabled(): boolean {
+  return localStorage.getItem("gitswamp-prefer-blame-by-default") === "true";
+}
 
 function getFileContentCacheKey(): string | null {
   if (props.commitSha) {
@@ -140,13 +163,31 @@ function estimateDiffChars(value: FileDiff): number {
 }
 
 function maintainHighlightCache() {
-  if (highlightedLineCache.value.size > MAX_HIGHLIGHT_CACHE_SIZE) {
-    const toDelete = Math.floor(MAX_HIGHLIGHT_CACHE_SIZE * 0.2);
+  const cacheLimit = currentHighlightCacheLimit();
+  if (highlightedLineCache.value.size > cacheLimit) {
+    const toDelete = Math.floor(cacheLimit * 0.2);
     let deleted = 0;
     for (const key of highlightedLineCache.value.keys()) {
       if (deleted >= toDelete) break;
       highlightedLineCache.value.delete(key);
       deleted++;
+    }
+  }
+}
+
+function maintainBlameCache() {
+  const cacheLimit = currentBlameCacheLimit();
+  if (blameCache.value.size <= cacheLimit) {
+    return;
+  }
+
+  const toDelete = Math.max(1, blameCache.value.size - cacheLimit);
+  let deleted = 0;
+  for (const key of blameCache.value.keys()) {
+    blameCache.value.delete(key);
+    deleted += 1;
+    if (deleted >= toDelete) {
+      break;
     }
   }
 }
@@ -163,6 +204,7 @@ interface InlineDiffPair {
 
 const INLINE_PAIR_MIN_SCORE = 0.25;
 const INLINE_LCS_MAX_CELLS = 220000;
+const INLINE_TOKEN_LCS_MAX_CELLS = 100000;
 const INLINE_PAIR_MAX_CELLS = 24000;
 const INLINE_PAIR_DIFF_LINE_LIMIT = 2400;
 const INLINE_PAIR_DIFF_CHAR_LIMIT = 260000;
@@ -414,6 +456,156 @@ function backtrackLcsKeepMask(base: string, compare: string, dp: Uint32Array[]):
   return keep;
 }
 
+const INLINE_TOKEN_SPLIT_PATTERN = /(\w+|\s+|[^\s\w]+)/g;
+
+function isWhitespaceToken(value: string): boolean {
+  return /^\s+$/.test(value);
+}
+
+function bridgeWhitespaceRuns(tokens: string[], changedMask: boolean[]): boolean[] {
+  const bridged = [...changedMask];
+  let idx = 0;
+
+  while (idx < tokens.length) {
+    if (!isWhitespaceToken(tokens[idx])) {
+      idx += 1;
+      continue;
+    }
+
+    const start = idx;
+    while (idx < tokens.length && isWhitespaceToken(tokens[idx])) {
+      idx += 1;
+    }
+
+    const left = start - 1;
+    const right = idx;
+    if (left >= 0 && right < tokens.length && bridged[left] && bridged[right]) {
+      for (let run = start; run < right; run += 1) {
+        bridged[run] = true;
+      }
+    }
+  }
+
+  return bridged;
+}
+
+function buildInlineSegmentsFromTokens(
+  tokens: string[],
+  changedMask: boolean[],
+  changedClass: string,
+): { parts: string[]; hasChanged: boolean } {
+  const parts: string[] = [];
+  let segment = "";
+  let segmentChanged = changedMask[0] ?? false;
+  let hasChanged = segmentChanged;
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const changed = changedMask[idx] ?? false;
+    if (idx > 0 && changed !== segmentChanged) {
+      pushInlineSegment(parts, segment, segmentChanged, changedClass);
+      segment = "";
+      segmentChanged = changed;
+    }
+
+    segment += tokens[idx];
+    if (changed) {
+      hasChanged = true;
+    }
+  }
+
+  pushInlineSegment(parts, segment, segmentChanged, changedClass);
+  return { parts, hasChanged };
+}
+
+function tokenizeInlineText(value: string): string[] {
+  const tokens = value.match(INLINE_TOKEN_SPLIT_PATTERN);
+  if (!tokens || tokens.length === 0) {
+    return [value];
+  }
+  return tokens;
+}
+
+function computeTokenLcsKeepMask(baseTokens: string[], compareTokens: string[]): boolean[] | null {
+  const rows = baseTokens.length;
+  const cols = compareTokens.length;
+  if (rows === 0) {
+    return [];
+  }
+
+  if ((rows + 1) * (cols + 1) > INLINE_TOKEN_LCS_MAX_CELLS) {
+    return null;
+  }
+
+  const dp = buildTokenLcsMatrix(baseTokens, compareTokens);
+  return backtrackTokenLcsKeepMask(baseTokens, compareTokens, dp);
+}
+
+function buildTokenLcsMatrix(baseTokens: string[], compareTokens: string[]): Uint32Array[] {
+  const rows = baseTokens.length;
+  const cols = compareTokens.length;
+
+  const dp = Array.from({ length: rows + 1 }, () => new Uint32Array(cols + 1));
+
+  for (let row = 1; row <= rows; row += 1) {
+    for (let col = 1; col <= cols; col += 1) {
+      if (baseTokens[row - 1] === compareTokens[col - 1]) {
+        dp[row][col] = dp[row - 1][col - 1] + 1;
+      } else {
+        dp[row][col] = Math.max(dp[row - 1][col], dp[row][col - 1]);
+      }
+    }
+  }
+
+  return dp;
+}
+
+function backtrackTokenLcsKeepMask(baseTokens: string[], compareTokens: string[], dp: Uint32Array[]): boolean[] {
+  const rows = baseTokens.length;
+  const cols = compareTokens.length;
+
+  const keep = Array.from({ length: rows }, () => false);
+  let row = rows;
+  let col = cols;
+
+  while (row > 0 && col > 0) {
+    if (baseTokens[row - 1] === compareTokens[col - 1]) {
+      keep[row - 1] = true;
+      row -= 1;
+      col -= 1;
+      continue;
+    }
+
+    if (dp[row - 1][col] >= dp[row][col - 1]) {
+      row -= 1;
+    } else {
+      col -= 1;
+    }
+  }
+
+  return keep;
+}
+
+function buildTokenInlineMarkup(base: string, compare: string, changedClass: string): string | null {
+  const baseTokens = tokenizeInlineText(base);
+  const compareTokens = tokenizeInlineText(compare);
+  const keepMask = computeTokenLcsKeepMask(baseTokens, compareTokens);
+  if (!keepMask || keepMask.length !== baseTokens.length) {
+    return null;
+  }
+
+  const changedMask = bridgeWhitespaceRuns(
+    baseTokens,
+    keepMask.map((keep) => !keep),
+  );
+  const { parts, hasChanged } = buildInlineSegmentsFromTokens(baseTokens, changedMask, changedClass);
+
+  if (!hasChanged) {
+    return null;
+  }
+
+  return parts.join("");
+}
+
 watch(
   () => [props.filePath, props.staged, props.commitSha],
   () => {
@@ -619,6 +811,7 @@ async function loadFileBlame(forceRefresh = false) {
 
     blameLines.value = lines;
     blameCache.value.set(blameCacheKey, lines);
+    maintainBlameCache();
   } catch (e) {
     blameLines.value = [];
     blameError.value = String(e);
@@ -661,6 +854,8 @@ const inlineBlameByLine = computed(() => {
     return map;
   }
 
+  const showHeaderOnEveryLine = isBlameByDefaultEnabled();
+
   let groupStart = 0;
   const finalizeGroup = (startIdx: number, endIdx: number) => {
     const size = endIdx - startIdx + 1;
@@ -668,7 +863,7 @@ const inlineBlameByLine = computed(() => {
       const line = sorted[idx];
       map.set(line.line_no, {
         entry: line,
-        showHeader: idx === startIdx,
+        showHeader: showHeaderOnEveryLine || idx === startIdx,
         groupSize: size,
       });
     }
@@ -867,13 +1062,31 @@ watch(isUnstaged, (val) => {
   }
 }, { immediate: true });
 
+watch(
+  () => [props.filePath, props.commitSha, props.staged],
+  () => {
+    if (!isBlameByDefaultEnabled() || !blameSupportedView.value) {
+      return;
+    }
+
+    showBlamePanel.value = true;
+    void loadFileBlame();
+  },
+);
+
 onMounted(() => {
   pruneDiffViewerCaches();
   cacheCleanupInterval = setInterval(() => {
     pruneDiffViewerCaches();
   }, CACHE_CLEANUP_INTERVAL_MS);
 
-  reload();
+  const enableBlameByDefault = isBlameByDefaultEnabled();
+  reload().finally(() => {
+    if (enableBlameByDefault && !diff.value?.is_binary && blameSupportedView.value) {
+      showBlamePanel.value = true;
+      void loadFileBlame();
+    }
+  });
   if (isUnstaged.value) {
     startFileWatch();
   }
@@ -1854,6 +2067,11 @@ function buildInlineDiffMarkup(base: string, compare: string, changedClass: stri
     return escapeHtml(base);
   }
 
+  const tokenMarkup = buildTokenInlineMarkup(base, compare, changedClass);
+  if (tokenMarkup) {
+    return tokenMarkup;
+  }
+
   const keepMask = computeLcsKeepMask(base, compare);
   if (!keepMask || keepMask.length !== base.length) {
     return buildPrefixSuffixInlineMarkup(base, compare, changedClass);
@@ -1878,27 +2096,12 @@ function pushInlineSegment(parts: string[], value: string, changed: boolean, cha
 }
 
 function buildInlineSegmentsFromMask(base: string, keepMask: boolean[], changedClass: string): { parts: string[]; hasChanged: boolean } {
-  const parts: string[] = [];
-  let segment = "";
-  let segmentChanged = !keepMask[0];
-  let hasChanged = segmentChanged;
-
-  for (let idx = 0; idx < base.length; idx += 1) {
-    const changed = !keepMask[idx];
-    if (idx > 0 && changed !== segmentChanged) {
-      pushInlineSegment(parts, segment, segmentChanged, changedClass);
-      segment = "";
-      segmentChanged = changed;
-    }
-
-    segment += base[idx];
-    if (changed) {
-      hasChanged = true;
-    }
-  }
-
-  pushInlineSegment(parts, segment, segmentChanged, changedClass);
-  return { parts, hasChanged };
+  const baseChars = base.split("");
+  const changedMask = bridgeWhitespaceRuns(
+    baseChars,
+    keepMask.map((keep) => !keep),
+  );
+  return buildInlineSegmentsFromTokens(baseChars, changedMask, changedClass);
 }
 
 function onEditInput() {
@@ -2076,7 +2279,7 @@ watch(usePlainTextHighlighting, () => {
       </div>
     </div>
 
-    <div class="flex-1 min-h-0 flex bg-[var(--diff-bg)] font-mono text-[13px] leading-[1.5]">
+    <div class="flex-1 min-h-0 flex bg-[var(--diff-bg)] font-mono text-[12px] leading-[1.4]">
       <div class="flex-1 min-w-0 overflow-auto">
       <div v-if="loading" class="flex items-center justify-center h-full">
         <div class="diff-loader-shell">
@@ -2256,7 +2459,7 @@ watch(usePlainTextHighlighting, () => {
               <div
                 v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                 :key="`${hunkIdx}-blame-${rowIdx}`"
-                class="min-h-[20px] px-2 py-0.5 overflow-hidden"
+                class="min-h-[18px] px-2 py-0.5 overflow-hidden"
               >
                 <template v-if="getInlineBlame(getSplitRowBlameLineNo(row))?.showHeader">
                   <div class="text-[10px] font-medium text-[var(--foreground)] truncate">
@@ -2278,12 +2481,12 @@ watch(usePlainTextHighlighting, () => {
                 <div
                   v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                   :key="`${hunkIdx}-old-${rowIdx}`"
-                  :class="['flex min-h-[20px]', splitCellClass(row.oldType)]"
+                  :class="['flex min-h-[18px]', splitCellClass(row.oldType)]"
                 >
-                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
                     {{ row.oldLineNo ?? '' }}
                   </div>
-                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[20px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'old')"></code></pre>
+                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[18px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'old')"></code></pre>
                 </div>
               </div>
             </div>
@@ -2297,12 +2500,12 @@ watch(usePlainTextHighlighting, () => {
                 <div
                   v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                   :key="`${hunkIdx}-new-${rowIdx}`"
-                  :class="['flex min-h-[20px]', splitCellClass(row.newType)]"
+                  :class="['flex min-h-[18px]', splitCellClass(row.newType)]"
                 >
-                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
                     {{ row.newLineNo ?? '' }}
                   </div>
-                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[20px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'new')"></code></pre>
+                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[18px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'new')"></code></pre>
                 </div>
               </div>
             </div>
@@ -2351,10 +2554,10 @@ watch(usePlainTextHighlighting, () => {
             :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
             :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
           >
-            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
               {{ item.line.oldLineNo ?? '' }}
             </div>
-            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
               {{ item.line.lineNo || '' }}
             </div>
             <div 
@@ -2364,7 +2567,7 @@ watch(usePlainTextHighlighting, () => {
               {{ linePrefix(item.line.type) }}
             </div>
             <pre 
-              class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[20px] m-0 select-text"
+              class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[18px] m-0 select-text"
               :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
             ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line)"></code></pre>
           </div>
@@ -2379,7 +2582,7 @@ watch(usePlainTextHighlighting, () => {
         <textarea
           v-model="editContent"
           @input="onEditInput"
-          class="w-full h-full bg-[var(--diff-bg)] text-[var(--diff-text)] p-3 resize-none outline-none font-mono text-[13px] leading-[1.5]"
+          class="w-full h-full bg-[var(--diff-bg)] text-[var(--diff-text)] p-3 resize-none outline-none font-mono text-[12px] leading-[1.4]"
           spellcheck="false"
         ></textarea>
       </div>
@@ -2581,24 +2784,28 @@ watch(usePlainTextHighlighting, () => {
 }
 
 :deep(.diff-inline-add) {
-  background: var(--diff-inline-add-bg);
-  border: 1.5px solid color-mix(in srgb, var(--diff-sign-add) 90%, transparent);
+  background: color-mix(in srgb, var(--diff-inline-add-bg) 42%, transparent);
+  border: 0;
   border-radius: 2px;
   color: var(--diff-inline-add-text);
   font-weight: inherit;
   font-style: normal;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 85%, transparent), 0 0 2px color-mix(in srgb, var(--diff-sign-add) 30%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 18%, transparent),
+    0 0 4px color-mix(in srgb, var(--diff-sign-add) 12%, transparent);
   text-decoration: none;
 }
 
 :deep(.diff-inline-del) {
-  background: var(--diff-inline-del-bg);
-  border: 1.5px solid color-mix(in srgb, var(--diff-sign-del) 90%, transparent);
+  background: color-mix(in srgb, var(--diff-inline-del-bg) 42%, transparent);
+  border: 0;
   border-radius: 2px;
   color: var(--diff-inline-del-text);
   font-weight: inherit;
   font-style: normal;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 85%, transparent), 0 0 2px color-mix(in srgb, var(--diff-sign-del) 30%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 18%, transparent),
+    0 0 4px color-mix(in srgb, var(--diff-sign-del) 12%, transparent);
   text-decoration: none;
 }
 </style>

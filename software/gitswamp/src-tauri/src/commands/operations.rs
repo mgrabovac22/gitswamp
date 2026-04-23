@@ -135,6 +135,36 @@ pub fn add_gitlab_ssh_key(domain: String, token: String, title: String, key: Str
 }
 
 #[tauri::command]
+pub fn add_github_ssh_key(token: String, title: String, key: String) -> Result<(), String> {
+    crate::services::git_service::GitService::add_github_ssh_key(&token, &title, &key)
+}
+
+#[tauri::command]
+pub fn list_github_ssh_keys(token: String) -> Result<Vec<crate::models::GithubSshKey>, String> {
+    crate::services::git_service::GitService::list_github_ssh_keys(&token)
+}
+
+#[tauri::command]
+pub fn delete_github_ssh_key(token: String, key_id: u64) -> Result<(), String> {
+    crate::services::git_service::GitService::delete_github_ssh_key(&token, key_id)
+}
+
+#[tauri::command]
+pub fn verify_github_token(token: String) -> Result<String, String> {
+    crate::services::git_service::GitService::verify_github_token(&token)
+}
+
+#[tauri::command]
+pub fn load_ssh_public_key_from_file(file_path: String) -> Result<String, String> {
+    crate::services::git_service::GitService::load_ssh_public_key_from_file(&file_path)
+}
+
+#[tauri::command]
+pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
+    crate::services::git_service::GitService::connect_github_oauth_via_gh_cli()
+}
+
+#[tauri::command]
 pub fn verify_gitlab_token(domain: String, token: String) -> Result<String, String> {
     crate::services::git_service::GitService::verify_gitlab_token(&domain, &token)
 }

@@ -417,11 +417,21 @@ function isSearchMatch(sha: string): boolean {
   return searchMatchSet.value.has(sha);
 }
 
+const GRAPH_SMOOTH_SCROLL_KEY = "gitswamp-graph-smooth-scroll";
+
+function resolveGraphScrollBehavior(behavior: ScrollBehavior): ScrollBehavior {
+  if (behavior !== "auto") {
+    return behavior;
+  }
+
+  return localStorage.getItem(GRAPH_SMOOTH_SCROLL_KEY) === "true" ? "smooth" : "auto";
+}
+
 function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "auto"): boolean {
   const idx = activeCommits.value.findIndex((commit) => commit.sha === sha);
   if (idx < 0 || !scrollContainer.value) return false;
   const top = Math.max(0, idx * rowHeight.value + wcOffset.value - rowHeight.value * 2);
-  scrollContainer.value.scrollTo({ top, behavior });
+  scrollContainer.value.scrollTo({ top, behavior: resolveGraphScrollBehavior(behavior) });
   return true;
 }
 
@@ -1044,13 +1054,13 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function scrollGraphToTop(behavior: ScrollBehavior = "auto") {
   if (!scrollContainer.value) return;
-  scrollContainer.value.scrollTo({ top: 0, behavior });
+  scrollContainer.value.scrollTo({ top: 0, behavior: resolveGraphScrollBehavior(behavior) });
 }
 
 function scrollGraphToBottom(behavior: ScrollBehavior = "auto") {
   if (!scrollContainer.value) return;
   const target = Math.max(0, scrollContainer.value.scrollHeight - scrollContainer.value.clientHeight);
-  scrollContainer.value.scrollTo({ top: target, behavior });
+  scrollContainer.value.scrollTo({ top: target, behavior: resolveGraphScrollBehavior(behavior) });
 }
 
 async function waitForCommitGrowth(previousCount: number, timeoutMs = 2400): Promise<boolean> {

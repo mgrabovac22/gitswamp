@@ -29,7 +29,9 @@ export type AppPalettePreference =
   | "smoke-blue-light"
   | "terracotta-light"
   | "pine-mist-light"
-  | "graphite-paper-light";
+  | "graphite-paper-light"
+  | "volcanic-night"
+  | "arctic-paper-light";
 
 export interface AppThemeOption {
   id: AppPalettePreference;
@@ -68,4 +70,6 @@ export const APP_THEME_OPTIONS: AppThemeOption[] = [
   { id: "terracotta-light", label: "Terracotta Light", mode: "light", group: "light" },
   { id: "pine-mist-light", label: "Pine Mist Light", mode: "light", group: "light" },
   { id: "graphite-paper-light", label: "Graphite Paper Light", mode: "light", group: "light" },
+  { id: "volcanic-night", label: "Volcanic Night", mode: "dark", group: "dark" },
+  { id: "arctic-paper-light", label: "Arctic Paper Light", mode: "light", group: "light" },
 ];

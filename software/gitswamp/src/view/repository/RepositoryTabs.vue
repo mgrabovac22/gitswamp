@@ -4,7 +4,7 @@ import { Folder, Plus, X, Home, Menu, HelpCircle, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { RepoInfo } from "@/types";
 
-type MenuSection = "file" | "edit" | "view" | "help";
+type MenuSection = "file" | "edit" | "view" | "options" | "help";
 type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
 
 interface MenuAction {
@@ -28,6 +28,10 @@ const emit = defineEmits<{
   openRepository: [];
   toggleTerminal: [];
   openSettings: [];
+  openIntegrations: [];
+  openGitIntegration: [];
+  openAdvanced: [];
+  openOrganisations: [];
   refreshRepository: [];
   openInVsCode: [];
   openInExplorer: [];
@@ -50,6 +54,7 @@ const sectionLabels: { id: MenuSection; label: string }[] = [
   { id: "file", label: "File" },
   { id: "edit", label: "Edit" },
   { id: "view", label: "View" },
+  { id: "options", label: "Options" },
   { id: "help", label: "Help" },
 ];
 
@@ -209,12 +214,41 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       disabled: !hasActiveRepo.value,
       run: () => emit("openInExplorer"),
     },
+  ],
+  options: [
     {
-      id: "open-settings",
-      label: "Open Settings",
-      description: "Configure appearance, behavior and authentication.",
+      id: "open-integrations",
+      label: "Integrations",
+      description: "Manage GitHub, GitLab, Bitbucket and Azure connections.",
+      shortcut: "Ctrl+Shift+I",
+      run: () => emit("openIntegrations"),
+    },
+    {
+      id: "open-git-integration",
+      label: "Git Integration",
+      description: "Check Git installation and configure background auto-fetch.",
+      shortcut: "Ctrl+Shift+K",
+      run: () => emit("openGitIntegration"),
+    },
+    {
+      id: "open-preferences",
+      label: "Options",
+      description: "Configure appearance, behavior and application options.",
       shortcut: "Ctrl+,",
       run: () => emit("openSettings"),
+    },
+    {
+      id: "open-advanced",
+      label: "Advanced",
+      description: "Configure graph behavior and advanced toggles.",
+      run: () => emit("openAdvanced"),
+    },
+    {
+      id: "open-organisations",
+      label: "Organisations",
+      description: "Manage organisation repositories and batch clone selections.",
+      shortcut: "Ctrl+Shift+Y",
+      run: () => emit("openOrganisations"),
     },
   ],
   help: [
@@ -317,7 +351,8 @@ onUnmounted(() => {
     <div ref="menuRoot" class="relative flex-shrink-0">
       <button
         ref="menuButton"
-        class="h-9 w-9 flex items-center justify-center rounded-t-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-all [app-region:no-drag]"
+        type="button"
+        class="h-9 w-9 flex items-center justify-center rounded-t-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-all [app-region:no-drag] pointer-events-auto"
         title="Menu"
         @click.stop="toggleMenu"
       >
@@ -452,7 +487,11 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+4</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open settings</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open integrations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+I</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Git integration</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+K</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open advanced options</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+A</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open organisations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+Y</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open options</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open logs panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+L</span></div>
             </div>
           </section>

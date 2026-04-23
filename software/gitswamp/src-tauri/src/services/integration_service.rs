@@ -6,11 +6,12 @@ use std::os::windows::process::CommandExt;
 
 use crate::constants::{
     API_AZURE_REPOS_PATH, API_BITBUCKET_LIST_REPOS, API_GITHUB_LIST_REPOS,
-    API_GITHUB_SEARCH_REPOS, API_GITLAB_BASE_PATH, API_GITLAB_USER_KEYS_PATH,
-    API_GITLAB_USER_PATH, APP_USER_AGENT, AZURE_HOST, AZURE_LEGACY_HOST,
-    GITHUB_ACCEPT_HEADER, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
+    API_GITHUB_SEARCH_REPOS, API_GITHUB_USER_KEYS_PATH, API_GITHUB_USER_PATH,
+    API_GITLAB_BASE_PATH, API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH,
+    APP_USER_AGENT, AZURE_HOST, AZURE_LEGACY_HOST, GITHUB_ACCEPT_HEADER,
+    HTTPS_SCHEME, JSON_ACCEPT_HEADER,
 };
-use crate::models::{AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo};
+use crate::models::{AzureRepo, BitbucketRepo, GithubRepo, GithubSshKey, GitlabRepo};
 use crate::services::helpers::urlencoded;
 
 #[cfg(windows)]
@@ -411,6 +412,281 @@ impl IntegrationService {
             }
             Err(e) => Err(format!("Failed to add SSH key: {}", e)),
         }
+    }
+
+    pub fn add_github_ssh_key(token: &str, title: &str, key: &str) -> Result<(), String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required to add an SSH key.".to_string());
+        }
+
+        let normalized_key = Self::normalize_ssh_public_key(key)?;
+        let key_title = if title.trim().is_empty() {
+            "gitswamp"
+        } else {
+            title.trim()
+        };
+
+        let body = serde_json::json!({
+            "title": key_title,
+            "key": normalized_key,
+        });
+
+        let result = ureq::post(API_GITHUB_USER_KEYS_PATH)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .set("Content-Type", "application/json")
+            .send_json(&body);
+
+        match result {
+            Ok(resp) => {
+                if resp.status() == 201 || resp.status() == 200 {
+                    Ok(())
+                } else {
+                    Err(format!("GitHub returned status {}", resp.status()))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                if let Ok(body) = resp.into_string() {
+                    let body_lower = body.to_lowercase();
+                    if code == 404 && body_lower.contains("not found") {
+                        return Err("GitHub rejected SSH key creation. The token/oauth scope must include admin:public_key.".to_string());
+                    }
+                    if body_lower.contains("already in use")
+                        || body_lower.contains("key is already")
+                        || body_lower.contains("already exists")
+                    {
+                        return Ok(());
+                    }
+                    Err(format!("GitHub error ({}): {}", code, body))
+                } else {
+                    Err(format!("GitHub returned status {}", code))
+                }
+            }
+            Err(e) => Err(format!("Failed to add GitHub SSH key: {}", e)),
+        }
+    }
+
+    pub fn list_github_ssh_keys(token: &str) -> Result<Vec<GithubSshKey>, String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required to list SSH keys.".to_string());
+        }
+
+        let resp = ureq::get(API_GITHUB_USER_KEYS_PATH)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let items = body.as_array().cloned().unwrap_or_default();
+        let keys = items
+            .iter()
+            .filter_map(|item| {
+                Some(GithubSshKey {
+                    id: item["id"].as_u64()?,
+                    title: item["title"].as_str().unwrap_or("Untitled").to_string(),
+                    key: item["key"].as_str().unwrap_or("").to_string(),
+                    fingerprint: item["fingerprint"].as_str().unwrap_or("").to_string(),
+                    created_at: item["created_at"].as_str().unwrap_or("").to_string(),
+                })
+            })
+            .collect();
+
+        Ok(keys)
+    }
+
+    pub fn delete_github_ssh_key(token: &str, key_id: u64) -> Result<(), String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required to delete an SSH key.".to_string());
+        }
+
+        if key_id == 0 {
+            return Err("A valid GitHub SSH key id is required.".to_string());
+        }
+
+        let url = format!("{}/{}", API_GITHUB_USER_KEYS_PATH, key_id);
+        let result = ureq::delete(&url)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call();
+
+        match result {
+            Ok(resp) => {
+                if resp.status() == 204 || resp.status() == 200 || resp.status() == 202 {
+                    Ok(())
+                } else {
+                    Err(format!("GitHub returned status {}", resp.status()))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                if body.trim().is_empty() {
+                    Err(format!("GitHub returned status {}", code))
+                } else {
+                    Err(format!("GitHub error ({}): {}", code, body))
+                }
+            }
+            Err(e) => Err(format!("Failed to delete GitHub SSH key: {}", e)),
+        }
+    }
+
+    pub fn verify_github_token(token: &str) -> Result<String, String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required.".to_string());
+        }
+
+        let resp = ureq::get(API_GITHUB_USER_PATH)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        Ok(body["login"].as_str().unwrap_or("Unknown").to_string())
+    }
+
+    pub fn load_ssh_public_key_from_file(file_path: &str) -> Result<String, String> {
+        let path = PathBuf::from(file_path.trim());
+        if path.as_os_str().is_empty() {
+            return Err("SSH key file path is required.".to_string());
+        }
+
+        if !path.exists() {
+            return Err(format!("SSH key file not found: {}", path.display()));
+        }
+
+        if !path.is_file() {
+            return Err(format!("Path is not a file: {}", path.display()));
+        }
+
+        let key_text = if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("pub"))
+            .unwrap_or(false)
+        {
+            fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read SSH public key file: {}", e))?
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(raw_text) => {
+                    let raw_trimmed = raw_text.trim_start();
+                    if raw_trimmed.starts_with("ssh-") || raw_trimmed.starts_with("ecdsa-") {
+                        raw_text
+                    } else {
+                        let candidates = Self::ssh_keygen_candidates();
+                        Self::derive_public_key(&candidates, &path)?
+                    }
+                }
+                Err(_) => {
+                    let candidates = Self::ssh_keygen_candidates();
+                    Self::derive_public_key(&candidates, &path)?
+                }
+            }
+        };
+
+        Self::normalize_ssh_public_key(&key_text)
+    }
+
+    pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
+        let gh_binary = Self::find_command_in_path(&["gh.exe", "gh"]).ok_or_else(|| {
+            "GitHub CLI (gh) was not found. Install it to use OAuth sign-in.".to_string()
+        })?;
+
+        let mut login_cmd = std::process::Command::new(&gh_binary);
+        login_cmd
+            .args([
+                "auth",
+                "login",
+                "--hostname",
+                "github.com",
+                "--web",
+                "--git-protocol",
+                "ssh",
+                "--skip-ssh-key",
+                "--scopes",
+                "repo,read:org,admin:public_key",
+            ]);
+
+        #[cfg(windows)]
+        login_cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let login_output = login_cmd
+            .output()
+            .map_err(|e| format!("Failed to start GitHub CLI login: {}", e))?;
+
+        if !login_output.status.success() {
+            let stderr = String::from_utf8_lossy(&login_output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&login_output.stdout).trim().to_string();
+            let details = if !stderr.is_empty() { stderr } else { stdout };
+            if details.is_empty() {
+                return Err("GitHub OAuth login failed via GitHub CLI.".to_string());
+            }
+            return Err(format!(
+                "GitHub OAuth login failed via GitHub CLI: {}",
+                details
+            ));
+        }
+
+        // Best-effort scope refresh in case user already had an existing gh session.
+        let mut refresh_cmd = std::process::Command::new(&gh_binary);
+        refresh_cmd.args([
+            "auth",
+            "refresh",
+            "--hostname",
+            "github.com",
+            "--scopes",
+            "repo,read:org,admin:public_key",
+        ]);
+
+        #[cfg(windows)]
+        refresh_cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let _ = refresh_cmd.output();
+
+        let mut token_cmd = std::process::Command::new(&gh_binary);
+        token_cmd.args(["auth", "token", "--hostname", "github.com"]);
+
+        #[cfg(windows)]
+        token_cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let token_output = token_cmd
+            .output()
+            .map_err(|e| format!("Failed to read token from GitHub CLI: {}", e))?;
+
+        if !token_output.status.success() {
+            let stderr = String::from_utf8_lossy(&token_output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+            let details = if !stderr.is_empty() { stderr } else { stdout };
+            if details.is_empty() {
+                return Err("GitHub CLI could not return an OAuth token.".to_string());
+            }
+            return Err(format!(
+                "GitHub CLI could not return an OAuth token: {}",
+                details
+            ));
+        }
+
+        let token = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+        if token.is_empty() {
+            return Err("GitHub CLI returned an empty OAuth token.".to_string());
+        }
+
+        Ok(token)
     }
 
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
@@ -980,6 +1256,27 @@ impl IntegrationService {
             return;
         }
         paths.push(value);
+    }
+
+    fn normalize_ssh_public_key(value: &str) -> Result<String, String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err("SSH public key is empty.".to_string());
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let key_type = parts.next().unwrap_or_default();
+        let key_body = parts.next().unwrap_or_default();
+        if key_type.is_empty() || key_body.is_empty() {
+            return Err("Invalid SSH public key format.".to_string());
+        }
+
+        let remainder = parts.collect::<Vec<_>>().join(" ");
+        if remainder.is_empty() {
+            Ok(format!("{} {}", key_type, key_body))
+        } else {
+            Ok(format!("{} {} {}", key_type, key_body, remainder))
+        }
     }
 
     fn ssh_keygen_candidates() -> Vec<PathBuf> {

@@ -12,6 +12,8 @@ pub const AZURE_LEGACY_HOST: &str = "visualstudio.com";
 
 pub const API_GITHUB_LIST_REPOS: &str = "https://api.github.com/user/repos?per_page=50&sort=updated&affiliation=owner,collaborator,organization_member";
 pub const API_GITHUB_SEARCH_REPOS: &str = "https://api.github.com/search/repositories?q={}&per_page=30";
+pub const API_GITHUB_USER_KEYS_PATH: &str = "https://api.github.com/user/keys";
+pub const API_GITHUB_USER_PATH: &str = "https://api.github.com/user";
 pub const API_BITBUCKET_LIST_REPOS: &str = "https://api.bitbucket.org/2.0/repositories?role=member&sort=-updated_on&pagelen=50";
 pub const API_GITLAB_BASE_PATH: &str = "/api/v4";
 pub const API_GITLAB_USER_KEYS_PATH: &str = "/api/v4/user/keys";

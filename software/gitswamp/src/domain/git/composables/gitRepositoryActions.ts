@@ -69,7 +69,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
 
   async function searchGithubRepos(query: string): Promise<GithubRepo[]> {
     if (!state.githubToken.value) {
-      state.error.value = "No GitHub token configured. Go to Settings to add one.";
+      state.error.value = "No GitHub token configured. Go to Options > Integrations to add one.";
       return [];
     }
 

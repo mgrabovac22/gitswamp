@@ -446,6 +446,7 @@ function handleRefreshState() {
 
           <CommitDetails
             v-show="!props.detailsPanelCollapsed"
+            class="h-full"
             :commit="props.git.selectedCommit.value"
             :selected-commits="props.git.selectedCommits.value"
             :can-amend-selected-commit="canAmendSelectedCommit"

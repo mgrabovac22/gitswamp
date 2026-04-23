@@ -2322,6 +2322,30 @@ impl GitService {
         IntegrationService::add_gitlab_ssh_key(domain, token, title, key)
     }
 
+    pub fn add_github_ssh_key(token: &str, title: &str, key: &str) -> Result<(), String> {
+        IntegrationService::add_github_ssh_key(token, title, key)
+    }
+
+    pub fn list_github_ssh_keys(token: &str) -> Result<Vec<crate::models::GithubSshKey>, String> {
+        IntegrationService::list_github_ssh_keys(token)
+    }
+
+    pub fn delete_github_ssh_key(token: &str, key_id: u64) -> Result<(), String> {
+        IntegrationService::delete_github_ssh_key(token, key_id)
+    }
+
+    pub fn verify_github_token(token: &str) -> Result<String, String> {
+        IntegrationService::verify_github_token(token)
+    }
+
+    pub fn load_ssh_public_key_from_file(file_path: &str) -> Result<String, String> {
+        IntegrationService::load_ssh_public_key_from_file(file_path)
+    }
+
+    pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
+        IntegrationService::connect_github_oauth_via_gh_cli()
+    }
+
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
         IntegrationService::verify_gitlab_token(domain, token)
     }

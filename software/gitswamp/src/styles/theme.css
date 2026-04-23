@@ -915,6 +915,76 @@ html[data-app-theme="graphite-paper-light"] {
   --sidebar-ring: #3d5068;
 }
 
+html[data-app-theme="volcanic-night"] {
+  --background: #1a1412;
+  --foreground: #f4e8e1;
+  --card: #241b18;
+  --card-foreground: #f4e8e1;
+  --popover: #2b201d;
+  --popover-foreground: #f4e8e1;
+  --primary: #f97316;
+  --accent: #ea580c;
+  --ring: #fb923c;
+  --switch-background: #ea580c;
+  --secondary: #352724;
+  --secondary-foreground: #f6ebe4;
+  --muted: #332521;
+  --muted-foreground: #d2b7ab;
+  --border: rgba(249, 115, 22, 0.24);
+  --input: rgba(251, 146, 60, 0.14);
+  --input-background: #2d211d;
+  --sidebar: #191312;
+  --sidebar-foreground: #f6ebe4;
+  --sidebar-primary: #fb923c;
+  --sidebar-accent: #2f231f;
+  --sidebar-accent-foreground: #f6ebe4;
+  --sidebar-border: rgba(251, 146, 60, 0.2);
+  --sidebar-ring: #fb923c;
+
+  --diff-add-bg: rgba(26, 94, 48, 0.36);
+  --diff-del-bg: rgba(127, 29, 29, 0.33);
+  --diff-sign-add: #22c55e;
+  --diff-sign-del: #f87171;
+  --diff-inline-add-bg: #22c55e;
+  --diff-inline-del-bg: #ef4444;
+}
+
+html[data-app-theme="arctic-paper-light"] {
+  --background: #edf3f8;
+  --foreground: #1f2f3d;
+  --card: #f9fcff;
+  --card-foreground: #1f2f3d;
+  --popover: #ffffff;
+  --popover-foreground: #1f2f3d;
+  --primary: #0f766e;
+  --accent: #0b5f59;
+  --ring: #0f766e;
+  --switch-background: #0f766e;
+  --secondary: #dde8f1;
+  --secondary-foreground: #253847;
+  --muted: #d2e0ec;
+  --muted-foreground: #4b6379;
+  --border: rgba(15, 118, 110, 0.2);
+  --input: rgba(15, 118, 110, 0.12);
+  --input-background: #ffffff;
+  --sidebar: #e4edf5;
+  --sidebar-foreground: #21303d;
+  --sidebar-primary: #0f766e;
+  --sidebar-accent: #d3e0eb;
+  --sidebar-accent-foreground: #2a3b4a;
+  --sidebar-border: rgba(15, 118, 110, 0.18);
+  --sidebar-ring: #0f766e;
+
+  --diff-add-bg: rgba(21, 128, 61, 0.13);
+  --diff-del-bg: rgba(185, 28, 28, 0.12);
+  --diff-sign-add: #15803d;
+  --diff-sign-del: #b91c1c;
+  --diff-inline-add-bg: #86efac;
+  --diff-inline-del-bg: #fecaca;
+  --diff-inline-add-text: #052e16;
+  --diff-inline-del-text: #450a0a;
+}
+
 html.light *::-webkit-scrollbar-thumb {
   background: rgba(124, 58, 237, 0.15);
 }
@@ -1052,6 +1122,69 @@ html.light .shadow-2xl {
     font-size: var(--font-size);
   }
 
+  html.gitswamp-linux.light select,
+  html.gitswamp-linux.light option {
+    color-scheme: light;
+    background-color: var(--input-background);
+    color: var(--foreground);
+  }
+
+  html.font-scale-tiny .commit-scroll .text-\[9px\] {
+    font-size: 8px !important;
+  }
+  html.font-scale-tiny .commit-scroll .text-\[10px\] {
+    font-size: 9px !important;
+  }
+  html.font-scale-tiny .commit-scroll .text-\[11px\] {
+    font-size: 10px !important;
+  }
+
+  html.font-scale-small .commit-scroll .text-\[9px\] {
+    font-size: 9px !important;
+  }
+  html.font-scale-small .commit-scroll .text-\[10px\] {
+    font-size: 10px !important;
+  }
+  html.font-scale-small .commit-scroll .text-\[11px\] {
+    font-size: 11px !important;
+  }
+
+  html.font-scale-medium .commit-scroll .text-\[9px\] {
+    font-size: 10px !important;
+  }
+  html.font-scale-medium .commit-scroll .text-\[10px\] {
+    font-size: 11px !important;
+  }
+  html.font-scale-medium .commit-scroll .text-\[11px\] {
+    font-size: 12px !important;
+  }
+
+  html.font-scale-largest .commit-scroll .text-\[9px\] {
+    font-size: 11px !important;
+  }
+  html.font-scale-largest .commit-scroll .text-\[10px\] {
+    font-size: 12px !important;
+  }
+  html.font-scale-largest .commit-scroll .text-\[11px\] {
+    font-size: 13px !important;
+  }
+
+  html.font-scale-huge .commit-scroll .text-\[9px\] {
+    font-size: 12px !important;
+  }
+  html.font-scale-huge .commit-scroll .text-\[10px\] {
+    font-size: 13px !important;
+  }
+  html.font-scale-huge .commit-scroll .text-\[11px\] {
+    font-size: 14px !important;
+  }
+
+  html.font-scale-medium .commit-row,
+  html.font-scale-largest .commit-row,
+  html.font-scale-huge .commit-row {
+    min-height: 30px;
+  }
+
   html.compact .commit-row {
     height: 22px !important;
   }
@@ -1079,7 +1212,14 @@ html.light .shadow-2xl {
   html.reduced-motion .node-pop,
   html.reduced-motion .graph-row,
   html.reduced-motion .working-node,
+  html.graph-animations-off .node-pop,
+  html.graph-animations-off .graph-row,
+  html.graph-animations-off .working-node,
   html.reduced-motion .current-branch-badge::after {
+    animation: none !important;
+  }
+
+  html.graph-animations-off .current-branch-badge::after {
     animation: none !important;
   }
 

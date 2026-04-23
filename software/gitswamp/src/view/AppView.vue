@@ -10,7 +10,7 @@ import CloneDialog from "@/view/repository/CloneDialog.vue";
 import InitDialog from "@/view/repository/InitDialog.vue";
 import GhostBranchDialog from "@/view/repository/GhostBranchDialog.vue";
 import MultiPlatformPushDialog from "@/view/repository/MultiPlatformPushDialog.vue";
-import SettingsDialog from "@/view/shell/SettingsDialog.vue";
+import OptionsDialog from "@/view/shell/OptionsDialog.vue";
 import ToastContainer from "@/shared/ui/ToastContainer.vue";
 import {
   applyAppPalettePreference,
@@ -36,10 +36,30 @@ const appWindow = getCurrentWindow();
 applyThemeModePreference(getStoredThemeModePreference());
 applyAppPalettePreference(getStoredAppPalettePreference());
 
-const savedFontSize = localStorage.getItem("gitswamp-font-size");
-if (savedFontSize) {
-  const fontSizes: Record<string, string> = { small: "14px", medium: "16px", large: "18px" };
-  document.documentElement.style.setProperty("--font-size", fontSizes[savedFontSize] || "16px");
+const savedGeneralFontSize = localStorage.getItem("gitswamp-general-font-size");
+if (savedGeneralFontSize) {
+  const parsedGeneral = Number.parseInt(savedGeneralFontSize, 10);
+  const generalSize = Number.isFinite(parsedGeneral) ? Math.max(12, Math.min(26, parsedGeneral)) : 18;
+  document.documentElement.style.setProperty("--font-size", `${generalSize}px`);
+} else {
+  const savedLegacyScale = localStorage.getItem("gitswamp-font-size");
+  const legacyMap: Record<string, string> = {
+    tiny: "14px",
+    small: "16px",
+    medium: "18px",
+    largest: "22px",
+    huge: "24px",
+    large: "18px",
+  };
+  if (savedLegacyScale && legacyMap[savedLegacyScale]) {
+    document.documentElement.style.setProperty("--font-size", legacyMap[savedLegacyScale]);
+  }
+}
+
+const savedCommitScale = localStorage.getItem("gitswamp-font-size");
+if (savedCommitScale && ["tiny", "small", "medium", "largest", "huge"].includes(savedCommitScale)) {
+  document.documentElement.classList.remove("font-scale-tiny", "font-scale-small", "font-scale-medium", "font-scale-largest", "font-scale-huge");
+  document.documentElement.classList.add(`font-scale-${savedCommitScale}`);
 }
 const savedCompact = localStorage.getItem("gitswamp-compact-mode");
 if (savedCompact === "true") {
@@ -87,6 +107,12 @@ interface Tab {
 type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
+type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
+
+const AUTO_FETCH_SETTINGS_EVENT = "gitswamp:auto-fetch-settings-changed";
+const AUTO_FETCH_ENABLED_KEY = "gitswamp-auto-fetch-enabled";
+const AUTO_FETCH_INTERVAL_KEY = "gitswamp-auto-fetch-interval-minutes";
+const AUTO_FETCH_DEFAULT_INTERVAL_MINUTES = 3;
 
 interface CloneProgressEventPayload {
   url: string;
@@ -117,7 +143,10 @@ const showBranchDialog = ref(false);
 const showGhostMaterializeDialog = ref(false);
 const ghostMaterializeName = ref("");
 const showStashDialog = ref(false);
-const showSettings = ref(false);
+const showOptions = ref(false);
+const optionsInitialSection = ref<OptionsInitialSection>("integrations");
+const autoFetchTimerId = ref<number | null>(null);
+const autoFetchInFlight = ref(false);
 const newBranchName = ref("");
 const stashMessage = ref("");
 const showEditMessageDialog = ref(false);
@@ -1054,14 +1083,74 @@ async function handleSaveProviderToken(provider: string, token: string) {
   await syncAuthStateAfterChange();
 }
 
-async function handleDeleteProviderToken(provider: string) {
-  await git.deleteProviderToken(provider);
-  await syncAuthStateAfterChange();
+function openOptions(section: OptionsInitialSection = "integrations") {
+  optionsInitialSection.value = section;
+  showOptions.value = true;
 }
 
-async function handleSaveGithubTokenFromSettings(token: string) {
-  await handleSaveProviderToken("github", token);
-  showSettings.value = false;
+function readAutoFetchSettings(): { enabled: boolean; intervalMinutes: number } {
+  const enabledRaw = localStorage.getItem(AUTO_FETCH_ENABLED_KEY);
+  const intervalRaw = localStorage.getItem(AUTO_FETCH_INTERVAL_KEY);
+  const parsedInterval = Number.parseInt(intervalRaw || "", 10);
+
+  return {
+    enabled: enabledRaw === null ? true : enabledRaw !== "false",
+    intervalMinutes: Number.isFinite(parsedInterval)
+      ? Math.max(1, Math.min(60, parsedInterval))
+      : AUTO_FETCH_DEFAULT_INTERVAL_MINUTES,
+  };
+}
+
+function stopAutoFetchTimer(): void {
+  if (autoFetchTimerId.value === null) {
+    return;
+  }
+
+  clearInterval(autoFetchTimerId.value);
+  autoFetchTimerId.value = null;
+}
+
+async function runBackgroundAutoFetch(): Promise<void> {
+  const { enabled } = readAutoFetchSettings();
+  const activeRepoPath = git.repoPath.value;
+  if (!enabled || !activeRepoPath || autoFetchInFlight.value) {
+    return;
+  }
+
+  autoFetchInFlight.value = true;
+  try {
+    await invoke<string>("fetch_all", {
+      path: activeRepoPath,
+      token: null,
+    });
+
+    await Promise.all([
+      git.refreshBranches(),
+      git.refreshCommits(),
+      git.refreshTags(),
+    ]);
+  } catch {
+    // Keep silent in background mode to avoid toast spam.
+  } finally {
+    autoFetchInFlight.value = false;
+  }
+}
+
+function restartAutoFetchTimer(): void {
+  stopAutoFetchTimer();
+
+  const { enabled, intervalMinutes } = readAutoFetchSettings();
+  if (!enabled) {
+    return;
+  }
+
+  autoFetchTimerId.value = globalThis.setInterval(() => {
+    void runBackgroundAutoFetch();
+  }, intervalMinutes * 60 * 1000);
+}
+
+function handleAutoFetchSettingsChanged(): void {
+  restartAutoFetchTimer();
 }
 
 async function handlePull() {
@@ -1252,6 +1341,30 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
     return true;
   }
 
+  if (event.ctrlKey && event.shiftKey && key === "i") {
+    event.preventDefault();
+    openOptions("integrations");
+    return true;
+  }
+
+  if (event.ctrlKey && event.shiftKey && key === "k") {
+    event.preventDefault();
+    openOptions("git");
+    return true;
+  }
+
+  if (event.ctrlKey && event.shiftKey && key === "a") {
+    event.preventDefault();
+    openOptions("advanced");
+    return true;
+  }
+
+  if (event.ctrlKey && event.shiftKey && key === "y") {
+    event.preventDefault();
+    openOptions("organisations");
+    return true;
+  }
+
   if (event.ctrlKey && event.shiftKey && key === "l") {
     event.preventDefault();
     openLogsPanel();
@@ -1260,7 +1373,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 
   if (event.ctrlKey && !event.shiftKey && key === ",") {
     event.preventDefault();
-    showSettings.value = true;
+    openOptions("preferences");
     return true;
   }
 
@@ -1297,6 +1410,7 @@ onMounted(() => {
   }
 
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
+  globalThis.addEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   appendLog("app", "Application started.");
 
   const restoreSession = shouldRestoreSession();
@@ -1331,6 +1445,8 @@ onMounted(() => {
     appWindow.maximize().catch(() => {});
   }, 120);
 
+  restartAutoFetchTimer();
+
 });
 
 onUnmounted(() => {
@@ -1339,6 +1455,8 @@ onUnmounted(() => {
   }
 
   globalThis.removeEventListener("keydown", handleGlobalShortcuts);
+  globalThis.removeEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
+  stopAutoFetchTimer();
   pullRequestFetchSequence++;
   if (pullRequestFetchTimer) {
     clearTimeout(pullRequestFetchTimer);
@@ -1388,6 +1506,13 @@ watch(recentRepos, () => {
     localStorage.setItem("gitswamp-recent", JSON.stringify(recentRepos.value));
   } catch {}
 }, { deep: true });
+
+watch(
+  () => git.repoPath.value,
+  () => {
+    restartAutoFetchTimer();
+  },
+);
 
 watch(
   () => [
@@ -2224,7 +2349,7 @@ const isAnyDialogOpen = computed(() =>
   showInitDialog.value ||
   showBranchDialog.value ||
   showStashDialog.value ||
-  showSettings.value ||
+  showOptions.value ||
   showEditMessageDialog.value ||
   showRenameDialog.value ||
   showAnnotatedTagDialog.value ||
@@ -2300,7 +2425,11 @@ const openReposList = computed(() =>
       @open-repository="browseAndOpen"
       @toggle-terminal="toggleTerminalPanel"
       @set-history-view="setHistoryViewMode($event)"
-      @open-settings="showSettings = true"
+      @open-settings="openOptions('preferences')"
+      @open-integrations="openOptions('integrations')"
+      @open-git-integration="openOptions('git')"
+      @open-advanced="openOptions('advanced')"
+      @open-organisations="openOptions('organisations')"
       @refresh-repository="refreshCurrentRepo()"
       @open-in-vs-code="openRepoInVsCode()"
       @open-in-explorer="openRepoInExplorer()"
@@ -2316,7 +2445,7 @@ const openReposList = computed(() =>
         @browse="browseAndOpen"
         @clone="showCloneDialog = true"
         @init="showInitDialog = true"
-        @settings="showSettings = true"
+        @settings="openOptions('preferences')"
         @remove-recent="removeRecent"
         @clear-recent="clearRecent"
       />
@@ -2337,7 +2466,7 @@ const openReposList = computed(() =>
         @discard-ghost-branch="handleDiscardGhostBranch"
         @stash="handleStash"
         @terminal="toggleTerminalPanel"
-        @settings="showSettings = true"
+        @settings="openOptions('preferences')"
       />
       <RepositoryWorkspace
         :git="git"
@@ -2474,13 +2603,11 @@ const openReposList = computed(() =>
       @close="showMultiPlatformPushDialog = false"
       @pushTo="handleMultiPlatformPush"
     />
-    <SettingsDialog
-      v-if="showSettings"
-      :token="git.githubToken.value"
+    <OptionsDialog
+      v-if="showOptions"
       :git-path="git.gitPath.value"
-      @save="handleSaveGithubTokenFromSettings"
-      @delete="handleDeleteProviderToken('github')"
-      @close="showSettings = false"
+      :initial-section="optionsInitialSection"
+      @close="showOptions = false"
     />
     <RepositoryAuthDialogs
       :show-push-username-dialog="showPushUsernameDialog"

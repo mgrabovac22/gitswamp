@@ -12,6 +12,7 @@ import {
   ArrowUp,
   ArrowDown,
   Copy,
+  Check,
   Plus,
   Minus,
   Trash2,
@@ -91,8 +92,10 @@ const stagedDiffSummary = ref<StagedDiffSummary>({
 });
 const COMMIT_LINT_DEBOUNCE_MS = 300;
 let commitLintTimer: ReturnType<typeof setTimeout> | null = null;
+let copiedShaTimer: ReturnType<typeof setTimeout> | null = null;
 const showDiscardConfirm = ref(false);
 const discardPath = ref<string | null>(null);
+const copiedShaKey = ref<string | null>(null);
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
   closeFileContextMenu();
@@ -988,8 +991,23 @@ function onCommit() {
   commitDescription.value = "";
 }
 
-function copyToClipboard(text: string) {
-  navigator.clipboard.writeText(text);
+async function copyToClipboard(text: string, key?: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    if (key) {
+      copiedShaKey.value = key;
+      if (copiedShaTimer) {
+        clearTimeout(copiedShaTimer);
+      }
+      copiedShaTimer = setTimeout(() => {
+        if (copiedShaKey.value === key) {
+          copiedShaKey.value = null;
+        }
+      }, 900);
+    }
+  } catch {
+    toast.error("Could not copy to clipboard.");
+  }
 }
 
 function fileParts(path: string) {
@@ -1189,6 +1207,10 @@ onUnmounted(() => {
   if (commitLintTimer) {
     clearTimeout(commitLintTimer);
     commitLintTimer = null;
+  }
+  if (copiedShaTimer) {
+    clearTimeout(copiedShaTimer);
+    copiedShaTimer = null;
   }
   globalThis.removeEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.removeEventListener("keydown", handleGlobalKeyDown);
@@ -1904,11 +1926,12 @@ onUnmounted(() => {
           <div class="flex items-center gap-2">
             <code class="text-xs text-[var(--primary)] bg-[var(--input-background)] px-2 py-1 rounded font-mono break-all">{{ commit.sha }}</code>
             <button
-              @click="copyToClipboard(commit.sha)"
+              @click="copyToClipboard(commit.sha, 'commit-sha')"
               class="p-1 rounded hover:bg-[var(--secondary)] transition-colors flex-shrink-0"
               title="Copy SHA"
             >
-              <Copy class="w-3 h-3 text-[var(--muted-foreground)]" />
+              <Check v-if="copiedShaKey === 'commit-sha'" class="w-3 h-3 text-[#10b981] animate-pulse" />
+              <Copy v-else class="w-3 h-3 text-[var(--muted-foreground)]" />
             </button>
           </div>
         </div>
@@ -2149,11 +2172,12 @@ onUnmounted(() => {
           <div class="flex items-center gap-2">
             <code class="text-xs text-[var(--primary)] bg-[var(--input-background)] px-2 py-1 rounded font-mono">{{ selectedStash.parent_sha.substring(0, 7) }}</code>
             <button
-              @click="copyToClipboard(selectedStash.parent_sha)"
+              @click="copyToClipboard(selectedStash.parent_sha, 'stash-parent-sha')"
               class="p-1 rounded hover:bg-[var(--secondary)] transition-colors flex-shrink-0"
               title="Copy SHA"
             >
-              <Copy class="w-3 h-3 text-[var(--muted-foreground)]" />
+              <Check v-if="copiedShaKey === 'stash-parent-sha'" class="w-3 h-3 text-[#10b981] animate-pulse" />
+              <Copy v-else class="w-3 h-3 text-[var(--muted-foreground)]" />
             </button>
           </div>
         </div>
