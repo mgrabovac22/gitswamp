@@ -49,6 +49,9 @@ type OptionsSection = "integrations" | "git" | "preferences" | "advanced" | "org
 type IntegrationPlatform = "github" | "gitlab" | "bitbucket" | "azure";
 type FontSizePreference = "tiny" | "small" | "medium" | "largest" | "huge";
 type OrganisationProvider = "github" | "gitlab" | "bitbucket" | "azure";
+type OrganisationSearchProvider = OrganisationProvider | "all";
+type OrganisationVisibilityFilter = "all" | "private" | "public";
+type OrganisationSortMode = "stars-desc" | "name-asc";
 
 interface GithubRepo {
   full_name: string;
@@ -60,6 +63,8 @@ interface GithubRepo {
 
 interface GitlabRepo {
   full_name: string;
+  path_with_namespace: string;
+  clone_url_ssh: string;
   clone_url_https: string;
   description: string;
   is_private: boolean;
@@ -68,6 +73,7 @@ interface GitlabRepo {
 
 interface BitbucketRepo {
   full_name: string;
+  clone_url_ssh: string;
   clone_url_https: string;
   description: string;
   is_private: boolean;
@@ -76,6 +82,7 @@ interface BitbucketRepo {
 
 interface AzureRepo {
   full_name: string;
+  clone_url_ssh: string;
   clone_url_https: string;
   description: string;
   is_private: boolean;
@@ -92,8 +99,11 @@ interface GithubSshKey {
 
 interface OrganisationRepoCandidate {
   id: string;
+  provider: OrganisationProvider;
   fullName: string;
-  cloneUrl: string;
+  cloneUrlHttps: string;
+  cloneUrlSsh: string;
+  webUrl: string;
   description: string;
   isPrivate: boolean;
   stars: number;
@@ -147,11 +157,15 @@ const autoFetchIntervalMinutes = ref(3);
 const gitPathBusy = ref(false);
 const installGitBusy = ref(false);
 
-const organisationProvider = ref<OrganisationProvider>("github");
+const organisationProvider = ref<OrganisationSearchProvider>("github");
 const organisationQuery = ref("");
 const organisationDestination = ref(String.raw`C:\Repozitoriji`);
 const organisationRepos = ref<OrganisationRepoCandidate[]>([]);
 const organisationSelectedRepoIds = ref<string[]>([]);
+const organisationCloneProtocol = ref<"https" | "ssh">("https");
+const organisationVisibilityFilter = ref<OrganisationVisibilityFilter>("all");
+const organisationSortMode = ref<OrganisationSortMode>("stars-desc");
+const organisationLocalFilter = ref("");
 const organisationLoading = ref(false);
 const organisationError = ref<string | null>(null);
 const organisationCloneBusy = ref(false);
@@ -212,9 +226,51 @@ const commitFontLabel = computed(() => {
 const generalFontLabel = computed(() => `${generalFontSizePx.value}px`);
 const selectedOrganisationCount = computed(() => organisationSelectedRepoIds.value.length);
 
-const allOrganisationReposSelected = computed(() =>
-  organisationRepos.value.length > 0 && selectedOrganisationCount.value === organisationRepos.value.length,
-);
+const filteredOrganisationRepos = computed(() => {
+  const query = organisationLocalFilter.value.trim().toLowerCase();
+
+  let repos = organisationRepos.value.filter((repo) => {
+    if (organisationVisibilityFilter.value === "private") {
+      return repo.isPrivate;
+    }
+
+    if (organisationVisibilityFilter.value === "public") {
+      return !repo.isPrivate;
+    }
+
+    return true;
+  });
+
+  if (query) {
+    repos = repos.filter((repo) => {
+      const haystack = `${repo.fullName} ${repo.description} ${repo.provider}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }
+
+  const sorted = [...repos];
+  if (organisationSortMode.value === "name-asc") {
+    sorted.sort((a, b) => a.fullName.localeCompare(b.fullName));
+  } else {
+    sorted.sort((a, b) => {
+      if (b.stars !== a.stars) {
+        return b.stars - a.stars;
+      }
+      return a.fullName.localeCompare(b.fullName);
+    });
+  }
+
+  return sorted;
+});
+
+const allVisibleOrganisationReposSelected = computed(() => {
+  if (filteredOrganisationRepos.value.length === 0) {
+    return false;
+  }
+
+  const selected = new Set(organisationSelectedRepoIds.value);
+  return filteredOrganisationRepos.value.every((repo) => selected.has(repo.id));
+});
 
 const currentGitPath = computed(() => props.gitPath || git.gitPath.value || "");
 const hasDetectedGit = computed(() => !!currentGitPath.value);
@@ -324,7 +380,9 @@ function removeOrganisationProfile(profileId: string): void {
 
 function useOrganisationProfile(profile: OrganisationProfile): void {
   organisationProvider.value = profile.provider;
-  organisationQuery.value = [profile.organisation, profile.repositoryFilter].filter(Boolean).join(" ").trim();
+  organisationQuery.value = [profile.organisation, profile.team, profile.repositoryFilter].filter(Boolean).join(" ").trim();
+  organisationLocalFilter.value = profile.repositoryFilter.trim();
+  organisationVisibilityFilter.value = "all";
 }
 
 function getOrganisationProviderToken(provider: OrganisationProvider): string | null {
@@ -343,11 +401,36 @@ function getOrganisationProviderToken(provider: OrganisationProvider): string | 
   return null;
 }
 
+function stripGitSuffix(url: string): string {
+  return url.replace(/\.git$/i, "");
+}
+
+function dedupeOrganisationRepos(items: OrganisationRepoCandidate[]): OrganisationRepoCandidate[] {
+  const merged = new Map<string, OrganisationRepoCandidate>();
+
+  for (const repo of items) {
+    const existing = merged.get(repo.id);
+    if (!existing) {
+      merged.set(repo.id, repo);
+      continue;
+    }
+
+    if (repo.stars > existing.stars) {
+      merged.set(repo.id, repo);
+    }
+  }
+
+  return Array.from(merged.values());
+}
+
 function mappedOrganisationReposFromGithub(items: GithubRepo[]): OrganisationRepoCandidate[] {
   return items.map((repo) => ({
     id: `github:${repo.full_name}`,
+    provider: "github",
     fullName: repo.full_name,
-    cloneUrl: repo.clone_url,
+    cloneUrlHttps: repo.clone_url,
+    cloneUrlSsh: `git@github.com:${repo.full_name}.git`,
+    webUrl: `https://github.com/${repo.full_name}`,
     description: repo.description,
     isPrivate: repo.is_private,
     stars: repo.stars,
@@ -357,8 +440,11 @@ function mappedOrganisationReposFromGithub(items: GithubRepo[]): OrganisationRep
 function mappedOrganisationReposFromGitlab(items: GitlabRepo[]): OrganisationRepoCandidate[] {
   return items.map((repo) => ({
     id: `gitlab:${repo.full_name}`,
+    provider: "gitlab",
     fullName: repo.full_name,
-    cloneUrl: repo.clone_url_https,
+    cloneUrlHttps: repo.clone_url_https,
+    cloneUrlSsh: repo.clone_url_ssh,
+    webUrl: `https://gitlab.com/${repo.path_with_namespace}`,
     description: repo.description,
     isPrivate: repo.is_private,
     stars: repo.stars,
@@ -368,8 +454,11 @@ function mappedOrganisationReposFromGitlab(items: GitlabRepo[]): OrganisationRep
 function mappedOrganisationReposFromBitbucket(items: BitbucketRepo[]): OrganisationRepoCandidate[] {
   return items.map((repo) => ({
     id: `bitbucket:${repo.full_name}`,
+    provider: "bitbucket",
     fullName: repo.full_name,
-    cloneUrl: repo.clone_url_https,
+    cloneUrlHttps: repo.clone_url_https,
+    cloneUrlSsh: repo.clone_url_ssh,
+    webUrl: `https://bitbucket.org/${repo.full_name}`,
     description: repo.description,
     isPrivate: repo.is_private,
     stars: repo.stars,
@@ -379,62 +468,110 @@ function mappedOrganisationReposFromBitbucket(items: BitbucketRepo[]): Organisat
 function mappedOrganisationReposFromAzure(items: AzureRepo[]): OrganisationRepoCandidate[] {
   return items.map((repo) => ({
     id: `azure:${repo.full_name}`,
+    provider: "azure",
     fullName: repo.full_name,
-    cloneUrl: repo.clone_url_https,
+    cloneUrlHttps: repo.clone_url_https,
+    cloneUrlSsh: repo.clone_url_ssh,
+    webUrl: stripGitSuffix(repo.clone_url_https),
     description: repo.description,
     isPrivate: repo.is_private,
     stars: repo.stars,
   }));
 }
 
-async function searchOrganisationRepos(): Promise<void> {
-  const provider = organisationProvider.value;
+async function searchSingleOrganisationProvider(provider: OrganisationProvider, query: string): Promise<OrganisationRepoCandidate[]> {
   const token = getOrganisationProviderToken(provider);
   if (!token) {
-    organisationError.value = "Provider token is not configured. Add it in Integrations first.";
-    organisationRepos.value = [];
-    organisationSelectedRepoIds.value = [];
-    return;
+    throw new Error(`${provider.toUpperCase()} token is not configured. Add it in Integrations first.`);
   }
 
+  if (provider === "github") {
+    const repos = await invoke<GithubRepo[]>("search_github_repos", { token, query });
+    return mappedOrganisationReposFromGithub(repos);
+  }
+
+  if (provider === "gitlab") {
+    const repos = await invoke<GitlabRepo[]>("search_gitlab_repos", {
+      domain: "gitlab.com",
+      token,
+      query,
+    });
+    return mappedOrganisationReposFromGitlab(repos);
+  }
+
+  if (provider === "bitbucket") {
+    const repos = await invoke<BitbucketRepo[]>("search_bitbucket_repos", { token, query });
+    return mappedOrganisationReposFromBitbucket(repos);
+  }
+
+  const domain = normalizeAzureDomainInput(azureDomainInput.value || git.providerTokens.value["azure-domain"] || "");
+  if (!domain) {
+    throw new Error("Azure domain is not configured. Save it in Integrations first.");
+  }
+
+  const repos = await invoke<AzureRepo[]>("search_azure_repos", {
+    domain,
+    token,
+    query,
+  });
+  return mappedOrganisationReposFromAzure(repos);
+}
+
+async function searchAllOrganisationProviders(query: string): Promise<OrganisationRepoCandidate[]> {
+  const providers: OrganisationProvider[] = ["github", "gitlab", "bitbucket", "azure"];
+  const activeProviders = providers.filter((provider) => {
+    if (provider === "azure") {
+      const hasToken = !!getOrganisationProviderToken("azure");
+      const domain = normalizeAzureDomainInput(azureDomainInput.value || git.providerTokens.value["azure-domain"] || "");
+      return hasToken && !!domain;
+    }
+    return !!getOrganisationProviderToken(provider);
+  });
+
+  if (!activeProviders.length) {
+    throw new Error("No provider credentials are configured. Add at least one provider token in Integrations first.");
+  }
+
+  const settled = await Promise.allSettled(activeProviders.map((provider) => searchSingleOrganisationProvider(provider, query)));
+  const combined: OrganisationRepoCandidate[] = [];
+  const failedProviders: string[] = [];
+
+  for (let idx = 0; idx < settled.length; idx += 1) {
+    const result = settled[idx];
+    const provider = activeProviders[idx];
+
+    if (result.status === "fulfilled") {
+      combined.push(...result.value);
+      continue;
+    }
+
+    failedProviders.push(provider);
+  }
+
+  if (!combined.length && failedProviders.length) {
+    throw new Error(`Search failed for configured providers: ${failedProviders.join(", ")}`);
+  }
+
+  if (failedProviders.length) {
+    toast.warning(`Some providers failed during search: ${failedProviders.join(", ")}`);
+  }
+
+  return dedupeOrganisationRepos(combined);
+}
+
+async function searchOrganisationRepos(): Promise<void> {
+  const provider = organisationProvider.value;
   const query = organisationQuery.value.trim();
   organisationLoading.value = true;
   organisationError.value = null;
   organisationSelectedRepoIds.value = [];
 
   try {
-    if (provider === "github") {
-      const repos = await invoke<GithubRepo[]>("search_github_repos", { token, query });
-      organisationRepos.value = mappedOrganisationReposFromGithub(repos).slice(0, 180);
-      return;
-    }
+    const repos = provider === "all"
+      ? await searchAllOrganisationProviders(query)
+      : await searchSingleOrganisationProvider(provider, query);
 
-    if (provider === "gitlab") {
-      const repos = await invoke<GitlabRepo[]>("search_gitlab_repos", {
-        domain: "gitlab.com",
-        token,
-        query,
-      });
-      organisationRepos.value = mappedOrganisationReposFromGitlab(repos).slice(0, 180);
-      return;
-    }
-
-    if (provider === "bitbucket") {
-      const repos = await invoke<BitbucketRepo[]>("search_bitbucket_repos", { token, query });
-      organisationRepos.value = mappedOrganisationReposFromBitbucket(repos).slice(0, 180);
-      return;
-    }
-
-    const domain = normalizeAzureDomainInput(azureDomainInput.value || git.providerTokens.value["azure-domain"] || "");
-    if (!domain) {
-      throw new Error("Azure domain is not configured. Save it in Integrations first.");
-    }
-    const repos = await invoke<AzureRepo[]>("search_azure_repos", {
-      domain,
-      token,
-      query,
-    });
-    organisationRepos.value = mappedOrganisationReposFromAzure(repos).slice(0, 180);
+    organisationRepos.value = repos.slice(0, 240);
   } catch (e) {
     organisationError.value = String(e);
     organisationRepos.value = [];
@@ -444,12 +581,61 @@ async function searchOrganisationRepos(): Promise<void> {
 }
 
 function toggleSelectAllOrganisationRepos(): void {
-  if (allOrganisationReposSelected.value) {
-    organisationSelectedRepoIds.value = [];
+  const visibleRepoIds = filteredOrganisationRepos.value.map((repo) => repo.id);
+  if (!visibleRepoIds.length) {
     return;
   }
 
-  organisationSelectedRepoIds.value = organisationRepos.value.map((repo) => repo.id);
+  const selected = new Set(organisationSelectedRepoIds.value);
+  if (allVisibleOrganisationReposSelected.value) {
+    for (const repoId of visibleRepoIds) {
+      selected.delete(repoId);
+    }
+  } else {
+    for (const repoId of visibleRepoIds) {
+      selected.add(repoId);
+    }
+  }
+
+  organisationSelectedRepoIds.value = Array.from(selected);
+}
+
+function resolveOrganisationCloneUrl(repo: OrganisationRepoCandidate): string {
+  if (organisationCloneProtocol.value === "ssh" && repo.cloneUrlSsh) {
+    return repo.cloneUrlSsh;
+  }
+
+  return repo.cloneUrlHttps || repo.cloneUrlSsh;
+}
+
+function isSshCloneUrl(url: string): boolean {
+  return url.startsWith("git@") || url.startsWith("ssh://");
+}
+
+async function copyOrganisationCloneUrl(repo: OrganisationRepoCandidate): Promise<void> {
+  const cloneUrl = resolveOrganisationCloneUrl(repo);
+  if (!cloneUrl) {
+    toast.error("Clone URL is not available for this repository.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(cloneUrl);
+    toast.success("Clone URL copied.");
+  } catch {
+    toast.error("Failed to copy clone URL.");
+  }
+}
+
+function openOrganisationRepository(repo: OrganisationRepoCandidate): void {
+  if (!repo.webUrl) {
+    toast.error("Web URL is not available for this repository.");
+    return;
+  }
+
+  openUrl(repo.webUrl).catch(() => {
+    toast.error("Failed to open repository URL.");
+  });
 }
 
 async function browseOrganisationDestination(): Promise<void> {
@@ -477,7 +663,6 @@ async function cloneSelectedOrganisationRepos(): Promise<void> {
     return;
   }
 
-  const token = getOrganisationProviderToken(organisationProvider.value);
   organisationCloneBusy.value = true;
   organisationCloneDone.value = 0;
   organisationCloneFailed.value = 0;
@@ -492,11 +677,18 @@ async function cloneSelectedOrganisationRepos(): Promise<void> {
       const repo = selectedRepos[repoIndex];
 
       try {
+        const cloneUrl = resolveOrganisationCloneUrl(repo);
+        if (!cloneUrl) {
+          throw new Error("Missing clone URL");
+        }
+
+        const token = isSshCloneUrl(cloneUrl) ? null : getOrganisationProviderToken(repo.provider);
+
         await invoke<string>("clone_repo", {
-          url: repo.cloneUrl,
+          url: cloneUrl,
           path: destination,
           shallow: false,
-          token,
+          token: token || null,
         });
       } catch {
         organisationCloneFailed.value += 1;
@@ -1992,7 +2184,7 @@ watch(
 
                 <div class="flex items-center gap-2 flex-wrap">
                   <button
-                    v-for="provider in ['github', 'gitlab', 'bitbucket', 'azure'] as const"
+                    v-for="provider in ['github', 'gitlab', 'bitbucket', 'azure', 'all'] as const"
                     :key="provider"
                     class="px-3 py-1.5 rounded text-xs font-medium border transition-colors capitalize"
                     :class="organisationProvider === provider
@@ -2000,7 +2192,7 @@ watch(
                       : 'border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]'"
                     @click="organisationProvider = provider"
                   >
-                    {{ provider }}
+                    {{ provider === 'all' ? 'all providers' : provider }}
                   </button>
                 </div>
 
@@ -2008,7 +2200,7 @@ watch(
                   <input
                     v-model="organisationQuery"
                     type="text"
-                    placeholder="Search organisations, teams or repositories"
+                    placeholder="Search organisations, teams, projects or repositories"
                     class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
                   />
                   <AppButton
@@ -2019,6 +2211,37 @@ watch(
                     <Loader2 v-if="organisationLoading" class="w-3.5 h-3.5 animate-spin" />
                     <template v-else>Search</template>
                   </AppButton>
+                </div>
+
+                <div class="grid grid-cols-4 gap-2">
+                  <select
+                    v-model="organisationCloneProtocol"
+                    class="px-2.5 py-2 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                  >
+                    <option value="https">Clone via HTTPS</option>
+                    <option value="ssh">Clone via SSH</option>
+                  </select>
+                  <select
+                    v-model="organisationVisibilityFilter"
+                    class="px-2.5 py-2 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                  >
+                    <option value="all">Visibility: all</option>
+                    <option value="private">Visibility: private</option>
+                    <option value="public">Visibility: public</option>
+                  </select>
+                  <select
+                    v-model="organisationSortMode"
+                    class="px-2.5 py-2 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                  >
+                    <option value="stars-desc">Sort: stars</option>
+                    <option value="name-asc">Sort: name</option>
+                  </select>
+                  <input
+                    v-model="organisationLocalFilter"
+                    type="text"
+                    placeholder="Filter loaded repos"
+                    class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
                 </div>
 
                 <div class="flex items-center gap-2">
@@ -2038,23 +2261,23 @@ watch(
                 <div class="flex items-center justify-between">
                   <button
                     class="text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                    :disabled="!organisationRepos.length"
+                    :disabled="!filteredOrganisationRepos.length"
                     @click="toggleSelectAllOrganisationRepos"
                   >
-                    {{ allOrganisationReposSelected ? 'Clear selection' : 'Select all' }}
+                    {{ allVisibleOrganisationReposSelected ? 'Clear visible selection' : 'Select visible' }}
                   </button>
                   <div class="text-[11px] text-[var(--muted-foreground)]">
-                    {{ selectedOrganisationCount }} selected / {{ organisationRepos.length }} loaded
+                    {{ selectedOrganisationCount }} selected / {{ filteredOrganisationRepos.length }} visible ({{ organisationRepos.length }} loaded)
                   </div>
                 </div>
 
                 <div class="border border-[var(--border)] rounded p-2.5 max-h-[280px] overflow-y-auto bg-[var(--card)]/50">
-                  <div v-if="!organisationRepos.length && !organisationLoading" class="text-[11px] text-[var(--muted-foreground)] py-2">
-                    No repositories loaded yet.
+                  <div v-if="!filteredOrganisationRepos.length && !organisationLoading" class="text-[11px] text-[var(--muted-foreground)] py-2">
+                    No repositories match the current query/filters.
                   </div>
                   <div v-else class="space-y-1.5">
                     <label
-                      v-for="repo in organisationRepos"
+                      v-for="repo in filteredOrganisationRepos"
                       :key="repo.id"
                       class="flex items-start gap-2 p-2 rounded border border-[var(--border)] hover:bg-[var(--secondary)]/40"
                     >
@@ -2066,7 +2289,17 @@ watch(
                       />
                       <div class="min-w-0 flex-1">
                         <div class="text-[11px] font-medium text-[var(--foreground)] truncate">{{ repo.fullName }}</div>
+                        <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5 inline-flex items-center gap-1.5">
+                          <span class="px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[9px] uppercase tracking-wide">{{ repo.provider }}</span>
+                          <span class="px-1.5 py-0.5 rounded" :class="repo.isPrivate ? 'bg-[#ef4444]/15 text-[#ef4444]' : 'bg-[#10b981]/15 text-[#10b981]'">
+                            {{ repo.isPrivate ? 'private' : 'public' }}
+                          </span>
+                        </div>
                         <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ repo.description || 'No description' }}</div>
+                        <div class="flex items-center gap-1.5 mt-1">
+                          <button class="text-[10px] px-2 py-0.5 rounded bg-[var(--secondary)] text-[var(--foreground)]" type="button" @click.prevent="copyOrganisationCloneUrl(repo)">Copy clone URL</button>
+                          <button class="text-[10px] px-2 py-0.5 rounded bg-[var(--secondary)] text-[var(--foreground)]" type="button" @click.prevent="openOrganisationRepository(repo)">Open</button>
+                        </div>
                       </div>
                       <div class="text-[10px] text-[var(--muted-foreground)] whitespace-nowrap">★ {{ repo.stars }}</div>
                     </label>
@@ -2080,7 +2313,7 @@ watch(
                     @click="cloneSelectedOrganisationRepos"
                   >
                     <Loader2 v-if="organisationCloneBusy" class="w-3.5 h-3.5 mr-1 animate-spin" />
-                    Clone selected asynchronously
+                    Clone selected ({{ organisationCloneProtocol.toUpperCase() }})
                   </AppButton>
                   <div class="text-[10px] text-[var(--muted-foreground)]" v-if="organisationCloneBusy">
                     Progress: {{ organisationCloneDone }}/{{ selectedOrganisationCount }} (failed: {{ organisationCloneFailed }})

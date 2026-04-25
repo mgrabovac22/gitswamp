@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::constants::{CONFLICT_END, CONFLICT_MID, CONFLICT_START};
 use crate::models::{FileBlameLine, FileDiff};
@@ -22,6 +23,109 @@ struct BlameCommitMeta {
 pub struct DiffService;
 
 impl DiffService {
+    fn patch_side_path(prefix: &str, path: &str) -> String {
+        if path == "/dev/null" {
+            "/dev/null".to_string()
+        } else {
+            format!("{}/{}", prefix, path)
+        }
+    }
+
+    fn hunk_line_prefix(line_type: &str) -> Option<char> {
+        match line_type {
+            "addition" => Some('+'),
+            "deletion" => Some('-'),
+            "context" => Some(' '),
+            _ => None,
+        }
+    }
+
+    fn build_single_hunk_patch(diff_info: &FileDiff, file_path: &str, hunk_index: usize) -> Result<String, String> {
+        let hunk = diff_info
+            .hunks
+            .get(hunk_index)
+            .ok_or_else(|| format!("Hunk index {} out of range", hunk_index))?;
+
+        let old_diff_path = diff_info.old_path.as_deref().unwrap_or(file_path);
+        let new_diff_path = file_path;
+
+        let old_side_path = match diff_info.status.as_str() {
+            "added" => "/dev/null",
+            _ => old_diff_path,
+        };
+
+        let new_side_path = match diff_info.status.as_str() {
+            "deleted" => "/dev/null",
+            _ => new_diff_path,
+        };
+
+        let mut patch = String::new();
+        patch.push_str(&format!("diff --git a/{} b/{}\n", old_diff_path, new_diff_path));
+        patch.push_str(&format!("--- {}\n", Self::patch_side_path("a", old_side_path)));
+        patch.push_str(&format!("+++ {}\n", Self::patch_side_path("b", new_side_path)));
+
+        let header_line = if hunk.header.trim_start().starts_with("@@") {
+            hunk.header.trim_end_matches('\n').to_string()
+        } else {
+            format!("@@ -{},{} +{},{} @@", hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines)
+        };
+
+        patch.push_str(&header_line);
+        patch.push('\n');
+
+        for line in &hunk.lines {
+            let Some(prefix) = Self::hunk_line_prefix(&line.line_type) else {
+                continue;
+            };
+
+            patch.push(prefix);
+            patch.push_str(line.content.trim_end_matches('\n'));
+            patch.push('\n');
+        }
+
+        Ok(patch)
+    }
+
+    fn apply_reverse_hunk_patch(path: &str, patch_text: &str, staged: bool) -> Result<(), String> {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+
+        let patch_path = std::env::temp_dir().join(format!(
+            "gitswamp-revert-hunk-{}-{}.patch",
+            std::process::id(),
+            unique_suffix
+        ));
+
+        std::fs::write(&patch_path, patch_text)
+            .map_err(|e| format!("Failed to write temporary patch file: {}", e))?;
+
+        let patch_path_string = patch_path.to_string_lossy().to_string();
+        let args_owned = if staged {
+            vec![
+                "apply".to_string(),
+                "--cached".to_string(),
+                "-R".to_string(),
+                patch_path_string,
+            ]
+        } else {
+            vec![
+                "apply".to_string(),
+                "-R".to_string(),
+                patch_path_string,
+            ]
+        };
+        let args: Vec<&str> = args_owned.iter().map(|value| value.as_str()).collect();
+
+        let apply_result = GitRepository::git_cli(path, &args);
+        let _ = std::fs::remove_file(&patch_path);
+
+        apply_result
+            .map(|_| ())
+            .map_err(|e| format!("Failed to apply reverse patch for selected hunk: {}", e))
+    }
+
     pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<FileDiff, String> {
         let repo = GitRepository::open(path)?;
         let mut diff_opts = git2::DiffOptions::new();
@@ -208,55 +312,11 @@ impl DiffService {
 
     pub fn revert_hunk(path: &str, file_path: &str, hunk_index: usize, staged: bool) -> Result<(), String> {
         let diff_info = Self::get_working_diff(path, file_path, staged)?;
-
-        if hunk_index >= diff_info.hunks.len() {
-            return Err(format!("Hunk index {} out of range", hunk_index));
+        if diff_info.is_binary {
+            return Err("Cannot revert hunks in binary files".to_string());
         }
 
-        let hunk = &diff_info.hunks[hunk_index];
-
-        let full_path = Path::new(path).join(file_path);
-        let current_content = std::fs::read_to_string(&full_path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
-
-        let current_lines: Vec<&str> = current_content.lines().collect();
-
-        let mut result_lines: Vec<String> = Vec::new();
-        let mut current_idx: usize = 0;
-
-        let hunk_start = (hunk.new_start as usize).saturating_sub(1);
-
-        while current_idx < hunk_start && current_idx < current_lines.len() {
-            result_lines.push(current_lines[current_idx].to_string());
-            current_idx += 1;
-        }
-
-        for line in &hunk.lines {
-            match line.line_type.as_str() {
-                "deletion" => {
-                    result_lines.push(line.content.trim_end_matches('\n').to_string());
-                }
-                "addition" => {
-                    current_idx += 1;
-                }
-                "context" => {
-                    if current_idx < current_lines.len() {
-                        result_lines.push(current_lines[current_idx].to_string());
-                    }
-                    current_idx += 1;
-                }
-                _ => {}
-            }
-        }
-
-        while current_idx < current_lines.len() {
-            result_lines.push(current_lines[current_idx].to_string());
-            current_idx += 1;
-        }
-
-        let new_content = result_lines.join("\n") + if current_content.ends_with('\n') { "\n" } else { "" };
-        std::fs::write(&full_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
-
-        Ok(())
+        let patch_text = Self::build_single_hunk_patch(&diff_info, file_path, hunk_index)?;
+        Self::apply_reverse_hunk_patch(path, &patch_text, staged)
     }
 }

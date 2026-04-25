@@ -101,7 +101,7 @@ function actionButtonStyle(style?: ToastAction["style"]): Record<string, string>
 
 <template>
   <Teleport to="body">
-    <div class="fixed bottom-4 right-4 z-[200] flex flex-col gap-2 max-w-sm">
+    <div class="fixed bottom-4 right-4 z-[2147483647] flex flex-col gap-2 max-w-sm">
       <TransitionGroup name="toast">
         <div
           v-for="toast in toasts"

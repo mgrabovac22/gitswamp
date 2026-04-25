@@ -90,6 +90,10 @@ const scrollTop = ref(0);
 const containerHeight = ref(400);
 const LINE_HEIGHT = 18; // pixels per line
 const OVERSCAN = 10;
+const fileDiffScrollContainer = ref<HTMLElement | null>(null);
+const FILE_DIFF_OVERVIEW_MIN_VISIBLE_RATIO = 1.08;
+const FILE_DIFF_OVERVIEW_MIN_MARKER_PERCENT = 0.75;
+const FILE_DIFF_OVERVIEW_MIN_VIEWPORT_PERCENT = 10;
 const DEFAULT_MAX_HIGHLIGHT_CACHE_SIZE = 2000;
 const MEMORY_SAVER_MAX_HIGHLIGHT_CACHE_SIZE = 900;
 const DEFAULT_MAX_BLAME_CACHE_ENTRIES = 36;
@@ -639,6 +643,9 @@ watch(viewMode, (mode) => {
     loadFileForEdit();
   } else if (mode === "file-diff") {
     loadFileContentAsync();
+    void nextTick(() => {
+      syncFileDiffViewportMetrics();
+    });
   } else if (mode === "time-lapse") {
     void loadTimeLapseFrames();
   } else {
@@ -737,6 +744,10 @@ async function loadFileContentAsync(forceRefresh = false) {
       error.value = String(e);
     }
   } finally {
+    if (loadSequence === fileContentLoadSequence && viewMode.value === "file-diff") {
+      syncFileDiffViewportMetrics();
+    }
+
     if (loadSequence === fileContentLoadSequence) {
       loadingFileContent.value = false;
     }
@@ -1079,6 +1090,7 @@ onMounted(() => {
   cacheCleanupInterval = setInterval(() => {
     pruneDiffViewerCaches();
   }, CACHE_CLEANUP_INTERVAL_MS);
+  window.addEventListener("resize", syncFileDiffViewportMetrics);
 
   const enableBlameByDefault = isBlameByDefaultEnabled();
   reload().finally(() => {
@@ -1097,6 +1109,8 @@ onUnmounted(() => {
     clearInterval(cacheCleanupInterval);
     cacheCleanupInterval = null;
   }
+
+  window.removeEventListener("resize", syncFileDiffViewportMetrics);
 
   stopFileWatch();
   stopTimeLapsePlayback();
@@ -1794,10 +1808,115 @@ const visibleFileLines = computed(() => {
 
 const totalFileHeight = computed(() => fullFileLines.value.length * LINE_HEIGHT);
 
-function onFileDiffScroll(e: Event) {
-  const el = e.target as HTMLElement;
+interface FileDiffOverviewSegment {
+  topPercent: number;
+  heightPercent: number;
+  type: "addition" | "deletion";
+}
+
+const showFileDiffOverview = computed(() => {
+  if (viewMode.value !== "file-diff" || loadingFileContent.value) {
+    return false;
+  }
+
+  const total = fullFileLines.value.length;
+  if (total === 0) {
+    return false;
+  }
+
+  return totalFileHeight.value > containerHeight.value * FILE_DIFF_OVERVIEW_MIN_VISIBLE_RATIO;
+});
+
+const fileDiffOverviewSegments = computed<FileDiffOverviewSegment[]>(() => {
+  const lines = fullFileLines.value;
+  const total = lines.length;
+  if (total === 0) {
+    return [];
+  }
+
+  const segments: FileDiffOverviewSegment[] = [];
+  let idx = 0;
+
+  while (idx < total) {
+    const type = lines[idx].type;
+    if (type !== "addition" && type !== "deletion") {
+      idx += 1;
+      continue;
+    }
+
+    const start = idx;
+    while (idx < total && lines[idx].type === type) {
+      idx += 1;
+    }
+
+    const length = idx - start;
+    segments.push({
+      topPercent: (start / total) * 100,
+      heightPercent: Math.max(FILE_DIFF_OVERVIEW_MIN_MARKER_PERCENT, (length / total) * 100),
+      type,
+    });
+  }
+
+  return segments;
+});
+
+const fileDiffOverviewViewport = computed(() => {
+  const totalHeight = totalFileHeight.value;
+  const viewportHeight = containerHeight.value;
+
+  if (totalHeight <= 0 || viewportHeight <= 0) {
+    return {
+      topPercent: 0,
+      heightPercent: 100,
+    };
+  }
+
+  const rawHeightPercent = (viewportHeight / totalHeight) * 100;
+  const heightPercent = Math.min(100, Math.max(FILE_DIFF_OVERVIEW_MIN_VIEWPORT_PERCENT, rawHeightPercent));
+  const maxScroll = Math.max(1, totalHeight - viewportHeight);
+  const clampedScrollTop = Math.max(0, Math.min(scrollTop.value, maxScroll));
+  const availableTrack = Math.max(0, 100 - heightPercent);
+  const topPercent = availableTrack > 0
+    ? (clampedScrollTop / maxScroll) * availableTrack
+    : 0;
+
+  return {
+    topPercent,
+    heightPercent,
+  };
+});
+
+function syncFileDiffViewportMetrics() {
+  const el = fileDiffScrollContainer.value;
+  if (!el) {
+    return;
+  }
+
   scrollTop.value = el.scrollTop;
   containerHeight.value = el.clientHeight;
+}
+
+function onFileDiffScroll(event: Event) {
+  const el = event.target as HTMLElement;
+  scrollTop.value = el.scrollTop;
+  containerHeight.value = el.clientHeight;
+}
+
+function jumpToFileDiffPosition(event: MouseEvent) {
+  const el = fileDiffScrollContainer.value;
+  if (!el || totalFileHeight.value <= 0) {
+    return;
+  }
+
+  const target = event.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  const y = event.clientY - rect.top;
+  const ratio = Math.max(0, Math.min(1, y / Math.max(1, rect.height)));
+  const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+  const nextScroll = Math.max(0, Math.min(maxScroll, ratio * totalFileHeight.value - el.clientHeight / 2));
+
+  el.scrollTop = nextScroll;
+  scrollTop.value = nextScroll;
 }
 
 function lineClass(type: string): string {
@@ -2517,65 +2636,91 @@ watch(usePlainTextHighlighting, () => {
         </div>
       </div>
 
-      <div v-else-if="viewMode === 'file-diff'" class="min-w-fit h-full overflow-auto" @scroll="onFileDiffScroll">
+      <div v-else-if="viewMode === 'file-diff'" class="relative h-full min-w-0">
         <div
-          v-if="rawDiffFallbackActive"
-          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+          ref="fileDiffScrollContainer"
+          class="h-full min-w-fit overflow-auto pr-6"
+          @scroll="onFileDiffScroll"
         >
-          {{ rawDiffFallbackReason || 'Coloring exceeded 5 seconds. Showing regular Git diff.' }}
-        </div>
-
-        <div v-if="loadingFileContent" class="flex items-center justify-center h-full">
-          <div class="diff-loader-shell">
-            <img :src="logoCrocGif" alt="Loading file content" class="diff-loader-logo" />
-            <div class="diff-loader-wave" aria-label="Loading">
-              <span
-                v-for="(letter, idx) in loadingLetters"
-                :key="'file-' + letter + idx"
-                :style="{ animationDelay: `${idx * 0.08}s` }"
-              >
-                {{ letter }}
-              </span>
-            </div>
-            <p class="diff-loader-caption">{{ loadingLabel }}...</p>
-          </div>
-        </div>
-        <div v-else-if="fullFileLines.length > 0" class="h-full">
           <div
-            v-if="usePlainTextHighlighting"
+            v-if="rawDiffFallbackActive"
             class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
           >
-            Large file mode: syntax coloring is simplified to reduce loading time.
+            {{ rawDiffFallbackReason || 'Coloring exceeded 5 seconds. Showing regular Git diff.' }}
           </div>
-          <div class="relative" :style="{ height: totalFileHeight + 'px' }">
-          <div
-            v-for="item in visibleFileLines"
-            :key="item.idx"
-            :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
-            :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
-          >
-            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
-              {{ item.line.oldLineNo ?? '' }}
+
+          <div v-if="loadingFileContent" class="flex items-center justify-center h-full">
+            <div class="diff-loader-shell">
+              <img :src="logoCrocGif" alt="Loading file content" class="diff-loader-logo" />
+              <div class="diff-loader-wave" aria-label="Loading">
+                <span
+                  v-for="(letter, idx) in loadingLetters"
+                  :key="'file-' + letter + idx"
+                  :style="{ animationDelay: `${idx * 0.08}s` }"
+                >
+                  {{ letter }}
+                </span>
+              </div>
+              <p class="diff-loader-caption">{{ loadingLabel }}...</p>
             </div>
-            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
-              {{ item.line.lineNo || '' }}
-            </div>
-            <div 
-              class="w-5 flex-shrink-0 text-center select-none font-bold leading-[20px]"
-              :class="item.line.type === 'addition' ? 'text-[var(--diff-sign-add)]' : item.line.type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
+          </div>
+          <div v-else-if="fullFileLines.length > 0" class="h-full">
+            <div
+              v-if="usePlainTextHighlighting"
+              class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
             >
-              {{ linePrefix(item.line.type) }}
+              Large file mode: syntax coloring is simplified to reduce loading time.
             </div>
-            <pre 
-              class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[18px] m-0 select-text"
-              :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
-            ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line)"></code></pre>
+            <div class="relative" :style="{ height: totalFileHeight + 'px' }">
+            <div
+              v-for="item in visibleFileLines"
+              :key="item.idx"
+              :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
+              :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
+            >
+              <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
+                {{ item.line.oldLineNo ?? '' }}
+              </div>
+              <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
+                {{ item.line.lineNo || '' }}
+              </div>
+              <div
+                class="w-5 flex-shrink-0 text-center select-none font-bold leading-[20px]"
+                :class="item.line.type === 'addition' ? 'text-[var(--diff-sign-add)]' : item.line.type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
+              >
+                {{ linePrefix(item.line.type) }}
+              </div>
+              <pre
+                class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[18px] m-0 select-text"
+                :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
+              ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line)"></code></pre>
+            </div>
+            </div>
           </div>
+          <div v-else-if="!loading && !loadingFileContent" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
+            No file content available
           </div>
         </div>
-        <div v-else-if="!loading && !loadingFileContent" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
-          No file content available
-        </div>
+
+        <button
+          v-if="showFileDiffOverview"
+          class="file-diff-overview"
+          type="button"
+          title="Jump through changes"
+          @click="jumpToFileDiffPosition"
+        >
+          <span
+            v-for="(segment, idx) in fileDiffOverviewSegments"
+            :key="`overview-${idx}`"
+            class="file-diff-overview-segment"
+            :class="segment.type === 'addition' ? 'file-diff-overview-segment-add' : 'file-diff-overview-segment-del'"
+            :style="{ top: `${segment.topPercent}%`, height: `${segment.heightPercent}%` }"
+          />
+          <span
+            class="file-diff-overview-viewport"
+            :style="{ top: `${fileDiffOverviewViewport.topPercent}%`, height: `${fileDiffOverviewViewport.heightPercent}%` }"
+          />
+        </button>
       </div>
 
       <div v-else-if="viewMode === 'edit'" class="min-w-fit h-full">
@@ -2807,6 +2952,46 @@ watch(usePlainTextHighlighting, () => {
     inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 18%, transparent),
     0 0 4px color-mix(in srgb, var(--diff-sign-del) 12%, transparent);
   text-decoration: none;
+}
+
+.file-diff-overview {
+  position: absolute;
+  top: 14px;
+  right: 10px;
+  width: 28px;
+  height: 136px;
+  border: 1px solid color-mix(in srgb, var(--diff-border) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--foreground) 12%, transparent);
+  overflow: hidden;
+  cursor: pointer;
+  z-index: 32;
+}
+
+.file-diff-overview-segment {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  border-radius: 999px;
+}
+
+.file-diff-overview-segment-add {
+  background: color-mix(in srgb, var(--diff-sign-add) 80%, var(--card) 20%);
+}
+
+.file-diff-overview-segment-del {
+  background: color-mix(in srgb, var(--diff-sign-del) 82%, var(--card) 18%);
+}
+
+.file-diff-overview-viewport {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--diff-link) 72%, white 28%);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 8%, transparent);
 }
 </style>
 
