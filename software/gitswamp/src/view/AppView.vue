@@ -31,18 +31,39 @@ import type { RepoInfo, CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, Issue
 
 const git = useGit();
 const toast = useToast();
-const appWindow = getCurrentWindow();
+
+function safeStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+const appWindow = (() => {
+  try {
+    return getCurrentWindow();
+  } catch {
+    return null;
+  }
+})();
 
 applyThemeModePreference(getStoredThemeModePreference());
 applyAppPalettePreference(getStoredAppPalettePreference());
 
-const savedGeneralFontSize = localStorage.getItem("gitswamp-general-font-size");
+const savedGeneralFontSize = safeStorageGet("gitswamp-general-font-size");
 if (savedGeneralFontSize) {
   const parsedGeneral = Number.parseInt(savedGeneralFontSize, 10);
   const generalSize = Number.isFinite(parsedGeneral) ? Math.max(12, Math.min(26, parsedGeneral)) : 18;
   document.documentElement.style.setProperty("--font-size", `${generalSize}px`);
 } else {
-  const savedLegacyScale = localStorage.getItem("gitswamp-font-size");
+  const savedLegacyScale = safeStorageGet("gitswamp-font-size");
   const legacyMap: Record<string, string> = {
     tiny: "14px",
     small: "16px",
@@ -56,32 +77,32 @@ if (savedGeneralFontSize) {
   }
 }
 
-const savedCommitScale = localStorage.getItem("gitswamp-font-size");
+const savedCommitScale = safeStorageGet("gitswamp-font-size");
 if (savedCommitScale && ["tiny", "small", "medium", "largest", "huge"].includes(savedCommitScale)) {
   document.documentElement.classList.remove("font-scale-tiny", "font-scale-small", "font-scale-medium", "font-scale-largest", "font-scale-huge");
   document.documentElement.classList.add(`font-scale-${savedCommitScale}`);
 }
-const savedCompact = localStorage.getItem("gitswamp-compact-mode");
+const savedCompact = safeStorageGet("gitswamp-compact-mode");
 if (savedCompact === "true") {
   document.documentElement.classList.add("compact");
 }
-const savedDummyMode = localStorage.getItem("gitswamp-dummy-mode");
+const savedDummyMode = safeStorageGet("gitswamp-dummy-mode");
 if (savedDummyMode === "true") {
   document.documentElement.classList.add("dummy-mode");
 }
-const savedAvatars = localStorage.getItem("gitswamp-show-avatars");
+const savedAvatars = safeStorageGet("gitswamp-show-avatars");
 if (savedAvatars === "false") {
   document.documentElement.classList.add("hide-avatars");
 }
-const savedReducedMotion = localStorage.getItem("gitswamp-reduced-motion");
+const savedReducedMotion = safeStorageGet("gitswamp-reduced-motion");
 if (savedReducedMotion === "true") {
   document.documentElement.classList.add("reduced-motion");
 }
-const savedWrapDiffLines = localStorage.getItem("gitswamp-wrap-diff-lines");
+const savedWrapDiffLines = safeStorageGet("gitswamp-wrap-diff-lines");
 if (savedWrapDiffLines === "true") {
   document.documentElement.classList.add("diff-wrap-lines");
 }
-const savedShowDiffLineNumbers = localStorage.getItem("gitswamp-show-diff-line-numbers");
+const savedShowDiffLineNumbers = safeStorageGet("gitswamp-show-diff-line-numbers");
 if (savedShowDiffLineNumbers === "false") {
   document.documentElement.classList.add("hide-diff-line-numbers");
 }
@@ -89,9 +110,9 @@ if (savedShowDiffLineNumbers === "false") {
 const RESTORE_SESSION_KEY = "gitswamp-restore-session";
 
 function shouldRestoreSession(): boolean {
-  const saved = localStorage.getItem(RESTORE_SESSION_KEY);
+  const saved = safeStorageGet(RESTORE_SESSION_KEY);
   if (saved === null) {
-    localStorage.setItem(RESTORE_SESSION_KEY, "true");
+    safeStorageSet(RESTORE_SESSION_KEY, "true");
     return true;
   }
   return saved === "true";
@@ -137,7 +158,7 @@ const timeMachineFocusSha = ref<string | null>(null);
 const showCloneDialog = ref(false);
 const showInitDialog = ref(false);
 const showTerminal = ref(false);
-const terminalAllowAll = ref(localStorage.getItem("gitswamp-terminal-allow-all") === "true");
+const terminalAllowAll = ref(safeStorageGet("gitswamp-terminal-allow-all") === "true");
 const activeRemoteAction = ref<"pull" | "push" | "fetch" | null>(null);
 const showBranchDialog = ref(false);
 const showGhostMaterializeDialog = ref(false);
@@ -181,7 +202,7 @@ const pushPlatform = ref("");
 const pushUsername = ref("");
 const pushDomain = ref("");
 const detailsPanelCollapsed = ref(true);
-const showLogsPanel = ref(localStorage.getItem("gitswamp-show-logs-panel") === "true");
+const showLogsPanel = ref(safeStorageGet("gitswamp-show-logs-panel") === "true");
 const appLogs = ref<string[]>([]);
 const userLogs = ref<string[]>([]);
 const errorLogs = ref<string[]>([]);
@@ -1089,8 +1110,8 @@ function openOptions(section: OptionsInitialSection = "integrations") {
 }
 
 function readAutoFetchSettings(): { enabled: boolean; intervalMinutes: number } {
-  const enabledRaw = localStorage.getItem(AUTO_FETCH_ENABLED_KEY);
-  const intervalRaw = localStorage.getItem(AUTO_FETCH_INTERVAL_KEY);
+  const enabledRaw = safeStorageGet(AUTO_FETCH_ENABLED_KEY);
+  const intervalRaw = safeStorageGet(AUTO_FETCH_INTERVAL_KEY);
   const parsedInterval = Number.parseInt(intervalRaw || "", 10);
 
   return {
@@ -1402,7 +1423,22 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
 
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
 const linuxRuntimeClass = "gitswamp-linux";
-const isLinuxRuntime = /linux/i.test(navigator.userAgent) || /linux/i.test(navigator.platform);
+const runtimeUserAgent = (() => {
+  try {
+    return navigator.userAgent;
+  } catch {
+    return "";
+  }
+})();
+
+const runtimePlatform = (() => {
+  try {
+    return navigator.platform;
+  } catch {
+    return "";
+  }
+})();
+const isLinuxRuntime = /linux/i.test(runtimeUserAgent) || /linux/i.test(runtimePlatform);
 
 onMounted(() => {
   if (isLinuxRuntime) {
@@ -1417,7 +1453,7 @@ onMounted(() => {
 
   try {
     if (restoreSession) {
-      const saved = localStorage.getItem("gitswamp-tabs");
+      const saved = safeStorageGet("gitswamp-tabs");
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.tabs?.length) {
@@ -1427,7 +1463,7 @@ onMounted(() => {
       }
     }
 
-    const savedRecent = localStorage.getItem("gitswamp-recent");
+    const savedRecent = safeStorageGet("gitswamp-recent");
     if (savedRecent) {
       recentRepos.value = JSON.parse(savedRecent);
     }
@@ -1440,10 +1476,12 @@ onMounted(() => {
     }
   }
 
-  appWindow.maximize().catch(() => {});
-  setTimeout(() => {
+  if (appWindow) {
     appWindow.maximize().catch(() => {});
-  }, 120);
+    setTimeout(() => {
+      appWindow.maximize().catch(() => {});
+    }, 120);
+  }
 
   restartAutoFetchTimer();
 
@@ -1466,12 +1504,10 @@ onUnmounted(() => {
 });
 
 watch([tabs, activeTabId], () => {
-  try {
-    localStorage.setItem(
-      "gitswamp-tabs",
-      JSON.stringify({ tabs: tabs.value, activeTabId: activeTabId.value })
-    );
-  } catch {}
+  safeStorageSet(
+    "gitswamp-tabs",
+    JSON.stringify({ tabs: tabs.value, activeTabId: activeTabId.value })
+  );
 }, { deep: true });
 
 // Collapse side panel and close diff when switching tabs
@@ -1481,7 +1517,7 @@ watch(activeTabId, () => {
 });
 
 watch(showLogsPanel, (value) => {
-  localStorage.setItem("gitswamp-show-logs-panel", String(value));
+  safeStorageSet("gitswamp-show-logs-panel", String(value));
 });
 
 watch(() => git.error.value, (value) => {
@@ -1502,9 +1538,7 @@ watch(
 );
 
 watch(recentRepos, () => {
-  try {
-    localStorage.setItem("gitswamp-recent", JSON.stringify(recentRepos.value));
-  } catch {}
+  safeStorageSet("gitswamp-recent", JSON.stringify(recentRepos.value));
 }, { deep: true });
 
 watch(
@@ -2368,7 +2402,7 @@ watch(isAnyDialogOpen, (opened) => {
 });
 
 watch(terminalAllowAll, (value) => {
-  localStorage.setItem("gitswamp-terminal-allow-all", String(value));
+  safeStorageSet("gitswamp-terminal-allow-all", String(value));
 });
 
 function handleCreateBranchAtCommit(sha: string) {

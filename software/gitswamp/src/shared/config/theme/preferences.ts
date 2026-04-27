@@ -6,8 +6,22 @@ export const APP_PALETTE_STORAGE_KEY = "gitswamp-theme-palette";
 const MODE_VALUES = new Set<ThemeModePreference>(["dark", "light"]);
 const APP_PALETTE_VALUES = new Set<AppPalettePreference>(APP_THEME_OPTIONS.map((theme) => theme.id));
 
+function safeStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
 export function getStoredThemeModePreference(): ThemeModePreference {
-  const saved = localStorage.getItem(THEME_MODE_STORAGE_KEY);
+  const saved = safeStorageGet(THEME_MODE_STORAGE_KEY);
   if (saved && MODE_VALUES.has(saved as ThemeModePreference)) {
     return saved as ThemeModePreference;
   }
@@ -16,7 +30,7 @@ export function getStoredThemeModePreference(): ThemeModePreference {
 }
 
 export function getStoredAppPalettePreference(): AppPalettePreference {
-  const saved = localStorage.getItem(APP_PALETTE_STORAGE_KEY);
+  const saved = safeStorageGet(APP_PALETTE_STORAGE_KEY);
   if (saved && APP_PALETTE_VALUES.has(saved as AppPalettePreference)) {
     return saved as AppPalettePreference;
   }
@@ -29,7 +43,7 @@ export function applyThemeModePreference(preference: ThemeModePreference): void 
 }
 
 export function storeThemeModePreference(preference: ThemeModePreference): void {
-  localStorage.setItem(THEME_MODE_STORAGE_KEY, preference);
+  safeStorageSet(THEME_MODE_STORAGE_KEY, preference);
 }
 
 export function applyAppPalettePreference(preference: AppPalettePreference): void {
@@ -37,5 +51,5 @@ export function applyAppPalettePreference(preference: AppPalettePreference): voi
 }
 
 export function storeAppPalettePreference(preference: AppPalettePreference): void {
-  localStorage.setItem(APP_PALETTE_STORAGE_KEY, preference);
+  safeStorageSet(APP_PALETTE_STORAGE_KEY, preference);
 }
