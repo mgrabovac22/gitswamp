@@ -131,6 +131,8 @@ const toast = useToast();
 
 const activeSection = ref<OptionsSection>(props.initialSection || "integrations");
 const activePlatform = ref<IntegrationPlatform>("github");
+const optionsScrollRef = ref<HTMLDivElement | null>(null);
+let isHydrating = true;
 
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
@@ -1276,6 +1278,11 @@ function formatGithubKeyMeta(item: GithubSshKey): string {
   return `${fp} • ${timestamp}`;
 }
 
+function resetOptionsScroll(): void {
+  if (!optionsScrollRef.value) return;
+  optionsScrollRef.value.scrollTo({ top: 0, behavior: "auto" });
+}
+
 onMounted(() => {
   themeMode.value = getStoredThemeModePreference();
   appPalette.value = getStoredAppPalettePreference();
@@ -1347,6 +1354,10 @@ onMounted(() => {
 
   void refreshGitPath(true);
   void refreshGithubUser();
+
+  queueMicrotask(() => {
+    isHydrating = false;
+  });
 });
 
 watch([
@@ -1365,6 +1376,9 @@ watch([
   autoFetchEnabled,
   autoFetchIntervalMinutes,
 ], () => {
+  if (isHydrating) {
+    return;
+  }
   generalFontSizePx.value = clampGeneralFontSize(generalFontSizePx.value);
   autoFetchIntervalMinutes.value = normalizeAutoFetchIntervalMinutes(String(autoFetchIntervalMinutes.value));
   applySettings();
@@ -1386,16 +1400,25 @@ watch([
 });
 
 watch(themeMode, (value) => {
+  if (isHydrating) {
+    return;
+  }
   applyThemeModePreference(value);
   storeThemeModePreference(value);
 });
 
 watch(appPalette, (value) => {
+  if (isHydrating) {
+    return;
+  }
   applyAppPalettePreference(value);
   storeAppPalettePreference(value);
 });
 
 watch(commitAnalyzerEnabled, (value) => {
+  if (isHydrating) {
+    return;
+  }
   updateCommitAnalyzerSettings({ enabled: value });
 });
 
@@ -1428,11 +1451,21 @@ watch(
     activeSection.value = value;
   },
 );
+
+watch(activeSection, () => {
+  resetOptionsScroll();
+});
+
+watch(activePlatform, () => {
+  if (activeSection.value === "integrations") {
+    resetOptionsScroll();
+  }
+});
 </script>
 
 <template>
   <div class="fixed inset-0 z-[7600] flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="emit('close')">
-    <div class="w-[980px] max-w-[96vw] max-h-[92vh] bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden flex flex-col">
+    <div class="w-[980px] max-w-[96vw] max-h-[92vh] h-[92vh] bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden flex flex-col">
       <div class="flex items-center justify-between px-5 py-4 border-b border-[var(--border)] flex-shrink-0">
         <div class="flex items-center gap-2">
           <Settings2 class="w-4 h-4 text-[var(--primary)]" />
@@ -1511,7 +1544,7 @@ watch(
           </button>
         </div>
 
-        <div class="flex-1 overflow-y-auto p-5">
+        <div class="flex-1 overflow-y-auto p-5" ref="optionsScrollRef">
           <template v-if="activeSection === 'integrations'">
             <div class="flex items-center gap-2 mb-4">
               <button

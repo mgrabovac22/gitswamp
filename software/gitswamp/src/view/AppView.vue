@@ -165,6 +165,7 @@ const showGhostMaterializeDialog = ref(false);
 const ghostMaterializeName = ref("");
 const showStashDialog = ref(false);
 const showOptions = ref(false);
+const optionsMounted = ref(false);
 const optionsInitialSection = ref<OptionsInitialSection>("integrations");
 const autoFetchTimerId = ref<number | null>(null);
 const autoFetchInFlight = ref(false);
@@ -1106,6 +1107,9 @@ async function handleSaveProviderToken(provider: string, token: string) {
 
 function openOptions(section: OptionsInitialSection = "integrations") {
   optionsInitialSection.value = section;
+  if (!optionsMounted.value) {
+    optionsMounted.value = true;
+  }
   showOptions.value = true;
 }
 
@@ -1441,10 +1445,6 @@ const runtimePlatform = (() => {
 const isLinuxRuntime = /linux/i.test(runtimeUserAgent) || /linux/i.test(runtimePlatform);
 
 onMounted(() => {
-  if (isLinuxRuntime) {
-    document.documentElement.classList.add(linuxRuntimeClass);
-  }
-
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
   globalThis.addEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   appendLog("app", "Application started.");
@@ -1488,10 +1488,6 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  if (isLinuxRuntime) {
-    document.documentElement.classList.remove(linuxRuntimeClass);
-  }
-
   globalThis.removeEventListener("keydown", handleGlobalShortcuts);
   globalThis.removeEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   stopAutoFetchTimer();
@@ -2638,7 +2634,8 @@ const openReposList = computed(() =>
       @pushTo="handleMultiPlatformPush"
     />
     <OptionsDialog
-      v-if="showOptions"
+      v-if="optionsMounted"
+      v-show="showOptions"
       :git-path="git.gitPath.value"
       :initial-section="optionsInitialSection"
       @close="showOptions = false"
