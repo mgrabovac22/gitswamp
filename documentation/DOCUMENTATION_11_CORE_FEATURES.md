@@ -693,9 +693,9 @@ This section documents updated module ownership and where each module must live.
 
 | Feature Area | Module File | Must Own |
 |-------------|-------------|----------|
-| Conflict suspects panel | `src/view/commit/CommitConflictHeatmapPanel.vue` | Hotspots stream, pairs stream, repository tree stream, per-element loaders, conflict diagnostics cards |
-| Productivity arena | `src/view/commit/CommitProductivityPanel.vue` | Stream-based metrics blocks, diagnostics section, per-element loaders, section-level performance caching |
-| Time machine | `src/view/commit/CommitTimeMachinePanel.vue` | Timeline stepping/autoplay, snapshot explorer, cached commit snapshots, smooth no-flicker transitions |
+| Conflict suspects panel | `src/view/commit/CommitConflictHeatmapPanel.vue` | Hotspots stream, pairs stream, repository tree stream, merge-window filtering, tree roll-up, per-element loaders, conflict diagnostics cards |
+| Productivity arena | `src/view/commit/CommitProductivityPanel.vue` | Preview/full-history loading, author filter, streak and rhythm metrics, stability scoring, section-level performance caching |
+| Time machine | `src/view/commit/CommitTimeMachinePanel.vue` | Full-history timeline loading, autoplay, SHA search, snapshot explorer, rollback command copy, cached commit snapshots |
 | Merge preflight bridge | `src/domain/git/composables/gitBranchActions.ts` | Merge-risk pre-check orchestration and user confirmation prompt flow |
 | Shared analytics models | `src/types/models/conflictHotspot.ts`, `src/types/models/conflictAnalytics.ts` | Typed contracts shared between panels and Tauri payloads |
 
@@ -704,7 +704,7 @@ This section documents updated module ownership and where each module must live.
 | Feature Area | Module File | Must Own |
 |-------------|-------------|----------|
 | Conflict command surface | `src-tauri/src/commands/conflicts.rs` | Tauri commands for hotspots, pairs, repo tree paths, merge preflight risk |
-| Productivity support commands | `src-tauri/src/commands/commits.rs` | Commits, author deletion stats, commit tree paths |
+| Productivity support commands | `src-tauri/src/commands/commits.rs` | Commits, author deletion stats, commit tree paths, commit file snapshots |
 | Heavy analytics logic | `src-tauri/src/services/git_service.rs` | Scoring, filtering windows, conflict pairing, preflight computation, deletion-stat optimization |
 | Analytics payload contracts | `src-tauri/src/models/conflict_hotspot.rs` | `ConflictHotspot`, `ConflictPair`, `MergeRiskPreflight` |
 | Command registration | `src-tauri/src/lib.rs` | `invoke_handler` registration for all above commands |
@@ -723,6 +723,7 @@ This section documents updated module ownership and where each module must live.
 2. Cache by stable keys (`repo`, `repo + window`, `repo + sha`, `repo + sha + filePath`).
 3. Use stale-run tokens for async stream safety.
 4. Time Machine autoplay must use scheduled snapshot refresh to reduce frame flicker.
+5. Keep conflict-tree roll-up logic aligned between the repository tree and hotspot scoring so folder nodes inherit child pressure consistently.
 
 ---
 
@@ -731,3 +732,4 @@ This section documents updated module ownership and where each module must live.
 - [13_COMMIT_OPERATIONS.md](./DOCUMENTATION_13_COMMIT_OPERATIONS.md) - Commit management
 - [14_FILE_OPERATIONS.md](./DOCUMENTATION_14_FILE_OPERATIONS.md) - File handling
 - [15_ADVANCED_FEATURES.md](./DOCUMENTATION_15_ADVANCED_FEATURES.md) - Advanced operations
+- [36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md) - Detailed history intelligence panels

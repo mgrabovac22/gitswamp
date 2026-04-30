@@ -161,22 +161,27 @@ The interactive commit history graph showing:
 
 ### Productivity Arena (Alt+2)
 Visualize developer activity and metrics:
+- Start in preview mode, then use **Load all** for the full commit history
+- Filter metrics by author to compare one contributor against the whole team
 - Commit frequency by contributor
-- Time-based activity patterns
-- File change statistics
-- Team productivity comparison
-- Activity heatmaps
+- Time-based activity patterns, streaks, and weekend/off-hours activity
+- File change statistics and deletion intensity
+- Team productivity comparison, balance score, and arena health score
+- Stability indicators derived from conflict pressure and regression-like commit messages
 - Useful for performance analysis and sprint planning
 
 ### Time Machine (Alt+3)
 Navigate through repository history frame-by-frame:
 - View repository state at specific commits
-- File snapshots at different points in history
-- Timeline-based scrubber for quick navigation
+- Move backward and forward one frame at a time
+- Enable autoplay or reverse autoplay for history playback
+- Search commits by SHA and jump through matches
+- Browse the repository tree snapshot and preview file contents at that commit
+- Copy a rollback command for the selected commit or selected file
 - Compare file versions across time
 - Inspect legacy code without checking out
 - Smooth autoplay and arrow-step transitions (reduced visual flicker)
-- Snapshot panels keep context and update progressively with section loaders
+- Snapshot panels keep context and update progressively with section loaders and caches
 - Useful for forensic analysis and understanding repository evolution
 
 ### Usual Conflict Suspects (Alt+4)
@@ -187,6 +192,8 @@ See merge conflict hotspots and risky areas:
 - Repository tree view with folder collapse/expand
 - File-level risk coloring and directory risk roll-up based on child hotspots
 - Conflict pair diagnostics (which file pairs often collide together)
+- Merge-window selector for 300, 500, 1000, or all history
+- Search filtering and tree-scope filtering for focused investigation
 - Helps prevent conflicting changes
 
 ## 5. Managing Branches

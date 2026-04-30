@@ -38,6 +38,10 @@ Temporary experimental workflow allowing you to:
 - Language-specific code metrics
 - Custom linting rules for commit messages
 - Author deletion statistics over time
+- History intelligence panels for deeper repository analysis:
+  - **Productivity Arena** - commit rhythm, author balance, bottleneck, and stability scoring
+  - **Time Machine** - frame-by-frame history playback, snapshot explorer, and rollback command guidance
+  - **Usual Conflict Suspects** - conflict hotspot heatmap, tree roll-up, and risky file-pair diagnostics
 
 #### Productivity Insights
 - **Commit Productivity Panel**: Visualization of commit activity and code change trends

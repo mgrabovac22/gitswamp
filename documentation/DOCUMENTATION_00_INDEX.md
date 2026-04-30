@@ -31,6 +31,7 @@ This documentation is organized into the following modules:
 - **[13_COMMIT_OPERATIONS.md](./DOCUMENTATION_13_COMMIT_OPERATIONS.md)** - Commit history and management
 - **[14_FILE_OPERATIONS.md](./DOCUMENTATION_14_FILE_OPERATIONS.md)** - Staging, diffing, and file operations
 - **[15_ADVANCED_FEATURES.md](./DOCUMENTATION_15_ADVANCED_FEATURES.md)** - Stashing, tagging, conflict resolution
+- **[36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md)** - Time Machine, Productivity Arena, and Conflict Suspects deep dive
 
 ### 6. Integration & APIs
 - **[16_GITHUB_INTEGRATION.md](./DOCUMENTATION_16_GITHUB_INTEGRATION.md)** - GitHub API integration

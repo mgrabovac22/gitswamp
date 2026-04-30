@@ -538,6 +538,13 @@ This section defines where backend logic for Conflict, Productivity, and Time Ma
 | Productivity arena | `get_commits`, `get_author_deletion_stats`, `get_conflict_hotspots` |
 | Time Machine | `get_commits`, `get_commit_files`, `get_commit_tree_paths`, `get_file_content` |
 
+### 13.4 Panel-level behavior notes
+
+- Conflict suspects uses separate repository scans for hotspot scoring, pair scoring, and tree-path hierarchy building.
+- Productivity Arena loads commit history, author deletion stats, and conflict hotspots in parallel so metrics can appear independently.
+- Time Machine loads full history first, then fetches file and tree snapshots lazily for the selected frame.
+- Commit snapshot preview requests are keyed by repository, commit SHA, and file path to keep autoplay responsive.
+
 ---
 
 **Related Documentation:**

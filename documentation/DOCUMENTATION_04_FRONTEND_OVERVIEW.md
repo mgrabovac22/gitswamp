@@ -255,34 +255,34 @@ src/
     - Context menu for file operations
 
 16. **CommitProductivityPanel.vue** (Analytics)
-    - Productivity metrics visualization
-    - Developer activity statistics
-    - Commit frequency analysis
-    - File change patterns
-    - Time-based productivity trends
-    - Contributor comparison charts
-    - Activity heatmap
-    - Export statistics functionality
+  - Preview-mode metrics with optional full-history loading
+  - Author filtering for per-contributor analytics
+  - Commit frequency, streak, and rhythm analysis
+  - Weekend/off-hours activity and bottleneck indicators
+  - Stability and regression-signal scoring
+  - Balance score, arena health score, and contributor comparison
+  - Section-level loader overlays and caching
+  - Metrics grouped into headline, flow, pressure, and stability cards
 
 17. **CommitTimeMachinePanel.vue** (Time Navigation)
-    - Navigate through repository history frames
-    - File snapshots at different commits
-    - Timeline scrubber for quick navigation
-    - Show file content at specific commits
-    - Diff between historical versions
-    - Time-based filtering
-    - Commit selection from timeline
-    - Side-by-side version comparison
+  - Full-history frame navigation through commit snapshots
+  - Autoplay and reverse-autoplay stepping
+  - SHA search with prev/next match navigation
+  - Repository tree snapshot explorer and file preview pane
+  - Copyable rollback command for commit- or file-scoped restore workflows
+  - Cached commit files, tree paths, and file contents for smooth playback
+  - Timeline scrubber and selected-frame progress tracking
+  - Loader overlays that avoid flicker while frames are changing
 
 18. **CommitConflictHeatmapPanel.vue** (Conflict Analytics)
-    - Merge conflict hotspot visualization
-    - Files with highest conflict frequency
-    - Conflict risk assessment
-    - Team collaboration conflict patterns
-    - Time-based conflict trends
-    - Risk level indicators
-    - Suggested conflict resolution strategies
-    - Historical conflict analysis
+  - Merge-window hotspot analysis with 300/500/1000/all scopes
+  - Files with highest conflict frequency and risk band indicators
+  - Conflict pair diagnostics for recurring cross-file collisions
+  - Repository tree heatmap with folder roll-up from child hotspots
+  - Search-based filtering and tree-scope filtering
+  - Collision index, merge-touch, and conflict-mention summaries
+  - Risk scoring cards and top-suspect explanations
+  - Expandable tree visualization for conflict pressure hotspots
 
 #### UI Components (5) - src/shared/ui/
 
@@ -381,9 +381,12 @@ GitSwamp provides 6 different history visualization modes, accessible from the *
 - Developer activity and metrics visualization
 - Displays productivity patterns across time
 - Shows commit frequency by contributor
-- Visualizes file change patterns
-- Time-based activity heatmaps
-- Team productivity comparison
+- Preview window plus full-history load switch
+- Author filter that recalculates the dashboard for one contributor
+- Time-based activity patterns, streaks, weekend/off-hours analysis
+- File change statistics and deletion intensity
+- Team productivity comparison and balance scoring
+- Arena health, bottleneck, and stability indicators
 - Useful for performance analysis and sprint planning
 
 #### 3. **Time Machine** - Alt+3
@@ -391,8 +394,13 @@ GitSwamp provides 6 different history visualization modes, accessible from the *
 - View repository state at specific commits
 - File snapshots at different points in history
 - Timeline-based scrubber navigation
+- SHA search with next/prev match navigation
+- Commit file snapshots, repository tree snapshots, and file preview explorer
+- Copyable rollback command for whole-commit or file-scoped rollback
 - Diff between historical versions
 - Inspect legacy code without checking out
+- Smooth autoplay and arrow-step transitions (reduced visual flicker)
+- Snapshot panels keep context and update progressively with section loaders and caches
 - Useful for forensic analysis and understanding evolution
 
 #### 4. **Usual Conflict Suspects (Conflict Heatmap)** - Alt+4
@@ -401,7 +409,9 @@ GitSwamp provides 6 different history visualization modes, accessible from the *
 - Conflict risk assessment and patterns
 - Team collaboration conflict analytics
 - Time-based conflict trend analysis
+- Merge-window selector (300 / 500 / 1000 / all)
 - Suggests risky merge areas
+- Search-based filtering plus tree-scope filtering
 - Helps prevent problematic merges
 
 #### 5. **Remote Insights** - Remote sync
@@ -809,9 +819,9 @@ This section defines where the updated analytics modules belong and what each mo
 
 | Layer | Module File | Responsibility |
 |------|-------------|----------------|
-| History panel UI | `src/view/commit/CommitConflictHeatmapPanel.vue` | Conflict suspects UI, repository tree heatmap, conflict pair analytics, per-section loaders, caching and stream orchestration |
-| History panel UI | `src/view/commit/CommitProductivityPanel.vue` | Productivity metrics, diagnostics cards, per-section loader overlays, stream-level async loading |
-| History panel UI | `src/view/commit/CommitTimeMachinePanel.vue` | Timeline scrubber, autoplay navigation, snapshot explorer, no-flicker frame transitions with cached snapshots |
+| History panel UI | `src/view/commit/CommitConflictHeatmapPanel.vue` | Conflict suspects UI, merge-window filtering, repository tree heatmap, conflict pair analytics, per-section loaders, caching and stream orchestration |
+| History panel UI | `src/view/commit/CommitProductivityPanel.vue` | Productivity metrics, author filter, preview/full-history switching, diagnostics cards, per-section loader overlays, stream-level async loading |
+| History panel UI | `src/view/commit/CommitTimeMachinePanel.vue` | Timeline scrubber, autoplay navigation, SHA search, snapshot explorer, rollback command copy, no-flicker frame transitions with cached snapshots |
 | Graph layout helper | `src/view/commit/graph/useCommitGraphLayout.ts` | Commit graph lane/path layout including conflict node/edge alignment behavior |
 | Domain action orchestration | `src/domain/git/composables/gitBranchActions.ts` | Merge workflow orchestration, merge preflight risk check, confirmation and toast messaging |
 | Frontend data model | `src/types/models/conflictHotspot.ts` | Conflict hotspot contract (including collision index fields used by heatmap/tree) |

@@ -26,6 +26,7 @@ The project focuses on delivering a comprehensive Git management solution that:
 4. **Resolve Conflicts** - Built-in merge conflict resolution interface
 5. **Integrate with Remote Services** - GitHub and GitLab repository search and authentication
 6. **Support Advanced Operations** - Stashing, tagging, cherry-picking, rebasing, and more
+7. **Analyze Repository Motion** - Productivity, Time Machine, and conflict-risk views for history intelligence
 
 ### 3.2 Target Users
 
@@ -169,7 +170,7 @@ gitswamp/
 - **Hamburger Menu (☰)** - Quick access to File, Edit, View, and Help sections
   - File: New Tab, Open Repository, Close Tab, Create Gist
   - Edit: Copy Repository Path, Refresh Repository, Open in VS Code
-  - View: Toggle Terminal, Open in Folder Explorer, Open Settings
+      - View: Toggle Terminal, Commit Graph, Productivity Arena, Time Machine, Usual Conflict Suspects, Open in Folder Explorer, Open Settings
   - Help: In-app Shortcuts, Online Guide, Report Issue
 - **In-App Help Panel (F1)** - Shortcut guide and quick start guide
 - **Folder Explorer Shortcut (Alt+O)** - Open active repository in system explorer
@@ -179,6 +180,12 @@ gitswamp/
 - **Custom Font Size** - Adjustable interface font
 - **Toast Notifications** - System-wide notifications for all operations
 - **Settings Dialog** - Configure application preferences
+
+### 6.11 Commit Intelligence Views
+
+- **Productivity Arena** - Commit rhythm, author balance, streaks, and stability scoring
+- **Time Machine** - Commit-by-commit history playback with snapshot explorer and rollback guidance
+- **Usual Conflict Suspects** - Merge-window hotspot analysis, tree heatmap, and risky pair detection
 
 ## 7. Architecture Overview
 
