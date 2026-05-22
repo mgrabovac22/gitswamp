@@ -1092,6 +1092,54 @@ async function jumpToEndStep() {
   }
 }
 
+function handleGraphSelectionArrowKey(event: KeyboardEvent): boolean {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+    return false;
+  }
+
+  const commits = props.commits || [];
+  if (!commits.length) {
+    return true;
+  }
+
+  event.preventDefault();
+
+  const currentSha = props.selected?.sha || null;
+  let idx = commits.findIndex((commit) => commit.sha === currentSha);
+  if (idx === -1) {
+    idx = event.key === "ArrowDown" ? 0 : commits.length - 1;
+  } else if (event.key === "ArrowDown") {
+    idx = Math.min(commits.length - 1, idx + 1);
+  } else {
+    idx = Math.max(0, idx - 1);
+  }
+
+  const target = commits[idx];
+  if (!target) {
+    return true;
+  }
+
+  emit("select", { commit: target, additive: false });
+
+  nextTick(() => {
+    const el = document.getElementById(`commit-row-${target.sha}`);
+    if (el && scrollContainer.value) {
+      const top = el.getBoundingClientRect().top - scrollContainer.value.getBoundingClientRect().top + scrollContainer.value.scrollTop;
+      const desired = Math.max(0, top - scrollContainer.value.clientHeight / 2);
+      scrollContainer.value.scrollTo({ top: desired, behavior: "smooth" });
+      return;
+    }
+
+    if (scrollContainer.value) {
+      const wc = scrollContainer.value;
+      const desired = Math.max(0, (idx * rowHeight) - (wc.clientHeight / 2));
+      wc.scrollTo({ top: desired, behavior: "smooth" });
+    }
+  });
+
+  return true;
+}
+
 function onGlobalGraphKeyDown(event: KeyboardEvent) {
   if (isEditableTarget(event.target)) {
     return;
@@ -1110,6 +1158,10 @@ function onGlobalGraphKeyDown(event: KeyboardEvent) {
   if (event.key === "End") {
     event.preventDefault();
     void jumpToEndStep();
+  }
+
+  if (handleGraphSelectionArrowKey(event)) {
+    return;
   }
 }
 
@@ -1439,6 +1491,7 @@ onUnmounted(() => {
         <div
           v-for="item in visibleNodes"
           :key="item.node.commit.sha"
+          :id="`commit-row-${item.node.commit.sha}`"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
           :class="isCommitSelected(item.node.commit.sha)
             ? 'bg-[var(--primary)]/10'

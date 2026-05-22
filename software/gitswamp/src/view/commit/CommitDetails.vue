@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted } from "vue";
+import { computed, ref, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -71,6 +71,7 @@ const emit = defineEmits<{
   stashApply: [index: number];
   stashDrop: [index: number];
   viewDiff: [{ path: string; sha: string | null; staged: boolean }];
+  closeDiffViewer: [];
   amendCommitMessage: [newMessage: string];
   refreshState: [];
 }>();
@@ -96,10 +97,26 @@ let copiedShaTimer: ReturnType<typeof setTimeout> | null = null;
 const showDiscardConfirm = ref(false);
 const discardPath = ref<string | null>(null);
 const copiedShaKey = ref<string | null>(null);
+const selectedChangePath = ref<string | null>(null);
+const commitFilesScrollContainer = ref<HTMLElement | null>(null);
+const fileNavigationMode = ref(false);
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
   closeFileContextMenu();
+  selectedChangePath.value = filePath;
   emit("viewDiff", { path: filePath, sha: commitSha, staged });
+}
+
+function scrollSelectedCommitFileIntoView() {
+  const container = commitFilesScrollContainer.value;
+  const selectedPath = selectedChangePath.value;
+  if (!container || !selectedPath) {
+    return;
+  }
+
+  const escapedPath = globalThis.CSS?.escape ? globalThis.CSS.escape(selectedPath) : selectedPath;
+  const selectedRow = container.querySelector<HTMLElement>(`[data-commit-file-path="${escapedPath}"]`);
+  selectedRow?.scrollIntoView({ block: "nearest", behavior: "auto" });
 }
 
 function confirmDiscard(path: string | null) {
@@ -122,7 +139,132 @@ function cancelDiscard() {
   discardPath.value = null;
 }
 
+function currentCommitFileIndex(): number {
+  if (!selectedChangePath.value) {
+    return -1;
+  }
+
+  return props.commitFiles.findIndex((file) => file.path === selectedChangePath.value);
+}
+
+function selectCommitFileAtIndex(index: number) {
+  const file = props.commitFiles[index];
+  if (!file) {
+    return;
+  }
+
+  fileNavigationMode.value = true;
+  setActiveTab("changes");
+  changesViewMode.value = "files";
+  selectedChangePath.value = file.path;
+}
+
+function openCommitFileAtIndex(index: number) {
+  const file = props.commitFiles[index];
+  if (!file) {
+    return;
+  }
+
+  selectCommitFileAtIndex(index);
+  openDiff(
+    file.path,
+    isMultiCommitSelection.value ? (file.commit_shas?.[0] || primaryCommitShaForDiff.value) : (props.commit?.sha ?? null),
+    false,
+  );
+
+  void nextTick(() => {
+    scrollSelectedCommitFileIntoView();
+  });
+}
+
+function navigateCommitFile(direction: 1 | -1) {
+  if (props.commitFiles.length === 0) {
+    return;
+  }
+
+  const currentIndex = currentCommitFileIndex();
+  let nextIndex = 0;
+  if (currentIndex < 0) {
+    nextIndex = direction > 0 ? 0 : props.commitFiles.length - 1;
+  } else {
+    nextIndex = Math.max(0, Math.min(props.commitFiles.length - 1, currentIndex + direction));
+  }
+
+  openCommitFileAtIndex(nextIndex);
+}
+
+function enterChangesPanelAndSelectFile(index = 0) {
+  if (props.commitFiles.length === 0) {
+    return;
+  }
+
+  const nextIndex = Math.max(0, Math.min(props.commitFiles.length - 1, index));
+  fileNavigationMode.value = true;
+  setActiveTab("changes");
+  changesViewMode.value = "files";
+  openCommitFileAtIndex(nextIndex);
+}
+
+function hasNavigableCommitFiles(): boolean {
+  return !!props.commit && !props.isWorkingChanges && !props.isStash && props.commitFiles.length > 0;
+}
+
+function handleCommitFileArrowRight(event: KeyboardEvent) {
+  if (!hasNavigableCommitFiles()) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  enterChangesPanelAndSelectFile(Math.max(0, currentCommitFileIndex()));
+}
+
+function handleCommitFileArrowDown(event: KeyboardEvent) {
+  if (!hasNavigableCommitFiles() || !fileNavigationMode.value) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+
+  if (activeTab.value === "changes") {
+    navigateCommitFile(1);
+    return;
+  }
+
+  enterChangesPanelAndSelectFile(0);
+}
+
+function handleCommitFileArrowUp(event: KeyboardEvent) {
+  if (!hasNavigableCommitFiles() || !fileNavigationMode.value || activeTab.value !== "changes") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  navigateCommitFile(-1);
+}
+
+function handleCommitFileArrowLeft(event: KeyboardEvent) {
+  if (!selectedChangePath.value) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  fileNavigationMode.value = false;
+  selectedChangePath.value = null;
+  emit("closeDiffViewer");
+}
+
 const activeTab = ref<"changes" | "info">("changes");
+// Tracks whether the user explicitly selected the tab. When true, do not override on programmatic commit changes.
+const userSelectedTab = ref(false);
+
+function setActiveTab(tab: "changes" | "info") {
+  activeTab.value = tab;
+  userSelectedTab.value = true;
+}
 const isMultiCommitSelection = computed(() => (props.selectedCommits?.length || 0) > 1);
 const primaryCommitShaForDiff = computed(() => {
   if (props.commit?.sha) {
@@ -135,8 +277,16 @@ const primaryCommitShaForDiff = computed(() => {
 });
 
 watch(() => props.commit, (newVal) => {
+  selectedChangePath.value = null;
+  fileNavigationMode.value = false;
   if (isMultiCommitSelection.value) {
     activeTab.value = "changes";
+    userSelectedTab.value = false;
+    return;
+  }
+
+  // Preserve user choice when stepping between commits
+  if (userSelectedTab.value) {
     return;
   }
 
@@ -147,20 +297,37 @@ watch(() => props.commit, (newVal) => {
   }
 });
 
+watch(selectedChangePath, async () => {
+  if (activeTab.value !== "changes") {
+    return;
+  }
+
+  await nextTick();
+  scrollSelectedCommitFileIntoView();
+});
+
 watch(() => props.selectedStash, (newVal) => {
   if (newVal) {
     activeTab.value = "changes";
+    userSelectedTab.value = false;
+    fileNavigationMode.value = false;
   }
 });
 
 watch(() => isMultiCommitSelection.value, (isMulti) => {
   if (isMulti) {
     activeTab.value = "changes";
+    userSelectedTab.value = false;
+    fileNavigationMode.value = false;
   }
 });
 
 watch(() => props.isWorkingChanges, (val) => {
-  if (val) activeTab.value = "changes";
+  if (val) {
+    activeTab.value = "changes";
+    userSelectedTab.value = false;
+    fileNavigationMode.value = false;
+  }
 });
 
 const expandedStaged = ref(true);
@@ -844,49 +1011,80 @@ function refreshFolderChangedState(node: ChangesTreeNode): boolean {
   return hasChangedChild;
 }
 
+function getOrCreateChangesTreeNode(
+  currentPath: string,
+  segment: string,
+  isFile: boolean,
+  branchNodes: ChangesTreeNode[],
+  byPath: Map<string, ChangesTreeNode>,
+): ChangesTreeNode {
+  const existing = byPath.get(currentPath);
+  if (existing) {
+    return existing;
+  }
+
+  const node: ChangesTreeNode = {
+    key: `${isFile ? "file" : "folder"}:${currentPath}`,
+    type: isFile ? "file" : "folder",
+    name: segment,
+    path: currentPath,
+    changed: false,
+    status: null,
+    children: [],
+  };
+
+  byPath.set(currentPath, node);
+  branchNodes.push(node);
+  return node;
+}
+
+function applyChangesTreeFileMeta(node: ChangesTreeNode, normalized: string, meta: Map<string, TreeFileMeta>) {
+  const fileMeta = meta.get(normalized);
+  node.changed = !!fileMeta;
+  node.status = fileMeta ? fileMeta.status : null;
+}
+
+function addChangesTreePath(
+  rawPath: string,
+  rootNodes: ChangesTreeNode[],
+  byPath: Map<string, ChangesTreeNode>,
+  meta: Map<string, TreeFileMeta>,
+) {
+  const normalized = normalizeRepoPath(rawPath);
+  if (!normalized) {
+    return;
+  }
+
+  const segments = normalized.split("/").filter((value) => value.length > 0);
+  if (segments.length === 0) {
+    return;
+  }
+
+  let branchNodes = rootNodes;
+  let currentPath = "";
+
+  for (let idx = 0; idx < segments.length; idx += 1) {
+    const segment = segments[idx];
+    const isFile = idx === segments.length - 1;
+    currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+
+    const node = getOrCreateChangesTreeNode(currentPath, segment, isFile, branchNodes, byPath);
+    if (isFile) {
+      applyChangesTreeFileMeta(node, normalized, meta);
+      continue;
+    }
+
+    ensureTreeFolderTracked(currentPath);
+    branchNodes = node.children;
+  }
+}
+
 function buildChangesTree(paths: string[], meta: Map<string, TreeFileMeta>): ChangesTreeNode[] {
   const rootNodes: ChangesTreeNode[] = [];
   const byPath = new Map<string, ChangesTreeNode>();
 
   for (const rawPath of paths) {
-    const normalized = normalizeRepoPath(rawPath);
-    if (!normalized) continue;
-
-    const segments = normalized.split("/").filter((value) => value.length > 0);
-    if (segments.length === 0) continue;
-
-    let branchNodes = rootNodes;
-    let currentPath = "";
-
-    for (let idx = 0; idx < segments.length; idx += 1) {
-      const segment = segments[idx];
-      const isFile = idx === segments.length - 1;
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-
-      let node = byPath.get(currentPath);
-      if (!node) {
-        node = {
-          key: `${isFile ? "file" : "folder"}:${currentPath}`,
-          type: isFile ? "file" : "folder",
-          name: segment,
-          path: currentPath,
-          changed: false,
-          status: null,
-          children: [],
-        };
-        byPath.set(currentPath, node);
-        branchNodes.push(node);
-      }
-
-      if (isFile) {
-        const fileMeta = meta.get(normalized);
-        node.changed = !!fileMeta;
-        node.status = fileMeta ? fileMeta.status : null;
-      } else {
-        ensureTreeFolderTracked(currentPath);
-        branchNodes = node.children;
-      }
-    }
+    addChangesTreePath(rawPath, rootNodes, byPath, meta);
   }
 
   for (const node of rootNodes) {
@@ -1108,6 +1306,26 @@ async function openSelectedFileWithEditor(editorId: ExternalEditorId) {
 function handleGlobalKeyDown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     closeFileContextMenu();
+    return;
+  }
+
+  if (event.key === "ArrowRight") {
+    handleCommitFileArrowRight(event);
+    return;
+  }
+
+  if (event.key === "ArrowDown") {
+    handleCommitFileArrowDown(event);
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    handleCommitFileArrowUp(event);
+    return;
+  }
+
+  if (event.key === "ArrowLeft") {
+    handleCommitFileArrowLeft(event);
   }
 }
 
@@ -1120,7 +1338,7 @@ onMounted(() => {
   syncGitkeepNotifyPreference();
   refreshCommitAnalyzerSettings();
   globalThis.addEventListener("pointerdown", handleGlobalPointerDown);
-  globalThis.addEventListener("keydown", handleGlobalKeyDown);
+  globalThis.addEventListener("keydown", handleGlobalKeyDown, true);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
   globalThis.addEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
   updateCompactWorkingLabel();
@@ -1213,7 +1431,7 @@ onUnmounted(() => {
     copiedShaTimer = null;
   }
   globalThis.removeEventListener("pointerdown", handleGlobalPointerDown);
-  globalThis.removeEventListener("keydown", handleGlobalKeyDown);
+  globalThis.removeEventListener("keydown", handleGlobalKeyDown, true);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
   globalThis.removeEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
 });
@@ -1225,7 +1443,7 @@ onUnmounted(() => {
       <div class="h-9 flex">
         <button
           v-if="!isMultiCommitSelection && ((commit && !isWorkingChanges) || (isStash && selectedStash))"
-          @click="activeTab = 'info'"
+          @click="setActiveTab('info')"
           :class="[
             'flex-1 text-xs font-medium tracking-wide transition-colors',
             activeTab === 'info'
@@ -1236,7 +1454,7 @@ onUnmounted(() => {
           Info
         </button>
         <button
-          @click="activeTab = 'changes'"
+          @click="setActiveTab('changes')"
           :class="[
             'flex-1 text-xs font-medium tracking-wide transition-colors',
             activeTab === 'changes'
@@ -1250,7 +1468,7 @@ onUnmounted(() => {
     </div>
 
     <div v-show="activeTab === 'changes' && isWorkingChanges" class="flex-1 flex flex-col overflow-hidden">
-      <div class="flex-1 overflow-y-auto">
+      <div ref="commitFilesScrollContainer" class="flex-1 overflow-y-auto">
         <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0 || (conflictFiles?.length || 0) > 0" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent">
           <div class="flex items-center justify-between gap-2 mb-1">
             <div class="flex items-center gap-2 min-w-0">
@@ -1709,7 +1927,9 @@ onUnmounted(() => {
             <div
               v-for="f in commitFiles"
               :key="f.path"
+              :data-commit-file-path="f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
+              :class="selectedChangePath === f.path ? 'bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/20' : ''"
               @click="openDiff(f.path, isMultiCommitSelection ? (f.commit_shas?.[0] || primaryCommitShaForDiff) : commit!.sha, false)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >

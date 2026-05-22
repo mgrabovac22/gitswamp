@@ -47,7 +47,7 @@ import {
 } from "lucide-vue-next";
 type OptionsSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
 type IntegrationPlatform = "github" | "gitlab" | "bitbucket" | "azure";
-type FontSizePreference = "tiny" | "small" | "medium" | "largest" | "huge";
+type FontSizePreference = "tiny" | "small" | "medium" | "largest" | "huge" | "xlarge" | "xxlarge" | "xxxlarge" | "xxxxlarge";
 type OrganisationProvider = "github" | "gitlab" | "bitbucket" | "azure";
 type OrganisationSearchProvider = OrganisationProvider | "all";
 type OrganisationVisibilityFilter = "all" | "private" | "public";
@@ -193,6 +193,10 @@ const fontSizes = {
   medium: "18px",
   largest: "22px",
   huge: "24px",
+  xlarge: "26px",
+  xxlarge: "28px",
+  xxxlarge: "30px",
+  xxxxlarge: "32px",
 };
 
 function normalizeFontSizePreference(value: string | null): FontSizePreference {
@@ -201,16 +205,30 @@ function normalizeFontSizePreference(value: string | null): FontSizePreference {
   if (value === "medium") return "medium";
   if (value === "largest") return "largest";
   if (value === "huge") return "huge";
+  if (value === "xlarge") return "xlarge";
+  if (value === "xxlarge") return "xxlarge";
+  if (value === "xxxlarge") return "xxxlarge";
+  if (value === "xxxxlarge") return "xxxxlarge";
   if (value === "large") return "largest";
   return "medium";
 }
 
 function applyFontScaleClasses(value: FontSizePreference): void {
-  document.documentElement.classList.remove("font-scale-tiny", "font-scale-small", "font-scale-medium", "font-scale-largest", "font-scale-huge");
+  document.documentElement.classList.remove(
+    "font-scale-tiny",
+    "font-scale-small",
+    "font-scale-medium",
+    "font-scale-largest",
+    "font-scale-huge",
+    "font-scale-xlarge",
+    "font-scale-xxlarge",
+    "font-scale-xxxlarge",
+    "font-scale-xxxxlarge",
+  );
   document.documentElement.classList.add(`font-scale-${value}`);
 }
 
-const commitFontScaleOrder: FontSizePreference[] = ["tiny", "small", "medium", "largest", "huge"];
+const commitFontScaleOrder: FontSizePreference[] = ["tiny", "small", "medium", "largest", "huge", "xlarge", "xxlarge", "xxxlarge", "xxxxlarge"];
 
 const commitFontSliderValue = computed(() => {
   const index = commitFontScaleOrder.indexOf(fontSize.value);
@@ -222,6 +240,10 @@ const commitFontLabel = computed(() => {
   if (fontSize.value === "small") return "Small";
   if (fontSize.value === "medium") return "Medium";
   if (fontSize.value === "largest") return "Large";
+  if (fontSize.value === "xlarge") return "X-Large";
+  if (fontSize.value === "xxlarge") return "XX-Large";
+  if (fontSize.value === "xxxlarge") return "XXX-Large";
+  if (fontSize.value === "xxxxlarge") return "XXXX-Large";
   return "Huge";
 });
 
@@ -279,7 +301,7 @@ const hasDetectedGit = computed(() => !!currentGitPath.value);
 
 function clampGeneralFontSize(value: number): number {
   if (!Number.isFinite(value)) return 18;
-  return Math.max(12, Math.min(26, Math.round(value)));
+  return Math.max(10, Math.min(40, Math.round(value)));
 }
 
 function setCommitFontFromSlider(event: Event): void {
@@ -1290,10 +1312,10 @@ onMounted(() => {
   fontSize.value = normalizeFontSizePreference(localStorage.getItem(OPTIONS_COMMIT_FONT_SIZE_KEY));
 
   const savedGeneralFont = localStorage.getItem(OPTIONS_GENERAL_FONT_SIZE_KEY);
-  if (savedGeneralFont !== null) {
-    generalFontSizePx.value = clampGeneralFontSize(Number.parseInt(savedGeneralFont, 10));
-  } else {
+  if (savedGeneralFont === null) {
     generalFontSizePx.value = clampGeneralFontSize(Number.parseInt(fontSizes[fontSize.value], 10));
+  } else {
+    generalFontSizePx.value = clampGeneralFontSize(Number.parseInt(savedGeneralFont, 10));
   }
 
   const savedCompact = localStorage.getItem("gitswamp-compact-mode");
@@ -2026,14 +2048,14 @@ watch(activePlatform, () => {
                   </div>
                   <div class="w-[290px] max-w-full">
                     <div class="flex items-center justify-between text-[10px] text-[var(--muted-foreground)] mb-1">
-                      <span>12px</span>
+                      <span>10px</span>
                       <span class="font-mono text-[var(--foreground)]">{{ generalFontLabel }}</span>
-                      <span>26px</span>
+                      <span>40px</span>
                     </div>
                     <input
                       type="range"
-                      min="12"
-                      max="26"
+                      min="10"
+                      max="40"
                       step="1"
                       :value="generalFontSizePx"
                       @input="setGeneralFontFromSlider"
@@ -2051,12 +2073,12 @@ watch(activePlatform, () => {
                     <div class="flex items-center justify-between text-[10px] text-[var(--muted-foreground)] mb-1">
                       <span>Tiny</span>
                       <span class="font-mono text-[var(--foreground)]">{{ commitFontLabel }}</span>
-                      <span>Huge</span>
+                      <span>XXXX-Large</span>
                     </div>
                     <input
                       type="range"
                       min="0"
-                      max="4"
+                      max="8"
                       step="1"
                       :value="commitFontSliderValue"
                       @input="setCommitFontFromSlider"

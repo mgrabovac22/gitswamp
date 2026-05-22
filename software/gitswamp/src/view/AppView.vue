@@ -57,11 +57,46 @@ const appWindow = (() => {
 applyThemeModePreference(getStoredThemeModePreference());
 applyAppPalettePreference(getStoredAppPalettePreference());
 
+// Manage general font size and commit font scale with wider ranges and Ctrl+zoom support
+const generalFontSize = ref<number>(16);
+const MIN_FONT_SIZE = 10;
+const MAX_FONT_SIZE = 40;
+
+const COMMIT_SCALE_NAMES = ["tiny", "small", "medium", "largest", "huge", "xlarge", "xxlarge", "xxxlarge", "xxxxlarge"] as const;
+const commitNumeric = ref<number>(4); // range 0..8 -> maps to the named commit scale classes
+
+function applyGeneralFontSize(size: number) {
+  const clamped = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(size)));
+  generalFontSize.value = clamped;
+  document.documentElement.style.setProperty("--font-size", `${clamped}px`);
+  safeStorageSet("gitswamp-general-font-size", String(clamped));
+}
+
+function applyCommitNumeric(n: number) {
+  const clamped = Math.max(0, Math.min(8, Math.round(n)));
+  commitNumeric.value = clamped;
+  const name = COMMIT_SCALE_NAMES[clamped] as string;
+  document.documentElement.classList.remove(
+    "font-scale-tiny",
+    "font-scale-small",
+    "font-scale-medium",
+    "font-scale-largest",
+    "font-scale-huge",
+    "font-scale-xlarge",
+    "font-scale-xxlarge",
+    "font-scale-xxxlarge",
+    "font-scale-xxxxlarge",
+  );
+  document.documentElement.classList.add(`font-scale-${name}`);
+  safeStorageSet("gitswamp-font-size", name);
+}
+
+// Initialize from storage (legacy and new)
 const savedGeneralFontSize = safeStorageGet("gitswamp-general-font-size");
 if (savedGeneralFontSize) {
   const parsedGeneral = Number.parseInt(savedGeneralFontSize, 10);
-  const generalSize = Number.isFinite(parsedGeneral) ? Math.max(12, Math.min(26, parsedGeneral)) : 18;
-  document.documentElement.style.setProperty("--font-size", `${generalSize}px`);
+  const generalSize = Number.isFinite(parsedGeneral) ? Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, parsedGeneral)) : 16;
+  applyGeneralFontSize(generalSize);
 } else {
   const savedLegacyScale = safeStorageGet("gitswamp-font-size");
   const legacyMap: Record<string, string> = {
@@ -73,14 +108,19 @@ if (savedGeneralFontSize) {
     large: "18px",
   };
   if (savedLegacyScale && legacyMap[savedLegacyScale]) {
-    document.documentElement.style.setProperty("--font-size", legacyMap[savedLegacyScale]);
+    const px = Number.parseInt(legacyMap[savedLegacyScale], 10) || 16;
+    applyGeneralFontSize(px);
+  } else {
+    applyGeneralFontSize(16);
   }
 }
 
 const savedCommitScale = safeStorageGet("gitswamp-font-size");
-if (savedCommitScale && ["tiny", "small", "medium", "largest", "huge"].includes(savedCommitScale)) {
-  document.documentElement.classList.remove("font-scale-tiny", "font-scale-small", "font-scale-medium", "font-scale-largest", "font-scale-huge");
-  document.documentElement.classList.add(`font-scale-${savedCommitScale}`);
+if (savedCommitScale && (COMMIT_SCALE_NAMES as readonly string[]).includes(savedCommitScale)) {
+  const idx = COMMIT_SCALE_NAMES.indexOf(savedCommitScale as any);
+  applyCommitNumeric(idx);
+} else {
+  applyCommitNumeric(4);
 }
 const savedCompact = safeStorageGet("gitswamp-compact-mode");
 if (savedCompact === "true") {
@@ -1341,22 +1381,38 @@ function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
   return true;
 }
 
-function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
+function handleRepositoryZoomShortcut(event: KeyboardEvent, key: string): boolean {
+  if (!event.ctrlKey || event.shiftKey) {
+    return false;
+  }
+
+  if (key !== "+" && key !== "=" && key !== "-" && key !== "0") {
+    return false;
+  }
+
+  event.preventDefault();
+
+  if (key === "-") {
+    applyGeneralFontSize(generalFontSize.value - 2);
+    applyCommitNumeric(commitNumeric.value - 4);
+    return true;
+  }
+
+  if (key === "+" || key === "=") {
+    applyGeneralFontSize(generalFontSize.value + 2);
+    applyCommitNumeric(commitNumeric.value + 4);
+    return true;
+  }
+
+  applyGeneralFontSize(16);
+  applyCommitNumeric(4);
+  return true;
+}
+
+function handleRepositoryDialogShortcut(event: KeyboardEvent, key: string): boolean {
   if (event.ctrlKey && event.shiftKey && key === "o") {
     event.preventDefault();
     void openRepoInVsCode();
-    return true;
-  }
-
-  if (isAltOnlyShortcut(event) && key === "o") {
-    event.preventDefault();
-    void openRepoInExplorer();
-    return true;
-  }
-
-  if (event.ctrlKey && !event.shiftKey && key === "r") {
-    event.preventDefault();
-    dispatchFocusCommitSearch();
     return true;
   }
 
@@ -1396,9 +1452,41 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
     return true;
   }
 
+  return false;
+}
+
+function handleRepositoryNavigationShortcut(event: KeyboardEvent, key: string): boolean {
+  if (isAltOnlyShortcut(event) && key === "o") {
+    event.preventDefault();
+    void openRepoInExplorer();
+    return true;
+  }
+
+  if (event.ctrlKey && !event.shiftKey && key === "r") {
+    event.preventDefault();
+    dispatchFocusCommitSearch();
+    return true;
+  }
+
   if (event.ctrlKey && !event.shiftKey && key === ",") {
     event.preventDefault();
     openOptions("preferences");
+    return true;
+  }
+
+  return false;
+}
+
+function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
+  if (handleRepositoryZoomShortcut(event, key)) {
+    return true;
+  }
+
+  if (handleRepositoryNavigationShortcut(event, key)) {
+    return true;
+  }
+
+  if (handleRepositoryDialogShortcut(event, key)) {
     return true;
   }
 
@@ -2403,6 +2491,7 @@ watch(terminalAllowAll, (value) => {
 
 function handleCreateBranchAtCommit(sha: string) {
   branchAtSha.value = sha;
+  newBranchName.value = "";
   showBranchDialog.value = true;
 }
 

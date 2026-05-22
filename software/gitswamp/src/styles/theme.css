@@ -1179,9 +1179,53 @@ html.light .shadow-2xl {
     font-size: 14px !important;
   }
 
+  html.font-scale-xlarge .commit-scroll .text-\[9px\] {
+    font-size: 13px !important;
+  }
+  html.font-scale-xlarge .commit-scroll .text-\[10px\] {
+    font-size: 14px !important;
+  }
+  html.font-scale-xlarge .commit-scroll .text-\[11px\] {
+    font-size: 15px !important;
+  }
+
+  html.font-scale-xxlarge .commit-scroll .text-\[9px\] {
+    font-size: 14px !important;
+  }
+  html.font-scale-xxlarge .commit-scroll .text-\[10px\] {
+    font-size: 15px !important;
+  }
+  html.font-scale-xxlarge .commit-scroll .text-\[11px\] {
+    font-size: 16px !important;
+  }
+
+  html.font-scale-xxxlarge .commit-scroll .text-\[9px\] {
+    font-size: 15px !important;
+  }
+  html.font-scale-xxxlarge .commit-scroll .text-\[10px\] {
+    font-size: 16px !important;
+  }
+  html.font-scale-xxxlarge .commit-scroll .text-\[11px\] {
+    font-size: 17px !important;
+  }
+
+  html.font-scale-xxxxlarge .commit-scroll .text-\[9px\] {
+    font-size: 16px !important;
+  }
+  html.font-scale-xxxxlarge .commit-scroll .text-\[10px\] {
+    font-size: 17px !important;
+  }
+  html.font-scale-xxxxlarge .commit-scroll .text-\[11px\] {
+    font-size: 18px !important;
+  }
+
   html.font-scale-medium .commit-row,
   html.font-scale-largest .commit-row,
-  html.font-scale-huge .commit-row {
+  html.font-scale-huge .commit-row,
+  html.font-scale-xlarge .commit-row,
+  html.font-scale-xxlarge .commit-row,
+  html.font-scale-xxxlarge .commit-row,
+  html.font-scale-xxxxlarge .commit-row {
     min-height: 30px;
   }
 

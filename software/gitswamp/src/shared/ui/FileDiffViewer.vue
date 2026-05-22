@@ -52,6 +52,7 @@ const hasUnsavedChanges = ref(false);
 const highlightedLineCache = ref(new Map<string, string>());
 const toast = useToast();
 const git = useGit();
+const timeLapseScrollContainer = ref<HTMLElement | null>(null);
 
 interface TimeLapseFrame {
   sha: string;
@@ -72,6 +73,7 @@ const TIME_LAPSE_MAX_FRAMES = 22;
 const DEFAULT_TIME_LAPSE_COMMIT_WINDOW = 100;
 const MIN_TIME_LAPSE_COMMIT_WINDOW = 20;
 const MAX_TIME_LAPSE_COMMIT_WINDOW = 2000;
+const TIME_LAPSE_FRAME_INTERVAL_MS = 2000;
 const timeLapseCommitWindowOptions = [50, 75, 100, 150, 200, 300, 500, 800, 1000] as const;
 const timeLapseCommitWindow = ref(DEFAULT_TIME_LAPSE_COMMIT_WINDOW);
 
@@ -656,6 +658,15 @@ watch(viewMode, (mode) => {
 watch(timeLapseCommitWindowSafe, () => {
   if (viewMode.value !== "time-lapse") return;
   void loadTimeLapseFrames();
+});
+
+watch([() => timeLapseFrameIndex.value, () => viewMode.value], async () => {
+  if (viewMode.value !== "time-lapse") return;
+  const frame = activeTimeLapseFrame.value;
+  if (!frame) return;
+
+  await nextTick();
+  scrollToTimeLapseFrame(frame);
 });
 
 watch(blamePanelVisible, (visible) => {
@@ -1504,6 +1515,16 @@ function buildTimeLapseRenderLines(frame: TimeLapseFrame | null): TimeLapseRende
 }
 
 const activeTimeLapseRenderLines = computed(() => buildTimeLapseRenderLines(activeTimeLapseFrame.value));
+const timeLapseCanAdvance = computed(() => timeLapseFrameIndex.value < timeLapseFrames.value.length - 1);
+const timeLapseCanRetreat = computed(() => timeLapseFrameIndex.value > 0);
+const timeLapseEndMessageShown = ref(false);
+const timeLapseProgressPercent = computed(() => {
+  if (timeLapseFrames.value.length <= 0) {
+    return 0;
+  }
+
+  return ((timeLapseFrameIndex.value + 1) / timeLapseFrames.value.length) * 100;
+});
 
 function stopTimeLapsePlayback() {
   if (timeLapseTimer) {
@@ -1514,13 +1535,26 @@ function stopTimeLapsePlayback() {
 }
 
 function nextTimeLapseFrame() {
-  if (timeLapseFrames.value.length === 0) return;
-  timeLapseFrameIndex.value = (timeLapseFrameIndex.value + 1) % timeLapseFrames.value.length;
+  if (timeLapseFrames.value.length === 0) return false;
+
+  if (timeLapseFrameIndex.value >= timeLapseFrames.value.length - 1) {
+    if (!timeLapseEndMessageShown.value) {
+      toast.info("Reached the last time-lapse frame.");
+      timeLapseEndMessageShown.value = true;
+    }
+    stopTimeLapsePlayback();
+    return false;
+  }
+
+  timeLapseFrameIndex.value += 1;
+  timeLapseEndMessageShown.value = false;
+  return true;
 }
 
 function previousTimeLapseFrame() {
   if (timeLapseFrames.value.length === 0) return;
-  timeLapseFrameIndex.value = (timeLapseFrameIndex.value - 1 + timeLapseFrames.value.length) % timeLapseFrames.value.length;
+  timeLapseFrameIndex.value = Math.max(0, timeLapseFrameIndex.value - 1);
+  timeLapseEndMessageShown.value = false;
 }
 
 function toggleTimeLapsePlay() {
@@ -1533,8 +1567,10 @@ function toggleTimeLapsePlay() {
 
   timeLapsePlaying.value = true;
   timeLapseTimer = setInterval(() => {
-    nextTimeLapseFrame();
-  }, 850);
+    if (!nextTimeLapseFrame()) {
+      stopTimeLapsePlayback();
+    }
+  }, TIME_LAPSE_FRAME_INTERVAL_MS);
 }
 
 function formatTimeLapseTimestamp(timestamp: number): string {
@@ -1715,20 +1751,35 @@ async function shareSelectionAsSnippet() {
 
   try {
     const gistUrl = await createGithubGistLink(fileName, selected);
-    await navigator.clipboard.writeText(gistUrl);
+    try {
+      await navigator.clipboard.writeText(gistUrl);
+    } catch (cErr) {
+      console.warn("Failed to write gist URL to clipboard:", cErr);
+    }
     toast.success("Snippet shared as gist. Link copied to clipboard.");
   } catch {
+    // Try to create a paste.rs fallback and show diagnostic info
     try {
       const pasteUrl = await createPasteRsLink(selected);
       if (pasteUrl) {
-        await navigator.clipboard.writeText(pasteUrl);
-        toast.success("Snippet shared. Link copied to clipboard.");
+        try {
+          await navigator.clipboard.writeText(pasteUrl);
+        } catch (cErr) {
+          console.warn("Failed to write paste.rs URL to clipboard:", cErr);
+        }
+        toast.success("Snippet shared via paste.rs. Link copied to clipboard.");
         return;
       }
-    } catch {
+    } catch (pasteErr) {
+      console.error("createPasteRsLink failed:", pasteErr);
     }
 
-    await navigator.clipboard.writeText(selected);
+    try {
+      await navigator.clipboard.writeText(selected);
+    } catch (cErr) {
+      console.error("Failed to copy selection to clipboard:", cErr);
+    }
+
     toast.warning("Could not create gist link. Selected snippet was copied to clipboard instead.");
   }
 }
@@ -1743,31 +1794,45 @@ async function createGithubGistLink(fileName: string, selected: string): Promise
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch("https://api.github.com/gists", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      description: `GitSwamp snippet from ${fileName}`,
-      public: true,
-      files: {
-        [fileName]: {
-          content: selected,
+  try {
+    const response = await fetch("https://api.github.com/gists", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        description: `GitSwamp snippet from ${fileName}`,
+        public: true,
+        files: {
+          [fileName]: {
+            content: selected,
+          },
         },
-      },
-    }),
-  });
+      }),
+    });
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      const statusText = `${response.status} ${response.statusText}`.trim();
+      const errMsg = "GitHub gist API error: " + statusText + (bodyText ? " - " + bodyText : "");
+      console.error(errMsg);
+      throw new Error(errMsg);
+    }
+
+    const payload = await response.json() as Record<string, unknown>;
+    const gistUrl = String(payload.html_url || payload.url || "").trim();
+    if (!gistUrl) {
+      const payloadText = JSON.stringify(payload || {});
+      const errMsg = `GitHub gist response missing URL: ${payloadText}`;
+      console.error(errMsg);
+      throw new Error(errMsg);
+    }
+
+    return gistUrl;
+  } catch (err: any) {
+    // Normalize error message and log for diagnostics. Caller will fall back.
+    const message = err?.message || String(err);
+    console.error("createGithubGistLink failed:", message);
+    throw new Error(`createGithubGistLink failed: ${message}`);
   }
-
-  const payload = await response.json() as Record<string, unknown>;
-  const gistUrl = String(payload.html_url || payload.url || "").trim();
-  if (!gistUrl) {
-    throw new Error("Missing gist URL");
-  }
-
-  return gistUrl;
 }
 
 async function createPasteRsLink(selected: string): Promise<string | null> {
@@ -1806,7 +1871,15 @@ const visibleFileLines = computed(() => {
   return result;
 });
 
-const totalFileHeight = computed(() => fullFileLines.value.length * LINE_HEIGHT);
+const fileDiffOverviewLines = computed(() => {
+  if (viewMode.value === "time-lapse") {
+    return activeTimeLapseRenderLines.value.map((line) => ({ type: line.type }));
+  }
+
+  return fullFileLines.value;
+});
+
+const totalFileHeight = computed(() => fileDiffOverviewLines.value.length * LINE_HEIGHT);
 
 interface FileDiffOverviewSegment {
   topPercent: number;
@@ -1815,11 +1888,11 @@ interface FileDiffOverviewSegment {
 }
 
 const showFileDiffOverview = computed(() => {
-  if (viewMode.value !== "file-diff" || loadingFileContent.value) {
+  if ((viewMode.value !== "file-diff" && viewMode.value !== "time-lapse") || loadingFileContent.value) {
     return false;
   }
 
-  const total = fullFileLines.value.length;
+  const total = fileDiffOverviewLines.value.length;
   if (total === 0) {
     return false;
   }
@@ -1827,8 +1900,12 @@ const showFileDiffOverview = computed(() => {
   return totalFileHeight.value > containerHeight.value * FILE_DIFF_OVERVIEW_MIN_VISIBLE_RATIO;
 });
 
+const showTimeLapseOverview = computed(() => {
+  return viewMode.value === "time-lapse" && !timeLapseLoading.value && !!activeTimeLapseFrame.value;
+});
+
 const fileDiffOverviewSegments = computed<FileDiffOverviewSegment[]>(() => {
-  const lines = fullFileLines.value;
+  const lines = fileDiffOverviewLines.value;
   const total = lines.length;
   if (total === 0) {
     return [];
@@ -1902,8 +1979,39 @@ function onFileDiffScroll(event: Event) {
   containerHeight.value = el.clientHeight;
 }
 
+function scrollToTimeLapseFrame(frame: TimeLapseFrame | null) {
+  if (!frame) return;
+  const el = timeLapseScrollContainer.value;
+  if (!el) return;
+
+  let anchor = 1;
+  if (frame.diffLines && frame.diffLines.length) {
+    const firstAddition = frame.diffLines.find((line) => line.line_type === "addition" && line.new_line_no != null && line.new_line_no > 0);
+    if (firstAddition?.new_line_no) {
+      anchor = firstAddition.new_line_no;
+    } else {
+      const firstAny = frame.diffLines.find((line) => line.new_line_no != null && line.new_line_no > 0);
+      if (firstAny?.new_line_no) {
+        anchor = firstAny.new_line_no;
+      }
+    }
+  }
+
+  const desired = Math.max(0, (anchor - 1) * LINE_HEIGHT - el.clientHeight / 2);
+  const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+  const nextScroll = Math.max(0, Math.min(maxScroll, desired));
+
+  try {
+    el.scrollTo({ top: nextScroll, behavior: "smooth" });
+  } catch {
+    el.scrollTop = nextScroll;
+  }
+
+  scrollTop.value = nextScroll;
+}
+
 function jumpToFileDiffPosition(event: MouseEvent) {
-  const el = fileDiffScrollContainer.value;
+  const el = viewMode.value === "time-lapse" ? timeLapseScrollContainer.value : fileDiffScrollContainer.value;
   if (!el || totalFileHeight.value <= 0) {
     return;
   }
@@ -2732,7 +2840,7 @@ watch(usePlainTextHighlighting, () => {
         ></textarea>
       </div>
 
-      <div v-else-if="viewMode === 'time-lapse'" class="h-full flex flex-col overflow-hidden">
+      <div v-else-if="viewMode === 'time-lapse'" class="h-full flex flex-col overflow-hidden relative">
         <div class="px-3 py-2 border-b border-[var(--diff-border)] bg-[var(--secondary)]/40 flex items-center justify-between gap-2">
           <div class="flex items-center gap-2 flex-wrap min-w-0">
             <div class="text-[11px] text-[var(--muted-foreground)]">
@@ -2753,6 +2861,7 @@ watch(usePlainTextHighlighting, () => {
             <button
               class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
               title="Previous frame"
+              :disabled="!timeLapseCanRetreat"
               @click="previousTimeLapseFrame"
             >
               <StepBack class="w-4 h-4" />
@@ -2768,12 +2877,34 @@ watch(usePlainTextHighlighting, () => {
             <button
               class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
               title="Next frame"
+              :disabled="!timeLapseCanAdvance"
               @click="nextTimeLapseFrame"
             >
               <StepForward class="w-4 h-4" />
             </button>
           </div>
         </div>
+
+        <button
+          v-if="showTimeLapseOverview"
+          class="file-diff-overview file-diff-overview-time-lapse"
+          type="button"
+          title="Jump through timeline frames"
+          :style="{ top: '12px' }"
+          @click="jumpToFileDiffPosition"
+        >
+          <span
+            v-for="(segment, idx) in fileDiffOverviewSegments"
+            :key="`timeline-overview-${idx}`"
+            class="file-diff-overview-segment"
+            :class="segment.type === 'addition' ? 'file-diff-overview-segment-add' : 'file-diff-overview-segment-del'"
+            :style="{ top: `${segment.topPercent}%`, height: `${segment.heightPercent}%` }"
+          />
+          <span
+            class="file-diff-overview-viewport"
+            :style="{ top: `${fileDiffOverviewViewport.topPercent}%`, height: `${fileDiffOverviewViewport.heightPercent}%` }"
+          />
+        </button>
 
         <div v-if="timeLapseLoading" class="flex-1 flex items-center justify-center">
           <div class="time-lapse-loader-shell">
@@ -2795,7 +2926,7 @@ watch(usePlainTextHighlighting, () => {
               {{ activeTimeLapseFrame.shortSha }} by {{ activeTimeLapseFrame.author }} • {{ formatTimeLapseTimestamp(activeTimeLapseFrame.timestamp) }}
             </div>
           </div>
-          <div class="flex-1 overflow-auto">
+          <div ref="timeLapseScrollContainer" class="flex-1 overflow-auto time-lapse-scroll-container" @scroll="onFileDiffScroll">
             <div v-if="activeTimeLapseRenderLines.length === 0" class="h-full flex items-center justify-center text-[var(--muted-foreground)] text-sm">
               No timeline content available for this frame.
             </div>
@@ -2828,6 +2959,9 @@ watch(usePlainTextHighlighting, () => {
           </div>
           <div class="px-3 py-1.5 border-t border-[var(--diff-border)] bg-[var(--secondary)]/40 text-[10px] text-[var(--muted-foreground)]">
             Frame {{ Math.min(timeLapseFrameIndex + 1, timeLapseFrames.length) }} / {{ timeLapseFrames.length }} • scanned last {{ timeLapseCommitWindowSafe }} commits
+          </div>
+          <div class="h-1 bg-[var(--secondary)]/70">
+            <div class="h-full bg-[var(--primary)]/70 transition-[width] duration-300" :style="{ width: `${timeLapseProgressPercent}%` }" />
           </div>
         </div>
       </div>
@@ -2893,6 +3027,33 @@ watch(usePlainTextHighlighting, () => {
   height: 54px;
   object-fit: contain;
   filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--foreground) 16%, transparent));
+}
+
+.time-lapse-scroll-container {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(139, 92, 246, 0.55) rgba(139, 92, 246, 0.08);
+  scrollbar-gutter: stable;
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar-track {
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.52);
+  border-radius: 999px;
+  border: 2px solid rgba(0, 0, 0, 0);
+  background-clip: padding-box;
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.7);
+  background-clip: padding-box;
 }
 
 @keyframes loaderFloat {
@@ -2967,6 +3128,12 @@ watch(usePlainTextHighlighting, () => {
   overflow: hidden;
   cursor: pointer;
   z-index: 32;
+}
+
+.file-diff-overview-time-lapse {
+  z-index: 60;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--foreground) 16%, transparent);
 }
 
 .file-diff-overview-segment {
