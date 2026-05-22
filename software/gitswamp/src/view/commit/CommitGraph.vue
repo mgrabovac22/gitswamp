@@ -1045,6 +1045,20 @@ function onFocusSearchShortcut() {
   searchInputEl.value?.select();
 }
 
+function onFocusSelectedCommitShortcut() {
+  const selectedSha = props.selected?.sha;
+  if (!selectedSha) {
+    return;
+  }
+
+  nextTick(() => {
+    const el = document.getElementById(`commit-row-${selectedSha}`);
+    if (el) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  });
+}
+
 function isEditableTarget(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
   if (!element) return false;
@@ -1132,7 +1146,7 @@ function handleGraphSelectionArrowKey(event: KeyboardEvent): boolean {
 
     if (scrollContainer.value) {
       const wc = scrollContainer.value;
-      const desired = Math.max(0, (idx * rowHeight) - (wc.clientHeight / 2));
+      const desired = Math.max(0, (idx * rowHeight.value) - (wc.clientHeight / 2));
       wc.scrollTo({ top: desired, behavior: "smooth" });
     }
   });
@@ -1249,6 +1263,7 @@ onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.addEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
+  globalThis.addEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
   updateCompactWorkingLabel();
   if (scrollContainer.value) {
@@ -1265,6 +1280,7 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.removeEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
+  globalThis.removeEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
 });
 </script>
@@ -1493,11 +1509,10 @@ onUnmounted(() => {
           :key="item.node.commit.sha"
           :id="`commit-row-${item.node.commit.sha}`"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
-          :class="isCommitSelected(item.node.commit.sha)
-            ? 'bg-[var(--primary)]/10'
-            : isSearchMatch(item.node.commit.sha)
-              ? 'search-hit-row hover:bg-[var(--primary)]/10'
-              : 'hover:bg-[var(--secondary)]'"
+          :class="[
+            isSearchMatch(item.node.commit.sha) ? 'search-hit-row hover:bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]',
+            isCommitSelected(item.node.commit.sha) ? 'selected-commit-row' : '',
+          ]"
           :style="{ top: (item.idx * rowHeight + wcOffset) + 'px', height: rowHeight + 'px' }"
           @click="onCommitClick($event, item.node.commit)"
           @contextmenu="onCtx($event, item.node.commit)"
@@ -1986,6 +2001,33 @@ onUnmounted(() => {
 
 .search-hit-row {
   background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+
+.selected-commit-row {
+  position: relative;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  animation: selectedCommitPulse 1.6s ease-in-out infinite;
+}
+
+.selected-commit-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--primary) 100%, white 0%), color-mix(in srgb, var(--primary) 70%, transparent));
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+@keyframes selectedCommitPulse {
+  0% {
+    background: color-mix(in srgb, var(--primary) 10%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--primary) 16%, transparent);
+  }
 }
 
 .stash-badge {

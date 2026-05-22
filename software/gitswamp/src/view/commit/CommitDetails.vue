@@ -1929,7 +1929,7 @@ onUnmounted(() => {
               :key="f.path"
               :data-commit-file-path="f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
-              :class="selectedChangePath === f.path ? 'bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/20' : ''"
+              :class="selectedChangePath === f.path ? 'bg-[var(--primary)]/10' : ''"
               @click="openDiff(f.path, isMultiCommitSelection ? (f.commit_shas?.[0] || primaryCommitShaForDiff) : commit!.sha, false)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >

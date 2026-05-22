@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2 } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
@@ -226,6 +226,29 @@ const rawDiffFallbackActive = ref(false);
 const rawDiffFallbackReason = ref<string | null>(null);
 let diffColoringDeadline = 0;
 let diffFallbackNotified = false;
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+
+  const tag = element.tagName.toLowerCase();
+  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select" || tag === "option";
+}
+
+function dispatchFocusSelectedCommit() {
+  globalThis.dispatchEvent(new Event("gitswamp-focus-selected-commit"));
+}
+
+function handleGlobalKeyDown(event: KeyboardEvent) {
+  if (event.key !== "ArrowLeft" || isInteractiveTarget(event.target) || viewMode.value === "edit") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  emit("close");
+  dispatchFocusSelectedCommit();
+}
 
 function resetDiffColoringBudget() {
   diffColoringDeadline = Date.now() + DIFF_COLORING_TIMEOUT_MS;
@@ -645,9 +668,6 @@ watch(viewMode, (mode) => {
     loadFileForEdit();
   } else if (mode === "file-diff") {
     loadFileContentAsync();
-    void nextTick(() => {
-      syncFileDiffViewportMetrics();
-    });
   } else if (mode === "time-lapse") {
     void loadTimeLapseFrames();
   } else {
@@ -665,7 +685,6 @@ watch([() => timeLapseFrameIndex.value, () => viewMode.value], async () => {
   const frame = activeTimeLapseFrame.value;
   if (!frame) return;
 
-  await nextTick();
   scrollToTimeLapseFrame(frame);
 });
 
@@ -746,8 +765,6 @@ async function loadFileContentAsync(forceRefresh = false) {
     if (loadSequence !== fileContentLoadSequence) return;
     fileContent.value = loadedContent;
     
-    // Allow UI to update
-    await nextTick();
     await new Promise(resolve => requestAnimationFrame(resolve));
     if (loadSequence !== fileContentLoadSequence) return;
   } catch (e) {
@@ -1101,6 +1118,7 @@ onMounted(() => {
   cacheCleanupInterval = setInterval(() => {
     pruneDiffViewerCaches();
   }, CACHE_CLEANUP_INTERVAL_MS);
+  document.addEventListener("keydown", handleGlobalKeyDown, true);
   window.addEventListener("resize", syncFileDiffViewportMetrics);
 
   const enableBlameByDefault = isBlameByDefaultEnabled();
@@ -1121,6 +1139,7 @@ onUnmounted(() => {
     cacheCleanupInterval = null;
   }
 
+  document.removeEventListener("keydown", handleGlobalKeyDown, true);
   window.removeEventListener("resize", syncFileDiffViewportMetrics);
 
   stopFileWatch();
@@ -2890,7 +2909,6 @@ watch(usePlainTextHighlighting, () => {
           class="file-diff-overview file-diff-overview-time-lapse"
           type="button"
           title="Jump through timeline frames"
-          :style="{ top: '12px' }"
           @click="jumpToFileDiffPosition"
         >
           <span
@@ -2953,7 +2971,7 @@ watch(usePlainTextHighlighting, () => {
                 >
                   {{ linePrefix(line.type) }}
                 </div>
-                <pre class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden m-0 select-text"><code class="hljs bg-transparent">{{ line.content }}</code></pre>
+                <pre class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden m-0 select-text"><code class="hljs bg-transparent" v-html="getHighlightedLine(line.content, `time-lapse:${line.key}:${line.content}`)"></code></pre>
               </div>
             </div>
           </div>
@@ -3131,6 +3149,8 @@ watch(usePlainTextHighlighting, () => {
 }
 
 .file-diff-overview-time-lapse {
+  top: 85px;
+  right: 25px;
   z-index: 60;
   background: color-mix(in srgb, var(--card) 94%, transparent);
   box-shadow: 0 10px 24px color-mix(in srgb, var(--foreground) 16%, transparent);
