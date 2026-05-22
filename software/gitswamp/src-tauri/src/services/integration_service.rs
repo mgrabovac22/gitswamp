@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,35 @@ use crate::constants::CREATE_NO_WINDOW;
 pub struct IntegrationService;
 
 impl IntegrationService {
+    fn map_github_repo(item: &serde_json::Value, viewer_login: &str, is_public_search_result: bool) -> Option<GithubRepo> {
+        Some(GithubRepo {
+            full_name: item["full_name"].as_str()?.to_string(),
+            clone_url: item["clone_url"].as_str()?.to_string(),
+            description: item["description"].as_str().unwrap_or("").to_string(),
+            is_private: item["private"].as_bool().unwrap_or(false),
+            stars: item["stargazers_count"].as_u64().unwrap_or(0) as u32,
+            owner_login: item["owner"]["login"].as_str().unwrap_or("").to_string(),
+            owner_type: item["owner"]["type"].as_str().unwrap_or("User").to_string(),
+            viewer_login: viewer_login.to_string(),
+            is_public_search_result,
+        })
+    }
+
+    fn github_repo_matches_query(item: &serde_json::Value, query: &str) -> bool {
+        let normalized_query = query.trim().to_lowercase();
+        if normalized_query.is_empty() {
+            return true;
+        }
+
+        let full_name = item["full_name"].as_str().unwrap_or_default().to_lowercase();
+        let description = item["description"].as_str().unwrap_or_default().to_lowercase();
+        let owner_login = item["owner"]["login"].as_str().unwrap_or_default().to_lowercase();
+
+        full_name.contains(&normalized_query)
+            || description.contains(&normalized_query)
+            || owner_login.contains(&normalized_query)
+    }
+
     fn base64_encode(data: &[u8]) -> String {
         const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut result = String::new();
@@ -120,38 +150,64 @@ impl IntegrationService {
         (https_url, ssh_url)
     }
 
-    pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
-        let url = if query.is_empty() {
-            API_GITHUB_LIST_REPOS.to_string()
-        } else {
-            API_GITHUB_SEARCH_REPOS.replace("{}", &urlencoded(query))
-        };
-        let resp = ureq::get(&url)
+    pub fn search_github_repos(token: &str, query: &str, include_public: bool) -> Result<Vec<GithubRepo>, String> {
+        let viewer_resp = ureq::get(API_GITHUB_USER_PATH)
             .set("Authorization", &format!("Bearer {}", token))
             .set("Accept", GITHUB_ACCEPT_HEADER)
             .set("User-Agent", APP_USER_AGENT)
             .call()
             .map_err(|e| format!("GitHub API error: {}", e))?;
-        let body: serde_json::Value = resp
+        let viewer_body: serde_json::Value = viewer_resp
             .into_json()
             .map_err(|e| format!("JSON parse error: {}", e))?;
-        let items = if query.is_empty() {
-            body.as_array().cloned().unwrap_or_default()
-        } else {
-            body["items"].as_array().cloned().unwrap_or_default()
-        };
-        let repos = items
-            .iter()
-            .filter_map(|item| {
-                Some(GithubRepo {
-                    full_name: item["full_name"].as_str()?.to_string(),
-                    clone_url: item["clone_url"].as_str()?.to_string(),
-                    description: item["description"].as_str().unwrap_or("").to_string(),
-                    is_private: item["private"].as_bool().unwrap_or(false),
-                    stars: item["stargazers_count"].as_u64().unwrap_or(0) as u32,
-                })
-            })
-            .collect();
+        let viewer_login = viewer_body["login"].as_str().unwrap_or_default().to_string();
+
+        let accessible_resp = ureq::get(API_GITHUB_LIST_REPOS)
+            .set("Authorization", &format!("Bearer {}", token))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+        let accessible_body: serde_json::Value = accessible_resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        let accessible_items = accessible_body.as_array().cloned().unwrap_or_default();
+
+        let mut repos_by_name: HashMap<String, GithubRepo> = HashMap::new();
+
+        for item in accessible_items.iter().filter(|item| Self::github_repo_matches_query(item, query)) {
+            if let Some(repo) = Self::map_github_repo(item, &viewer_login, false) {
+                repos_by_name.insert(repo.full_name.clone(), repo);
+            }
+        }
+
+        if include_public && !query.trim().is_empty() {
+            let public_url = API_GITHUB_SEARCH_REPOS.replace("{}", &urlencoded(query.trim()));
+            let public_resp = ureq::get(&public_url)
+                .set("Authorization", &format!("Bearer {}", token))
+                .set("Accept", GITHUB_ACCEPT_HEADER)
+                .set("User-Agent", APP_USER_AGENT)
+                .call()
+                .map_err(|e| format!("GitHub API error: {}", e))?;
+            let public_body: serde_json::Value = public_resp
+                .into_json()
+                .map_err(|e| format!("JSON parse error: {}", e))?;
+            let public_items = public_body["items"].as_array().cloned().unwrap_or_default();
+
+            for item in public_items.iter().filter(|item| Self::github_repo_matches_query(item, query)) {
+                if let Some(repo) = Self::map_github_repo(item, &viewer_login, true) {
+                    repos_by_name.entry(repo.full_name.clone()).or_insert(repo);
+                }
+            }
+        }
+
+        let mut repos: Vec<GithubRepo> = repos_by_name.into_values().collect();
+        repos.sort_by(|left, right| {
+            left
+                .is_public_search_result
+                .cmp(&right.is_public_search_result)
+                .then_with(|| left.full_name.cmp(&right.full_name))
+        });
         Ok(repos)
     }
 

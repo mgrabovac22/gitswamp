@@ -1687,10 +1687,13 @@ function selectTab(id: string) {
 
 function closeTab(id: string) {
   const idx = tabs.value.findIndex((t) => t.id === id);
-  if (idx < 0 || tabs.value.length <= 1) return;
+  if (idx < 0) return;
+  if (!tabs.value[idx]?.repo && tabs.value.length <= 1) return;
   tabs.value.splice(idx, 1);
   if (activeTabId.value === id) {
-    activeTabId.value = tabs.value[Math.min(idx, tabs.value.length - 1)].id;
+    const nextTab = tabs.value[idx] || tabs.value[idx - 1] || tabs.value[0];
+    if (!nextTab) return;
+    activeTabId.value = nextTab.id;
     const active = tabs.value.find((t) => t.id === activeTabId.value);
     if (active?.path) git.openRepository(active.path);
   }

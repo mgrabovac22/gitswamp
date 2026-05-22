@@ -105,8 +105,8 @@ pub fn delete_tag(path: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn search_github_repos(token: String, query: String) -> Result<Vec<crate::models::GithubRepo>, String> {
-    crate::services::git_service::GitService::search_github_repos(&token, &query)
+pub fn search_github_repos(token: String, query: String, include_public: bool) -> Result<Vec<crate::models::GithubRepo>, String> {
+    crate::services::git_service::GitService::search_github_repos(&token, &query, include_public)
 }
 
 #[tauri::command]

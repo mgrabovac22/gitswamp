@@ -447,6 +447,48 @@ function dedupeOrganisationRepos(items: OrganisationRepoCandidate[]): Organisati
   return Array.from(merged.values());
 }
 
+function getOrganisationRepoSortRank(repo: OrganisationRepoCandidate, query: string): number {
+  const normalizedQuery = query.trim().toLowerCase();
+  const normalizedFullName = repo.fullName.toLowerCase();
+  const [ownerPart = "", repoPart = ""] = repo.fullName.split("/");
+  const normalizedOwnerPart = ownerPart.toLowerCase();
+  const normalizedRepoPart = repoPart.toLowerCase();
+
+  if (!normalizedQuery) {
+    return 2;
+  }
+
+  if (normalizedOwnerPart.includes(normalizedQuery)) {
+    return 0;
+  }
+
+  if (normalizedFullName.includes(normalizedQuery) || normalizedRepoPart.includes(normalizedQuery)) {
+    return 1;
+  }
+
+  return 2;
+}
+
+function sortOrganisationRepos(items: OrganisationRepoCandidate[], query: string): OrganisationRepoCandidate[] {
+  return [...items].sort((left, right) => {
+    const leftRank = getOrganisationRepoSortRank(left, query);
+    const rightRank = getOrganisationRepoSortRank(right, query);
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    if (left.provider !== right.provider) {
+      return left.provider.localeCompare(right.provider);
+    }
+
+    if (right.stars !== left.stars) {
+      return right.stars - left.stars;
+    }
+
+    return left.fullName.localeCompare(right.fullName);
+  });
+}
+
 function mappedOrganisationReposFromGithub(items: GithubRepo[]): OrganisationRepoCandidate[] {
   return items.map((repo) => ({
     id: `github:${repo.full_name}`,
@@ -510,7 +552,7 @@ async function searchSingleOrganisationProvider(provider: OrganisationProvider, 
   }
 
   if (provider === "github") {
-    const repos = await invoke<GithubRepo[]>("search_github_repos", { token, query });
+    const repos = await invoke<GithubRepo[]>("search_github_repos", { token, query, includePublic: true });
     return mappedOrganisationReposFromGithub(repos);
   }
 
@@ -595,7 +637,7 @@ async function searchOrganisationRepos(): Promise<void> {
       ? await searchAllOrganisationProviders(query)
       : await searchSingleOrganisationProvider(provider, query);
 
-    organisationRepos.value = repos.slice(0, 240);
+    organisationRepos.value = sortOrganisationRepos(repos, query).slice(0, 240);
   } catch (e) {
     organisationError.value = String(e);
     organisationRepos.value = [];

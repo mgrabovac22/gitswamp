@@ -2298,8 +2298,8 @@ impl GitService {
         RemoteService::reset_branch_to_remote(path, branch)
     }
 
-    pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
-        IntegrationService::search_github_repos(token, query)
+    pub fn search_github_repos(token: &str, query: &str, include_public: bool) -> Result<Vec<GithubRepo>, String> {
+        IntegrationService::search_github_repos(token, query, include_public)
     }
 
     pub fn search_gitlab_repos(domain: &str, token: &str, query: &str) -> Result<Vec<GitlabRepo>, String> {
