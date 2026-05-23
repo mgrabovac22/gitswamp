@@ -174,6 +174,7 @@ const selectedShaSet = computed(() => {
   return new Set<string>();
 });
 const hasCommitSelection = computed(() => selectedShaSet.value.size > 0);
+const hasMultiCommitSelection = computed(() => selectedShaSet.value.size > 1);
 
 function isCommitSelected(sha: string): boolean {
   return selectedShaSet.value.has(sha);
@@ -1511,7 +1512,9 @@ onUnmounted(() => {
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
           :class="[
             isSearchMatch(item.node.commit.sha) ? 'search-hit-row hover:bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]',
-            isCommitSelected(item.node.commit.sha) ? 'selected-commit-row' : '',
+            isCommitSelected(item.node.commit.sha)
+              ? (hasMultiCommitSelection ? 'selected-commit-row--multi' : 'selected-commit-row')
+              : '',
           ]"
           :style="{ top: (item.idx * rowHeight + wcOffset) + 'px', height: rowHeight + 'px' }"
           @click="onCommitClick($event, item.node.commit)"
@@ -2009,16 +2012,9 @@ onUnmounted(() => {
   animation: selectedCommitPulse 1.6s ease-in-out infinite;
 }
 
-.selected-commit-row::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--primary) 100%, white 0%), color-mix(in srgb, var(--primary) 70%, transparent));
-  opacity: 0.9;
-  pointer-events: none;
+.selected-commit-row--multi {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  animation: none;
 }
 
 @keyframes selectedCommitPulse {

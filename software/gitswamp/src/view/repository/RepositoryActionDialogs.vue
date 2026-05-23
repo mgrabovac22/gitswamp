@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { computed } from "vue";
+
 const props = defineProps<{
   showBranchDialog: boolean;
   newBranchName: string;
+  existingBranchNames?: string[];
   showStashDialog: boolean;
   stashMessage: string;
   showTagDialog: boolean;
@@ -45,6 +48,23 @@ const emit = defineEmits<{
   "submit:rebaseSkip": [];
   "submit:rebaseAbort": [];
 }>();
+
+const branchNameExists = computed(() => {
+  const candidate = props.newBranchName.trim().toLowerCase();
+  if (!candidate) {
+    return false;
+  }
+
+  return (props.existingBranchNames || []).some((branchName) => branchName.trim().toLowerCase() === candidate);
+});
+
+function submitBranch() {
+  if (!props.newBranchName.trim() || branchNameExists.value) {
+    return;
+  }
+
+  emit("submit:branch");
+}
 </script>
 
 <template>
@@ -56,12 +76,15 @@ const emit = defineEmits<{
         @input="emit('update:newBranchName', ($event.target as HTMLInputElement).value)"
         placeholder="Branch name..."
         class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
-        @keyup.enter="emit('submit:branch')"
+        @keyup.enter="submitBranch"
         autofocus
       />
+      <p v-if="branchNameExists" class="mb-4 text-[10px] text-[#f59e0b]">
+        Branch already exists. Choose a different name.
+      </p>
       <div class="flex justify-end gap-2">
         <button @click="emit('close:branch')" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
-        <button @click="emit('submit:branch')" :disabled="!props.newBranchName.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Create</button>
+        <button @click="submitBranch" :disabled="!props.newBranchName.trim() || branchNameExists" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Create</button>
       </div>
     </div>
   </div>

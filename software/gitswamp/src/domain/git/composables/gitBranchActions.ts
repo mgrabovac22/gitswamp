@@ -99,14 +99,18 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function createBranch(name: string, startPoint?: string) {
-    if (!state.repoPath.value) return;
+  async function createBranch(name: string, startPoint?: string): Promise<boolean> {
+    if (!state.repoPath.value) return false;
     try {
       state.loading.value = true;
       await callTauri("create_branch", { path: state.repoPath.value, name, startPoint: startPoint || null });
       await Promise.all([refresh.refreshBranches(), refresh.refreshCommits()]);
+      toast.success(startPoint ? `Branch "${name}" created at selected commit` : `Branch "${name}" created`);
+      return true;
     } catch (e) {
       state.error.value = String(e);
+      toast.error("Create branch failed: " + String(e));
+      return false;
     } finally {
       state.loading.value = false;
     }
@@ -217,7 +221,7 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     }
     if (source === target) {
       toast.info("Source and target branches are the same.");
-      return "error" as RebaseExecutionState;
+      return "error";
     }
 
     const sourceRef = sourceRemote ? `origin/${source}` : source;
@@ -237,7 +241,7 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
       toast.success(`Rebased ${source} onto ${target}`);
-      return "ok" as RebaseExecutionState;
+      return "ok";
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push(`$ git checkout ${source}\n$ git rebase ${target}\nError: ${e}`);
@@ -246,11 +250,11 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
       if (isRebaseConflictMessage(e)) {
         toast.warning("Rebase paused due to conflicts. Resolve files, then Continue/Skip/Abort.");
-        return "conflict" as RebaseExecutionState;
+        return "conflict";
       }
 
       toast.error("Rebase failed: " + String(e));
-      return "error" as RebaseExecutionState;
+      return "error";
     } finally {
       state.loading.value = false;
       if (loadingToastId !== null) {

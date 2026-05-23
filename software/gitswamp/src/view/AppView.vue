@@ -2393,8 +2393,8 @@ function handleTimeMachineBlame(sha: string) {
   setHistoryViewMode("time-machine");
 }
 
-function submitCreateBranch(name: string) {
-  submitCreateBranchFromDialog(name);
+async function submitCreateBranch(name: string) {
+  await submitCreateBranchFromDialog(name);
 }
 
 function handleStash() {
@@ -2498,13 +2498,14 @@ function handleCreateBranchAtCommit(sha: string) {
   showBranchDialog.value = true;
 }
 
-function submitCreateBranchFromDialog(name: string) {
-  if (branchAtSha.value) {
-    git.createBranch(name, branchAtSha.value);
-    branchAtSha.value = "";
-  } else {
-    git.createBranch(name);
+async function submitCreateBranchFromDialog(name: string) {
+  const startPoint = branchAtSha.value || undefined;
+  const created = await git.createBranch(name, startPoint);
+  if (!created) {
+    return;
   }
+
+  branchAtSha.value = "";
   showBranchDialog.value = false;
   newBranchName.value = "";
 }
@@ -2661,6 +2662,7 @@ const openReposList = computed(() =>
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"
       :new-branch-name="newBranchName"
+      :existing-branch-names="git.localBranches.value.map((branch: { name: string }) => branch.name)"
       :show-stash-dialog="showStashDialog"
       :stash-message="stashMessage"
       :show-tag-dialog="showTagDialog"
