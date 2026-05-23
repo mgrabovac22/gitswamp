@@ -16,6 +16,21 @@ impl RemoteService {
         GitRepository::get_git_path()
     }
 
+    fn local_tag_refspecs(repo: &git2::Repository) -> Result<Vec<String>, String> {
+        let mut refspecs = Vec::new();
+        let tag_names = repo.tag_names(None).map_err(|e| e.message().to_string())?;
+
+        for name in tag_names.iter().flatten() {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            refspecs.push(format!("refs/tags/{}:refs/tags/{}", trimmed, trimmed));
+        }
+
+        Ok(refspecs)
+    }
+
     fn push_unique_candidate(candidates: &mut Vec<String>, candidate: &str) {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -303,6 +318,7 @@ impl RemoteService {
         } else {
             format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
         };
+        let tag_refspecs = Self::local_tag_refspecs(&repo)?;
 
         let mut remote = repo
             .find_remote("origin")
@@ -334,13 +350,19 @@ impl RemoteService {
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 
-                    match temp_remote.push(&[&refspec], Some(&mut push_opts)) {
+                    let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
+                    push_refspecs.push(refspec.as_str());
+                    for tag_refspec in &tag_refspecs {
+                        push_refspecs.push(tag_refspec.as_str());
+                    }
+
+                    match temp_remote.push(&push_refspecs, Some(&mut push_opts)) {
                         Ok(_) => {
                             let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                             return Ok(if force {
-                                "Force push complete.".to_string()
+                                "Force push complete. Tags pushed too.".to_string()
                             } else {
-                                "Push complete.".to_string()
+                                "Push complete. Tags pushed too.".to_string()
                             });
                         }
                         Err(err) => {
@@ -360,14 +382,20 @@ impl RemoteService {
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
+        let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
+        push_refspecs.push(refspec.as_str());
+        for tag_refspec in &tag_refspecs {
+            push_refspecs.push(tag_refspec.as_str());
+        }
+
         remote
-            .push(&[&refspec], Some(&mut push_opts))
+            .push(&push_refspecs, Some(&mut push_opts))
             .map_err(|e| e.message().to_string())?;
 
         Ok(if force {
-            "Force push complete.".to_string()
+            "Force push complete. Tags pushed too.".to_string()
         } else {
-            "Push complete.".to_string()
+            "Push complete. Tags pushed too.".to_string()
         })
     }
 
@@ -505,6 +533,7 @@ impl RemoteService {
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let branch_name = head.shorthand().unwrap_or("main").to_string();
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+        let tag_refspecs = Self::local_tag_refspecs(&repo)?;
 
         let (name_part, domain) = if let Some((left, right)) = repo_name.rsplit_once('@') {
             let domain_part = right.trim().to_string();
@@ -663,14 +692,20 @@ impl RemoteService {
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
-        remote.push(&[&refspec], Some(&mut push_opts)).map_err(|e| {
+        let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
+        push_refspecs.push(refspec.as_str());
+        for tag_refspec in &tag_refspecs {
+            push_refspecs.push(tag_refspec.as_str());
+        }
+
+        remote.push(&push_refspecs, Some(&mut push_opts)).map_err(|e| {
             let msg = e.message().to_string();
             if msg.contains("status code: 404") {
                 return "Push failed with 404: repository not found or no access. For GitHub, create the repository first on GitHub (same username/repo) and verify token permissions (repo scope).".to_string();
             }
             msg
         })?;
-        Ok(format!("Push to {platform} completed."))
+        Ok(format!("Push to {platform} completed. Tags pushed too."))
     }
 
     pub fn check_origin(path: &str) -> Result<bool, String> {
