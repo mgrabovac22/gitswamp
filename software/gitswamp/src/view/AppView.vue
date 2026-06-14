@@ -1514,23 +1514,6 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
 }
 
 const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
-const linuxRuntimeClass = "gitswamp-linux";
-const runtimeUserAgent = (() => {
-  try {
-    return navigator.userAgent;
-  } catch {
-    return "";
-  }
-})();
-
-const runtimePlatform = (() => {
-  try {
-    return navigator.platform;
-  } catch {
-    return "";
-  }
-})();
-const isLinuxRuntime = /linux/i.test(runtimeUserAgent) || /linux/i.test(runtimePlatform);
 
 onMounted(() => {
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
@@ -2662,7 +2645,7 @@ const openReposList = computed(() =>
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"
       :new-branch-name="newBranchName"
-      :existing-branch-names="git.localBranches.value.map((branch: { name: string }) => branch.name)"
+      :existing-branch-names="git.localBranches.value.map((branch) => branch.name)"
       :show-stash-dialog="showStashDialog"
       :stash-message="stashMessage"
       :show-tag-dialog="showTagDialog"

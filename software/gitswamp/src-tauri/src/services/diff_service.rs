@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::constants::{CONFLICT_END, CONFLICT_MID, CONFLICT_START};
-use crate::models::{FileBlameLine, FileDiff};
+use crate::models::{DiffHunk, DiffLine, FileBlameLine, FileDiff};
 use crate::repositories::git_repository::GitRepository;
 use crate::services::helpers::extract_file_diff;
 
@@ -23,6 +23,67 @@ struct BlameCommitMeta {
 pub struct DiffService;
 
 impl DiffService {
+    fn build_untracked_file_diff(repo_root: &Path, file_path: &str) -> Result<FileDiff, String> {
+        let full_path = repo_root.join(file_path);
+        let content = std::fs::read(&full_path).map_err(|e| e.to_string())?;
+
+        if content.contains(&0) {
+            return Ok(FileDiff {
+                path: file_path.to_string(),
+                old_path: None,
+                status: "added".to_string(),
+                hunks: Vec::new(),
+                is_binary: true,
+            });
+        }
+
+        let content = match String::from_utf8(content) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(FileDiff {
+                    path: file_path.to_string(),
+                    old_path: None,
+                    status: "added".to_string(),
+                    hunks: Vec::new(),
+                    is_binary: true,
+                });
+            }
+        };
+
+        let lines: Vec<DiffLine> = content
+            .split_inclusive('\n')
+            .enumerate()
+            .map(|(idx, line)| DiffLine {
+                line_type: "addition".to_string(),
+                old_line_no: None,
+                new_line_no: Some((idx + 1) as u32),
+                content: line.to_string(),
+            })
+            .collect();
+
+        let new_lines = lines.len() as u32;
+        let hunks = if new_lines == 0 {
+            Vec::new()
+        } else {
+            vec![DiffHunk {
+                old_start: 0,
+                old_lines: 0,
+                new_start: 1,
+                new_lines,
+                header: format!("@@ -0,0 +1,{} @@", new_lines),
+                lines,
+            }]
+        };
+
+        Ok(FileDiff {
+            path: file_path.to_string(),
+            old_path: None,
+            status: "added".to_string(),
+            hunks,
+            is_binary: false,
+        })
+    }
+
     fn patch_side_path(prefix: &str, path: &str) -> String {
         if path == "/dev/null" {
             "/dev/null".to_string()
@@ -140,7 +201,18 @@ impl DiffService {
                 .map_err(|e| e.message().to_string())?
         };
 
-        extract_file_diff(&diff, file_path)
+        match extract_file_diff(&diff, file_path) {
+            Ok(file_diff) => Ok(file_diff),
+            Err(error) if !staged => {
+                let status = repo.status_file(Path::new(file_path)).map_err(|e| e.message().to_string())?;
+                if status.contains(git2::Status::WT_NEW) {
+                    Self::build_untracked_file_diff(Path::new(path), file_path)
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn get_commit_diff(path: &str, sha: &str, file_path: &str) -> Result<FileDiff, String> {

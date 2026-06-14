@@ -6,6 +6,7 @@ import { statusHash } from "./gitHelpers";
 
 export function createRefreshActions(state: GitState) {
   let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null;
+  let statusRequestId = 0;
 
   async function loadCommitsToCount(targetCount: number): Promise<boolean> {
     if (!state.repoPath.value || state.loadingMore.value) return false;
@@ -96,10 +97,15 @@ export function createRefreshActions(state: GitState) {
 
   async function refreshStatus() {
     if (!state.repoPath.value) return;
+    const requestId = ++statusRequestId;
+    const repoPath = state.repoPath.value;
     try {
-      state.fileStatuses.value = await callTauri<FileStatusInfo[]>("get_status", { path: state.repoPath.value });
-      state.lastStatusHash.value = statusHash(state.fileStatuses.value);
+      const result = await callTauri<FileStatusInfo[]>("get_status", { path: repoPath });
+      if (requestId !== statusRequestId || repoPath !== state.repoPath.value) return;
+      state.fileStatuses.value = result;
+      state.lastStatusHash.value = statusHash(result);
     } catch (e) {
+      if (requestId !== statusRequestId || repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
     }
   }

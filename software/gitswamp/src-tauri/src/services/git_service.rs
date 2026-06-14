@@ -2154,28 +2154,65 @@ impl GitService {
         GitRepository::git_cli(path, &["tag", "-d", name])
     }
 
-    pub fn discard_file(path: &str, file_path: &str) -> Result<(), String> {
-        let repo = GitRepository::open(path)?;
-        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+    fn remove_worktree_path(repo_root: &Path, file_path: &str) -> Result<(), String> {
+        let relative = Self::sanitize_relative_path(file_path)?;
+        let full = repo_root.join(relative);
+        if full.is_dir() {
+            std::fs::remove_dir_all(&full).map_err(|e| e.to_string())?;
+        } else if full.exists() {
+            std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn discard_file_with_statuses(
+        repo: &Repository,
+        repo_root: &Path,
+        statuses: &git2::Statuses<'_>,
+        file_path: &str,
+    ) -> Result<(), String> {
         let is_conflicted = statuses
             .iter()
             .any(|s| s.path() == Some(file_path) && s.status().is_conflicted());
         if is_conflicted {
-            return Self::resolve_conflict_file(path, file_path, "ours");
+            return Self::resolve_conflict_file(&repo_root.to_string_lossy(), file_path, "ours");
         }
+
         let is_untracked = statuses
             .iter()
             .any(|s| s.path() == Some(file_path) && s.status().contains(git2::Status::WT_NEW));
-        if is_untracked {
-            let full = Path::new(path).join(file_path);
-            std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+        let has_index_entry = repo
+            .index()
+            .map_err(|e| e.message().to_string())?
+            .get_path(Path::new(file_path), 0)
+            .is_some();
+
+        if is_untracked || !has_index_entry {
+            Self::remove_worktree_path(repo_root, file_path)?;
         } else {
-            repo.checkout_head(Some(
+            repo.checkout_index(None, Some(
                 git2::build::CheckoutBuilder::default()
                     .path(file_path)
                     .force(),
             ))
             .map_err(|e| e.message().to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn discard_file(path: &str, file_path: &str) -> Result<(), String> {
+        let repo = GitRepository::open(path)?;
+        let repo_root = Path::new(path);
+        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+        Self::discard_file_with_statuses(&repo, repo_root, &statuses, file_path)
+    }
+
+    pub fn discard_files(path: &str, file_paths: &[String]) -> Result<(), String> {
+        let repo = GitRepository::open(path)?;
+        let repo_root = Path::new(path);
+        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+        for file_path in file_paths {
+            Self::discard_file_with_statuses(&repo, repo_root, &statuses, file_path)?;
         }
         Ok(())
     }

@@ -62,14 +62,9 @@ pub async fn discard_file(path: String, file_path: String) -> Result<(), String>
 
 #[tauri::command]
 pub async fn discard_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        for file_path in file_paths {
-            GitService::discard_file(&path, &file_path)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || GitService::discard_files(&path, &file_paths))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
