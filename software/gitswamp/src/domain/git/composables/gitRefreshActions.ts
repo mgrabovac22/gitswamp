@@ -1,4 +1,5 @@
 import type { CommitFileInfo, CommitInfo, BranchInfo, FileStatusInfo, RepoInfo, StashInfo, TagInfo } from "@/types";
+import { RepositoryRefreshCoordinator, type RepositoryRefreshKind } from "@/app/refresh/RepositoryRefreshCoordinator";
 
 import { callTauri } from "./gitCall";
 import { PAGE_SIZE, type GitState } from "./gitState";
@@ -7,6 +8,7 @@ import { statusHash } from "./gitHelpers";
 export function createRefreshActions(state: GitState) {
   let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null;
   let statusRequestId = 0;
+  const coordinator = new RepositoryRefreshCoordinator();
 
   async function loadCommitsToCount(targetCount: number): Promise<boolean> {
     if (!state.repoPath.value || state.loadingMore.value) return false;
@@ -130,6 +132,7 @@ export function createRefreshActions(state: GitState) {
 
   async function refreshAll() {
     if (!state.repoPath.value) return;
+    coordinator.cancel();
     state.loading.value = true;
     try {
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
@@ -139,6 +142,24 @@ export function createRefreshActions(state: GitState) {
     } finally {
       state.loading.value = false;
     }
+  }
+
+  async function runCoordinatedRefresh(kinds: ReadonlySet<RepositoryRefreshKind>) {
+    const tasks: Promise<void>[] = [];
+    if (kinds.has("commits")) tasks.push(refreshCommits());
+    if (kinds.has("branches")) tasks.push(refreshBranches());
+    if (kinds.has("status")) tasks.push(refreshStatus());
+    if (kinds.has("stashes")) tasks.push(refreshStashes());
+    if (kinds.has("tags")) tasks.push(refreshTags());
+    await Promise.all(tasks);
+  }
+
+  function requestRefresh(kinds: RepositoryRefreshKind | RepositoryRefreshKind[]) {
+    coordinator.request(kinds, runCoordinatedRefresh);
+  }
+
+  function requestStatusValidation() {
+    requestRefresh("status");
   }
 
   async function getCommitFiles(sha: string) {
@@ -220,6 +241,8 @@ export function createRefreshActions(state: GitState) {
     refreshStashes,
     refreshTags,
     refreshAll,
+    requestRefresh,
+    requestStatusValidation,
     getCommitFiles,
     selectStash,
     clearStashSelection,

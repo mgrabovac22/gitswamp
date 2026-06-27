@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { Folder, Plus, X, Home, Menu, HelpCircle, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import type { RepoInfo } from "@/types";
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
@@ -19,12 +20,14 @@ interface MenuAction {
 const props = defineProps<{
   tabs: { id: string; repo: RepoInfo | null; label: string }[];
   activeTabId: string;
+  canReopenClosedTab?: boolean;
 }>();
 
 const emit = defineEmits<{
   selectTab: [id: string];
   closeTab: [id: string];
   newTab: [];
+  reopenClosedTab: [];
   openRepository: [];
   toggleTerminal: [];
   openSettings: [];
@@ -61,7 +64,7 @@ const sectionLabels: { id: MenuSection; label: string }[] = [
 const activeTab = computed(() => props.tabs.find((tab) => tab.id === props.activeTabId) ?? null);
 const hasActiveRepo = computed(() => !!activeTab.value?.repo);
 const activeRepoPath = computed(() => activeTab.value?.repo?.path ?? "");
-const canCloseActiveTab = computed(() => props.tabs.length > 1);
+const canCloseActiveTab = computed(() => props.tabs.length > 1 || !!activeTab.value?.repo);
 
 function toggleMenu() {
   menuOpen.value = !menuOpen.value;
@@ -130,6 +133,14 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Ctrl+W",
       disabled: !canCloseActiveTab.value,
       run: () => emit("closeTab", props.activeTabId),
+    },
+    {
+      id: "reopen-closed-tab",
+      label: "Reopen Closed Tab",
+      description: "Restore the most recently closed workspace tab.",
+      shortcut: "Ctrl+Shift+T",
+      disabled: !props.canReopenClosedTab,
+      run: () => emit("reopenClosedTab"),
     },
     {
       id: "create-gist",
@@ -310,13 +321,6 @@ function onWindowReposition() {
   updateMenuPosition();
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  const element = target as HTMLElement | null;
-  if (!element) return false;
-  const tag = element.tagName.toLowerCase();
-  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select";
-}
-
 function onGlobalKeyDown(event: KeyboardEvent) {
   if (event.key === "F1" && !isEditableTarget(event.target)) {
     event.preventDefault();
@@ -479,7 +483,9 @@ onUnmounted(() => {
             <div class="space-y-1.5 text-[11px]">
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open help and shortcuts</span><span class="text-[var(--muted-foreground)] font-mono">F1</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">New tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+T</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+O</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Close active tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+W</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Reopen closed tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+T</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Toggle terminal panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+`</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Refresh repository data</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in VS Code</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+O</span></div>

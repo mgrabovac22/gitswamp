@@ -2,9 +2,11 @@ import { useToast } from "@/shared/notifications/useToast";
 
 import { callTauri } from "./gitCall";
 import type { GitState } from "./gitState";
+import { markFilesStaged, markFilesUnstaged, removeUnstagedFiles } from "./gitStatusOptimisticUpdates";
 
 type RefreshDeps = {
   refreshStatus: () => Promise<void>;
+  requestStatusValidation: () => void;
   refreshCommits: () => Promise<void>;
   refreshBranches: () => Promise<void>;
 };
@@ -15,7 +17,8 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     if (!state.repoPath.value) return;
     try {
       await callTauri("stage_file", { path: state.repoPath.value, filePath });
-      await refresh.refreshStatus();
+      markFilesStaged(state, [filePath]);
+      refresh.requestStatusValidation();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -25,7 +28,8 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     if (!state.repoPath.value) return;
     try {
       await callTauri("unstage_file", { path: state.repoPath.value, filePath });
-      await refresh.refreshStatus();
+      markFilesUnstaged(state, [filePath]);
+      refresh.requestStatusValidation();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -37,7 +41,8 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       const filePaths = state.unstagedFiles.value.map((f) => f.path);
       if (!filePaths.length) return;
       await callTauri("stage_files", { path: state.repoPath.value, filePaths });
-      await refresh.refreshStatus();
+      markFilesStaged(state, filePaths);
+      refresh.requestStatusValidation();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -49,7 +54,8 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       const filePaths = state.stagedFiles.value.map((f) => f.path);
       if (!filePaths.length) return;
       await callTauri("unstage_files", { path: state.repoPath.value, filePaths });
-      await refresh.refreshStatus();
+      markFilesUnstaged(state, filePaths);
+      refresh.requestStatusValidation();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -69,7 +75,8 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     if (!state.repoPath.value) return;
     try {
       await callTauri("discard_file", { path: state.repoPath.value, filePath });
-      await refresh.refreshStatus();
+      removeUnstagedFiles(state, [filePath]);
+      refresh.requestStatusValidation();
     } catch (e) {
       state.error.value = String(e);
     }
@@ -81,7 +88,8 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       const filePaths = state.unstagedFiles.value.map((f) => f.path);
       if (!filePaths.length) return;
       await callTauri("discard_files", { path: state.repoPath.value, filePaths });
-      await refresh.refreshStatus();
+      removeUnstagedFiles(state, filePaths);
+      refresh.requestStatusValidation();
     } catch (e) {
       state.error.value = String(e);
     }

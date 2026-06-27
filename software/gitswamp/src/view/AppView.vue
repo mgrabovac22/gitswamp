@@ -12,14 +12,16 @@ import GhostBranchDialog from "@/view/repository/GhostBranchDialog.vue";
 import MultiPlatformPushDialog from "@/view/repository/MultiPlatformPushDialog.vue";
 import OptionsDialog from "@/view/shell/OptionsDialog.vue";
 import ToastContainer from "@/shared/ui/ToastContainer.vue";
-import {
-  applyAppPalettePreference,
-  applyThemeModePreference,
-  getStoredAppPalettePreference,
-  getStoredThemeModePreference,
-} from "@/shared/themePreferences";
+import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
+import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
+import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
+import { handleRepositoryTabShortcut } from "@/features/repository/tabs/repositoryTabShortcuts";
+import { useRepositoryTabs } from "@/features/repository/tabs/useRepositoryTabs";
+import { useRecentRepositories } from "@/features/repository/recent/useRecentRepositories";
+import { useAppLogs } from "@/features/shell/useAppLogs";
+import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
@@ -27,24 +29,47 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
-import type { RepoInfo, CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
+import type { CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 const git = useGit();
 const toast = useToast();
-
-function safeStorageGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeStorageSet(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {}
-}
+const {
+  generalFontSize,
+  commitNumeric,
+  applyGeneralFontSize,
+  applyCommitNumeric,
+} = useAppAppearance();
+const {
+  showLogsPanel,
+  appLogs,
+  userLogs,
+  errorLogs,
+  appendLog,
+  openLogsPanel,
+} = useAppLogs();
+const {
+  recentRepos,
+  addToRecent,
+  removeRecent,
+  clearRecent,
+} = useRecentRepositories();
+const {
+  tabs,
+  activeTabId,
+  isLanding,
+  canCloseActiveTab,
+  canReopenClosedTab,
+  openReposList,
+  restoreTabs,
+  selectTab,
+  closeTab,
+  newTab,
+  reopenClosedTab,
+  closeActiveTab,
+  setActiveTabRepository,
+} = useRepositoryTabs({
+  openRepository: (path) => git.openRepository(path),
+});
 
 const appWindow = (() => {
   try {
@@ -53,117 +78,6 @@ const appWindow = (() => {
     return null;
   }
 })();
-
-applyThemeModePreference(getStoredThemeModePreference());
-applyAppPalettePreference(getStoredAppPalettePreference());
-
-// Manage general font size and commit font scale with wider ranges and Ctrl+zoom support
-const generalFontSize = ref<number>(16);
-const MIN_FONT_SIZE = 10;
-const MAX_FONT_SIZE = 40;
-
-const COMMIT_SCALE_NAMES = ["tiny", "small", "medium", "largest", "huge", "xlarge", "xxlarge", "xxxlarge", "xxxxlarge"] as const;
-const commitNumeric = ref<number>(4); // range 0..8 -> maps to the named commit scale classes
-
-function applyGeneralFontSize(size: number) {
-  const clamped = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(size)));
-  generalFontSize.value = clamped;
-  document.documentElement.style.setProperty("--font-size", `${clamped}px`);
-  safeStorageSet("gitswamp-general-font-size", String(clamped));
-}
-
-function applyCommitNumeric(n: number) {
-  const clamped = Math.max(0, Math.min(8, Math.round(n)));
-  commitNumeric.value = clamped;
-  const name = COMMIT_SCALE_NAMES[clamped] as string;
-  document.documentElement.classList.remove(
-    "font-scale-tiny",
-    "font-scale-small",
-    "font-scale-medium",
-    "font-scale-largest",
-    "font-scale-huge",
-    "font-scale-xlarge",
-    "font-scale-xxlarge",
-    "font-scale-xxxlarge",
-    "font-scale-xxxxlarge",
-  );
-  document.documentElement.classList.add(`font-scale-${name}`);
-  safeStorageSet("gitswamp-font-size", name);
-}
-
-// Initialize from storage (legacy and new)
-const savedGeneralFontSize = safeStorageGet("gitswamp-general-font-size");
-if (savedGeneralFontSize) {
-  const parsedGeneral = Number.parseInt(savedGeneralFontSize, 10);
-  const generalSize = Number.isFinite(parsedGeneral) ? Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, parsedGeneral)) : 16;
-  applyGeneralFontSize(generalSize);
-} else {
-  const savedLegacyScale = safeStorageGet("gitswamp-font-size");
-  const legacyMap: Record<string, string> = {
-    tiny: "14px",
-    small: "16px",
-    medium: "18px",
-    largest: "22px",
-    huge: "24px",
-    large: "18px",
-  };
-  if (savedLegacyScale && legacyMap[savedLegacyScale]) {
-    const px = Number.parseInt(legacyMap[savedLegacyScale], 10) || 16;
-    applyGeneralFontSize(px);
-  } else {
-    applyGeneralFontSize(16);
-  }
-}
-
-const savedCommitScale = safeStorageGet("gitswamp-font-size");
-if (savedCommitScale && (COMMIT_SCALE_NAMES as readonly string[]).includes(savedCommitScale)) {
-  const idx = COMMIT_SCALE_NAMES.indexOf(savedCommitScale as any);
-  applyCommitNumeric(idx);
-} else {
-  applyCommitNumeric(4);
-}
-const savedCompact = safeStorageGet("gitswamp-compact-mode");
-if (savedCompact === "true") {
-  document.documentElement.classList.add("compact");
-}
-const savedDummyMode = safeStorageGet("gitswamp-dummy-mode");
-if (savedDummyMode === "true") {
-  document.documentElement.classList.add("dummy-mode");
-}
-const savedAvatars = safeStorageGet("gitswamp-show-avatars");
-if (savedAvatars === "false") {
-  document.documentElement.classList.add("hide-avatars");
-}
-const savedReducedMotion = safeStorageGet("gitswamp-reduced-motion");
-if (savedReducedMotion === "true") {
-  document.documentElement.classList.add("reduced-motion");
-}
-const savedWrapDiffLines = safeStorageGet("gitswamp-wrap-diff-lines");
-if (savedWrapDiffLines === "true") {
-  document.documentElement.classList.add("diff-wrap-lines");
-}
-const savedShowDiffLineNumbers = safeStorageGet("gitswamp-show-diff-line-numbers");
-if (savedShowDiffLineNumbers === "false") {
-  document.documentElement.classList.add("hide-diff-line-numbers");
-}
-
-const RESTORE_SESSION_KEY = "gitswamp-restore-session";
-
-function shouldRestoreSession(): boolean {
-  const saved = safeStorageGet(RESTORE_SESSION_KEY);
-  if (saved === null) {
-    safeStorageSet(RESTORE_SESSION_KEY, "true");
-    return true;
-  }
-  return saved === "true";
-}
-
-interface Tab {
-  id: string;
-  repo: RepoInfo | null;
-  label: string;
-  path: string;
-}
 
 type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
@@ -189,10 +103,6 @@ interface CloneProgressEventPayload {
   total_deltas: number;
 }
 
-const tabs = ref<Tab[]>([
-  { id: "landing", repo: null, label: "Start", path: "" },
-]);
-const activeTabId = ref("landing");
 const historyViewMode = ref<HistoryViewMode>("graph");
 const timeMachineFocusSha = ref<string | null>(null);
 const showCloneDialog = ref(false);
@@ -243,11 +153,6 @@ const pushPlatform = ref("");
 const pushUsername = ref("");
 const pushDomain = ref("");
 const detailsPanelCollapsed = ref(true);
-const showLogsPanel = ref(safeStorageGet("gitswamp-show-logs-panel") === "true");
-const appLogs = ref<string[]>([]);
-const userLogs = ref<string[]>([]);
-const errorLogs = ref<string[]>([]);
-const MAX_LOG_ROWS = 400;
 const openPullRequestBranches = ref<string[]>([]);
 const githubIssues = ref<IssueInfo[]>([]);
 const githubPullRequests = ref<PullRequestInfo[]>([]);
@@ -266,38 +171,6 @@ const authKeyNameInput = ref("gitswamp");
 const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
 let singleCommitLoadSha: string | null = null;
-
-function normalizeLogMessage(value: string): string {
-  const flattened = value.replace(/\s+/g, " ").trim();
-  if (flattened.length <= 240) {
-    return flattened;
-  }
-  return flattened.slice(0, 240) + "...";
-}
-
-function appendLog(target: "app" | "user" | "error", message: string) {
-  const row = `[${new Date().toLocaleTimeString()}] ${normalizeLogMessage(message)}`;
-  let bucket = appLogs;
-  if (target === "user") {
-    bucket = userLogs;
-  } else if (target === "error") {
-    bucket = errorLogs;
-  }
-  bucket.value.push(row);
-  if (bucket.value.length > MAX_LOG_ROWS) {
-    bucket.value.splice(0, bucket.value.length - MAX_LOG_ROWS);
-  }
-
-  invoke("append_app_log", {
-    channel: target,
-    message: row,
-  }).catch(() => {});
-}
-
-function openLogsPanel() {
-  showLogsPanel.value = true;
-  appendLog("user", "Opened logs panel.");
-}
 
 function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
   diffFilePath.value = filePath;
@@ -1348,13 +1221,6 @@ async function refreshCurrentRepo() {
   toast.success("Repository refreshed");
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  const element = target as HTMLElement | null;
-  if (!element) return false;
-  const tag = element.tagName.toLowerCase();
-  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select" || tag === "option";
-}
-
 function isAltOnlyShortcut(event: KeyboardEvent): boolean {
   return event.altKey && !event.ctrlKey && !event.shiftKey;
 }
@@ -1452,10 +1318,22 @@ function handleRepositoryDialogShortcut(event: KeyboardEvent, key: string): bool
     return true;
   }
 
+  if (event.ctrlKey && event.shiftKey && key === "r") {
+    event.preventDefault();
+    void refreshCurrentRepo();
+    return true;
+  }
+
   return false;
 }
 
 function handleRepositoryNavigationShortcut(event: KeyboardEvent, key: string): boolean {
+  if (event.ctrlKey && !event.shiftKey && key === "o") {
+    event.preventDefault();
+    void browseAndOpen();
+    return true;
+  }
+
   if (isAltOnlyShortcut(event) && key === "o") {
     event.preventDefault();
     void openRepoInExplorer();
@@ -1494,6 +1372,16 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
+  if (handleRepositoryTabShortcut(event, {
+    newTab,
+    closeActiveTab,
+    reopenClosedTab,
+    canCloseActiveTab: () => canCloseActiveTab.value,
+    canReopenClosedTab: () => canReopenClosedTab.value,
+  })) {
+    return;
+  }
+
   if (isEditableTarget(event.target)) {
     return;
   }
@@ -1513,8 +1401,6 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
   handleRepositoryShortcut(event, key);
 }
 
-const recentRepos = ref<{ name: string; path: string; branch: string; owner?: string }[]>([]);
-
 onMounted(() => {
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
   globalThis.addEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
@@ -1528,15 +1414,9 @@ onMounted(() => {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.tabs?.length) {
-          tabs.value = parsed.tabs;
-          activeTabId.value = parsed.activeTabId || tabs.value[0].id;
+          restoreTabs(parsed.tabs, parsed.activeTabId);
         }
       }
-    }
-
-    const savedRecent = safeStorageGet("gitswamp-recent");
-    if (savedRecent) {
-      recentRepos.value = JSON.parse(savedRecent);
     }
   } catch {}
 
@@ -1583,10 +1463,6 @@ watch(activeTabId, () => {
   showDiffViewer.value = false;
 });
 
-watch(showLogsPanel, (value) => {
-  safeStorageSet("gitswamp-show-logs-panel", String(value));
-});
-
 watch(() => git.error.value, (value) => {
   if (!value) return;
   appendLog("error", value);
@@ -1603,10 +1479,6 @@ watch(
     }
   },
 );
-
-watch(recentRepos, () => {
-  safeStorageSet("gitswamp-recent", JSON.stringify(recentRepos.value));
-}, { deep: true });
 
 watch(
   () => git.repoPath.value,
@@ -1657,49 +1529,13 @@ const selectedPullRequest = computed(() =>
   githubPullRequests.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
 );
 
-const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value));
-const isLanding = computed(() => !activeTab.value?.repo);
-
-function selectTab(id: string) {
-  activeTabId.value = id;
-  const tab = tabs.value.find((t) => t.id === id);
-  if (tab?.path) {
-    git.openRepository(tab.path);
-  }
-}
-
-function closeTab(id: string) {
-  const idx = tabs.value.findIndex((t) => t.id === id);
-  if (idx < 0) return;
-  if (!tabs.value[idx]?.repo && tabs.value.length <= 1) return;
-  tabs.value.splice(idx, 1);
-  if (activeTabId.value === id) {
-    const nextTab = tabs.value[idx] || tabs.value[idx - 1] || tabs.value[0];
-    if (!nextTab) return;
-    activeTabId.value = nextTab.id;
-    const active = tabs.value.find((t) => t.id === activeTabId.value);
-    if (active?.path) git.openRepository(active.path);
-  }
-}
-
-function newTab() {
-  const id = "tab-" + Date.now();
-  tabs.value.push({ id, repo: null, label: "Start", path: "" });
-  activeTabId.value = id;
-}
-
 async function openRepo(path: string) {
   try {
     await git.openRepository(path);
     if (git.repoInfo.value) {
       const repo = git.repoInfo.value;
       appendLog("user", `Opened repository: ${repo.path}`);
-      const tab = tabs.value.find((t) => t.id === activeTabId.value);
-      if (tab) {
-        tab.repo = repo;
-        tab.label = repo.name;
-        tab.path = repo.path;
-      }
+      setActiveTabRepository(repo);
       addToRecent(repo);
       git.selectedCommits.value = [];
       git.selectedCommitFiles.value = [];
@@ -1951,25 +1787,6 @@ async function generateAndPushGitlabKey() {
   } finally {
     authSubmitting.value = false;
   }
-}
-
-function addToRecent(repo: RepoInfo) {
-  const existing = recentRepos.value.findIndex((r) => r.path === repo.path);
-  if (existing >= 0) recentRepos.value.splice(existing, 1);
-  recentRepos.value.unshift({
-    name: repo.name,
-    path: repo.path,
-    branch: repo.current_branch,
-  });
-  if (recentRepos.value.length > 20) recentRepos.value.length = 20;
-}
-
-function removeRecent(path: string) {
-  recentRepos.value = recentRepos.value.filter((r) => r.path !== path);
-}
-
-function clearRecent() {
-  recentRepos.value = [];
 }
 
 function normalizeCommitSelectionPayload(payload: CommitSelectionPayload): { commit: CommitInfo | null; additive: boolean } {
@@ -2508,15 +2325,6 @@ function submitCreateTag() {
   tagAtSha.value = "";
 }
 
-const openReposList = computed(() =>
-  tabs.value
-    .filter((t) => t.repo)
-    .map((t) => ({
-      name: t.repo!.name,
-      path: t.repo!.path,
-      branch: t.repo!.current_branch,
-    }))
-);
 </script>
 
 <template>
@@ -2525,9 +2333,11 @@ const openReposList = computed(() =>
     <RepositoryTabs
       :tabs="tabs"
       :active-tab-id="activeTabId"
+      :can-reopen-closed-tab="canReopenClosedTab"
       @select-tab="selectTab"
       @close-tab="closeTab"
       @new-tab="newTab"
+      @reopen-closed-tab="reopenClosedTab"
       @open-repository="browseAndOpen"
       @toggle-terminal="toggleTerminalPanel"
       @set-history-view="setHistoryViewMode($event)"

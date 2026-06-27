@@ -39,6 +39,7 @@ const status = createStatusActions(
   state,
   {
     refreshStatus: refresh.refreshStatus,
+    requestStatusValidation: refresh.requestStatusValidation,
     refreshCommits: refresh.refreshCommits,
     refreshBranches: refresh.refreshBranches,
   },

@@ -1,21 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import FileDiffViewer from "@/shared/ui/FileDiffViewer.vue";
+import { computed, defineAsyncComponent } from "vue";
 import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
-import CommitProductivityPanel from "@/view/commit/CommitProductivityPanel.vue";
-import CommitTimeMachinePanel from "@/view/commit/CommitTimeMachinePanel.vue";
-import CommitConflictHeatmapPanel from "@/view/commit/CommitConflictHeatmapPanel.vue";
 import CommitDetails from "@/view/commit/CommitDetails.vue";
 import TerminalPanel from "@/view/shell/TerminalPanel.vue";
 import LogsPanel from "@/view/shell/LogsPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
-import RemoteInsightsPanel from "@/view/repository/RemoteInsightsPanel.vue";
+import { useResizableWorkspace } from "@/features/repository/workspace/useResizableWorkspace";
 import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
+
+const FileDiffViewer = defineAsyncComponent(() => import("@/shared/ui/FileDiffViewer.vue"));
+const CommitProductivityPanel = defineAsyncComponent(() => import("@/view/commit/CommitProductivityPanel.vue"));
+const CommitTimeMachinePanel = defineAsyncComponent(() => import("@/view/commit/CommitTimeMachinePanel.vue"));
+const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/commit/CommitConflictHeatmapPanel.vue"));
+const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository/RemoteInsightsPanel.vue"));
 
 const props = defineProps<{
   git: any;
@@ -103,124 +105,15 @@ const canAmendSelectedCommit = computed(() => {
   return selected.refs.some((ref: string) => ref === branch || ref === remoteBranch || ref.includes(headRef));
 });
 
-const SIDEBAR_WIDTH_KEY = "gitswamp-sidebar-width";
-const DETAILS_WIDTH_KEY = "gitswamp-details-width";
-const LOGS_WIDTH_KEY = "gitswamp-logs-width";
-const TERMINAL_HEIGHT_KEY = "gitswamp-terminal-height";
-const sidebarWidth = ref(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 224);
-const detailsWidth = ref(Number(localStorage.getItem(DETAILS_WIDTH_KEY)) || 320);
-const logsWidth = ref(Number(localStorage.getItem(LOGS_WIDTH_KEY)) || 360);
-const terminalHeight = ref(Number(localStorage.getItem(TERMINAL_HEIGHT_KEY)) || 240);
-const resizeTarget = ref<"sidebar" | "details" | "logs" | "terminal" | null>(null);
-const resizeStartX = ref(0);
-const resizeStartWidth = ref(0);
-const resizeStartY = ref(0);
-const resizeStartHeight = ref(0);
-const workspaceColumnRef = ref<HTMLElement | null>(null);
-
-const contentAreaStyle = computed(() => {
-  if (!props.showTerminal) return undefined;
-  return { height: `calc(100% - ${terminalHeight.value}px)` };
-});
-
-const terminalPanelStyle = computed(() => ({
-  height: `${terminalHeight.value}px`,
-}));
-
-function clampWidth(target: "sidebar" | "details" | "logs", width: number): number {
-  if (target === "sidebar") {
-    return Math.min(Math.max(width, 180), 420);
-  }
-
-  if (target === "logs") {
-    return Math.min(Math.max(width, 280), 720);
-  }
-
-  return Math.min(Math.max(width, 260), 700);
-}
-
-function clampTerminalHeight(height: number): number {
-  const containerHeight = workspaceColumnRef.value?.clientHeight ?? globalThis.innerHeight;
-  const maxHeight = Math.max(180, Math.floor(containerHeight * 0.7));
-  return Math.min(Math.max(height, 140), maxHeight);
-}
-
-function onWindowResize() {
-  terminalHeight.value = clampTerminalHeight(terminalHeight.value);
-}
-
-function beginResize(target: "sidebar" | "details" | "logs" | "terminal", event: MouseEvent) {
-  resizeTarget.value = target;
-
-  if (target === "terminal") {
-    resizeStartY.value = event.clientY;
-    resizeStartHeight.value = terminalHeight.value;
-    document.body.style.cursor = "row-resize";
-  } else {
-    resizeStartX.value = event.clientX;
-    if (target === "sidebar") {
-      resizeStartWidth.value = sidebarWidth.value;
-    } else if (target === "logs") {
-      resizeStartWidth.value = logsWidth.value;
-    } else {
-      resizeStartWidth.value = detailsWidth.value;
-    }
-    document.body.style.cursor = "col-resize";
-  }
-
-  document.body.style.userSelect = "none";
-}
-
-function onPointerMove(event: MouseEvent) {
-  if (!resizeTarget.value) return;
-
-  if (resizeTarget.value === "terminal") {
-    const deltaY = event.clientY - resizeStartY.value;
-    terminalHeight.value = clampTerminalHeight(resizeStartHeight.value - deltaY);
-    return;
-  }
-
-  const deltaX = event.clientX - resizeStartX.value;
-  if (resizeTarget.value === "sidebar") {
-    sidebarWidth.value = clampWidth("sidebar", resizeStartWidth.value + deltaX);
-  } else if (resizeTarget.value === "logs") {
-    logsWidth.value = clampWidth("logs", resizeStartWidth.value - deltaX);
-  } else {
-    detailsWidth.value = clampWidth("details", resizeStartWidth.value - deltaX);
-  }
-}
-
-function endResize() {
-  if (!resizeTarget.value) return;
-
-  if (resizeTarget.value === "terminal") {
-    localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight.value));
-  } else if (resizeTarget.value === "logs") {
-    localStorage.setItem(LOGS_WIDTH_KEY, String(logsWidth.value));
-  } else {
-    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
-    localStorage.setItem(DETAILS_WIDTH_KEY, String(detailsWidth.value));
-  }
-
-  resizeTarget.value = null;
-  document.body.style.cursor = "";
-  document.body.style.userSelect = "";
-}
-
-onMounted(() => {
-  terminalHeight.value = clampTerminalHeight(terminalHeight.value);
-  globalThis.addEventListener("mousemove", onPointerMove);
-  globalThis.addEventListener("mouseup", endResize);
-  globalThis.addEventListener("resize", onWindowResize);
-});
-
-onUnmounted(() => {
-  globalThis.removeEventListener("mousemove", onPointerMove);
-  globalThis.removeEventListener("mouseup", endResize);
-  globalThis.removeEventListener("resize", onWindowResize);
-  document.body.style.cursor = "";
-  document.body.style.userSelect = "";
-});
+const {
+  sidebarWidth,
+  detailsWidth,
+  logsWidth,
+  workspaceColumnRef,
+  contentAreaStyle,
+  terminalPanelStyle,
+  beginResize,
+} = useResizableWorkspace(() => props.showTerminal);
 
 function toggleDetailsPanel() {
   emit("update:detailsPanelCollapsed", !props.detailsPanelCollapsed);
