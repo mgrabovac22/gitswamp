@@ -26,7 +26,6 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
 import type { CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
@@ -71,15 +70,7 @@ const {
   openRepository: (path) => git.openRepository(path),
 });
 
-const appWindow = (() => {
-  try {
-    return getCurrentWindow();
-  } catch {
-    return null;
-  }
-})();
-
-type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -1050,23 +1041,13 @@ function stopAutoFetchTimer(): void {
 
 async function runBackgroundAutoFetch(): Promise<void> {
   const { enabled } = readAutoFetchSettings();
-  const activeRepoPath = git.repoPath.value;
-  if (!enabled || !activeRepoPath || autoFetchInFlight.value) {
+  if (!enabled || !git.repoPath.value || autoFetchInFlight.value) {
     return;
   }
 
   autoFetchInFlight.value = true;
   try {
-    await invoke<string>("fetch_all", {
-      path: activeRepoPath,
-      token: null,
-    });
-
-    await Promise.all([
-      git.refreshBranches(),
-      git.refreshCommits(),
-      git.refreshTags(),
-    ]);
+    await git.backgroundFetchAll();
   } catch {
     // Keep silent in background mode to avoid toast spam.
   } finally {
@@ -1089,6 +1070,7 @@ function restartAutoFetchTimer(): void {
 
 function handleAutoFetchSettingsChanged(): void {
   restartAutoFetchTimer();
+  void runBackgroundAutoFetch();
 }
 
 async function handlePull() {
@@ -1232,9 +1214,10 @@ function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
 
   const viewByKey: Partial<Record<string, HistoryViewMode>> = {
     "1": "graph",
-    "2": "productivity",
-    "3": "time-machine",
-    "4": "conflict-heatmap",
+    "2": "galaxy",
+    "3": "productivity",
+    "4": "time-machine",
+    "5": "conflict-heatmap",
   };
 
   const nextMode = viewByKey[key];
@@ -1425,13 +1408,6 @@ onMounted(() => {
     if (active?.path) {
       git.openRepository(active.path);
     }
-  }
-
-  if (appWindow) {
-    appWindow.maximize().catch(() => {});
-    setTimeout(() => {
-      appWindow.maximize().catch(() => {});
-    }, 120);
   }
 
   restartAutoFetchTimer();

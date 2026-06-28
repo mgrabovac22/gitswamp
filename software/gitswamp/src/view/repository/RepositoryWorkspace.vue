@@ -9,11 +9,12 @@ import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
 import { useResizableWorkspace } from "@/features/repository/workspace/useResizableWorkspace";
 import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
 
-type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 
 const FileDiffViewer = defineAsyncComponent(() => import("@/shared/ui/FileDiffViewer.vue"));
+const CommitGalaxyPanel = defineAsyncComponent(() => import("@/view/commit/CommitGalaxyPanel.vue"));
 const CommitProductivityPanel = defineAsyncComponent(() => import("@/view/commit/CommitProductivityPanel.vue"));
 const CommitTimeMachinePanel = defineAsyncComponent(() => import("@/view/commit/CommitTimeMachinePanel.vue"));
 const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/commit/CommitConflictHeatmapPanel.vue"));
@@ -269,6 +270,20 @@ function handleRefreshState() {
           @request-rebase="emit('requestRebase', $event)"
           @time-machine-blame="emit('timeMachineBlame', $event)"
           @jump-to-search-result="handleJumpToSearchResult($event)"
+        />
+
+        <CommitGalaxyPanel
+          v-else-if="props.historyViewMode === 'galaxy'"
+          class="flex-1"
+          :commits="props.git.displayedCommits.value"
+          :branches="props.git.branches.value"
+          :current-branch="props.git.currentBranch.value"
+          :selected-sha="props.git.selectedCommit.value?.sha || null"
+          :has-more="props.git.hasMoreCommits.value"
+          @close="emit('setHistoryView', 'graph')"
+          @load-more="props.git.loadMoreCommits()"
+          @load-all="props.git.loadAllCommits()"
+          @select="emit('selectCommit', $event)"
         />
 
         <CommitProductivityPanel

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Minimize2, Maximize2, X } from "lucide-vue-next";
+import { Minus, Square, X } from "lucide-vue-next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onMounted, onUnmounted, ref } from "vue";
 import titleLogo from "@/assets/logo_croc.png";
@@ -44,7 +44,7 @@ onUnmounted(() => {
 
 <template>
   <div
-    class="relative z-[50] h-8 bg-[var(--header-bg)] flex items-center justify-between px-2 border-b border-[var(--border)] select-none [app-region:drag] [-webkit-app-region:drag]"
+    class="relative z-[50] h-8 bg-[var(--header-bg)] flex items-center justify-between pl-2 pr-0 border-b border-[var(--border)] select-none [app-region:drag] [-webkit-app-region:drag]"
     data-tauri-drag-region
     @mousedown="onTitleBarMouseDown"
   >
@@ -57,30 +57,33 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="flex items-center gap-1">
+    <div class="flex h-full items-stretch [app-region:no-drag] [-webkit-app-region:no-drag]" data-no-window-drag="true">
       <button
+        type="button"
         @click="minimize"
         data-no-window-drag="true"
-        class="w-8 h-6 flex items-center justify-center rounded hover:bg-[var(--header-hover)] transition-all group [app-region:no-drag] [-webkit-app-region:no-drag]"
+        class="flex h-full w-11 items-center justify-center text-[var(--header-fg)]/80 transition-colors hover:bg-[var(--header-hover)] hover:text-[var(--header-fg)] [app-region:no-drag] [-webkit-app-region:no-drag]"
         title="Minimize"
       >
-        <Minimize2 class="w-3.5 h-3.5 text-[var(--header-fg)]/80 group-hover:text-[var(--header-fg)]" />
+        <Minus class="h-4 w-4" />
       </button>
       <button
+        type="button"
         @click="toggleMaximize"
         data-no-window-drag="true"
-        class="w-8 h-6 flex items-center justify-center rounded hover:bg-[var(--header-hover)] transition-all group [app-region:no-drag] [-webkit-app-region:no-drag]"
+        class="flex h-full w-11 items-center justify-center text-[var(--header-fg)]/80 transition-colors hover:bg-[var(--header-hover)] hover:text-[var(--header-fg)] [app-region:no-drag] [-webkit-app-region:no-drag]"
         title="Maximize"
       >
-        <Maximize2 class="w-3.5 h-3.5 text-[var(--header-fg)]/80 group-hover:text-[var(--header-fg)]" />
+        <Square class="h-3.5 w-3.5" />
       </button>
       <button
+        type="button"
         @click="close"
         data-no-window-drag="true"
-        class="w-8 h-6 flex items-center justify-center rounded hover:bg-[#ef4444] transition-all group [app-region:no-drag] [-webkit-app-region:no-drag]"
+        class="flex h-full w-11 items-center justify-center text-[var(--header-fg)]/80 transition-colors hover:bg-[#ef4444] hover:text-white [app-region:no-drag] [-webkit-app-region:no-drag]"
         title="Close"
       >
-        <X class="w-4 h-4 text-[var(--header-fg)]/80 group-hover:text-white" />
+        <X class="h-4 w-4" />
       </button>
     </div>
   </div>

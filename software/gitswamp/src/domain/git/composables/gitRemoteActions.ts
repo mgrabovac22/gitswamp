@@ -155,6 +155,28 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
+  async function backgroundFetchAll() {
+    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+
+    try {
+      await callTauri<string>("fetch_all", {
+        path: repoPath,
+        token: getTokenForUrl(state, getOriginUrl(state)),
+      });
+
+      if (state.repoPath.value !== repoPath) {
+        return;
+      }
+
+      await Promise.all([refresh.refreshBranches(), refresh.refreshCommits(), refresh.refreshTags()]);
+      state.error.value = null;
+    } catch (e) {
+      const errorMsg = String(e);
+      state.error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
+    }
+  }
+
   async function deleteRemoteBranch(branch: string) {
     if (!state.repoPath.value) return;
     try {
@@ -267,6 +289,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     pull,
     push,
     fetchAll,
+    backgroundFetchAll,
     deleteRemoteBranch,
     setUpstream,
     resetBranchToRemote,

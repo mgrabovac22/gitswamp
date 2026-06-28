@@ -245,6 +245,7 @@ export function useGit() {
     refreshTags: refresh.refreshTags,
     refreshAll: refreshAllWithGhost,
     loadMoreCommits: refresh.loadMoreCommits,
+    loadAllCommits: refresh.loadAllCommits,
     ensureCommitLoaded: refresh.ensureCommitLoaded,
     getCommitFiles: refresh.getCommitFiles,
 
@@ -273,6 +274,7 @@ export function useGit() {
     pushToMultiplePlatforms: remote.pushToMultiplePlatforms,
     checkOriginExists: remote.checkOriginExists,
     fetchAll: remote.fetchAll,
+    backgroundFetchAll: remote.backgroundFetchAll,
     deleteRemoteBranch: remote.deleteRemoteBranch,
     setUpstream: remote.setUpstream,
     resetBranchToRemote: remote.resetBranchToRemote,

@@ -58,6 +58,14 @@ export function createRefreshActions(state: GitState) {
     }, 50);
   }
 
+  async function loadAllCommits(maxCount = 50000) {
+    if (!state.repoPath.value || state.loadingMore.value) return;
+    await loadCommitsToCount(maxCount);
+    if (state.commits.value.length >= maxCount) {
+      state.hasMoreCommits.value = false;
+    }
+  }
+
   async function doLoadMoreCommits() {
     if (!state.repoPath.value || !state.hasMoreCommits.value || state.loadingMore.value) return;
 
@@ -236,6 +244,7 @@ export function createRefreshActions(state: GitState) {
   return {
     refreshCommits,
     loadMoreCommits,
+    loadAllCommits,
     refreshBranches,
     refreshStatus,
     refreshStashes,

@@ -6,7 +6,7 @@ import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import type { RepoInfo } from "@/types";
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
-type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap";
 
 interface MenuAction {
   id: string;
@@ -194,10 +194,18 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       run: () => emit("setHistoryView", "graph"),
     },
     {
+      id: "view-galaxy",
+      label: "Galaxy View",
+      description: "Explore commits and branches as an interactive canvas galaxy.",
+      shortcut: "Alt+2",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "galaxy"),
+    },
+    {
       id: "view-productivity",
       label: "Productivity Arena",
       description: "Show commit activity and productivity analytics.",
-      shortcut: "Alt+2",
+      shortcut: "Alt+3",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "productivity"),
     },
@@ -205,7 +213,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       id: "view-time-machine",
       label: "Time Machine",
       description: "Navigate history frames and inspect repository state.",
-      shortcut: "Alt+3",
+      shortcut: "Alt+4",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "time-machine"),
     },
@@ -213,7 +221,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       id: "view-conflict-heatmap",
       label: "Usual Conflict Suspects",
       description: "Highlight merge hotspots and risky conflict areas.",
-      shortcut: "Alt+4",
+      shortcut: "Alt+5",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "conflict-heatmap"),
     },
@@ -472,6 +480,7 @@ onUnmounted(() => {
             <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Core Features</h4>
             <ul class="space-y-1 text-[11px] text-[var(--muted-foreground)]">
               <li>Graph panel: search, navigate matches, isolate branch history, drag and drop merge requests.</li>
+              <li>Galaxy view: zoom and pan a canvas map of loaded commits, branches and ancestry links.</li>
               <li>Repository sidebar: local and remote branches, stashes, tags, plus Create a Gist action.</li>
               <li>Right-click menus on commits and branches expose checkout, merge, reset, and branch operations.</li>
               <li>Terminal panel supports git aliases, quick actions, history, reverse search and open-tool commands.</li>
@@ -490,7 +499,8 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Refresh repository data</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in VS Code</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+O</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in folder explorer</span><span class="text-[var(--muted-foreground)] font-mono">Alt+O</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+4</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Galaxy View</span><span class="text-[var(--muted-foreground)] font-mono">Alt+2</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+5</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open integrations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+I</span></div>
