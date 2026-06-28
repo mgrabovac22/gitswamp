@@ -131,7 +131,7 @@ function actionButtonStyle(style?: ToastAction["style"]): Record<string, string>
           />
           <div class="flex-1 min-w-0">
             <p class="text-sm">{{ toast.message }}</p>
-            <p v-if="toast.detail" class="text-[11px] text-[var(--muted-foreground)] mt-1">
+            <p v-if="toast.detail" class="text-[11px] text-[var(--muted-foreground)] mt-1 whitespace-pre-line">
               {{ toast.detail }}
             </p>
             <div v-if="toast.type === 'progress'" class="mt-2">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { computed, ref, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -23,6 +23,8 @@ import {
   File,
   FolderTree,
   Files,
+  Hammer,
+  Map as MapIcon,
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
@@ -78,6 +80,11 @@ const emit = defineEmits<{
 
 const commitSummary = ref("");
 const commitDescription = ref("");
+const showCommitBuilder = ref(false);
+const commitBuilderType = ref("Fix");
+const commitBuilderScope = ref("");
+const commitBuilderSummary = ref("");
+const commitBuilderBody = ref("");
 const commitLintEngine = createCommitLintEngine();
 const commitAnalyzerSettings = ref(getStoredCommitAnalyzerSettings());
 const commitLintResult = ref<CommitLintResult | null>(null);
@@ -100,6 +107,13 @@ const copiedShaKey = ref<string | null>(null);
 const selectedChangePath = ref<string | null>(null);
 const commitFilesScrollContainer = ref<HTMLElement | null>(null);
 const fileNavigationMode = ref(false);
+const commitBuilderButtonRef = ref<HTMLElement | null>(null);
+const commitBuilderPanelRef = ref<HTMLElement | null>(null);
+const commitAnalyzerIndicatorRef = ref<HTMLElement | null>(null);
+const commitAnalyzerPanelRef = ref<HTMLElement | null>(null);
+const commitAnalyzerTooltipVisible = ref(false);
+const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "330px", zIndex: 2147483600 });
+const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
   closeFileContextMenu();
@@ -429,6 +443,131 @@ const commitLintIndicatorClass = computed(() => {
   }
   return "text-[var(--muted-foreground)] border-[var(--border)] bg-[var(--secondary)]";
 });
+
+const commitBuilderTypes = ["Fix", "Feat", "Refactor", "Docs", "Style", "Test", "Chore", "Perf", "Build", "Ci", "Revert"] as const;
+const commitBuilderScopes = computed(() => {
+  const scopes = [
+    stagedDiffSummary.value.inferred_scope,
+    "frontend",
+    "backend",
+    "git",
+    "ui",
+    "ux",
+    "shell",
+    "tabs",
+    "diff",
+    "commit",
+    "graph",
+    "galaxy",
+    "settings",
+    "state",
+    "repo",
+    "branch",
+    "stash",
+    "merge",
+    "rebase",
+    "remote",
+    "auth",
+    "api",
+    "data",
+    "cache",
+    "perf",
+    "memory",
+    "tests",
+    "docs",
+    "style",
+    "build",
+    "ci",
+    "deps",
+  ]
+    .map((scope) => scope.trim().toLowerCase())
+    .filter((scope) => scope.length > 0 && scope !== "general");
+  return Array.from(new Set(scopes));
+});
+
+const commitBuilderPreview = computed(() => {
+  const type = capitalizeCommitBuilderType(commitBuilderType.value.trim() || "Fix");
+  const scope = commitBuilderScope.value.trim();
+  const summary = commitBuilderSummary.value.trim() || commitSummary.value.trim() || "describe change";
+  return scope ? `${type}(${scope}): ${summary}` : `${type}: ${summary}`;
+});
+
+function capitalizeCommitBuilderType(type: string): string {
+  const trimmed = type.trim();
+  if (!trimmed) {
+    return "Fix";
+  }
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+}
+
+function updateFloatingPanelPosition(
+  anchor: HTMLElement | null,
+  panel: HTMLElement | null,
+  width: number,
+  fallbackHeight: number,
+  target: typeof commitBuilderPanelStyle,
+) {
+  if (!anchor) {
+    return;
+  }
+
+  const rect = anchor.getBoundingClientRect();
+  const viewportWidth = globalThis.innerWidth || document.documentElement.clientWidth || 1024;
+  const viewportHeight = globalThis.innerHeight || document.documentElement.clientHeight || 768;
+  const panelHeight = panel?.offsetHeight || fallbackHeight;
+  const left = Math.min(Math.max(8, rect.right - width), Math.max(8, viewportWidth - width - 8));
+  let top = rect.top - panelHeight - 8;
+
+  if (top < 8) {
+    top = Math.min(rect.bottom + 8, Math.max(8, viewportHeight - panelHeight - 8));
+  }
+
+  target.value = {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${width}px`,
+    zIndex: 2147483600,
+  };
+}
+
+function updateCommitFloatingPanels() {
+  if (showCommitBuilder.value) {
+    updateFloatingPanelPosition(commitBuilderButtonRef.value, commitBuilderPanelRef.value, 330, 310, commitBuilderPanelStyle);
+  }
+  if (commitAnalyzerTooltipVisible.value) {
+    updateFloatingPanelPosition(commitAnalyzerIndicatorRef.value, commitAnalyzerPanelRef.value, 270, 112, commitAnalyzerPanelStyle);
+  }
+}
+
+function showCommitAnalyzerTooltip() {
+  commitAnalyzerTooltipVisible.value = true;
+  void nextTick(updateCommitFloatingPanels);
+}
+
+function hideCommitAnalyzerTooltip() {
+  commitAnalyzerTooltipVisible.value = false;
+}
+
+function openCommitBuilder() {
+  commitBuilderType.value = capitalizeCommitBuilderType(commitBuilderType.value || "Fix");
+  commitBuilderScope.value = commitBuilderScope.value || stagedDiffSummary.value.inferred_scope || commitBuilderScopes.value[0] || "";
+  commitBuilderSummary.value = commitSummary.value;
+  commitBuilderBody.value = commitDescription.value;
+  showCommitBuilder.value = true;
+  void nextTick(updateCommitFloatingPanels);
+}
+
+function saveCommitBuilder() {
+  const summary = commitBuilderSummary.value.trim();
+  if (!summary) {
+    toast.error("Commit builder needs a short message.");
+    return;
+  }
+  commitSummary.value = commitBuilderPreview.value;
+  commitDescription.value = commitBuilderBody.value.trim();
+  showCommitBuilder.value = false;
+  queueCommitLintAnalysis();
+}
 
 function commitLintFindingClass(finding: CommitLintFinding): string {
   if (finding.severity === "error") {
@@ -833,7 +972,7 @@ function statusColor(status: string): string {
   }
 }
 
-type ChangesViewMode = "files" | "tree";
+type ChangesViewMode = "files" | "tree" | "map";
 
 interface TreeFileMeta {
   status: string;
@@ -857,7 +996,30 @@ interface ChangesTreeRow {
   depth: number;
 }
 
+interface ChangeMapFile {
+  path: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  conflicted: boolean;
+  additions: number;
+  deletions: number;
+}
+
+interface ChangeMapFolder {
+  path: string;
+  label: string;
+  depth: number;
+  fileCount: number;
+  stagedCount: number;
+  unstagedCount: number;
+  conflictCount: number;
+  additions: number;
+  deletions: number;
+}
+
 const changesViewMode = ref<ChangesViewMode>("files");
+const selectedChangeMapFolder = ref<string | null>(null);
 const showAllFilesInTree = ref(false);
 const commitTreePaths = ref<string[]>([]);
 const commitTreeLoading = ref(false);
@@ -1106,11 +1268,183 @@ function flattenTreeRows(nodes: ChangesTreeNode[], depth = 0, rows: ChangesTreeR
 
 const treeNodes = computed(() => buildChangesTree(treeSourcePaths.value, activeTreeMeta.value));
 const treeRows = computed(() => flattenTreeRows(treeNodes.value));
+const changeMapFiles = computed<ChangeMapFile[]>(() => {
+  const byPath = new Map<string, ChangeMapFile>();
+
+  const ensure = (path: string, status: string, additions = 0, deletions = 0) => {
+    const normalized = normalizeRepoPath(path);
+    if (!normalized) return null;
+    const existing = byPath.get(normalized);
+    if (existing) {
+      if (existing.status !== "conflicted" && status === "conflicted") {
+        existing.status = "conflicted";
+      } else if (existing.status === "modified" && status !== "modified") {
+        existing.status = status;
+      }
+      existing.additions += Math.max(0, additions);
+      existing.deletions += Math.max(0, deletions);
+      return existing;
+    }
+
+    const entry: ChangeMapFile = {
+      path: normalized,
+      status,
+      staged: false,
+      unstaged: false,
+      conflicted: false,
+      additions: Math.max(0, additions),
+      deletions: Math.max(0, deletions),
+    };
+    byPath.set(normalized, entry);
+    return entry;
+  };
+
+  if (props.isWorkingChanges) {
+    for (const file of props.unstagedFiles) {
+      const entry = ensure(file.path, file.conflicted ? "conflicted" : file.status);
+      if (!entry) continue;
+      entry.unstaged = true;
+      entry.conflicted = entry.conflicted || !!file.conflicted;
+    }
+    for (const file of props.stagedFiles) {
+      const entry = ensure(file.path, file.conflicted ? "conflicted" : file.status);
+      if (!entry) continue;
+      entry.staged = true;
+      entry.conflicted = entry.conflicted || !!file.conflicted;
+    }
+    for (const file of props.conflictFiles || []) {
+      const entry = ensure(file.path, "conflicted");
+      if (!entry) continue;
+      entry.unstaged = true;
+      entry.conflicted = true;
+    }
+    return Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  const sourceFiles = props.isStash ? (props.stashFiles || []) : props.commitFiles;
+  for (const file of sourceFiles) {
+    const entry = ensure(file.path, file.status, file.additions || 0, file.deletions || 0);
+    if (!entry) continue;
+    entry.staged = true;
+  }
+
+  return Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+});
+
+function directoryForPath(path: string): string {
+  const parts = normalizeRepoPath(path).split("/").filter(Boolean);
+  if (parts.length <= 1) return ".";
+  return parts.slice(0, -1).join("/");
+}
+
+function directoryChain(path: string): string[] {
+  const directory = directoryForPath(path);
+  if (directory === ".") return ["."];
+  const segments = directory.split("/");
+  const chain: string[] = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    chain.push(segments.slice(0, index + 1).join("/"));
+  }
+  return chain;
+}
+
+const changeMapFolders = computed<ChangeMapFolder[]>(() => {
+  const folders = new Map<string, ChangeMapFolder>();
+
+  for (const file of changeMapFiles.value) {
+    for (const folderPath of directoryChain(file.path)) {
+      const existing = folders.get(folderPath);
+      const folder = existing || {
+        path: folderPath,
+        label: folderPath === "." ? "root" : `${folderPath.split("/")[folderPath.split("/").length - 1] || folderPath}/`,
+        depth: folderPath === "." ? 0 : folderPath.split("/").length - 1,
+        fileCount: 0,
+        stagedCount: 0,
+        unstagedCount: 0,
+        conflictCount: 0,
+        additions: 0,
+        deletions: 0,
+      };
+
+      folder.fileCount += 1;
+      if (file.conflicted) {
+        folder.conflictCount += 1;
+      } else if (file.unstaged) {
+        folder.unstagedCount += 1;
+      } else if (file.staged) {
+        folder.stagedCount += 1;
+      }
+      folder.additions += file.additions;
+      folder.deletions += file.deletions;
+      folders.set(folderPath, folder);
+    }
+  }
+
+  return Array.from(folders.values()).sort((a, b) => {
+    if (a.path === ".") return -1;
+    if (b.path === ".") return 1;
+    const aParent = a.path.split("/").slice(0, -1).join("/");
+    const bParent = b.path.split("/").slice(0, -1).join("/");
+    return aParent.localeCompare(bParent) || a.depth - b.depth || a.path.localeCompare(b.path);
+  });
+});
+
+const maxChangeMapFolderFiles = computed(() =>
+  Math.max(1, ...changeMapFolders.value.map((folder) => folder.fileCount)),
+);
+
+const selectedChangeMapLabel = computed(() => {
+  if (!selectedChangeMapFolder.value) return "All changed files";
+  const folder = changeMapFolders.value.find((item) => item.path === selectedChangeMapFolder.value);
+  return folder?.path === "." ? "root" : folder?.path || "Folder";
+});
+
+const filteredChangeMapFiles = computed(() => {
+  const folder = selectedChangeMapFolder.value;
+  if (!folder) return changeMapFiles.value;
+  if (folder === ".") {
+    return changeMapFiles.value.filter((file) => directoryForPath(file.path) === ".");
+  }
+  return changeMapFiles.value.filter((file) => file.path.startsWith(`${folder}/`));
+});
+
+function setChangeMapFolder(folderPath: string | null) {
+  selectedChangeMapFolder.value = selectedChangeMapFolder.value === folderPath ? null : folderPath;
+}
+
+function changeMapFolderWidth(folder: ChangeMapFolder): string {
+  const percent = Math.max(8, (folder.fileCount / maxChangeMapFolderFiles.value) * 100);
+  return `${percent}%`;
+}
+
+function changeMapSegmentWidth(count: number, total: number): string {
+  if (total <= 0 || count <= 0) return "0%";
+  return `${Math.max(6, (count / total) * 100)}%`;
+}
+
+function openChangeMapFile(file: ChangeMapFile) {
+  if (props.isWorkingChanges) {
+    const meta = workingTreeMeta.value.get(file.path);
+    openDiff(file.path, null, meta ? !meta.hasUnstaged && meta.hasStaged : file.staged && !file.unstaged);
+    return;
+  }
+
+  if (props.isStash) {
+    return;
+  }
+
+  const targetSha = primaryCommitShaForDiff.value;
+  if (!targetSha) return;
+  openDiff(file.path, targetSha, false);
+}
 
 function setChangesViewMode(mode: ChangesViewMode) {
   changesViewMode.value = mode;
   if (mode !== "tree") {
     showAllFilesInTree.value = false;
+  }
+  if (mode !== "map") {
+    selectedChangeMapFolder.value = null;
   }
 }
 
@@ -1305,6 +1639,8 @@ async function openSelectedFileWithEditor(editorId: ExternalEditorId) {
 
 function handleGlobalKeyDown(event: KeyboardEvent) {
   if (event.key === "Escape") {
+    showCommitBuilder.value = false;
+    commitAnalyzerTooltipVisible.value = false;
     closeFileContextMenu();
     return;
   }
@@ -1340,6 +1676,8 @@ onMounted(() => {
   globalThis.addEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.addEventListener("keydown", handleGlobalKeyDown, true);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
+  globalThis.addEventListener("resize", updateCommitFloatingPanels);
+  globalThis.addEventListener("scroll", updateCommitFloatingPanels, true);
   globalThis.addEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
   updateCompactWorkingLabel();
 });
@@ -1421,6 +1759,12 @@ watch(
   { immediate: true },
 );
 
+watch(commitLintIndicator, (indicator) => {
+  if (indicator === "none") {
+    commitAnalyzerTooltipVisible.value = false;
+  }
+});
+
 onUnmounted(() => {
   if (commitLintTimer) {
     clearTimeout(commitLintTimer);
@@ -1433,6 +1777,8 @@ onUnmounted(() => {
   globalThis.removeEventListener("pointerdown", handleGlobalPointerDown);
   globalThis.removeEventListener("keydown", handleGlobalKeyDown, true);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
+  globalThis.removeEventListener("resize", updateCommitFloatingPanels);
+  globalThis.removeEventListener("scroll", updateCommitFloatingPanels, true);
   globalThis.removeEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
 });
 </script>
@@ -1489,6 +1835,13 @@ onUnmounted(() => {
                 @click="setChangesViewMode('tree')"
               >
                 <FolderTree class="w-3 h-3" />
+              </button>
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'map' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('map')"
+              >
+                <MapIcon class="w-3 h-3" />
               </button>
             </div>
           </div>
@@ -1709,7 +2062,7 @@ onUnmounted(() => {
 
         </template>
 
-        <template v-else>
+        <template v-else-if="changesViewMode === 'tree'">
           <div class="border-b border-[var(--border)]">
             <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)]">
               <span class="text-xs font-medium text-[var(--foreground)]">Changes tree</span>
@@ -1805,13 +2158,97 @@ onUnmounted(() => {
             </div>
           </div>
         </template>
+
+        <template v-else>
+          <div class="border-b border-[var(--border)]">
+            <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)]">
+              <div class="min-w-0">
+                <div class="text-xs font-medium text-[var(--foreground)]">File Change Map</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] truncate">
+                  {{ selectedChangeMapLabel }} · {{ filteredChangeMapFiles.length }} file{{ filteredChangeMapFiles.length === 1 ? "" : "s" }}
+                </div>
+              </div>
+              <button
+                v-if="selectedChangeMapFolder"
+                class="text-[10px] px-2 py-0.5 rounded border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]"
+                @click="setChangeMapFolder(null)"
+              >
+                Clear
+              </button>
+            </div>
+
+            <div v-if="changeMapFolders.length === 0" class="px-4 py-8 text-[11px] text-[var(--muted-foreground)] text-center">
+              No folders to map.
+            </div>
+
+            <div v-else class="px-3 py-2 space-y-1.5">
+              <button
+                v-for="folder in changeMapFolders"
+                :key="folder.path"
+                class="w-full rounded border px-2 py-1.5 text-left transition-colors"
+                :class="selectedChangeMapFolder === folder.path
+                  ? 'border-[var(--primary)]/55 bg-[var(--primary)]/12'
+                  : 'border-[var(--border)] bg-[var(--input-background)] hover:bg-[var(--secondary)]/55'"
+                @click="setChangeMapFolder(folder.path)"
+              >
+                <div class="flex items-center gap-2">
+                  <Folder class="w-3.5 h-3.5 flex-shrink-0 text-[var(--primary)]" />
+                  <span
+                    class="min-w-0 flex-1 truncate text-xs font-medium text-[var(--foreground)]"
+                    :style="{ paddingLeft: `${folder.depth * 10}px` }"
+                    :title="folder.path"
+                  >
+                    {{ folder.label }}
+                  </span>
+                  <span class="text-[10px] text-[var(--muted-foreground)]">{{ folder.fileCount }} file{{ folder.fileCount === 1 ? "" : "s" }}</span>
+                </div>
+                <div class="mt-1 flex h-1.5 overflow-hidden rounded bg-[var(--secondary)]">
+                  <div class="bg-[#ef4444]" :style="{ width: changeMapSegmentWidth(folder.conflictCount, folder.fileCount) }" />
+                  <div class="bg-[#f59e0b]" :style="{ width: changeMapSegmentWidth(folder.unstagedCount, folder.fileCount) }" />
+                  <div class="bg-[#10b981]" :style="{ width: changeMapSegmentWidth(folder.stagedCount, folder.fileCount) }" />
+                </div>
+                <div class="mt-1 h-1 rounded bg-[var(--secondary)]">
+                  <div class="h-full rounded bg-[var(--primary)]/55" :style="{ width: changeMapFolderWidth(folder) }" />
+                </div>
+              </button>
+            </div>
+
+            <div class="border-t border-[var(--border)]">
+              <div
+                v-for="file in filteredChangeMapFiles"
+                :key="'map-working-' + file.path"
+                class="group flex cursor-pointer items-center gap-2 px-4 py-1.5 transition-colors hover:bg-[var(--primary)]/6"
+                @click="openChangeMapFile(file)"
+                @contextmenu="openFileContextMenu($event, file.path)"
+              >
+                <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(file.status) }">{{ statusIcon(file.status) }}</span>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-xs text-[var(--foreground)]">{{ fileParts(file.path).fileName }}</div>
+                  <div class="truncate text-[10px] text-[var(--muted-foreground)]">{{ fileParts(file.path).directory || '.' }}</div>
+                </div>
+                <span v-if="file.conflicted" class="text-[10px] text-[#ef4444]">conflict</span>
+                <span v-else-if="file.unstaged" class="text-[10px] text-[#f59e0b]">unstaged</span>
+                <span v-else-if="file.staged" class="text-[10px] text-[#10b981]">staged</span>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
 
       <div class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0">
-        <div class="mb-2">
+        <div class="mb-2 relative">
           <div class="flex items-center justify-between mb-1 gap-2">
             <div class="text-[10px] font-medium text-[var(--muted-foreground)]">Subject</div>
             <div class="flex items-center gap-2">
+              <button
+                ref="commitBuilderButtonRef"
+                type="button"
+                class="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--input-background)] text-[var(--muted-foreground)] transition-colors hover:border-[var(--primary)]/45 hover:text-[var(--primary)]"
+                title="Visual commit builder"
+                @click="openCommitBuilder"
+              >
+                <Hammer class="h-3 w-3" />
+              </button>
               <span :class="[
                 'text-[10px] font-medium',
                 commitSummary.length > 72 ? 'text-[#ef4444]' : 'text-[var(--muted-foreground)]'
@@ -1821,32 +2258,22 @@ onUnmounted(() => {
 
               <div
                 v-if="commitAnalyzerSettings.enabled && commitLintIndicator !== 'none'"
-                class="relative group"
+                class="relative"
               >
                 <span
+                  ref="commitAnalyzerIndicatorRef"
                   :class="[
                     'inline-flex items-center justify-center w-4 h-4 rounded border text-[10px] font-bold cursor-help',
                     commitLintIndicatorClass,
                   ]"
+                  @mouseenter="showCommitAnalyzerTooltip"
+                  @mouseleave="hideCommitAnalyzerTooltip"
+                  @focus="showCommitAnalyzerTooltip"
+                  @blur="hideCommitAnalyzerTooltip"
+                  tabindex="0"
                 >
                   {{ commitLintIndicator === 'error' ? 'X' : '!' }}
                 </span>
-
-                <div class="hidden group-hover:block absolute right-0 top-[calc(100%+6px)] z-40 w-[270px] rounded-md border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-xl">
-                  <div class="text-[11px] font-semibold text-[var(--foreground)] mb-1">Commit checks</div>
-                  <div v-if="commitLintLoading" class="text-[10px] text-[var(--muted-foreground)]">Analyzing staged diff...</div>
-                  <div v-else class="space-y-1">
-                    <div
-                      v-for="finding in commitLintTooltipFindings"
-                      :key="finding.id"
-                      class="flex items-start gap-1.5 text-[10px]"
-                      :class="commitLintFindingClass(finding)"
-                    >
-                      <span class="w-8 text-center font-semibold">{{ finding.severity === 'error' ? 'ERR' : 'WARN' }}</span>
-                      <span class="flex-1 leading-snug">{{ finding.message }}</span>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -1918,6 +2345,13 @@ onUnmounted(() => {
               >
                 <FolderTree class="w-3 h-3" />
               </button>
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'map' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('map')"
+              >
+                <MapIcon class="w-3 h-3" />
+              </button>
             </div>
           </div>
         </div>
@@ -1954,7 +2388,7 @@ onUnmounted(() => {
           </div>
         </template>
 
-        <template v-else>
+        <template v-else-if="changesViewMode === 'tree'">
           <div v-if="showAllFilesInTree && commitTreeLoading" class="px-3 py-2 text-[10px] text-[var(--muted-foreground)] border-b border-[var(--border)]">
             Loading full commit tree...
           </div>
@@ -2023,6 +2457,80 @@ onUnmounted(() => {
               <FileText class="w-6 h-6 text-[var(--muted-foreground)] opacity-40" />
             </div>
             <p class="text-xs text-[var(--muted-foreground)]">No file changes</p>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="border-b border-[var(--border)]">
+            <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)]">
+              <div class="min-w-0">
+                <div class="text-xs font-medium text-[var(--foreground)]">File Change Map</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] truncate">
+                  {{ selectedChangeMapLabel }} · {{ filteredChangeMapFiles.length }} file{{ filteredChangeMapFiles.length === 1 ? "" : "s" }}
+                </div>
+              </div>
+              <button
+                v-if="selectedChangeMapFolder"
+                class="text-[10px] px-2 py-0.5 rounded border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]"
+                @click="setChangeMapFolder(null)"
+              >
+                Clear
+              </button>
+            </div>
+
+            <div v-if="changeMapFolders.length === 0" class="px-4 py-8 text-[11px] text-[var(--muted-foreground)] text-center">
+              No folders to map.
+            </div>
+
+            <div v-else class="px-3 py-2 space-y-1.5">
+              <button
+                v-for="folder in changeMapFolders"
+                :key="folder.path"
+                class="w-full rounded border px-2 py-1.5 text-left transition-colors"
+                :class="selectedChangeMapFolder === folder.path
+                  ? 'border-[var(--primary)]/55 bg-[var(--primary)]/12'
+                  : 'border-[var(--border)] bg-[var(--input-background)] hover:bg-[var(--secondary)]/55'"
+                @click="setChangeMapFolder(folder.path)"
+              >
+                <div class="flex items-center gap-2">
+                  <Folder class="w-3.5 h-3.5 flex-shrink-0 text-[var(--primary)]" />
+                  <span
+                    class="min-w-0 flex-1 truncate text-xs font-medium text-[var(--foreground)]"
+                    :style="{ paddingLeft: `${folder.depth * 10}px` }"
+                    :title="folder.path"
+                  >
+                    {{ folder.label }}
+                  </span>
+                  <span class="text-[10px] text-[var(--muted-foreground)]">{{ folder.fileCount }} file{{ folder.fileCount === 1 ? "" : "s" }}</span>
+                </div>
+                <div class="mt-1 h-1 rounded bg-[var(--secondary)]">
+                  <div class="h-full rounded bg-[var(--primary)]/55" :style="{ width: changeMapFolderWidth(folder) }" />
+                </div>
+                <div v-if="folder.additions || folder.deletions" class="mt-1 flex gap-2 text-[10px] font-mono">
+                  <span v-if="folder.additions" class="text-[#10b981]">+{{ folder.additions }}</span>
+                  <span v-if="folder.deletions" class="text-[#ef4444]">-{{ folder.deletions }}</span>
+                </div>
+              </button>
+            </div>
+
+            <div class="border-t border-[var(--border)]">
+              <div
+                v-for="file in filteredChangeMapFiles"
+                :key="'map-commit-' + file.path"
+                class="group flex cursor-pointer items-center gap-2 px-4 py-1.5 transition-colors hover:bg-[var(--primary)]/6"
+                :class="selectedChangePath === file.path ? 'bg-[var(--primary)]/10' : ''"
+                @click="openChangeMapFile(file)"
+                @contextmenu="openFileContextMenu($event, file.path)"
+              >
+                <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(file.status) }">{{ statusIcon(file.status) }}</span>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-xs text-[var(--foreground)]">{{ fileParts(file.path).fileName }}</div>
+                  <div class="truncate text-[10px] text-[var(--muted-foreground)]">{{ fileParts(file.path).directory || '.' }}</div>
+                </div>
+                <span v-if="file.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ file.additions }}</span>
+                <span v-if="file.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ file.deletions }}</span>
+              </div>
+            </div>
           </div>
         </template>
       </div>
@@ -2239,6 +2747,13 @@ onUnmounted(() => {
               >
                 <FolderTree class="w-3 h-3" />
               </button>
+              <button
+                class="h-6 px-2 rounded text-[10px] font-medium transition-colors flex items-center gap-1"
+                :class="changesViewMode === 'map' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                @click="setChangesViewMode('map')"
+              >
+                <MapIcon class="w-3 h-3" />
+              </button>
             </div>
           </div>
 
@@ -2259,7 +2774,7 @@ onUnmounted(() => {
             </div>
           </template>
 
-          <template v-else>
+          <template v-else-if="changesViewMode === 'tree'">
             <div
               v-for="row in treeRows"
               :key="row.node.key"
@@ -2313,6 +2828,78 @@ onUnmounted(() => {
               >
                 {{ statusIcon(row.node.status) }}
               </span>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="border-b border-[var(--border)]">
+              <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)]">
+                <div class="min-w-0">
+                  <div class="text-xs font-medium text-[var(--foreground)]">File Change Map</div>
+                  <div class="text-[10px] text-[var(--muted-foreground)] truncate">
+                    {{ selectedChangeMapLabel }} · {{ filteredChangeMapFiles.length }} file{{ filteredChangeMapFiles.length === 1 ? "" : "s" }}
+                  </div>
+                </div>
+                <button
+                  v-if="selectedChangeMapFolder"
+                  class="text-[10px] px-2 py-0.5 rounded border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]"
+                  @click="setChangeMapFolder(null)"
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div v-if="changeMapFolders.length === 0" class="px-4 py-8 text-[11px] text-[var(--muted-foreground)] text-center">
+                No folders to map.
+              </div>
+
+              <div v-else class="px-3 py-2 space-y-1.5">
+                <button
+                  v-for="folder in changeMapFolders"
+                  :key="folder.path"
+                  class="w-full rounded border px-2 py-1.5 text-left transition-colors"
+                  :class="selectedChangeMapFolder === folder.path
+                    ? 'border-[#f59e0b]/55 bg-[#f59e0b]/12'
+                    : 'border-[var(--border)] bg-[var(--input-background)] hover:bg-[var(--secondary)]/55'"
+                  @click="setChangeMapFolder(folder.path)"
+                >
+                  <div class="flex items-center gap-2">
+                    <Folder class="w-3.5 h-3.5 flex-shrink-0 text-[#f59e0b]" />
+                    <span
+                      class="min-w-0 flex-1 truncate text-xs font-medium text-[var(--foreground)]"
+                      :style="{ paddingLeft: `${folder.depth * 10}px` }"
+                      :title="folder.path"
+                    >
+                      {{ folder.label }}
+                    </span>
+                    <span class="text-[10px] text-[var(--muted-foreground)]">{{ folder.fileCount }} file{{ folder.fileCount === 1 ? "" : "s" }}</span>
+                  </div>
+                  <div class="mt-1 h-1 rounded bg-[var(--secondary)]">
+                    <div class="h-full rounded bg-[#f59e0b]/65" :style="{ width: changeMapFolderWidth(folder) }" />
+                  </div>
+                  <div v-if="folder.additions || folder.deletions" class="mt-1 flex gap-2 text-[10px] font-mono">
+                    <span v-if="folder.additions" class="text-[#10b981]">+{{ folder.additions }}</span>
+                    <span v-if="folder.deletions" class="text-[#ef4444]">-{{ folder.deletions }}</span>
+                  </div>
+                </button>
+              </div>
+
+              <div class="border-t border-[var(--border)]">
+                <div
+                  v-for="file in filteredChangeMapFiles"
+                  :key="'map-stash-' + file.path"
+                  class="group flex items-center gap-2 px-4 py-1.5 transition-colors hover:bg-[#f59e0b]/6"
+                  @contextmenu="openFileContextMenu($event, file.path)"
+                >
+                  <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(file.status) }">{{ statusIcon(file.status) }}</span>
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-xs text-[var(--foreground)]">{{ fileParts(file.path).fileName }}</div>
+                    <div class="truncate text-[10px] text-[var(--muted-foreground)]">{{ fileParts(file.path).directory || '.' }}</div>
+                  </div>
+                  <span v-if="file.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ file.additions }}</span>
+                  <span v-if="file.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ file.deletions }}</span>
+                </div>
+              </div>
             </div>
           </template>
         </div>
@@ -2410,6 +2997,118 @@ onUnmounted(() => {
         <p class="text-xs text-[var(--muted-foreground)]">Select a commit to view details</p>
       </div>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="commitAnalyzerTooltipVisible && commitAnalyzerSettings.enabled && commitLintIndicator !== 'none'"
+        ref="commitAnalyzerPanelRef"
+        class="fixed pointer-events-none rounded-md border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-2xl"
+        :style="commitAnalyzerPanelStyle"
+      >
+        <div class="text-[11px] font-semibold text-[var(--foreground)] mb-1">Commit checks</div>
+        <div v-if="commitLintLoading" class="text-[10px] text-[var(--muted-foreground)]">Analyzing staged diff...</div>
+        <div v-else class="space-y-1">
+          <div
+            v-for="finding in commitLintTooltipFindings"
+            :key="finding.id"
+            class="flex items-start gap-1.5 text-[10px]"
+            :class="commitLintFindingClass(finding)"
+          >
+            <span class="w-8 text-center font-semibold">{{ finding.severity === 'error' ? 'ERR' : 'WARN' }}</span>
+            <span class="flex-1 leading-snug">{{ finding.message }}</span>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showCommitBuilder"
+        ref="commitBuilderPanelRef"
+        class="fixed rounded-lg border border-[var(--border)] bg-[var(--popover)] p-3 shadow-2xl"
+        :style="commitBuilderPanelStyle"
+        @pointerdown.stop
+      >
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <Hammer class="h-3.5 w-3.5 text-[var(--primary)]" />
+            <div class="text-xs font-semibold text-[var(--foreground)]">Visual Commit Builder</div>
+          </div>
+          <button
+            type="button"
+            class="rounded p-0.5 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
+            @click="showCommitBuilder = false"
+          >
+            <X class="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <label class="space-y-1">
+            <span class="text-[10px] text-[var(--muted-foreground)]">Type</span>
+            <select
+              v-model="commitBuilderType"
+              class="h-8 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-xs text-[var(--foreground)] outline-none"
+            >
+              <option v-for="type in commitBuilderTypes" :key="type" :value="type">{{ type }}</option>
+            </select>
+          </label>
+          <label class="space-y-1">
+            <span class="text-[10px] text-[var(--muted-foreground)]">Scope</span>
+            <input
+              v-model="commitBuilderScope"
+              list="commit-builder-scopes"
+              class="h-8 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-xs text-[var(--foreground)] outline-none"
+              placeholder="git"
+            >
+            <datalist id="commit-builder-scopes">
+              <option v-for="scope in commitBuilderScopes" :key="scope" :value="scope" />
+            </datalist>
+          </label>
+        </div>
+
+        <label class="mt-2 block space-y-1">
+          <span class="text-[10px] text-[var(--muted-foreground)]">Message</span>
+          <input
+            v-model="commitBuilderSummary"
+            class="h-8 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-xs text-[var(--foreground)] outline-none"
+            placeholder="discard only unstaged file changes"
+            @keyup.enter="saveCommitBuilder"
+          >
+        </label>
+
+        <label class="mt-2 block space-y-1">
+          <span class="text-[10px] text-[var(--muted-foreground)]">Description</span>
+          <textarea
+            v-model="commitBuilderBody"
+            rows="2"
+            class="w-full resize-none rounded border border-[var(--border)] bg-[var(--input-background)] px-2 py-1.5 text-xs text-[var(--foreground)] outline-none"
+            placeholder="Optional body..."
+          />
+        </label>
+
+        <div class="mt-2 rounded border border-[var(--border)] bg-[var(--input-background)] px-2 py-1.5 font-mono text-[10px] text-[var(--foreground)]">
+          {{ commitBuilderPreview }}
+        </div>
+
+        <div class="mt-3 flex justify-end gap-2">
+          <button
+            type="button"
+            class="rounded border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-1 text-[11px] text-[var(--foreground)] hover:opacity-85"
+            @click="showCommitBuilder = false"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="rounded bg-[var(--primary)] px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+            @click="saveCommitBuilder"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </Teleport>
 
     <Teleport to="body">
       <div

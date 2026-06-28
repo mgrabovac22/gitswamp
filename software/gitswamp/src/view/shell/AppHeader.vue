@@ -7,6 +7,7 @@ import {
   Settings,
   Loader2,
   Download,
+  CircleHelp,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -33,6 +34,7 @@ const emit = defineEmits<{
   ghostBranch: [];
   materializeGhostBranch: [];
   discardGhostBranch: [];
+  explainGitState: [];
   stash: [];
   terminal: [];
   settings: [];
@@ -122,6 +124,15 @@ onUnmounted(() => {
       >
         {{ originConflictRisk.level === 'high' ? 'Conflict Risk' : 'Merge Warning' }}
       </span>
+      <AppButton
+        variant="ghost"
+        size="sm"
+        class="h-8 w-8 px-0 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] transition-all"
+        title="Explain Git state"
+        @click="emit('explainGitState')"
+      >
+        <CircleHelp class="w-3.5 h-3.5" />
+      </AppButton>
       <BranchQuickActions
         :loading="loading"
         :ghost-active="!!ghostActive"

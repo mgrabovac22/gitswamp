@@ -7,6 +7,7 @@ import TerminalPanel from "@/view/shell/TerminalPanel.vue";
 import LogsPanel from "@/view/shell/LogsPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
 import { useResizableWorkspace } from "@/features/repository/workspace/useResizableWorkspace";
+import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
@@ -116,8 +117,96 @@ const {
   beginResize,
 } = useResizableWorkspace(() => props.showTerminal);
 
+const { scheduleDestructiveAction } = useUndoableDestructiveAction();
+
 function toggleDetailsPanel() {
   emit("update:detailsPanelCollapsed", !props.detailsPanelCollapsed);
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+function scheduleDeleteBranch(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete branch "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep the branch.",
+    run: () => props.git.deleteBranch(name),
+  });
+}
+
+function scheduleDeleteRemoteBranch(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete remote branch "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep the remote branch.",
+    run: () => props.git.deleteRemoteBranch(name),
+  });
+}
+
+function scheduleDeleteBranchAndRemote(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete local and remote branch "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep both branch refs.",
+    run: () => emit("deleteBranchAndRemote", name),
+  });
+}
+
+function scheduleDeleteTag(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete tag "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep the tag.",
+    run: () => props.git.deleteTag(name),
+  });
+}
+
+function scheduleResetToCommit(sha: string, mode: "soft" | "mixed" | "hard") {
+  scheduleDestructiveAction({
+    message: `Reset ${mode} to ${sha.slice(0, 8)} in 5 seconds.`,
+    detail: mode === "hard"
+      ? "Hard reset can drop working-tree changes. Click Undo to cancel."
+      : "Click Undo to keep the current branch position.",
+    run: () => props.git.resetToCommit(sha, mode),
+  });
+}
+
+function scheduleResetBranchToRemote(branch: string) {
+  scheduleDestructiveAction({
+    message: `Reset "${branch}" to remote in 5 seconds.`,
+    detail: "Click Undo to keep the local branch state.",
+    run: () => props.git.resetBranchToRemote(branch),
+  });
+}
+
+function scheduleStashPop(index: number) {
+  scheduleDestructiveAction({
+    message: `Pop stash@{${index}} in 5 seconds.`,
+    detail: "Click Undo to leave the stash untouched.",
+    run: () => props.git.stashPop(index),
+  });
+}
+
+function scheduleStashDrop(index: number) {
+  scheduleDestructiveAction({
+    message: `Drop stash@{${index}} in 5 seconds.`,
+    detail: "Click Undo to keep the stash entry.",
+    run: () => props.git.stashDrop(index),
+  });
+}
+
+function scheduleDiscardFile(path: string) {
+  scheduleDestructiveAction({
+    message: `Discard "${fileNameFromPath(path)}" in 5 seconds.`,
+    detail: "Only unstaged working-tree changes are discarded. Click Undo to cancel.",
+    run: () => props.git.discardFile(path),
+  });
+}
+
+function scheduleDiscardAll() {
+  scheduleDestructiveAction({
+    message: "Discard all unstaged changes in 5 seconds.",
+    detail: "Staged changes stay staged. Click Undo to cancel.",
+    run: () => props.git.discardAll(),
+  });
 }
 
 async function handleJumpToSearchResult(sha: string) {
@@ -175,10 +264,10 @@ function handleRefreshState() {
         :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
         @checkout="props.git.checkoutBranch($event)"
         @create-branch="props.git.createBranch($event)"
-        @delete-branch="props.git.deleteBranch($event)"
-        @stash-pop="props.git.stashPop($event)"
+        @delete-branch="scheduleDeleteBranch($event)"
+        @stash-pop="scheduleStashPop($event)"
         @stash-apply="props.git.stashApply($event)"
-        @stash-drop="props.git.stashDrop($event)"
+        @stash-drop="scheduleStashDrop($event)"
         @select-issue="emit('selectIssue', $event)"
         @select-pull-request="emit('selectPullRequest', $event)"
         @open-create-issue="emit('openCreateIssue')"
@@ -243,9 +332,9 @@ function handleRefreshState() {
           @create-branch-at="emit('createBranchAt', $event)"
           @cherry-pick="props.git.cherryPick($event)"
           @revert="props.git.revertCommit($event)"
-          @reset-soft="props.git.resetToCommit($event, 'soft')"
-          @reset-mixed="props.git.resetToCommit($event, 'mixed')"
-          @reset-hard="props.git.resetToCommit($event, 'hard')"
+          @reset-soft="scheduleResetToCommit($event, 'soft')"
+          @reset-mixed="scheduleResetToCommit($event, 'mixed')"
+          @reset-hard="scheduleResetToCommit($event, 'hard')"
           @copy-sha="() => {}"
           @create-tag-at="emit('createTagAt', $event)"
           @create-annotated-tag-at="emit('createAnnotatedTagAt', $event)"
@@ -256,15 +345,15 @@ function handleRefreshState() {
           @set-upstream="(branch: string, remoteBranch: string) => props.git.setUpstream(branch, remoteBranch)"
           @edit-commit-message="emit('editCommitMessage', $event)"
           @rename-branch="emit('renameBranch', $event)"
-          @delete-branch="props.git.deleteBranch($event)"
-          @delete-remote-branch="props.git.deleteRemoteBranch($event)"
-          @delete-branch-and-remote="emit('deleteBranchAndRemote', $event)"
+          @delete-branch="scheduleDeleteBranch($event)"
+          @delete-remote-branch="scheduleDeleteRemoteBranch($event)"
+          @delete-branch-and-remote="scheduleDeleteBranchAndRemote($event)"
           @copy-branch-name="() => {}"
-          @reset-branch-to-remote="props.git.resetBranchToRemote($event)"
-          @delete-tag="props.git.deleteTag($event)"
-          @stash-pop="props.git.stashPop($event)"
+          @reset-branch-to-remote="scheduleResetBranchToRemote($event)"
+          @delete-tag="scheduleDeleteTag($event)"
+          @stash-pop="scheduleStashPop($event)"
           @stash-apply="props.git.stashApply($event)"
-          @stash-drop="props.git.stashDrop($event)"
+          @stash-drop="scheduleStashDrop($event)"
           @select-stash="emit('selectStash', $event)"
           @request-merge="emit('requestMerge', $event)"
           @request-rebase="emit('requestRebase', $event)"
@@ -373,14 +462,14 @@ function handleRefreshState() {
             @stage-all="props.git.stageAll()"
             @unstage-all="props.git.unstageAll()"
             @commit="props.git.commitChanges($event)"
-            @discard="props.git.discardFile($event)"
-            @discard-all="props.git.discardAll()"
+            @discard="scheduleDiscardFile($event)"
+            @discard-all="scheduleDiscardAll"
             @resolve-all-conflicts="props.git.resolveAllConflicts()"
             @resolve-conflict="props.git.promptResolveConflict($event)"
             @manual-resolve="emit('openConflictResolver', $event)"
-            @stash-pop="props.git.stashPop($event)"
+            @stash-pop="scheduleStashPop($event)"
             @stash-apply="props.git.stashApply($event)"
-            @stash-drop="props.git.stashDrop($event)"
+            @stash-drop="scheduleStashDrop($event)"
             @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
             @refresh-state="handleRefreshState"

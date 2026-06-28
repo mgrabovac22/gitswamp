@@ -3,6 +3,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import type { BranchInfo, CommitInfo } from "@/types";
 
 type ViewMode = "galaxy" | "tree";
+type GalaxyShape = "spiral" | "layers" | "constellation";
+type DepthPreset = "balanced" | "deep";
 
 type GalaxyNode = {
   commit: CommitInfo;
@@ -76,6 +78,7 @@ const MAX_RENDERED_COMMITS = 50000;
 const STARFIELD_COUNT = 180;
 const MIN_ZOOM = 0.18;
 const MAX_ZOOM = 5.5;
+const MINI_MAP_MAX_POINTS = 1600;
 const BRANCH_COLORS = [
   "#7dd3fc",
   "#c084fc",
@@ -93,9 +96,15 @@ const containerRef = ref<HTMLElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const hoveredNode = shallowRef<ProjectedNode | null>(null);
 const viewMode = ref<ViewMode>("galaxy");
+const galaxyShape = ref<GalaxyShape>("spiral");
+const depthPreset = ref<DepthPreset>("deep");
 const focusedSha = ref<string | null>(null);
 const showLabels = ref(true);
 const showGuides = ref(true);
+const showTimeRings = ref(true);
+const showBranchAura = ref(true);
+const showDepthFog = ref(true);
+const showMiniMap = ref(true);
 const highlightMerges = ref(true);
 const tooltip = ref({ x: 0, y: 0 });
 const isDragging = ref(false);
@@ -448,11 +457,18 @@ const renderedCountLabel = computed(() => {
 
 const viewTitle = computed(() => (viewMode.value === "tree" ? "Tree View" : "Galaxy View"));
 
+const shapeLabel = computed(() => {
+  if (viewMode.value === "tree") return "Canopy";
+  if (galaxyShape.value === "layers") return "Branch Layers";
+  if (galaxyShape.value === "constellation") return "Constellation";
+  return "Spiral Galaxy";
+});
+
 const viewDetailLabel = computed(() => {
   const lanes = galaxyScene.value.lanes.length;
   return viewMode.value === "tree"
     ? `main trunk · ${lanes} branch canopy`
-    : `${lanes} branch levels · center zoom · drag rotate`;
+    : `${shapeLabel.value} · ${lanes} branch levels · drag rotate`;
 });
 
 const tooltipStyle = computed(() => {
@@ -469,6 +485,35 @@ function scheduleDraw() {
     frameId = null;
     drawScene();
   });
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const clean = hex.replace("#", "");
+  const value = Number.parseInt(clean.length === 3
+    ? clean.split("").map((item) => item + item).join("")
+    : clean, 16);
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
+}
+
+function colorWithAlpha(hex: string, alpha: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
+}
+
+function depthAlpha(depth: number): number {
+  if (!showDepthFog.value || viewMode.value === "tree") return 1;
+  const range = depthPreset.value === "deep" ? 1250 : 1650;
+  return clamp(0.48 + (depth + range * 0.24) / range, 0.34, 1);
+}
+
+function depthLineWidth(depth: number, base: number): number {
+  if (viewMode.value === "tree") return base;
+  const strength = depthPreset.value === "deep" ? 0.52 : 0.34;
+  return base * clamp(1 + (depth / 900) * strength, 0.62, 1.55);
 }
 
 function resizeCanvas() {
@@ -504,10 +549,37 @@ function layoutForNode(node: GalaxyNode): { x: number; y: number; z: number } {
 
   const focus = zoomLayoutFocus();
   const levelScale = 0.82 + focus * 0.24;
+  const layerX = node.levelX;
+  const layerY = node.levelY * levelScale;
+  const layerZ = node.levelZ;
+
+  if (galaxyShape.value === "layers") {
+    const branchWave = Math.sin(node.ageProgress * Math.PI * 5 + node.laneOffset * 0.85) * 34;
+    return {
+      x: mix(layerX + branchWave * 0.26, node.galaxyX, 0.14 * (1 - focus)),
+      y: layerY,
+      z: layerZ + branchWave + node.laneOffset * 24,
+    };
+  }
+
+  if (galaxyShape.value === "constellation") {
+    const arc = node.ageProgress * Math.PI * 2.6 + node.laneOffset * 0.42;
+    const laneMagnitude = Math.max(1, Math.abs(node.laneOffset));
+    const branchRadius = 78 + laneMagnitude * 28;
+    const x = node.laneOffset * 104 + Math.sin(arc) * branchRadius * 0.26;
+    const y = mix(node.levelY * 0.92, node.galaxyY * 0.72, 0.22 * (1 - focus));
+    const z = Math.cos(arc) * (115 + laneMagnitude * 18) + node.levelZ * 0.45;
+    return {
+      x: mix(x, layerX, focus * 0.58),
+      y: mix(y, layerY, focus * 0.82),
+      z: mix(z, layerZ, focus * 0.52),
+    };
+  }
+
   return {
-    x: mix(node.galaxyX, node.levelX, focus),
-    y: mix(node.galaxyY, node.levelY * levelScale, focus),
-    z: mix(node.galaxyZ, node.levelZ, focus),
+    x: mix(node.galaxyX, layerX, focus),
+    y: mix(node.galaxyY, layerY, focus),
+    z: mix(node.galaxyZ, layerZ, focus),
   };
 }
 
@@ -523,17 +595,21 @@ function projectLayoutPoint(x: number, y: number, z: number): { screenX: number;
   }
 
   const focus = zoomLayoutFocus();
-  const rotation = mix(viewport.rotation, -0.08, focus * 0.25);
-  const tilt = mix(viewport.tilt, 0.96, focus);
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
-  const rotatedX = x * cos - y * sin * (1 - focus * 0.28);
-  const rotatedY = x * sin + y * cos;
-  const depth = z + rotatedY * mix(0.08, 0.025, focus);
-  const depthScale = 1 + clamp(depth / 920, -0.28, 0.32);
+  const rotation = mix(viewport.rotation, -0.08, focus * 0.2);
+  const pitch = mix(viewport.tilt, 0.46, focus * 0.36);
+  const cosYaw = Math.cos(rotation);
+  const sinYaw = Math.sin(rotation);
+  const xYaw = x * cosYaw - y * sinYaw;
+  const yYaw = x * sinYaw + y * cosYaw;
+  const cosPitch = Math.cos(pitch);
+  const sinPitch = Math.sin(pitch);
+  const yPitch = yYaw * cosPitch - z * sinPitch;
+  const depth = yYaw * sinPitch + z * cosPitch;
+  const cameraDistance = depthPreset.value === "deep" ? 1120 : 1520;
+  const depthScale = clamp(cameraDistance / Math.max(260, cameraDistance - depth), 0.54, depthPreset.value === "deep" ? 1.82 : 1.46);
   return {
-    screenX: canvasWidth / 2 + viewport.panX + rotatedX * viewport.zoom * depthScale,
-    screenY: canvasHeight / 2 + viewport.panY + (rotatedY * tilt + z * mix(0.26, 0.08, focus)) * viewport.zoom,
+    screenX: canvasWidth / 2 + viewport.panX + xYaw * viewport.zoom * depthScale,
+    screenY: canvasHeight / 2 + viewport.panY + yPitch * viewport.zoom * depthScale,
     depth,
     scale: depthScale,
   };
@@ -578,6 +654,26 @@ function drawBackground(context: CanvasRenderingContext2D) {
 
   context.save();
   context.scale(dpr, dpr);
+  if (viewMode.value === "galaxy" && showBranchAura.value) {
+    const nebulaCount = Math.min(6, galaxyScene.value.lanes.length || 3);
+    for (let index = 0; index < nebulaCount; index += 1) {
+      const lane = galaxyScene.value.lanes[index];
+      const seed = hashText(`nebula:${lane?.name || index}`);
+      const x = ((seed % 9000) / 9000) * canvasWidth;
+      const y = ((Math.floor(seed / 9000) % 9000) / 9000) * canvasHeight;
+      const radius = Math.max(canvasWidth, canvasHeight) * (0.18 + (seed % 7) * 0.012);
+      const nebula = context.createRadialGradient(x, y, 0, x, y, radius);
+      nebula.addColorStop(0, colorWithAlpha(lane?.color || "#7dd3fc", 0.1));
+      nebula.addColorStop(0.48, colorWithAlpha(lane?.color || "#7dd3fc", 0.035));
+      nebula.addColorStop(1, "rgba(2, 6, 23, 0)");
+      context.globalAlpha = 1;
+      context.fillStyle = nebula;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.fill();
+    }
+  }
+
   const starCount = viewMode.value === "tree" ? Math.floor(STARFIELD_COUNT * 0.45) : STARFIELD_COUNT;
   for (let i = 0; i < starCount; i += 1) {
     const seed = hashText(`${i}:gitswamp-${viewMode.value}`);
@@ -591,6 +687,57 @@ function drawBackground(context: CanvasRenderingContext2D) {
     context.fill();
   }
   context.restore();
+}
+
+function drawProjectedOrbit(
+  context: CanvasRenderingContext2D,
+  radiusX: number,
+  radiusY: number,
+  z: number,
+  color: string,
+  alpha: number,
+  width: number,
+) {
+  const steps = 96;
+  context.save();
+  context.globalAlpha = alpha;
+  context.strokeStyle = color;
+  context.lineWidth = width;
+  context.beginPath();
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = (index / steps) * Math.PI * 2;
+    const point = projectLayoutPoint(Math.cos(angle) * radiusX, Math.sin(angle) * radiusY, z);
+    if (index === 0) {
+      context.moveTo(point.screenX, point.screenY);
+    } else {
+      context.lineTo(point.screenX, point.screenY);
+    }
+  }
+  context.closePath();
+  context.stroke();
+  context.restore();
+}
+
+function drawTimeRings(context: CanvasRenderingContext2D) {
+  if (viewMode.value !== "galaxy" || !showTimeRings.value) return;
+
+  const scene = galaxyScene.value;
+  const maxRadius = Math.max(150, Math.sqrt(scene.nodes.length + 1) * 21 + 78);
+  const rings = galaxyShape.value === "layers" ? 5 : 6;
+  for (let index = 1; index <= rings; index += 1) {
+    const progress = index / rings;
+    const radius = maxRadius * progress;
+    const color = index === rings ? "#93c5fd" : "#60a5fa";
+    drawProjectedOrbit(
+      context,
+      radius,
+      radius * (galaxyShape.value === "constellation" ? 0.42 : 0.72),
+      (index % 2 === 0 ? -36 : 34) * (depthPreset.value === "deep" ? 1.4 : 0.9),
+      color,
+      0.035 + progress * 0.025,
+      Math.max(0.6, viewport.zoom * 0.55),
+    );
+  }
 }
 
 function drawGalaxyGuides(context: CanvasRenderingContext2D) {
@@ -738,13 +885,152 @@ function drawTreeGuides(context: CanvasRenderingContext2D) {
   context.restore();
 }
 
+function drawBranchAuras(context: CanvasRenderingContext2D, nodes: ProjectedNode[]) {
+  if (viewMode.value !== "galaxy" || !showBranchAura.value) return;
+
+  const laneStats = new Map<string, {
+    color: string;
+    count: number;
+    x: number;
+    y: number;
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    depth: number;
+  }>();
+  const step = Math.max(1, Math.floor(nodes.length / 9000));
+  for (let index = 0; index < nodes.length; index += step) {
+    const node = nodes[index];
+    if (
+      node.screenX < -120
+      || node.screenX > canvasWidth + 120
+      || node.screenY < -120
+      || node.screenY > canvasHeight + 120
+    ) {
+      continue;
+    }
+
+    const weight = depthAlpha(node.depth);
+    const stat = laneStats.get(node.laneName) || {
+      color: node.color,
+      count: 0,
+      x: 0,
+      y: 0,
+      minX: node.screenX,
+      maxX: node.screenX,
+      minY: node.screenY,
+      maxY: node.screenY,
+      depth: 0,
+    };
+    stat.count += weight;
+    stat.x += node.screenX * weight;
+    stat.y += node.screenY * weight;
+    stat.minX = Math.min(stat.minX, node.screenX);
+    stat.maxX = Math.max(stat.maxX, node.screenX);
+    stat.minY = Math.min(stat.minY, node.screenY);
+    stat.maxY = Math.max(stat.maxY, node.screenY);
+    stat.depth += node.depth * weight;
+    laneStats.set(node.laneName, stat);
+  }
+
+  const orderedLaneNames = galaxyScene.value.lanes.map((lane) => lane.name);
+  context.save();
+  context.globalCompositeOperation = "lighter";
+  for (const laneName of orderedLaneNames.slice(0, 18)) {
+    const stat = laneStats.get(laneName);
+    if (!stat || stat.count < 1.5) continue;
+
+    const x = stat.x / stat.count;
+    const y = stat.y / stat.count;
+    const avgDepth = stat.depth / stat.count;
+    const width = clamp((stat.maxX - stat.minX) * 0.64, 70, 360);
+    const height = clamp((stat.maxY - stat.minY) * 0.32, 42, 220);
+    const alpha = (laneName === currentBranchName.value ? 0.12 : 0.065) * depthAlpha(avgDepth);
+    const aura = context.createRadialGradient(x, y, 0, x, y, Math.max(width, height));
+    aura.addColorStop(0, colorWithAlpha(stat.color, alpha));
+    aura.addColorStop(0.52, colorWithAlpha(stat.color, alpha * 0.36));
+    aura.addColorStop(1, "rgba(2, 6, 23, 0)");
+    context.fillStyle = aura;
+    context.beginPath();
+    context.ellipse(x, y, width, height, viewport.rotation * 0.28, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.restore();
+}
+
+function drawMiniMap(context: CanvasRenderingContext2D) {
+  if (!showMiniMap.value || viewMode.value !== "galaxy" || canvasWidth < 420 || canvasHeight < 300) return;
+
+  const nodes = galaxyScene.value.nodes;
+  if (!nodes.length) return;
+
+  const width = 168;
+  const height = 104;
+  const left = 12;
+  const top = canvasHeight - height - 12;
+  const padding = 9;
+  const step = Math.max(1, Math.ceil(nodes.length / MINI_MAP_MAX_POINTS));
+  const plotted: { node: GalaxyNode; x: number; y: number }[] = [];
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (let index = 0; index < nodes.length; index += step) {
+    const node = nodes[index];
+    const layout = layoutForNode(node);
+    plotted.push({ node, x: layout.x, y: layout.y });
+    minX = Math.min(minX, layout.x);
+    maxX = Math.max(maxX, layout.x);
+    minY = Math.min(minY, layout.y);
+    maxY = Math.max(maxY, layout.y);
+  }
+
+  const rangeX = Math.max(1, maxX - minX);
+  const rangeY = Math.max(1, maxY - minY);
+
+  context.save();
+  context.globalAlpha = 1;
+  context.fillStyle = "rgba(2, 6, 23, 0.58)";
+  context.strokeStyle = "rgba(148, 163, 184, 0.18)";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.rect(left, top, width, height);
+  context.fill();
+  context.stroke();
+
+  for (const item of plotted) {
+    const x = left + padding + ((item.x - minX) / rangeX) * (width - padding * 2);
+    const y = top + padding + ((item.y - minY) / rangeY) * (height - padding * 2);
+    const selected = item.node.commit.sha === props.selectedSha || item.node.commit.sha === hoveredNode.value?.commit.sha;
+    const currentBranch = normalizeBranchName(item.node.laneName) === currentBranchName.value;
+    context.globalAlpha = selected ? 0.9 : currentBranch ? 0.5 : 0.28;
+    context.fillStyle = selected ? "#ffffff" : currentBranch ? "#fef08a" : item.node.color;
+    context.beginPath();
+    context.arc(x, y, selected ? 2.3 : 1.25, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.restore();
+}
+
 function drawStraightEdge(context: CanvasRenderingContext2D, from: ProjectedNode, to: ProjectedNode, color: string) {
-  context.globalAlpha = 0.12 + Math.min(0.16, viewport.zoom * 0.035);
-  context.strokeStyle = color;
-  context.lineWidth = Math.max(0.5, viewport.zoom * 0.8);
+  const avgDepth = (from.depth + to.depth) / 2;
+  const selectedEdge = from.commit.sha === props.selectedSha || to.commit.sha === props.selectedSha;
+  const alpha = (selectedEdge ? 0.34 : 0.12 + Math.min(0.16, viewport.zoom * 0.035)) * depthAlpha(avgDepth);
+  context.globalAlpha = alpha;
+  context.strokeStyle = showDepthFog.value ? colorWithAlpha(color, 0.96) : color;
+  context.lineWidth = Math.max(0.5, depthLineWidth(avgDepth, viewport.zoom * 0.8));
   context.beginPath();
   context.moveTo(from.screenX, from.screenY);
-  context.lineTo(to.screenX, to.screenY);
+  if (galaxyShape.value === "constellation") {
+    const midX = mix(from.screenX, to.screenX, 0.5);
+    const midY = mix(from.screenY, to.screenY, 0.5);
+    const curve = clamp((to.depth - from.depth) * 0.12, -36, 36);
+    context.quadraticCurveTo(midX + curve, midY - Math.abs(curve) * 0.35, to.screenX, to.screenY);
+  } else {
+    context.lineTo(to.screenX, to.screenY);
+  }
   context.stroke();
 }
 
@@ -785,13 +1071,14 @@ function drawNode(context: CanvasRenderingContext2D, node: ProjectedNode) {
   glow.addColorStop(0, selected ? "#ffffff" : node.color);
   glow.addColorStop(0.24, currentBranch ? "#fef08a" : node.color);
   glow.addColorStop(1, "rgba(2, 6, 23, 0)");
-  context.globalAlpha = branch || selected || hovered || currentBranch ? 0.76 : viewMode.value === "tree" ? 0.48 : 0.34;
+  const visibility = depthAlpha(node.depth);
+  context.globalAlpha = (branch || selected || hovered || currentBranch ? 0.76 : viewMode.value === "tree" ? 0.48 : 0.34) * visibility;
   context.fillStyle = glow;
   context.beginPath();
   context.arc(node.screenX, node.screenY, radius * 4.2, 0, Math.PI * 2);
   context.fill();
 
-  context.globalAlpha = 0.94;
+  context.globalAlpha = 0.94 * visibility;
   context.fillStyle = selected ? "#ffffff" : currentBranch ? "#fef08a" : node.color;
   context.beginPath();
   if (viewMode.value === "tree" && !selected && !hovered) {
@@ -802,16 +1089,26 @@ function drawNode(context: CanvasRenderingContext2D, node: ProjectedNode) {
   context.fill();
 
   if (highlightMerges.value && merge) {
-    context.globalAlpha = selected || hovered ? 0.78 : 0.5;
+    context.globalAlpha = (selected || hovered ? 0.78 : 0.5) * visibility;
     context.strokeStyle = "#f97316";
-    context.lineWidth = Math.max(1, viewport.zoom * 0.55);
+    context.lineWidth = Math.max(1, depthLineWidth(node.depth, viewport.zoom * 0.55));
     context.beginPath();
     context.arc(node.screenX, node.screenY, radius * 1.85, 0, Math.PI * 2);
     context.stroke();
+
+    if (viewMode.value === "galaxy") {
+      context.globalAlpha = (selected || hovered ? 0.5 : 0.26) * visibility;
+      context.strokeStyle = "#fed7aa";
+      context.lineWidth = Math.max(0.7, viewport.zoom * 0.38);
+      context.beginPath();
+      context.moveTo(node.screenX, node.screenY - radius * 3.2);
+      context.lineTo(node.screenX, node.screenY + radius * 3.2);
+      context.stroke();
+    }
   }
 
   if (showLabels.value && branch && viewport.zoom > 0.38) {
-    context.globalAlpha = 0.86;
+    context.globalAlpha = 0.86 * visibility;
     context.font = "11px ui-sans-serif, system-ui, sans-serif";
     context.fillStyle = currentBranch ? "#fef9c3" : "#e0f2fe";
     context.fillText(node.branchLabel || "", node.screenX + radius + 6, node.screenY + 3);
@@ -831,6 +1128,8 @@ function drawScene() {
     projectedBySha.set(node.commit.sha, node);
   }
 
+  drawTimeRings(context);
+
   if (showGuides.value) {
     if (viewMode.value === "tree") {
       drawTreeGuides(context);
@@ -838,6 +1137,8 @@ function drawScene() {
       drawGalaxyGuides(context);
     }
   }
+
+  drawBranchAuras(context, projectedNodes);
 
   context.lineCap = "round";
   for (const edge of galaxyScene.value.edges) {
@@ -863,6 +1164,8 @@ function drawScene() {
   for (const node of projectedNodes) {
     drawNode(context, node);
   }
+
+  drawMiniMap(context);
 
   context.globalAlpha = 1;
   context.restore();
@@ -1030,6 +1333,26 @@ function toggleGuides() {
   scheduleDraw();
 }
 
+function toggleTimeRings() {
+  showTimeRings.value = !showTimeRings.value;
+  scheduleDraw();
+}
+
+function toggleBranchAura() {
+  showBranchAura.value = !showBranchAura.value;
+  scheduleDraw();
+}
+
+function toggleDepthFog() {
+  showDepthFog.value = !showDepthFog.value;
+  scheduleDraw();
+}
+
+function toggleMiniMap() {
+  showMiniMap.value = !showMiniMap.value;
+  scheduleDraw();
+}
+
 function toggleMerges() {
   highlightMerges.value = !highlightMerges.value;
   scheduleDraw();
@@ -1057,6 +1380,12 @@ watch(galaxyScene, () => {
   scheduleDraw();
 });
 
+watch(galaxyShape, () => {
+  resetView();
+});
+
+watch(depthPreset, scheduleDraw);
+
 watch(() => props.selectedSha, scheduleDraw);
 </script>
 
@@ -1081,6 +1410,25 @@ watch(() => props.selectedSha, scheduleDraw);
     </div>
 
     <div class="absolute right-3 top-3 flex max-w-[calc(100%-18rem)] flex-wrap items-center justify-end gap-2">
+      <select
+        v-if="viewMode === 'galaxy'"
+        v-model="galaxyShape"
+        class="h-[26px] rounded border border-white/10 bg-slate-950/80 px-2 text-[11px] text-slate-100 outline-none hover:bg-slate-800"
+        title="Galaxy layout"
+      >
+        <option value="spiral">Spiral</option>
+        <option value="layers">Branch Layers</option>
+        <option value="constellation">Constellation</option>
+      </select>
+      <select
+        v-if="viewMode === 'galaxy'"
+        v-model="depthPreset"
+        class="h-[26px] rounded border border-white/10 bg-slate-950/80 px-2 text-[11px] text-slate-100 outline-none hover:bg-slate-800"
+        title="Depth strength"
+      >
+        <option value="deep">Deep 3D</option>
+        <option value="balanced">Balanced</option>
+      </select>
       <button
         type="button"
         class="rounded border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[11px] text-slate-100 hover:bg-slate-800"
@@ -1121,6 +1469,50 @@ watch(() => props.selectedSha, scheduleDraw);
         @click="toggleGuides"
       >
         Guides
+      </button>
+      <button
+        v-if="viewMode === 'galaxy'"
+        type="button"
+        :class="[
+          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
+          showTimeRings ? 'border-cyan-300/30 bg-cyan-500/15 text-cyan-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
+        ]"
+        @click="toggleTimeRings"
+      >
+        Rings
+      </button>
+      <button
+        v-if="viewMode === 'galaxy'"
+        type="button"
+        :class="[
+          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
+          showBranchAura ? 'border-fuchsia-300/30 bg-fuchsia-500/15 text-fuchsia-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
+        ]"
+        @click="toggleBranchAura"
+      >
+        Aura
+      </button>
+      <button
+        v-if="viewMode === 'galaxy'"
+        type="button"
+        :class="[
+          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
+          showDepthFog ? 'border-violet-300/30 bg-violet-500/15 text-violet-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
+        ]"
+        @click="toggleDepthFog"
+      >
+        Depth
+      </button>
+      <button
+        v-if="viewMode === 'galaxy'"
+        type="button"
+        :class="[
+          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
+          showMiniMap ? 'border-teal-300/30 bg-teal-500/15 text-teal-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
+        ]"
+        @click="toggleMiniMap"
+      >
+        Map
       </button>
       <button
         type="button"
@@ -1171,6 +1563,11 @@ watch(() => props.selectedSha, scheduleDraw);
       </div>
       <div class="mt-1 line-clamp-3 font-medium">{{ hoveredNode.commit.message }}</div>
       <div class="mt-1 text-slate-400">{{ hoveredNode.commit.author_name }} · {{ hoveredNode.commit.time_ago }}</div>
+      <div class="mt-1 flex flex-wrap gap-1.5 text-[10px] text-slate-300">
+        <span class="rounded bg-white/5 px-1.5 py-0.5">lane: {{ hoveredNode.laneName }}</span>
+        <span class="rounded bg-white/5 px-1.5 py-0.5">{{ hoveredNode.commit.parent_shas.length || 0 }} parent{{ hoveredNode.commit.parent_shas.length === 1 ? "" : "s" }}</span>
+        <span v-if="hoveredNode.commit.parent_shas.length > 1" class="rounded bg-orange-400/15 px-1.5 py-0.5 text-orange-100">merge</span>
+      </div>
       <div v-if="hoveredNode.commit.refs.length" class="mt-1 truncate text-slate-400">
         refs: {{ hoveredNode.commit.refs.join(", ") }}
       </div>

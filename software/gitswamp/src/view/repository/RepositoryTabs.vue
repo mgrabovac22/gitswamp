@@ -491,6 +491,7 @@ onUnmounted(() => {
             <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Shortcuts</h4>
             <div class="space-y-1.5 text-[11px]">
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open help and shortcuts</span><span class="text-[var(--muted-foreground)] font-mono">F1</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open command palette</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+K</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">New tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+T</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+O</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Close active tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+W</span></div>

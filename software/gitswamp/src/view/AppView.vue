@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import TitleBar from "@/view/shell/TitleBar.vue";
 import AppHeader from "@/view/shell/AppHeader.vue";
+import CommandPalette from "@/view/shell/CommandPalette.vue";
 import RepositoryTabs from "@/view/repository/RepositoryTabs.vue";
 import RepositoryWorkspace from "@/view/repository/RepositoryWorkspace.vue";
 import LandingPage from "@/view/repository/LandingPage.vue";
@@ -17,6 +18,7 @@ import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
 import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
+import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import { handleRepositoryTabShortcut } from "@/features/repository/tabs/repositoryTabShortcuts";
 import { useRepositoryTabs } from "@/features/repository/tabs/useRepositoryTabs";
 import { useRecentRepositories } from "@/features/repository/recent/useRecentRepositories";
@@ -32,6 +34,7 @@ import type { CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, Pull
 
 const git = useGit();
 const toast = useToast();
+const { scheduleDestructiveAction } = useUndoableDestructiveAction();
 const {
   generalFontSize,
   commitNumeric,
@@ -74,6 +77,18 @@ type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "c
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
+type CommandPaletteTone = "default" | "success" | "warning" | "danger";
+
+interface CommandPaletteAction {
+  id: string;
+  label: string;
+  description?: string;
+  shortcut?: string;
+  keywords?: string[];
+  disabled?: boolean;
+  tone?: CommandPaletteTone;
+  run: () => void | Promise<void>;
+}
 
 const AUTO_FETCH_SETTINGS_EVENT = "gitswamp:auto-fetch-settings-changed";
 const AUTO_FETCH_ENABLED_KEY = "gitswamp-auto-fetch-enabled";
@@ -129,6 +144,7 @@ const rebaseConflictBusy = ref(false);
 
 const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
+const showCommandPalette = ref(false);
 
 const showDiffViewer = ref(false);
 const diffFilePath = ref("");
@@ -552,6 +568,77 @@ const originConflictRisk = computed(() => {
 
   return { level: "none" as const, label: "No origin conflict risk." };
 });
+
+function pluralCount(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function currentBranchDivergence(): { ahead: number; behind: number } {
+  const current = git.currentBranch.value;
+  const local = git.localBranches.value.find((branch) => branch.name === current || branch.is_head);
+  return {
+    ahead: local?.ahead || 0,
+    behind: local?.behind || 0,
+  };
+}
+
+function explainGitState() {
+  const branch = git.currentBranch.value || "detached HEAD";
+  const staged = git.stagedFiles.value.length;
+  const unstaged = git.unstagedFiles.value.length;
+  const conflicts = git.conflictFiles.value.length;
+  const { ahead, behind } = currentBranchDivergence();
+  const changedFiles = collectChangedWorkingPaths().length;
+  const hasOrigin = (git.repoInfo.value?.remotes || []).some((remote: RemoteInfo) => remote.name === "origin");
+  const clean = staged === 0 && unstaged === 0 && conflicts === 0;
+  const state = conflicts > 0
+    ? "conflicts"
+    : ahead > 0 && behind > 0
+      ? "diverged"
+      : behind > 0
+        ? "behind origin"
+        : ahead > 0
+          ? "ahead of origin"
+          : clean
+            ? "clean"
+            : "local changes";
+  const lines = [
+    `State: ${state}.`,
+    `Branch: ${branch}.`,
+    `Files: ${pluralCount(staged, "staged file")}, ${pluralCount(unstaged, "unstaged file")}, ${pluralCount(conflicts, "conflict")}.`,
+    hasOrigin
+      ? `Origin: ${pluralCount(ahead, "commit")} ahead, ${pluralCount(behind, "commit")} behind.`
+      : "Origin: no origin remote is configured.",
+  ];
+
+  if (conflicts > 0) {
+    lines.push("Next: open conflict resolver, fix conflicted files, then stage resolved files.");
+    lines.push("Avoid: reset, pull, or commit until conflicts are resolved.");
+  } else if (ahead > 0 && behind > 0) {
+    lines.push("Next: rebase or merge remote changes carefully, then push after testing.");
+    if (changedFiles > 0) lines.push("Tip: commit/stash local changes before syncing.");
+  } else if (behind > 0 && changedFiles > 0) {
+    lines.push("Next: commit or stash local changes, then pull/rebase from origin.");
+  } else if (staged > 0) {
+    lines.push("Next: commit staged changes, or stage related unstaged files first.");
+  } else if (unstaged > 0) {
+    lines.push("Next: review the diff, then stage wanted files or discard only unstaged changes.");
+  } else if (behind > 0) {
+    lines.push("Next: pull/rebase before starting new work.");
+  } else if (ahead > 0) {
+    lines.push("Next: push when tests and review look good.");
+  } else if (!hasOrigin) {
+    lines.push("Next: add a remote if you want to push or sync this repository.");
+  } else {
+    lines.push("Next: continue working, create a branch, or pull/fetch to check for updates.");
+  }
+
+  if (originConflictRisk.value.level !== "none") {
+    lines.push(`Warning: ${originConflictRisk.value.label}`);
+  }
+
+  toast.infoDetail(`Git State: ${branch}`, lines.join("\n"), 14000);
+}
 
 interface GithubApiContext {
   apiBase: string;
@@ -1203,6 +1290,248 @@ async function refreshCurrentRepo() {
   toast.success("Repository refreshed");
 }
 
+function openCommandPalette() {
+  showCommandPalette.value = true;
+}
+
+function closeCommandPalette() {
+  showCommandPalette.value = false;
+}
+
+function branchExists(name: string): boolean {
+  return git.localBranches.value.some((branch) => branch.name === name || branch.name.endsWith(`/${name}`));
+}
+
+async function checkoutBranchFromPalette(name: string) {
+  if (!hasActiveRepositoryPath()) return;
+  await git.checkoutBranch(name);
+  if (git.error.value) {
+    toast.error(git.error.value);
+    return;
+  }
+  toast.success(`Checked out ${name}`);
+}
+
+function confirmDiscardUnstagedFromPalette() {
+  const count = git.unstagedFiles.value.length;
+  if (count === 0) {
+    toast.info("No unstaged changes to discard.");
+    return;
+  }
+
+  scheduleDestructiveAction({
+    message: `Discard ${count} unstaged change${count === 1 ? "" : "s"} in 5 seconds.`,
+    detail: "Staged changes stay staged. Click Undo to cancel.",
+    run: async () => {
+      await git.discardAll();
+      if (git.error.value) {
+        toast.error(git.error.value);
+      } else {
+        toast.success("Unstaged changes discarded");
+      }
+    },
+  });
+}
+
+const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
+  const hasRepo = hasActiveRepositoryPath();
+  const hasUnstaged = git.unstagedFiles.value.length > 0;
+  const hasStaged = git.stagedFiles.value.length > 0;
+  const hasChanges = hasUnstaged || hasStaged;
+
+  return [
+    {
+      id: "stage-all",
+      label: "Stage all",
+      description: `${git.unstagedFiles.value.length} unstaged file${git.unstagedFiles.value.length === 1 ? "" : "s"}`,
+      keywords: ["add", "git add", "changes"],
+      disabled: !hasRepo || !hasUnstaged,
+      tone: "success",
+      run: () => git.stageAll(),
+    },
+    {
+      id: "unstage-all",
+      label: "Unstage all",
+      description: `${git.stagedFiles.value.length} staged file${git.stagedFiles.value.length === 1 ? "" : "s"}`,
+      keywords: ["restore staged", "reset", "changes"],
+      disabled: !hasRepo || !hasStaged,
+      tone: "warning",
+      run: () => git.unstageAll(),
+    },
+    {
+      id: "discard-unstaged",
+      label: "Discard unstaged",
+      description: "Discard only unstaged working-tree changes.",
+      keywords: ["restore", "clean", "changes"],
+      disabled: !hasRepo || !hasUnstaged,
+      tone: "danger",
+      run: confirmDiscardUnstagedFromPalette,
+    },
+    {
+      id: "working-changes",
+      label: "Show working changes",
+      description: "Open the changes panel for current staged and unstaged files.",
+      keywords: ["status", "files"],
+      disabled: !hasRepo || !hasChanges,
+      run: onSelectWorkingChanges,
+    },
+    {
+      id: "refresh",
+      label: "Refresh repository",
+      description: "Reload status, branches and commit history.",
+      shortcut: "Ctrl Shift R",
+      keywords: ["reload", "status"],
+      disabled: !hasRepo,
+      run: refreshCurrentRepo,
+    },
+    {
+      id: "fetch",
+      label: "Fetch all remotes",
+      description: "Update remote refs without changing local branches.",
+      keywords: ["remote", "origin"],
+      disabled: !hasRepo,
+      run: handleFetch,
+    },
+    {
+      id: "pull",
+      label: "Pull current branch",
+      description: "Pull latest changes for the current branch.",
+      keywords: ["remote", "origin"],
+      disabled: !hasRepo,
+      run: handlePull,
+    },
+    {
+      id: "push",
+      label: "Push current branch",
+      description: "Push local commits or set up a remote.",
+      keywords: ["remote", "origin"],
+      disabled: !hasRepo,
+      run: handlePush,
+    },
+    {
+      id: "checkout-main",
+      label: "Checkout main",
+      description: "Switch to main branch.",
+      keywords: ["switch branch"],
+      disabled: !hasRepo || !branchExists("main"),
+      run: () => checkoutBranchFromPalette("main"),
+    },
+    {
+      id: "checkout-master",
+      label: "Checkout master",
+      description: "Switch to master branch.",
+      keywords: ["switch branch"],
+      disabled: !hasRepo || !branchExists("master"),
+      run: () => checkoutBranchFromPalette("master"),
+    },
+    {
+      id: "checkout-develop",
+      label: "Checkout develop",
+      description: "Switch to develop branch.",
+      keywords: ["switch branch dev"],
+      disabled: !hasRepo || !branchExists("develop"),
+      run: () => checkoutBranchFromPalette("develop"),
+    },
+    {
+      id: "create-branch",
+      label: "Create branch",
+      description: "Open branch creation dialog.",
+      keywords: ["new branch"],
+      disabled: !hasRepo,
+      run: handleCreateBranch,
+    },
+    {
+      id: "stash",
+      label: "Stash changes",
+      description: "Save current working-tree changes into a stash.",
+      keywords: ["save changes"],
+      disabled: !hasRepo || !hasChanges,
+      run: handleStash,
+    },
+    {
+      id: "terminal",
+      label: "Toggle terminal",
+      description: "Show or hide the integrated terminal.",
+      shortcut: "Ctrl `",
+      keywords: ["shell"],
+      run: toggleTerminalPanel,
+    },
+    {
+      id: "open-repo",
+      label: "Open repository",
+      description: "Browse and open another local repository.",
+      shortcut: "Ctrl O",
+      keywords: ["folder"],
+      run: browseAndOpen,
+    },
+    {
+      id: "open-vscode",
+      label: "Open in VS Code",
+      description: "Open the current repository in Visual Studio Code.",
+      keywords: ["editor"],
+      disabled: !hasRepo,
+      run: openRepoInVsCode,
+    },
+    {
+      id: "open-explorer",
+      label: "Open in folder explorer",
+      description: "Open the current repository folder.",
+      shortcut: "Alt O",
+      keywords: ["files", "folder"],
+      disabled: !hasRepo,
+      run: openRepoInExplorer,
+    },
+    {
+      id: "settings",
+      label: "Open settings",
+      description: "Open preferences and app options.",
+      shortcut: "Ctrl ,",
+      keywords: ["options", "preferences"],
+      run: () => openOptions("preferences"),
+    },
+    {
+      id: "git-settings",
+      label: "Open Git integration",
+      description: "Configure Git path and background auto-fetch.",
+      shortcut: "Ctrl Shift K",
+      keywords: ["settings", "fetch"],
+      run: () => openOptions("git"),
+    },
+    {
+      id: "integrations",
+      label: "Open integrations",
+      description: "Manage GitHub, GitLab, Bitbucket and Azure connections.",
+      shortcut: "Ctrl Shift I",
+      keywords: ["tokens", "remote"],
+      run: () => openOptions("integrations"),
+    },
+    {
+      id: "logs",
+      label: "Open logs",
+      description: "Show app, user and error logs.",
+      shortcut: "Ctrl Shift L",
+      keywords: ["debug"],
+      run: openLogsPanel,
+    },
+    {
+      id: "view-graph",
+      label: "Graph view",
+      description: "Return to the standard commit graph.",
+      shortcut: "Alt 1",
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("graph"),
+    },
+    {
+      id: "view-galaxy",
+      label: "Galaxy view",
+      description: "Open the interactive commit galaxy.",
+      shortcut: "Alt 2",
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("galaxy"),
+    },
+  ];
+});
+
 function isAltOnlyShortcut(event: KeyboardEvent): boolean {
   return event.altKey && !event.ctrlKey && !event.shiftKey;
 }
@@ -1355,6 +1684,14 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
+  const key = event.key.toLowerCase();
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === "k") {
+    event.preventDefault();
+    openCommandPalette();
+    return;
+  }
+
   if (handleRepositoryTabShortcut(event, {
     newTab,
     closeActiveTab,
@@ -1368,8 +1705,6 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
   if (isEditableTarget(event.target)) {
     return;
   }
-
-  const key = event.key.toLowerCase();
 
   if (event.ctrlKey && event.code === "Backquote") {
     event.preventDefault();
@@ -2076,7 +2411,11 @@ async function handleRebaseConflictAbort() {
 async function handleCheckoutRemoteBranch(name: string) {
   const localBranch = git.localBranches.value.find(b => b.name === name);
   if (localBranch) {
-    await git.resetBranchToRemote(name);
+    scheduleDestructiveAction({
+      message: `Reset "${name}" to remote in 5 seconds.`,
+      detail: "Click Undo to keep the current local branch state.",
+      run: () => git.resetBranchToRemote(name),
+    });
   } else {
     try {
       await git.createBranch(name, "origin/" + name);
@@ -2145,23 +2484,11 @@ async function handleSubmitGhostMaterialize(name: string) {
 }
 
 function handleDiscardGhostBranch() {
-  toast.action(
-    "warning",
-    "Discard active Ghost Branch experiment?",
-    [
-      {
-        label: "Discard",
-        style: "danger",
-        onClick: () => git.discardGhostBranch(),
-      },
-      {
-        label: "Cancel",
-        style: "neutral",
-        onClick: () => {},
-      },
-    ],
-    18000,
-  );
+  scheduleDestructiveAction({
+    message: "Discard active Ghost Branch experiment in 5 seconds.",
+    detail: "Click Undo to keep the current Ghost Branch state.",
+    run: () => git.discardGhostBranch(),
+  });
 }
 
 function handleTimeMachineBlame(sha: string) {
@@ -2329,6 +2656,12 @@ function submitCreateTag() {
       @open-logs="openLogsPanel()"
     />
 
+    <CommandPalette
+      :visible="showCommandPalette"
+      :actions="commandPaletteActions"
+      @close="closeCommandPalette"
+    />
+
     <template v-if="isLanding">
       <LandingPage
         :open-repos="openReposList"
@@ -2356,6 +2689,7 @@ function submitCreateTag() {
         @ghost-branch="handleStartGhostBranch"
         @materialize-ghost-branch="handleOpenGhostMaterializeDialog"
         @discard-ghost-branch="handleDiscardGhostBranch"
+        @explain-git-state="explainGitState"
         @stash="handleStash"
         @terminal="toggleTerminalPanel"
         @settings="openOptions('preferences')"

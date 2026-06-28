@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2 } from "lucide-vue-next";
+import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 import {
@@ -49,6 +49,7 @@ const splitPaneRefs = ref(new Map<string, HTMLElement>());
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
+const fileJourneyOpen = ref(false);
 const highlightedLineCache = ref(new Map<string, string>());
 const toast = useToast();
 const git = useGit();
@@ -203,6 +204,54 @@ const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
 const fileNameParts = computed(() => splitFilePath(props.filePath));
 const blameSupportedView = computed(() => viewMode.value === "diff" || viewMode.value === "split-diff");
 const blamePanelVisible = computed(() => showBlamePanel.value && blameSupportedView.value);
+const fileJourneyAvailable = computed(() => {
+  const currentDiff = diff.value;
+  const isDiffView = viewMode.value === "diff" || viewMode.value === "split-diff" || viewMode.value === "file-diff";
+  return isDiffView && !!currentDiff && !loading.value && !error.value && !currentDiff.is_binary;
+});
+const fileJourneyVisible = computed(() => fileJourneyOpen.value && fileJourneyAvailable.value);
+
+interface QuickFileJourney {
+  createdBy: string;
+  lastChangedBy: string;
+  lastChanged: string;
+}
+
+const quickFileJourney = computed<QuickFileJourney>(() => {
+  if (timeLapseFrames.value.length > 0) {
+    const firstFrame = timeLapseFrames.value[0];
+    const lastFrame = timeLapseFrames.value[timeLapseFrames.value.length - 1];
+    return {
+      createdBy: firstFrame?.author || "Unknown",
+      lastChangedBy: lastFrame?.author || "Unknown",
+      lastChanged: lastFrame ? formatTimeLapseTimestamp(lastFrame.timestamp) : "Unknown",
+    };
+  }
+
+  let firstLine: FileBlameLine | null = null;
+  let lastLine: FileBlameLine | null = null;
+
+  for (const line of blameLines.value) {
+    if (!line.is_uncommitted) {
+      if (!firstLine || line.author_time < firstLine.author_time) firstLine = line;
+      if (!lastLine || line.author_time > lastLine.author_time) lastLine = line;
+    }
+  }
+
+  if (firstLine && lastLine) {
+    return {
+      createdBy: firstLine.author || "Unknown",
+      lastChangedBy: lastLine.author || "Unknown",
+      lastChanged: formatBlameTimestamp(lastLine.author_time),
+    };
+  }
+
+  return {
+    createdBy: props.commitSha ? "Current commit" : "Not loaded",
+    lastChangedBy: props.commitSha ? "Current commit" : (props.staged ? "Index" : "Working tree"),
+    lastChanged: props.commitSha ? props.commitSha.slice(0, 8) : (isUnstaged.value ? "Unstaged" : "Staged"),
+  };
+});
 
 interface InlineDiffPair {
   compareText: string;
@@ -2357,10 +2406,17 @@ function onEditInput() {
 watch(usePlainTextHighlighting, () => {
   highlightedLineCache.value.clear();
 });
+
+watch(
+  () => [props.filePath, props.commitSha, props.staged],
+  () => {
+    fileJourneyOpen.value = false;
+  },
+);
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-[var(--card)] overflow-hidden">
+  <div class="relative h-full flex flex-col bg-[var(--card)] overflow-hidden">
     <div class="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] bg-[var(--card)] flex-shrink-0">
       <div class="flex items-center gap-3 min-w-0">
         <Pencil v-if="isWorkingChanges" class="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
@@ -2418,6 +2474,21 @@ watch(usePlainTextHighlighting, () => {
         </div>
 
         <div class="flex items-center gap-2">
+          <button
+            type="button"
+            :disabled="!fileJourneyAvailable"
+            :class="[
+              'p-1.5 rounded-md border transition-colors',
+              fileJourneyOpen
+                ? 'border-[var(--primary)] bg-[var(--primary)] text-white'
+                : 'border-[var(--diff-border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]',
+              !fileJourneyAvailable ? 'opacity-45 cursor-not-allowed hover:text-[var(--muted-foreground)]' : ''
+            ]"
+            title="Toggle file journey"
+            @click="fileJourneyOpen = !fileJourneyOpen"
+          >
+            <History class="w-3.5 h-3.5" />
+          </button>
           <div class="flex bg-[var(--secondary)] rounded-md overflow-hidden">
             <button
               @click="viewMode = 'diff'"
@@ -2985,6 +3056,34 @@ watch(usePlainTextHighlighting, () => {
       </div>
 
       </div>
+    </div>
+
+    <div
+      v-if="fileJourneyVisible"
+      class="absolute bottom-3 right-3 z-[90] w-[210px] max-w-[calc(100%-1.5rem)] rounded-md border border-[var(--diff-border)] bg-[var(--card)]/96 p-2 shadow-xl backdrop-blur"
+    >
+      <div class="mb-1.5 flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-[var(--foreground)]">
+          <FileText class="h-3.5 w-3.5 text-[var(--primary)]" />
+          <span class="truncate">File Journey</span>
+        </div>
+        <button
+          type="button"
+          class="rounded p-0.5 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
+          title="Hide file journey"
+          @click="fileJourneyOpen = false"
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <dl class="grid grid-cols-[64px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-snug">
+        <dt class="text-[var(--muted-foreground)]">Created</dt>
+        <dd class="truncate text-[var(--foreground)]">{{ quickFileJourney.createdBy }}</dd>
+        <dt class="text-[var(--muted-foreground)]">Last by</dt>
+        <dd class="truncate text-[var(--foreground)]">{{ quickFileJourney.lastChangedBy }}</dd>
+        <dt class="text-[var(--muted-foreground)]">When</dt>
+        <dd class="truncate text-[var(--foreground)]">{{ quickFileJourney.lastChanged }}</dd>
+      </dl>
     </div>
   </div>
 </template>
