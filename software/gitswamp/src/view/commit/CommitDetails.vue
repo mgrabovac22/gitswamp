@@ -83,6 +83,7 @@ const commitDescription = ref("");
 const showCommitBuilder = ref(false);
 const commitBuilderType = ref("Fix");
 const commitBuilderScope = ref("");
+const commitBuilderIssue = ref("");
 const commitBuilderSummary = ref("");
 const commitBuilderBody = ref("");
 const commitLintEngine = createCommitLintEngine();
@@ -112,7 +113,7 @@ const commitBuilderPanelRef = ref<HTMLElement | null>(null);
 const commitAnalyzerIndicatorRef = ref<HTMLElement | null>(null);
 const commitAnalyzerPanelRef = ref<HTMLElement | null>(null);
 const commitAnalyzerTooltipVisible = ref(false);
-const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "330px", zIndex: 2147483600 });
+const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "360px", zIndex: 2147483600 });
 const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
@@ -489,8 +490,13 @@ const commitBuilderPreview = computed(() => {
   const type = capitalizeCommitBuilderType(commitBuilderType.value.trim() || "Fix");
   const scope = commitBuilderScope.value.trim();
   const summary = commitBuilderSummary.value.trim() || commitSummary.value.trim() || "describe change";
-  return scope ? `${type}(${scope}): ${summary}` : `${type}: ${summary}`;
+  const issueTag = normalizedCommitBuilderIssueTag.value;
+  const cleanSummary = issueTag ? summary.replace(/^#\d+\s+/, "") : summary;
+  const taggedSummary = issueTag ? `${issueTag} ${cleanSummary}` : cleanSummary;
+  return scope ? `${type}(${scope}): ${taggedSummary}` : `${type}: ${taggedSummary}`;
 });
+
+const normalizedCommitBuilderIssueTag = computed(() => normalizeIssueTag(commitBuilderIssue.value));
 
 function capitalizeCommitBuilderType(type: string): string {
   const trimmed = type.trim();
@@ -498,6 +504,30 @@ function capitalizeCommitBuilderType(type: string): string {
     return "Fix";
   }
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+}
+
+function normalizeIssueTag(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const match = trimmed.match(/\d+/);
+  return match ? `#${match[0]}` : "";
+}
+
+function parseCommitBuilderSubject(subject: string): { type: string; scope: string; issue: string; summary: string } | null {
+  const match = subject.trim().match(/^([A-Za-z]+)(?:\(([^)]+)\))?:\s*(#\d+)?\s*(.*)$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    type: capitalizeCommitBuilderType(match[1] || "Fix"),
+    scope: (match[2] || "").trim(),
+    issue: match[3] || "",
+    summary: (match[4] || "").trim(),
+  };
 }
 
 function updateFloatingPanelPosition(
@@ -532,7 +562,7 @@ function updateFloatingPanelPosition(
 
 function updateCommitFloatingPanels() {
   if (showCommitBuilder.value) {
-    updateFloatingPanelPosition(commitBuilderButtonRef.value, commitBuilderPanelRef.value, 330, 310, commitBuilderPanelStyle);
+    updateFloatingPanelPosition(commitBuilderButtonRef.value, commitBuilderPanelRef.value, 360, 340, commitBuilderPanelStyle);
   }
   if (commitAnalyzerTooltipVisible.value) {
     updateFloatingPanelPosition(commitAnalyzerIndicatorRef.value, commitAnalyzerPanelRef.value, 270, 112, commitAnalyzerPanelStyle);
@@ -549,9 +579,11 @@ function hideCommitAnalyzerTooltip() {
 }
 
 function openCommitBuilder() {
-  commitBuilderType.value = capitalizeCommitBuilderType(commitBuilderType.value || "Fix");
-  commitBuilderScope.value = commitBuilderScope.value || stagedDiffSummary.value.inferred_scope || commitBuilderScopes.value[0] || "";
-  commitBuilderSummary.value = commitSummary.value;
+  const parsed = parseCommitBuilderSubject(commitSummary.value);
+  commitBuilderType.value = parsed?.type || capitalizeCommitBuilderType(commitBuilderType.value || "Fix");
+  commitBuilderScope.value = parsed?.scope || commitBuilderScope.value || stagedDiffSummary.value.inferred_scope || commitBuilderScopes.value[0] || "";
+  commitBuilderIssue.value = parsed?.issue || commitBuilderIssue.value || "";
+  commitBuilderSummary.value = parsed?.summary || commitSummary.value;
   commitBuilderBody.value = commitDescription.value;
   showCommitBuilder.value = true;
   void nextTick(updateCommitFloatingPanels);
@@ -561,6 +593,10 @@ function saveCommitBuilder() {
   const summary = commitBuilderSummary.value.trim();
   if (!summary) {
     toast.error("Commit builder needs a short message.");
+    return;
+  }
+  if (commitBuilderIssue.value.trim() && !normalizedCommitBuilderIssueTag.value) {
+    toast.error("Issue tag needs a number, for example 123 or #123.");
     return;
   }
   commitSummary.value = commitBuilderPreview.value;
@@ -3043,7 +3079,7 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div class="grid grid-cols-2 gap-2">
+        <div class="grid grid-cols-3 gap-2">
           <label class="space-y-1">
             <span class="text-[10px] text-[var(--muted-foreground)]">Type</span>
             <select
@@ -3064,6 +3100,16 @@ onUnmounted(() => {
             <datalist id="commit-builder-scopes">
               <option v-for="scope in commitBuilderScopes" :key="scope" :value="scope" />
             </datalist>
+          </label>
+          <label class="space-y-1">
+            <span class="text-[10px] text-[var(--muted-foreground)]">Issue</span>
+            <input
+              v-model="commitBuilderIssue"
+              class="h-8 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-xs text-[var(--foreground)] outline-none"
+              placeholder="#123"
+              inputmode="numeric"
+              @keyup.enter="saveCommitBuilder"
+            >
           </label>
         </div>
 
