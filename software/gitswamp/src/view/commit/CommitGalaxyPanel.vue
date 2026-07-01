@@ -5,6 +5,7 @@ import type { BranchInfo, CommitInfo } from "@/types";
 type ViewMode = "galaxy" | "tree";
 type GalaxyShape = "spiral" | "layers" | "constellation";
 type DepthPreset = "balanced" | "deep";
+type GalaxyMotionMode = "threeD" | "balanced" | "circling";
 
 type GalaxyNode = {
   commit: CommitInfo;
@@ -97,7 +98,8 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const hoveredNode = shallowRef<ProjectedNode | null>(null);
 const viewMode = ref<ViewMode>("galaxy");
 const galaxyShape = ref<GalaxyShape>("spiral");
-const depthPreset = ref<DepthPreset>("deep");
+const galaxyMotionMode = ref<GalaxyMotionMode>("threeD");
+const depthPreset = computed<DepthPreset>(() => (galaxyMotionMode.value === "balanced" ? "balanced" : "deep"));
 const focusedSha = ref<string | null>(null);
 const showLabels = ref(true);
 const showGuides = ref(true);
@@ -112,6 +114,7 @@ const isDragging = ref(false);
 let ctx: CanvasRenderingContext2D | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let frameId: number | null = null;
+let animationTimer: ReturnType<typeof setTimeout> | null = null;
 let canvasWidth = 1;
 let canvasHeight = 1;
 let dpr = 1;
@@ -121,6 +124,9 @@ let pointerDownX = 0;
 let pointerDownY = 0;
 let draggedSincePointerDown = false;
 let projectedNodes: ProjectedNode[] = [];
+const projectedBySha = new Map<string, ProjectedNode>();
+let galaxyAnimationTime = 0;
+let circlingSpeedScale = 1;
 
 const viewport = {
   zoom: 1,
@@ -464,11 +470,18 @@ const shapeLabel = computed(() => {
   return "Spiral Galaxy";
 });
 
+const motionLabel = computed(() => {
+  if (viewMode.value === "tree") return "Tree";
+  if (galaxyMotionMode.value === "circling") return "Circling";
+  if (galaxyMotionMode.value === "balanced") return "Balanced";
+  return "3D";
+});
+
 const viewDetailLabel = computed(() => {
   const lanes = galaxyScene.value.lanes.length;
   return viewMode.value === "tree"
     ? `main trunk · ${lanes} branch canopy`
-    : `${shapeLabel.value} · ${lanes} branch levels · drag rotate`;
+    : `${motionLabel.value} · ${shapeLabel.value} · ${lanes} branch levels · drag rotate`;
 });
 
 const tooltipStyle = computed(() => {
@@ -485,6 +498,47 @@ function scheduleDraw() {
     frameId = null;
     drawScene();
   });
+}
+
+function isCirclingActive(): boolean {
+  return viewMode.value === "galaxy" && galaxyMotionMode.value === "circling";
+}
+
+function circlingFrameDelayMs(): number {
+  const count = galaxyScene.value.nodes.length;
+  if (count > 30000) return 96;
+  if (count > 14000) return 64;
+  if (count > 6000) return 48;
+  return 36;
+}
+
+function updateCirclingMetrics() {
+  const count = galaxyScene.value.nodes.length;
+  circlingSpeedScale = count > 30000
+    ? 0.34
+    : count > 14000
+      ? 0.48
+      : count > 6000
+        ? 0.68
+        : 1;
+}
+
+function scheduleCirclingFrame() {
+  if (!isCirclingActive() || animationTimer !== null || frameId !== null) {
+    return;
+  }
+
+  animationTimer = setTimeout(() => {
+    animationTimer = null;
+    scheduleDraw();
+  }, circlingFrameDelayMs());
+}
+
+function stopCirclingFrame() {
+  if (animationTimer !== null) {
+    clearTimeout(animationTimer);
+    animationTimer = null;
+  }
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -553,6 +607,23 @@ function layoutForNode(node: GalaxyNode): { x: number; y: number; z: number } {
   const layerY = node.levelY * levelScale;
   const layerZ = node.levelZ;
 
+  if (galaxyMotionMode.value === "circling") {
+    const baseRadius = Math.max(48, Math.hypot(node.galaxyX, node.galaxyY));
+    const laneMagnitude = Math.max(1, Math.abs(node.laneOffset));
+    const direction = node.laneOffset < 0 ? -1 : 1;
+    const speed = (0.018 + laneMagnitude * 0.0018 + node.ageProgress * 0.009) * direction * circlingSpeedScale;
+    const angle = Math.atan2(node.galaxyY, node.galaxyX) + galaxyAnimationTime * speed;
+    const ringSquash = 0.58 + Math.min(0.16, laneMagnitude * 0.025);
+    const orbitX = Math.cos(angle) * baseRadius + node.laneOffset * 16;
+    const orbitY = Math.sin(angle) * baseRadius * ringSquash;
+    const orbitZ = node.galaxyZ * 0.32 + Math.sin(angle + node.laneOffset * 0.45) * (82 + laneMagnitude * 9);
+    return {
+      x: mix(orbitX, layerX, focus * 0.68),
+      y: mix(orbitY, layerY, focus * 0.64),
+      z: mix(orbitZ, layerZ, focus * 0.5),
+    };
+  }
+
   if (galaxyShape.value === "layers") {
     const branchWave = Math.sin(node.ageProgress * Math.PI * 5 + node.laneOffset * 0.85) * 34;
     return {
@@ -615,16 +686,30 @@ function projectLayoutPoint(x: number, y: number, z: number): { screenX: number;
   };
 }
 
-function projectNode(node: GalaxyNode): ProjectedNode {
+function projectNodeInto(node: GalaxyNode, target?: ProjectedNode): ProjectedNode {
   const layout = layoutForNode(node);
   const projected = projectLayoutPoint(layout.x, layout.y, layout.z);
-  return {
-    ...node,
-    screenX: projected.screenX,
-    screenY: projected.screenY,
-    depth: projected.depth,
-    screenRadius: Math.max(1.5, node.radius * viewport.zoom * projected.scale),
-  };
+  const output = target || ({ ...node } as ProjectedNode);
+  Object.assign(output, node);
+  output.screenX = projected.screenX;
+  output.screenY = projected.screenY;
+  output.depth = projected.depth;
+  output.screenRadius = Math.max(1.5, node.radius * viewport.zoom * projected.scale);
+  return output;
+}
+
+function projectSceneNodes(): ProjectedNode[] {
+  const nodes = galaxyScene.value.nodes;
+  if (projectedNodes.length > nodes.length) {
+    projectedNodes.length = nodes.length;
+  }
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    projectedNodes[index] = projectNodeInto(nodes[index], projectedNodes[index]);
+  }
+
+  projectedNodes.sort((a, b) => a.depth - b.depth);
+  return projectedNodes;
 }
 
 function drawBackground(context: CanvasRenderingContext2D) {
@@ -723,18 +808,20 @@ function drawTimeRings(context: CanvasRenderingContext2D) {
 
   const scene = galaxyScene.value;
   const maxRadius = Math.max(150, Math.sqrt(scene.nodes.length + 1) * 21 + 78);
-  const rings = galaxyShape.value === "layers" ? 5 : 6;
+  const circling = galaxyMotionMode.value === "circling";
+  const rings = circling ? 7 : galaxyShape.value === "layers" ? 5 : 6;
   for (let index = 1; index <= rings; index += 1) {
     const progress = index / rings;
     const radius = maxRadius * progress;
-    const color = index === rings ? "#93c5fd" : "#60a5fa";
+    const color = circling && index % 2 === 0 ? "#22d3ee" : index === rings ? "#93c5fd" : "#60a5fa";
+    const pulse = circling ? 0.015 * (1 + Math.sin(galaxyAnimationTime * 0.7 + index)) : 0;
     drawProjectedOrbit(
       context,
       radius,
-      radius * (galaxyShape.value === "constellation" ? 0.42 : 0.72),
+      radius * (circling ? 0.56 : galaxyShape.value === "constellation" ? 0.42 : 0.72),
       (index % 2 === 0 ? -36 : 34) * (depthPreset.value === "deep" ? 1.4 : 0.9),
       color,
-      0.035 + progress * 0.025,
+      0.035 + progress * 0.025 + pulse,
       Math.max(0.6, viewport.zoom * 0.55),
     );
   }
@@ -1117,13 +1204,17 @@ function drawNode(context: CanvasRenderingContext2D, node: ProjectedNode) {
 
 function drawScene() {
   if (!ctx) return;
+  if (isCirclingActive()) {
+    galaxyAnimationTime = performance.now() * 0.001;
+    updateCirclingMetrics();
+  }
   const context = ctx;
   drawBackground(context);
 
   context.save();
   context.scale(dpr, dpr);
-  projectedNodes = galaxyScene.value.nodes.map(projectNode).sort((a, b) => a.depth - b.depth);
-  const projectedBySha = new Map<string, ProjectedNode>();
+  projectedNodes = projectSceneNodes();
+  projectedBySha.clear();
   for (const node of projectedNodes) {
     projectedBySha.set(node.commit.sha, node);
   }
@@ -1169,6 +1260,7 @@ function drawScene() {
 
   context.globalAlpha = 1;
   context.restore();
+  scheduleCirclingFrame();
 }
 
 function pointerPosition(event: PointerEvent | WheelEvent): { x: number; y: number } {
@@ -1320,6 +1412,9 @@ function resetView() {
 
 function toggleTreeView() {
   viewMode.value = viewMode.value === "tree" ? "galaxy" : "tree";
+  if (viewMode.value === "tree") {
+    stopCirclingFrame();
+  }
   resetView();
 }
 
@@ -1369,6 +1464,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   resizeObserver?.disconnect();
+  stopCirclingFrame();
   if (frameId !== null) {
     cancelAnimationFrame(frameId);
     frameId = null;
@@ -1382,6 +1478,22 @@ watch(galaxyScene, () => {
 
 watch(galaxyShape, () => {
   resetView();
+});
+
+watch(galaxyMotionMode, () => {
+  if (!isCirclingActive()) {
+    stopCirclingFrame();
+  }
+  scheduleDraw();
+  scheduleCirclingFrame();
+});
+
+watch(viewMode, () => {
+  if (!isCirclingActive()) {
+    stopCirclingFrame();
+  }
+  scheduleDraw();
+  scheduleCirclingFrame();
 });
 
 watch(depthPreset, scheduleDraw);
@@ -1422,12 +1534,13 @@ watch(() => props.selectedSha, scheduleDraw);
       </select>
       <select
         v-if="viewMode === 'galaxy'"
-        v-model="depthPreset"
+        v-model="galaxyMotionMode"
         class="h-[26px] rounded border border-white/10 bg-slate-950/80 px-2 text-[11px] text-slate-100 outline-none hover:bg-slate-800"
-        title="Depth strength"
+        title="Galaxy motion"
       >
-        <option value="deep">Deep 3D</option>
+        <option value="threeD">3D</option>
         <option value="balanced">Balanced</option>
+        <option value="circling">Circling</option>
       </select>
       <button
         type="button"

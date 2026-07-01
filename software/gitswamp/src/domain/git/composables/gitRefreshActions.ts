@@ -7,19 +7,24 @@ import { statusHash } from "./gitHelpers";
 
 export function createRefreshActions(state: GitState) {
   let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null;
+  let loadMoreRequestId = 0;
   let statusRequestId = 0;
   const coordinator = new RepositoryRefreshCoordinator();
 
   async function loadCommitsToCount(targetCount: number): Promise<boolean> {
-    if (!state.repoPath.value || state.loadingMore.value) return false;
+    const repoPath = state.repoPath.value;
+    if (!repoPath || state.loadingMore.value) return false;
 
     state.loadingMore.value = true;
+    const requestId = ++loadMoreRequestId;
     try {
       const currentCount = state.commits.value.length;
       const result = await callTauri<CommitInfo[]>("get_commits", {
-        path: state.repoPath.value,
+        path: repoPath,
         maxCount: targetCount,
       });
+
+      if (repoPath !== state.repoPath.value) return false;
 
       if (result.length <= currentCount) {
         state.hasMoreCommits.value = false;
@@ -30,23 +35,29 @@ export function createRefreshActions(state: GitState) {
       state.hasMoreCommits.value = result.length >= targetCount;
       return true;
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return false;
       state.error.value = String(e);
       return false;
     } finally {
-      state.loadingMore.value = false;
+      if (requestId === loadMoreRequestId) {
+        state.loadingMore.value = false;
+      }
     }
   }
 
   async function refreshCommits() {
-    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
     try {
       const result = await callTauri<CommitInfo[]>("get_commits", {
-        path: state.repoPath.value,
+        path: repoPath,
         maxCount: PAGE_SIZE,
       });
+      if (repoPath !== state.repoPath.value) return;
       state.commits.value = result;
       state.hasMoreCommits.value = result.length >= PAGE_SIZE;
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
     }
   }
@@ -97,10 +108,14 @@ export function createRefreshActions(state: GitState) {
   }
 
   async function refreshBranches() {
-    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
     try {
-      state.branches.value = await callTauri<BranchInfo[]>("get_branches", { path: state.repoPath.value });
+      const result = await callTauri<BranchInfo[]>("get_branches", { path: repoPath });
+      if (repoPath !== state.repoPath.value) return;
+      state.branches.value = result;
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
     }
   }
@@ -121,34 +136,46 @@ export function createRefreshActions(state: GitState) {
   }
 
   async function refreshStashes() {
-    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
     try {
-      state.stashes.value = await callTauri<StashInfo[]>("stash_list", { path: state.repoPath.value });
+      const result = await callTauri<StashInfo[]>("stash_list", { path: repoPath });
+      if (repoPath !== state.repoPath.value) return;
+      state.stashes.value = result;
     } catch {
       // Ignore optional refresh failures.
     }
   }
 
   async function refreshTags() {
-    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
     try {
-      state.tags.value = await callTauri<TagInfo[]>("get_tags", { path: state.repoPath.value });
+      const result = await callTauri<TagInfo[]>("get_tags", { path: repoPath });
+      if (repoPath !== state.repoPath.value) return;
+      state.tags.value = result;
     } catch {
       // Ignore optional refresh failures.
     }
   }
 
   async function refreshAll() {
-    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
     coordinator.cancel();
     state.loading.value = true;
     try {
-      state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+      const repoInfo = await callTauri<RepoInfo>("get_repo_info", { path: repoPath });
+      if (repoPath !== state.repoPath.value) return;
+      state.repoInfo.value = repoInfo;
       await Promise.all([refreshCommits(), refreshBranches(), refreshStatus(), refreshStashes(), refreshTags()]);
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
     } finally {
-      state.loading.value = false;
+      if (repoPath === state.repoPath.value) {
+        state.loading.value = false;
+      }
     }
   }
 
@@ -171,13 +198,14 @@ export function createRefreshActions(state: GitState) {
   }
 
   async function getCommitFiles(sha: string) {
-    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
     try {
-      state.selectedCommitFiles.value = await callTauri<CommitFileInfo[]>("get_commit_files", {
-        path: state.repoPath.value,
-        sha,
-      });
+      const files = await callTauri<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha });
+      if (repoPath !== state.repoPath.value) return;
+      state.selectedCommitFiles.value = files;
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
       state.selectedCommitFiles.value = [];
     }
@@ -189,17 +217,18 @@ export function createRefreshActions(state: GitState) {
     state.selectedCommits.value = [];
     state.selectedCommitFiles.value = [];
 
-    if (!stash || !state.repoPath.value) {
+    const repoPath = state.repoPath.value;
+    if (!stash || !repoPath) {
       state.selectedStashFiles.value = [];
       return;
     }
 
     try {
-      state.selectedStashFiles.value = await callTauri<CommitFileInfo[]>("stash_files", {
-        path: state.repoPath.value,
-        index: stash.index,
-      });
+      const files = await callTauri<CommitFileInfo[]>("stash_files", { path: repoPath, index: stash.index });
+      if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;
+      state.selectedStashFiles.value = files;
     } catch (e) {
+      if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;
       state.error.value = String(e);
       state.selectedStashFiles.value = [];
     }
@@ -211,7 +240,8 @@ export function createRefreshActions(state: GitState) {
   }
 
   async function searchCommits(query: string) {
-    if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
     if (!query.trim()) {
       clearSearch();
       return;
@@ -220,10 +250,11 @@ export function createRefreshActions(state: GitState) {
     try {
       state.searchQuery.value = query;
       const results = await callTauri<CommitInfo[]>("search_commits", {
-        path: state.repoPath.value,
+        path: repoPath,
         query,
         maxCount: 50000,
       });
+      if (repoPath !== state.repoPath.value) return;
       state.searchResults.value = results;
       state.hasMoreSearchResults.value = false;
 
@@ -231,6 +262,7 @@ export function createRefreshActions(state: GitState) {
         await ensureCommitLoaded(results[0].sha);
       }
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
     }
   }

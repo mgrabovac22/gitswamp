@@ -177,7 +177,38 @@ const authEmailInput = ref("");
 const authKeyNameInput = ref("gitswamp");
 const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
-let singleCommitLoadSha: string | null = null;
+let singleCommitLoadKey: string | null = null;
+let selectedCommitWatcherSkipSha: string | null = null;
+const COMMIT_FILES_CACHE_LIMIT = 80;
+const COMMIT_FILES_CACHE_MAX_FILES = 1500;
+const commitFilesCache = new Map<string, CommitFileInfo[]>();
+
+function getCommitFilesCacheKey(repoPath: string, sha: string) {
+  return `${repoPath}\u0000${sha}`;
+}
+
+function getCachedCommitFiles(repoPath: string, sha: string) {
+  const key = getCommitFilesCacheKey(repoPath, sha);
+  const cached = commitFilesCache.get(key);
+  if (!cached) return null;
+  commitFilesCache.delete(key);
+  commitFilesCache.set(key, cached);
+  return cached;
+}
+
+function cacheCommitFiles(repoPath: string, sha: string, files: CommitFileInfo[]) {
+  if (files.length > COMMIT_FILES_CACHE_MAX_FILES) return;
+  const key = getCommitFilesCacheKey(repoPath, sha);
+  if (commitFilesCache.has(key)) {
+    commitFilesCache.delete(key);
+  }
+  commitFilesCache.set(key, files);
+  while (commitFilesCache.size > COMMIT_FILES_CACHE_LIMIT) {
+    const oldestKey = commitFilesCache.keys().next().value;
+    if (!oldestKey) break;
+    commitFilesCache.delete(oldestKey);
+  }
+}
 
 function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
   diffFilePath.value = filePath;
@@ -1823,11 +1854,16 @@ watch(() => git.selectedCommit.value, (commit) => {
   }
 
   if (commit) {
+    if (selectedCommitWatcherSkipSha === commit.sha) {
+      selectedCommitWatcherSkipSha = null;
+      return;
+    }
     viewingWorkingChanges.value = false;
     git.selectedCommits.value = [commit];
     git.selectedCommitFiles.value = [];
     void loadSingleSelectedCommitFiles(commit);
   } else if (git.selectedCommits.value.length <= 1) {
+    selectedCommitWatcherSkipSha = null;
     git.selectedCommits.value = [];
   }
 });
@@ -2129,8 +2165,22 @@ function mergeCommitFileStatus(currentStatus: string, nextStatus: string): strin
   return next >= current ? nextStatus : currentStatus;
 }
 
+async function getCommitFiles(repoPath: string, sha: string): Promise<CommitFileInfo[]> {
+  const cached = getCachedCommitFiles(repoPath, sha);
+  if (cached) return cached;
+
+  try {
+    const files = await invoke<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha });
+    cacheCommitFiles(repoPath, sha, files);
+    return files;
+  } catch {
+    return [];
+  }
+}
+
 async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
-  if (!git.repoPath.value || commits.length <= 1) {
+  const repoPath = git.repoPath.value;
+  if (!repoPath || commits.length <= 1) {
     return;
   }
 
@@ -2139,19 +2189,12 @@ async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
 
   const responses = await Promise.all(
     sorted.map(async (commit) => {
-      try {
-        const files = await invoke<CommitFileInfo[]>("get_commit_files", {
-          path: git.repoPath.value,
-          sha: commit.sha,
-        });
-        return { sha: commit.sha, files };
-      } catch {
-        return { sha: commit.sha, files: [] as CommitFileInfo[] };
-      }
+      const files = await getCommitFiles(repoPath, commit.sha);
+      return { sha: commit.sha, files };
     }),
   );
 
-  if (runToken !== multiCommitFilesRunToken) {
+  if (runToken !== multiCommitFilesRunToken || git.repoPath.value !== repoPath) {
     return;
   }
 
@@ -2183,30 +2226,33 @@ async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
 }
 
 async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
-  if (!git.repoPath.value) {
+  const repoPath = git.repoPath.value;
+  if (!repoPath) {
     git.selectedCommitFiles.value = [];
     return;
   }
 
-  if (singleCommitLoadSha === commit.sha) {
+  const cacheKey = getCommitFilesCacheKey(repoPath, commit.sha);
+  const cached = getCachedCommitFiles(repoPath, commit.sha);
+  if (cached) {
+    const stillSelected = git.selectedCommits.value.length === 1 && git.selectedCommits.value[0]?.sha === commit.sha;
+    if (stillSelected) {
+      git.selectedCommitFiles.value = cached;
+    }
     return;
   }
 
-  singleCommitLoadSha = commit.sha;
+  if (singleCommitLoadKey === cacheKey) {
+    return;
+  }
+
+  singleCommitLoadKey = cacheKey;
   const runToken = ++multiCommitFilesRunToken;
-  let files: CommitFileInfo[] = [];
 
   try {
-    try {
-      files = await invoke<CommitFileInfo[]>("get_commit_files", {
-        path: git.repoPath.value,
-        sha: commit.sha,
-      });
-    } catch {
-      files = [];
-    }
+    const files = await getCommitFiles(repoPath, commit.sha);
 
-    if (runToken !== multiCommitFilesRunToken) {
+    if (runToken !== multiCommitFilesRunToken || git.repoPath.value !== repoPath) {
       return;
     }
 
@@ -2217,8 +2263,8 @@ async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
 
     git.selectedCommitFiles.value = files;
   } finally {
-    if (singleCommitLoadSha === commit.sha) {
-      singleCommitLoadSha = null;
+    if (singleCommitLoadKey === cacheKey) {
+      singleCommitLoadKey = null;
     }
   }
 }
@@ -2241,20 +2287,35 @@ async function onSelectCommit(payload: CommitSelectionPayload) {
   }
 
   git.selectedCommits.value = nextSelection;
+  const watcherSkipSha = nextSelection.length === 1 ? nextSelection[0].sha : null;
+  selectedCommitWatcherSkipSha = watcherSkipSha;
   git.selectedCommit.value = nextSelection.length === 1 ? nextSelection[0] : null;
+  if (watcherSkipSha) {
+    queueMicrotask(() => {
+      if (selectedCommitWatcherSkipSha === watcherSkipSha) {
+        selectedCommitWatcherSkipSha = null;
+      }
+    });
+  }
+  git.clearStashSelection();
+  detailsPanelCollapsed.value = false;
 
   if (nextSelection.length === 0) {
     multiCommitFilesRunToken += 1;
     git.selectedCommitFiles.value = [];
   } else if (nextSelection.length === 1) {
-    git.selectedCommitFiles.value = [];
-    await loadSingleSelectedCommitFiles(nextSelection[0]);
+    multiCommitFilesRunToken += 1;
+    const repoPath = git.repoPath.value;
+    const cached = repoPath ? getCachedCommitFiles(repoPath, nextSelection[0].sha) : null;
+    git.selectedCommitFiles.value = cached || [];
+    if (!cached) {
+      void loadSingleSelectedCommitFiles(nextSelection[0]);
+    }
   } else {
-    await loadAggregatedSelectedCommitFiles(nextSelection);
+    multiCommitFilesRunToken += 1;
+    git.selectedCommitFiles.value = [];
+    void loadAggregatedSelectedCommitFiles(nextSelection);
   }
-
-  git.clearStashSelection();
-  detailsPanelCollapsed.value = false;
 }
 
 function onSelectWorkingChanges() {

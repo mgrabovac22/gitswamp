@@ -101,7 +101,7 @@ const terminal = createTerminalActions(state);
 
 async function openRepositoryWithGhost(path: string) {
   await repo.openRepository(path);
-  await ghost.refreshGhostBranchState();
+  void ghost.refreshGhostBranchState();
 }
 
 async function refreshAllWithGhost() {

@@ -51,6 +51,7 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
   }
 
   function selectTab(id: string) {
+    if (id === activeTabId.value) return;
     activeTabId.value = id;
     const tab = tabs.value.find((item) => item.id === id);
     if (tab?.path) {
