@@ -12,6 +12,7 @@ import InitDialog from "@/view/repository/InitDialog.vue";
 import GhostBranchDialog from "@/view/repository/GhostBranchDialog.vue";
 import MultiPlatformPushDialog from "@/view/repository/MultiPlatformPushDialog.vue";
 import OptionsDialog from "@/view/shell/OptionsDialog.vue";
+import LogsPanel from "@/view/shell/LogsPanel.vue";
 import ToastContainer from "@/shared/ui/ToastContainer.vue";
 import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
@@ -24,6 +25,10 @@ import { useRepositoryTabs } from "@/features/repository/tabs/useRepositoryTabs"
 import { useRecentRepositories } from "@/features/repository/recent/useRecentRepositories";
 import { useAppLogs } from "@/features/shell/useAppLogs";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
+import {
+  SMART_GITIGNORE_WIZARD_EVENT,
+  getStoredSmartGitignoreWizardEnabled,
+} from "@/shared/config/gitignoreWizardPreferences";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
@@ -47,7 +52,7 @@ const {
   userLogs,
   errorLogs,
   appendLog,
-  openLogsPanel,
+  toggleLogsPanel,
 } = useAppLogs();
 const {
   recentRepos,
@@ -64,6 +69,7 @@ const {
   openReposList,
   restoreTabs,
   selectTab,
+  selectAdjacentTab,
   closeTab,
   newTab,
   reopenClosedTab,
@@ -130,6 +136,7 @@ const stashMessage = ref("");
 const showEditMessageDialog = ref(false);
 const editMessageSha = ref("");
 const editMessageText = ref("");
+const smartGitignoreWizardEnabled = ref(getStoredSmartGitignoreWizardEnabled());
 const showRenameDialog = ref(false);
 const renameBranchOld = ref("");
 const renameBranchNew = ref("");
@@ -1191,6 +1198,15 @@ function handleAutoFetchSettingsChanged(): void {
   void runBackgroundAutoFetch();
 }
 
+function handleSmartGitignoreWizardChanged(event: Event): void {
+  if (event instanceof CustomEvent) {
+    smartGitignoreWizardEnabled.value = Boolean(event.detail);
+    return;
+  }
+
+  smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
+}
+
 async function handlePull() {
   appendLog("user", "Pull triggered.");
   activeRemoteAction.value = "pull";
@@ -1538,11 +1554,11 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
     },
     {
       id: "logs",
-      label: "Open logs",
-      description: "Show app, user and error logs.",
+      label: "Toggle logs",
+      description: "Show or hide app, user and error logs.",
       shortcut: "Ctrl Shift L",
       keywords: ["debug"],
-      run: openLogsPanel,
+      run: toggleLogsPanel,
     },
     {
       id: "view-graph",
@@ -1657,7 +1673,7 @@ function handleRepositoryDialogShortcut(event: KeyboardEvent, key: string): bool
 
   if (event.ctrlKey && event.shiftKey && key === "l") {
     event.preventDefault();
-    openLogsPanel();
+    toggleLogsPanel();
     return true;
   }
 
@@ -1727,6 +1743,7 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
     newTab,
     closeActiveTab,
     reopenClosedTab,
+    selectAdjacentTab,
     canCloseActiveTab: () => canCloseActiveTab.value,
     canReopenClosedTab: () => canReopenClosedTab.value,
   })) {
@@ -1753,6 +1770,7 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
 onMounted(() => {
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
   globalThis.addEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
+  globalThis.addEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
   appendLog("app", "Application started.");
 
   const restoreSession = shouldRestoreSession();
@@ -1783,6 +1801,7 @@ onMounted(() => {
 onUnmounted(() => {
   globalThis.removeEventListener("keydown", handleGlobalShortcuts);
   globalThis.removeEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
+  globalThis.removeEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
   stopAutoFetchTimer();
   pullRequestFetchSequence++;
   if (pullRequestFetchTimer) {
@@ -2714,7 +2733,7 @@ function submitCreateTag() {
       @open-in-vs-code="openRepoInVsCode()"
       @open-in-explorer="openRepoInExplorer()"
       @create-gist="createGistFromRepo()"
-      @open-logs="openLogsPanel()"
+      @open-logs="toggleLogsPanel()"
     />
 
     <CommandPalette
@@ -2724,17 +2743,33 @@ function submitCreateTag() {
     />
 
     <template v-if="isLanding">
-      <LandingPage
-        :open-repos="openReposList"
-        :recent-repos="recentRepos"
-        @open="openRepo"
-        @browse="browseAndOpen"
-        @clone="showCloneDialog = true"
-        @init="showInitDialog = true"
-        @settings="openOptions('preferences')"
-        @remove-recent="removeRecent"
-        @clear-recent="clearRecent"
-      />
+      <div class="flex-1 min-h-0 flex overflow-hidden">
+        <LandingPage
+          :open-repos="openReposList"
+          :recent-repos="recentRepos"
+          :github-token="git.providerTokens.value.github || git.githubToken.value || ''"
+          @open="openRepo"
+          @browse="browseAndOpen"
+          @clone="showCloneDialog = true"
+          @init="showInitDialog = true"
+          @settings="openOptions('preferences')"
+          @logs="toggleLogsPanel()"
+          @remove-recent="removeRecent"
+          @clear-recent="clearRecent"
+        />
+
+        <div
+          v-if="showLogsPanel"
+          class="h-full w-[360px] max-w-[42vw] flex-shrink-0"
+        >
+          <LogsPanel
+            :app-logs="appLogs"
+            :user-logs="userLogs"
+            :error-logs="errorLogs"
+            @close="showLogsPanel = false"
+          />
+        </div>
+      </div>
     </template>
 
     <template v-else-if="git.repoInfo.value">
@@ -2779,6 +2814,7 @@ function submitCreateTag() {
         :app-logs="appLogs"
         :user-logs="userLogs"
         :error-logs="errorLogs"
+        :smart-gitignore-wizard-enabled="smartGitignoreWizardEnabled"
         @set-history-view="setHistoryViewMode($event)"
         @update:show-terminal="showTerminal = $event"
         @update:terminal-allow-all="terminalAllowAll = $event"

@@ -28,6 +28,7 @@ import {
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
+import SmartGitignoreWizard from "@/view/commit/SmartGitignoreWizard.vue";
 import { splitFilePath } from "@/shared/codeView";
 import { useToast } from "@/shared/notifications/useToast";
 import {
@@ -56,6 +57,7 @@ const props = defineProps<{
   selectedStash?: StashInfo | null;
   stashFiles?: CommitFileInfo[];
   repoPath: string;
+  smartGitignoreWizardEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -1968,6 +1970,13 @@ onUnmounted(() => {
             </button>
           </div>
         </div>
+
+        <SmartGitignoreWizard
+          v-if="props.smartGitignoreWizardEnabled"
+          :repo-path="props.repoPath"
+          :unstaged-files="props.unstagedFiles"
+          @applied="emit('refreshState')"
+        />
 
         <div v-if="unstagedFiles.length > 0" class="border-b border-[var(--border)]">
           <div class="flex items-center justify-between px-3 py-2 bg-[var(--card)]">

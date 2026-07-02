@@ -3,6 +3,7 @@ export type ThemeModePreference = "dark" | "light";
 export type AppPalettePreference =
   | "swamp"
   | "default"
+  | "default-light"
   | "github-dark"
   | "graphite-gray"
   | "dark-red"
@@ -52,6 +53,7 @@ export const APP_THEME_OPTIONS: AppThemeOption[] = [
   { id: "copper-night", label: "Copper Night", mode: "dark", group: "dark" },
   { id: "nord-fjord", label: "Nord Fjord", mode: "dark", group: "dark" },
   { id: "espresso", label: "Espresso", mode: "dark", group: "dark" },
+  { id: "default-light", label: "Default Light", mode: "light", group: "light" },
   { id: "github-light", label: "GitHub Light", mode: "light", group: "light" },
   { id: "mint-light", label: "Mint Light", mode: "light", group: "light" },
   { id: "sand-light", label: "Sand Light", mode: "light", group: "light" },

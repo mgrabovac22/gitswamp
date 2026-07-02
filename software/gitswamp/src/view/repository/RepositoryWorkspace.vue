@@ -45,6 +45,7 @@ const props = defineProps<{
   appLogs: string[];
   userLogs: string[];
   errorLogs: string[];
+  smartGitignoreWizardEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -457,6 +458,7 @@ function handleRefreshState() {
             :selected-stash="props.git.selectedStash.value"
             :stash-files="props.git.selectedStashFiles.value"
             :repo-path="props.git.repoPath.value"
+            :smart-gitignore-wizard-enabled="props.smartGitignoreWizardEnabled"
             @stage="props.git.stageFile($event)"
             @unstage="props.git.unstageFile($event)"
             @stage-all="props.git.stageAll()"

@@ -59,6 +59,15 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
     }
   }
 
+  function selectAdjacentTab(direction: 1 | -1) {
+    if (tabs.value.length <= 1) return;
+
+    const currentIndex = tabs.value.findIndex((tab) => tab.id === activeTabId.value);
+    const startIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = (startIndex + direction + tabs.value.length) % tabs.value.length;
+    selectTab(tabs.value[nextIndex].id);
+  }
+
   function rememberClosedTab(tab: RepositoryTab) {
     closedTabs.value = [cloneTab(tab), ...closedTabs.value].slice(0, CLOSED_TABS_LIMIT);
   }
@@ -133,6 +142,7 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
     openReposList,
     restoreTabs,
     selectTab,
+    selectAdjacentTab,
     closeTab,
     newTab,
     reopenClosedTab,

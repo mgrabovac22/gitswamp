@@ -18,12 +18,12 @@ defineEmits<{
   <div class="border-b border-[var(--sidebar-border)]">
     <button
       @click="$emit('toggle')"
-      class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
+      class="w-full flex items-center justify-start gap-2 px-4 py-2.5 text-left text-sm text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
     >
       <ChevronDown v-if="expanded" class="w-4 h-4" />
       <ChevronRight v-else class="w-4 h-4" />
       <component :is="icon" class="w-4 h-4 text-[var(--sidebar-primary)]" />
-      <span>{{ label }}</span>
+      <span class="text-left">{{ label }}</span>
       <span class="ml-auto text-xs bg-[var(--secondary)] px-2 py-0.5 rounded-full text-[var(--muted-foreground)]">{{ count }}</span>
     </button>
     <div v-if="expanded" class="pb-2">

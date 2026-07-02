@@ -191,6 +191,33 @@ function buildHelpText(allowAll: boolean): string {
   ].join("\n");
 }
 
+function normalizeSudoCommand(trimmed: string): { command: string; note: string; error?: string } {
+  if (!/^sudo(?:\s+|$)/i.test(trimmed)) {
+    return { command: trimmed, note: "" };
+  }
+
+  const command = trimmed.replace(/^sudo(?:\s+|$)/i, "").trim();
+  const note = "\n(sudo removed: interactive sudo password prompts are not supported in GitSwamp terminal; running without sudo.)";
+
+  if (!command) {
+    return {
+      command,
+      note,
+      error: "Error: sudo needs a command. Try running the command without sudo.",
+    };
+  }
+
+  if (command.startsWith("-")) {
+    return {
+      command: "",
+      note,
+      error: "Error: sudo flags are not supported here. Try the same command without sudo/options.",
+    };
+  }
+
+  return { command, note };
+}
+
 function quoteForShell(arg: string): string {
   if (!/[\s"'`$&|<>^()]/.test(arg)) {
     return arg;
@@ -588,17 +615,17 @@ export function createTerminalActions(state: GitState) {
     }
   }
 
-  async function executeGitArgs(rawArgs: string[], typedCommand: string, allowAllMode: boolean) {
+  async function executeGitArgs(rawArgs: string[], typedCommand: string, allowAllMode: boolean, commandNote = "") {
     const expandedArgs = expandGitShortcut(rawArgs);
     const args = normalizeGitArgs(expandedArgs);
 
     if (args.length === 0) {
-      appendOutput("$ git\nError: Missing git arguments.");
+      appendOutput("$ git" + commandNote + "\nError: Missing git arguments.");
       return;
     }
 
     const commandLabel = "$ git " + args.join(" ");
-    const expandedNote = buildExpandedNote(rawArgs, expandedArgs, args);
+    const expandedNote = commandNote + buildExpandedNote(rawArgs, expandedArgs, args);
 
     lastExecuted = { command: typedCommand, allowAll: allowAllMode };
 
@@ -614,14 +641,14 @@ export function createTerminalActions(state: GitState) {
     await runGitCommandWithFallback(args, commandLabel, expandedNote);
   }
 
-  async function runAllowAllCommand(trimmed: string, parsed: string[] | null) {
+  async function runAllowAllCommand(trimmed: string, parsed: string[] | null, commandNote = "") {
     if (parsed && parsed.length > 0) {
       const first = parsed[0].toLowerCase();
       const explicitGit = first === "git";
       const shortcutGit = !!GIT_SHORTCUTS[first];
       if (explicitGit || shortcutGit) {
         const gitArgs = explicitGit ? parsed.slice(1) : parsed;
-        await executeGitArgs(gitArgs, trimmed, true);
+        await executeGitArgs(gitArgs, trimmed, true, commandNote);
         return;
       }
     }
@@ -632,43 +659,51 @@ export function createTerminalActions(state: GitState) {
         path: state.repoPath.value,
         command: trimmed,
       });
-      appendOutput(`$ ${trimmed}\n${result || "(done)"}`);
+      appendOutput(`$ ${trimmed}${commandNote}\n${result || "(done)"}`);
     } catch (error) {
-      appendOutput(`$ ${trimmed}\nError: ${error}`);
+      appendOutput(`$ ${trimmed}${commandNote}\nError: ${error}`);
     }
   }
 
-  async function runGitModeCommand(trimmed: string, parsed: string[] | null) {
+  async function runGitModeCommand(trimmed: string, parsed: string[] | null, commandNote = "") {
     if (!parsed) {
-      appendOutput(`$ ${trimmed}\nError: Invalid command syntax (check quotes/escaping).`);
+      appendOutput(`$ ${trimmed}${commandNote}\nError: Invalid command syntax (check quotes/escaping).`);
       return;
     }
 
     const rawArgs = parsed[0]?.toLowerCase() === "git" ? parsed.slice(1) : parsed;
-    await executeGitArgs(rawArgs, trimmed, false);
+    await executeGitArgs(rawArgs, trimmed, false, commandNote);
   }
 
   async function runTerminalCommand(command: string, allowAll = false) {
     const trimmed = command.trim();
     if (!trimmed) return;
 
-    if (await handleBuiltInCommand(trimmed, allowAll)) {
+    const normalized = normalizeSudoCommand(trimmed);
+    if (normalized.error) {
+      appendOutput(`$ ${trimmed}${normalized.note}\n${normalized.error}`);
+      return;
+    }
+
+    const executableCommand = normalized.command;
+
+    if (await handleBuiltInCommand(executableCommand, allowAll)) {
       return;
     }
 
     if (!state.repoPath.value) {
-      appendOutput("Error: Open a repository before using terminal commands.");
+      appendOutput(`$ ${executableCommand}${normalized.note}\nError: Open a repository before using terminal commands.`);
       return;
     }
 
-    const parsed = parseCommandArgs(trimmed);
+    const parsed = parseCommandArgs(executableCommand);
 
     if (allowAll) {
-      await runAllowAllCommand(trimmed, parsed);
+      await runAllowAllCommand(executableCommand, parsed, normalized.note);
       return;
     }
 
-    await runGitModeCommand(trimmed, parsed);
+    await runGitModeCommand(executableCommand, parsed, normalized.note);
   }
 
   return {

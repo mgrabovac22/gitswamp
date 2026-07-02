@@ -66,6 +66,17 @@ const hasActiveRepo = computed(() => !!activeTab.value?.repo);
 const activeRepoPath = computed(() => activeTab.value?.repo?.path ?? "");
 const canCloseActiveTab = computed(() => props.tabs.length > 1 || !!activeTab.value?.repo);
 
+function canCloseTab(tab: { id: string; repo: RepoInfo | null; label: string }): boolean {
+  return props.tabs.length > 1 || !!tab.repo;
+}
+
+function closeTabWithMiddleClick(tab: { id: string; repo: RepoInfo | null; label: string }) {
+  if (!canCloseTab(tab)) {
+    return;
+  }
+  emit("closeTab", tab.id);
+}
+
 function toggleMenu() {
   menuOpen.value = !menuOpen.value;
   if (menuOpen.value) {
@@ -287,7 +298,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "help-logs",
       label: "Logs",
-      description: "Open app, user and error log panel on the right side.",
+      description: "Show or hide the app, user and error log panel.",
       shortcut: "Ctrl+Shift+L",
       run: () => emit("openLogs"),
     },
@@ -377,6 +388,7 @@ onUnmounted(() => {
         v-for="tab in tabs"
         :key="tab.id"
         @click="emit('selectTab', tab.id)"
+        @mousedown.middle.prevent.stop="closeTabWithMiddleClick(tab)"
         :class="[
           'h-9 px-3 rounded-t-md flex items-center gap-2 text-xs font-medium transition-colors relative group min-w-0 max-w-48 flex-shrink-0',
           activeTabId === tab.id
@@ -493,6 +505,8 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open help and shortcuts</span><span class="text-[var(--muted-foreground)] font-mono">F1</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open command palette</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+K</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">New tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+T</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Next tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Tab</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Previous tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+Tab</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+O</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Close active tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+W</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Reopen closed tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+T</span></div>
@@ -509,7 +523,7 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open advanced options</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+A</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open organisations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+Y</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open options</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open logs panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+L</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Toggle logs panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+L</span></div>
             </div>
           </section>
         </div>
@@ -594,25 +608,12 @@ onUnmounted(() => {
 
 <style scoped>
 .tabs-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(139, 92, 246, 0.3) transparent;
+  scrollbar-width: none;
 }
 
 .tabs-scroll::-webkit-scrollbar {
-  height: 5px;
-}
-
-.tabs-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.tabs-scroll::-webkit-scrollbar-thumb {
-  background: rgba(139, 92, 246, 0.28);
-  border-radius: 999px;
-}
-
-.tabs-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 92, 246, 0.45);
+  width: 0;
+  height: 0;
 }
 
 .menu-action-desc {

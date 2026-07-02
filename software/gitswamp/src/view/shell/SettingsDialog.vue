@@ -18,6 +18,10 @@ import {
   getStoredCommitAnalyzerSettings,
   updateCommitAnalyzerSettings,
 } from "@/shared/config/commitAnalyzerPreferences";
+import {
+  getStoredSmartGitignoreWizardEnabled,
+  storeSmartGitignoreWizardEnabled,
+} from "@/shared/config/gitignoreWizardPreferences";
 
 const props = defineProps<{
   token: string | null;
@@ -44,11 +48,13 @@ const reducedMotion = ref(false);
 const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
+const smartGitignoreWizardEnabled = ref(false);
 const commitAnalyzerEnabled = ref(true);
-
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
 const lightThemeOptions = appThemeOptions.filter((theme) => theme.group === "light");
+const DEFAULT_DARK_PALETTE: AppPalettePreference = "default";
+const DEFAULT_LIGHT_PALETTE: AppPalettePreference = "default-light";
 
 const fontSizes = {
   small: "14px",
@@ -62,7 +68,7 @@ onMounted(() => {
   }
   themeMode.value = getStoredThemeModePreference();
   appPalette.value = getStoredAppPalettePreference();
-  
+
   const savedFontSize = localStorage.getItem("gitswamp-font-size");
   if (savedFontSize && (savedFontSize === "small" || savedFontSize === "medium" || savedFontSize === "large")) {
     fontSize.value = savedFontSize;
@@ -103,7 +109,8 @@ onMounted(() => {
   }
 
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
-  
+  smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
+
   applySettings();
 });
 
@@ -139,6 +146,10 @@ watch(commitAnalyzerEnabled, (value) => {
   updateCommitAnalyzerSettings({ enabled: value });
 });
 
+watch(smartGitignoreWizardEnabled, (value) => {
+  storeSmartGitignoreWizardEnabled(value);
+});
+
 watch(appPalette, (value) => {
   applyAppPalettePreference(value);
   storeAppPalettePreference(value);
@@ -160,7 +171,9 @@ function themeLabel(theme: AppThemeOption): string {
 }
 
 function toggleThemeMode() {
-  themeMode.value = themeMode.value === "dark" ? "light" : "dark";
+  const nextMode: ThemeModePreference = themeMode.value === "dark" ? "light" : "dark";
+  themeMode.value = nextMode;
+  appPalette.value = nextMode === "dark" ? DEFAULT_DARK_PALETTE : DEFAULT_LIGHT_PALETTE;
 }
 
 function handleSave() {
@@ -391,6 +404,23 @@ function handleDelete() {
               <div
                 class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
                 :class="notifyGitkeep ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Smart .gitignore Wizard</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Suggest ignore rules from untracked files only when enabled</p>
+            </div>
+            <button
+              @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="smartGitignoreWizardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="smartGitignoreWizardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
               />
             </button>
           </div>

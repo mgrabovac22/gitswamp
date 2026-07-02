@@ -2,6 +2,7 @@ export interface RepositoryTabShortcutHandlers {
   newTab: () => void;
   closeActiveTab: () => void;
   reopenClosedTab: () => void;
+  selectAdjacentTab: (direction: 1 | -1) => void;
   canCloseActiveTab: () => boolean;
   canReopenClosedTab: () => boolean;
 }
@@ -19,6 +20,12 @@ export function handleRepositoryTabShortcut(
   }
 
   const key = event.key.toLowerCase();
+
+  if (key === "tab") {
+    event.preventDefault();
+    handlers.selectAdjacentTab(event.shiftKey ? -1 : 1);
+    return true;
+  }
 
   if (!event.shiftKey && key === "t") {
     event.preventDefault();

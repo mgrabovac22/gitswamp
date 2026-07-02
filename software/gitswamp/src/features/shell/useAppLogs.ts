@@ -45,6 +45,11 @@ export function useAppLogs() {
     appendLog("user", "Opened logs panel.");
   }
 
+  function toggleLogsPanel() {
+    showLogsPanel.value = !showLogsPanel.value;
+    appendLog("user", showLogsPanel.value ? "Opened logs panel." : "Closed logs panel.");
+  }
+
   watch(showLogsPanel, (value) => {
     safeStorageSet("gitswamp-show-logs-panel", String(value));
   });
@@ -56,5 +61,6 @@ export function useAppLogs() {
     errorLogs,
     appendLog,
     openLogsPanel,
+    toggleLogsPanel,
   };
 }

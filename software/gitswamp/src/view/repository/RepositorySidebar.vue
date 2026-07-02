@@ -178,7 +178,7 @@ function showPullRequestBadge(branch: BranchInfo): boolean {
 <template>
   <div class="w-full bg-[var(--sidebar)] border-r border-[var(--sidebar-border)] flex flex-col h-full flex-shrink-0">
     <div class="p-3 border-b border-[var(--sidebar-border)]">
-      <div class="flex items-center gap-2.5 mb-2.5 px-2 py-2 rounded-lg bg-[var(--sidebar-primary)]/20 border-2 border-[var(--sidebar-primary)]/50 shadow-md shadow-[var(--sidebar-primary)]/10">
+      <div class="flex items-center justify-start text-left gap-2.5 mb-2.5 px-2 py-2 rounded-lg bg-[var(--sidebar-primary)]/20 border-2 border-[var(--sidebar-primary)]/50 shadow-md shadow-[var(--sidebar-primary)]/10">
         <GitBranch class="w-5 h-5 text-[var(--sidebar-primary)] flex-shrink-0 drop-shadow-[0_0_6px_var(--sidebar-primary)]" />
         <div class="flex-1 min-w-0">
           <div class="text-[9px] text-[var(--sidebar-primary)]/70 uppercase tracking-wider font-semibold">Current Branch</div>
@@ -207,7 +207,7 @@ function showPullRequestBadge(branch: BranchInfo): boolean {
           <button
             v-if="!showNewBranch"
             @click="showNewBranch = true"
-            class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
+            class="w-full flex items-center justify-start gap-1.5 px-2 py-1 text-left text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
           >
             <Plus class="w-3 h-3" />
             New branch
@@ -232,7 +232,7 @@ function showPullRequestBadge(branch: BranchInfo): boolean {
           :key="branch.name"
           @click="emit('checkout', branch.name)"
           :class="[
-            'w-full flex items-center gap-2 px-4 py-1 pl-8 text-[11px] transition-all group',
+            'w-full flex items-center justify-start gap-2 px-4 py-1 pl-8 text-left text-[11px] transition-all group',
             branch.is_head
               ? 'text-[var(--sidebar-primary)] bg-[var(--sidebar-primary)]/10 font-medium'
               : 'text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]',
@@ -282,9 +282,9 @@ function showPullRequestBadge(branch: BranchInfo): boolean {
           v-for="branch in filteredBranches(remoteBranches)"
           :key="branch.name"
           @click="emit('checkout', branch.name)"
-          class="w-full flex items-center gap-2 px-4 py-1 pl-10 text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
+          class="w-full flex items-center justify-start gap-2 px-4 py-1 pl-10 text-left text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
         >
-          <span class="truncate flex-1">{{ branch.name }}</span>
+          <span class="truncate flex-1 text-left">{{ branch.name }}</span>
           <span class="flex items-center gap-1 flex-shrink-0">
             <Cloud class="w-3 h-3 text-[var(--muted-foreground)]" title="Remote branch" />
             <GitPullRequest

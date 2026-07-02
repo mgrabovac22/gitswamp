@@ -324,6 +324,7 @@ function onContainerClick(event: MouseEvent) {
 }
 
 onMounted(() => {
+  nextTick(focusInput);
   void scanOpenToolsOnce();
 });
 </script>
