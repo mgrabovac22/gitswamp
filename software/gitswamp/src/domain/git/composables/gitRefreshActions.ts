@@ -5,16 +5,128 @@ import { callTauri } from "./gitCall";
 import { PAGE_SIZE, type GitState } from "./gitState";
 import { statusHash } from "./gitHelpers";
 
+type RefreshCommitsOptions = {
+  progressive?: boolean;
+};
+
+const INITIAL_COMMIT_REVEAL_COUNT = 36;
+const COMMIT_REVEAL_FRAME_MS = 16;
+const INITIAL_REVEAL_FRAME_COUNT = 5;
+const COMPLETION_REVEAL_FRAME_COUNT = 8;
+
 export function createRefreshActions(state: GitState) {
   let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null;
   let loadMoreRequestId = 0;
+  let commitRefreshRequestId = 0;
   let statusRequestId = 0;
   const coordinator = new RepositoryRefreshCoordinator();
+
+  function scheduleCommitWaveFrame(callback: () => void) {
+    if (typeof globalThis.requestAnimationFrame === "function") {
+      globalThis.requestAnimationFrame(callback);
+      return;
+    }
+    globalThis.setTimeout(callback, COMMIT_REVEAL_FRAME_MS);
+  }
+
+  function sameCommitRefs(left: CommitInfo, right: CommitInfo): boolean {
+    if (left.refs.length !== right.refs.length) return false;
+    return left.refs.every((ref, index) => ref === right.refs[index]);
+  }
+
+  function sameCommitPage(current: CommitInfo[], next: CommitInfo[]): boolean {
+    if (current.length !== next.length) return false;
+    return current.every((commit, index) => commit.sha === next[index]?.sha && sameCommitRefs(commit, next[index]));
+  }
+
+  function visibleCommitSlice(commits: CommitInfo[], visibleCount: number, preserveExistingPrefix: boolean): CommitInfo[] {
+    const next = commits.slice(0, visibleCount);
+    if (!preserveExistingPrefix) {
+      return next;
+    }
+
+    const existing = state.commits.value;
+    const prefixCount = Math.min(existing.length, next.length);
+    for (let index = 0; index < prefixCount; index += 1) {
+      if (existing[index]?.sha !== next[index]?.sha) {
+        break;
+      }
+      next[index] = existing[index];
+    }
+    return next;
+  }
+
+  function revealCommitsInWave(repoPath: string, commits: CommitInfo[], requestId: number, startCount = 0): Promise<boolean> {
+    if (commits.length === 0) {
+      state.commits.value = [];
+      return Promise.resolve(true);
+    }
+
+    let visibleCount = Math.min(startCount, commits.length);
+    return new Promise((resolve) => {
+      const step = () => {
+        if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) {
+          resolve(false);
+          return;
+        }
+
+        const remainingCount = commits.length - visibleCount;
+        const nextIncrement = startCount === 0
+          ? Math.max(6, Math.ceil(commits.length / INITIAL_REVEAL_FRAME_COUNT))
+          : Math.max(8, Math.ceil(remainingCount / COMPLETION_REVEAL_FRAME_COUNT));
+        visibleCount = Math.min(commits.length, visibleCount + nextIncrement);
+        state.commits.value = visibleCommitSlice(commits, visibleCount, startCount > 0);
+
+        if (visibleCount >= commits.length) {
+          resolve(true);
+          return;
+        }
+
+        scheduleCommitWaveFrame(step);
+      };
+
+      scheduleCommitWaveFrame(step);
+    });
+  }
+
+  async function completeInitialCommitPage(
+    repoPath: string,
+    requestId: number,
+    resultPromise?: Promise<CommitInfo[]>,
+  ) {
+    try {
+      const result = await (resultPromise ?? callTauri<CommitInfo[]>("get_commits", {
+        path: repoPath,
+        maxCount: PAGE_SIZE,
+      }));
+
+      if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
+
+      const currentCount = state.commits.value.length;
+      if (result.length > currentCount) {
+        await revealCommitsInWave(repoPath, result, requestId, currentCount);
+      } else {
+        state.commits.value = result;
+      }
+
+      if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
+      state.hasMoreCommits.value = result.length >= PAGE_SIZE;
+    } catch (e) {
+      if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
+      state.error.value = String(e);
+    } finally {
+      if (requestId === commitRefreshRequestId && repoPath === state.repoPath.value) {
+        state.commitWaveLoading.value = false;
+      }
+    }
+  }
 
   async function loadCommitsToCount(targetCount: number): Promise<boolean> {
     const repoPath = state.repoPath.value;
     if (!repoPath || state.loadingMore.value) return false;
 
+    commitRefreshRequestId += 1;
+    state.commitWaveLoading.value = false;
     state.loadingMore.value = true;
     const requestId = ++loadMoreRequestId;
     try {
@@ -45,19 +157,52 @@ export function createRefreshActions(state: GitState) {
     }
   }
 
-  async function refreshCommits() {
+  async function refreshCommits(options: RefreshCommitsOptions = {}) {
     const repoPath = state.repoPath.value;
     if (!repoPath) return;
+    const requestId = ++commitRefreshRequestId;
+    const useProgressiveWave = options.progressive === true && state.commits.value.length === 0;
+
+    if (useProgressiveWave) {
+      state.commitWaveLoading.value = true;
+      try {
+        const firstResult = await callTauri<CommitInfo[]>("get_commits", {
+          path: repoPath,
+          maxCount: INITIAL_COMMIT_REVEAL_COUNT,
+          quick: true,
+        });
+        if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
+
+        state.hasMoreCommits.value = firstResult.length >= INITIAL_COMMIT_REVEAL_COUNT;
+        const fullPagePromise = callTauri<CommitInfo[]>("get_commits", {
+          path: repoPath,
+          maxCount: PAGE_SIZE,
+        });
+        const revealed = await revealCommitsInWave(repoPath, firstResult, requestId);
+        if (!revealed || requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
+
+        void completeInitialCommitPage(repoPath, requestId, fullPagePromise);
+      } catch (e) {
+        if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
+        state.error.value = String(e);
+        state.commitWaveLoading.value = false;
+      }
+      return;
+    }
+
+    state.commitWaveLoading.value = false;
     try {
       const result = await callTauri<CommitInfo[]>("get_commits", {
         path: repoPath,
         maxCount: PAGE_SIZE,
       });
-      if (repoPath !== state.repoPath.value) return;
-      state.commits.value = result;
+      if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
+      if (!sameCommitPage(state.commits.value, result)) {
+        state.commits.value = result;
+      }
       state.hasMoreCommits.value = result.length >= PAGE_SIZE;
     } catch (e) {
-      if (repoPath !== state.repoPath.value) return;
+      if (requestId !== commitRefreshRequestId || repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
     }
   }

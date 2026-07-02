@@ -76,7 +76,7 @@ const {
   closeActiveTab,
   setActiveTabRepository,
 } = useRepositoryTabs({
-  openRepository: (path) => git.openRepository(path),
+  openRepository: (path, options) => git.openRepository(path, options),
 });
 
 type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
@@ -186,8 +186,8 @@ const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
 let singleCommitLoadKey: string | null = null;
 let selectedCommitWatcherSkipSha: string | null = null;
-const COMMIT_FILES_CACHE_LIMIT = 80;
-const COMMIT_FILES_CACHE_MAX_FILES = 1500;
+const COMMIT_FILES_CACHE_LIMIT = 24;
+const COMMIT_FILES_CACHE_MAX_FILES = 600;
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
 
 function getCommitFilesCacheKey(repoPath: string, sha: string) {
@@ -1790,7 +1790,7 @@ onMounted(() => {
   if (restoreSession) {
     const active = tabs.value.find((t) => t.id === activeTabId.value);
     if (active?.path) {
-      git.openRepository(active.path);
+      git.openRepository(active.path, { optimisticRepoInfo: active.repo, background: true });
     }
   }
 

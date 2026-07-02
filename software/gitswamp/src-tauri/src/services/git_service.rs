@@ -594,36 +594,54 @@ impl GitService {
     }
 
     pub fn commits(path: &str, max_count: usize) -> Result<Vec<CommitInfo>, String> {
+        Self::commits_with_options(path, max_count, false)
+    }
+
+    pub fn commits_with_options(
+        path: &str,
+        max_count: usize,
+        quick: bool,
+    ) -> Result<Vec<CommitInfo>, String> {
         let repo = GitRepository::open(path)?;
         let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
 
-        if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
-            for item in branches.flatten() {
-                if let Some(oid) = item.0.get().target() {
-                    let _ = revwalk.push(oid);
+        if quick {
+            let _ = revwalk.push_head();
+        } else {
+            if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                for item in branches.flatten() {
+                    if let Some(oid) = item.0.get().target() {
+                        let _ = revwalk.push(oid);
+                    }
                 }
             }
-        }
-        if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
-            for item in branches.flatten() {
-                if let Some(oid) = item.0.get().target() {
-                    let _ = revwalk.push(oid);
+            if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
+                for item in branches.flatten() {
+                    if let Some(oid) = item.0.get().target() {
+                        let _ = revwalk.push(oid);
+                    }
                 }
             }
+            let _ = revwalk.push_head();
         }
-        let _ = revwalk.push_head();
         revwalk
             .set_sorting(Sort::TIME | Sort::TOPOLOGICAL)
             .map_err(|e| e.message().to_string())?;
 
-        let mut ref_map = build_ref_map(&repo);
+        let mut ref_map = if quick {
+            HashMap::new()
+        } else {
+            build_ref_map(&repo)
+        };
         if let Ok(head) = repo.head() {
-            if !head.is_branch() {
-                if let Some(head_target) = head.target() {
-                    let refs = ref_map.entry(head_target.to_string()).or_default();
-                    if !refs.iter().any(|value| value == "HEAD") {
-                        refs.push("HEAD".to_string());
+            if let Some(head_target) = head.target() {
+                let refs = ref_map.entry(head_target.to_string()).or_default();
+                if quick {
+                    if let Some(name) = head.shorthand() {
+                        refs.push(name.to_string());
                     }
+                } else if !head.is_branch() && !refs.iter().any(|value| value == "HEAD") {
+                    refs.push("HEAD".to_string());
                 }
             }
         }

@@ -5,7 +5,10 @@ import type { RepositoryTab } from "./repositoryTabs.types";
 const CLOSED_TABS_LIMIT = 10;
 
 interface RepositoryTabsOptions {
-  openRepository: (path: string) => void | Promise<void>;
+  openRepository: (path: string, options?: {
+    optimisticRepoInfo?: RepoInfo | null;
+    background?: boolean;
+  }) => void | Promise<void>;
 }
 
 function createTabId(): string {
@@ -55,7 +58,7 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
     activeTabId.value = id;
     const tab = tabs.value.find((item) => item.id === id);
     if (tab?.path) {
-      void options.openRepository(tab.path);
+      void options.openRepository(tab.path, { optimisticRepoInfo: tab.repo, background: true });
     }
   }
 
@@ -94,7 +97,7 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
       activeTabId.value = nextTab.id;
       const active = tabs.value.find((tab) => tab.id === activeTabId.value);
       if (active?.path) {
-        void options.openRepository(active.path);
+        void options.openRepository(active.path, { optimisticRepoInfo: active.repo, background: true });
       }
     }
   }
@@ -116,7 +119,7 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
     activeTabId.value = id;
 
     if (restoredTab.path) {
-      void options.openRepository(restoredTab.path);
+      void options.openRepository(restoredTab.path, { optimisticRepoInfo: restoredTab.repo, background: true });
     }
   }
 

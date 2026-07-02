@@ -36,6 +36,7 @@ const props = defineProps<{
   tags?: TagInfo[];
   openPullRequestBranches?: string[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
+  commitWaveLoading?: boolean;
 }>();
 
 type CommitSelectPayload = {
@@ -185,6 +186,13 @@ function onCommitClick(event: MouseEvent, commit: CommitInfo) {
     commit,
     additive: event.ctrlKey || event.metaKey,
   });
+}
+
+function commitRowStyle(idx: number) {
+  return {
+    top: `${idx * rowHeight.value + wcOffset.value}px`,
+    height: `${rowHeight.value}px`,
+  };
 }
 
 function updateCompactWorkingLabel() {
@@ -1394,7 +1402,10 @@ onUnmounted(() => {
     </div>
 
     <div v-if="!activeCommits.length && !hasWorkingChanges" class="flex-1 flex items-center justify-center text-sm text-[var(--muted-foreground)]">
-      No commits to display
+      <div v-if="props.commitWaveLoading" class="text-xs text-[var(--muted-foreground)]">Loading commits...</div>
+      <template v-else>
+        No commits to display
+      </template>
     </div>
 
     <div v-else ref="scrollContainer" class="commit-scroll flex-1 overflow-y-auto min-h-0" @scroll="onScroll">
@@ -1516,7 +1527,7 @@ onUnmounted(() => {
               ? (hasMultiCommitSelection ? 'selected-commit-row--multi' : 'selected-commit-row')
               : '',
           ]"
-          :style="{ top: (item.idx * rowHeight + wcOffset) + 'px', height: rowHeight + 'px' }"
+          :style="commitRowStyle(item.idx)"
           @click="onCommitClick($event, item.node.commit)"
           @contextmenu="onCtx($event, item.node.commit)"
           @dragover.prevent="onCommitRowDragOver($event, item.node.commit)"
@@ -1716,7 +1727,7 @@ onUnmounted(() => {
           class="absolute left-0 right-0 flex items-center justify-center text-[9px] text-[var(--muted-foreground)]"
           :style="{ top: totalH + 'px', height: rowHeight + 'px' }"
         >
-          Loading more commits...
+          {{ props.commitWaveLoading ? "Loading commits..." : "Loading more commits..." }}
         </div>
       </div>
     </div>
@@ -1986,20 +1997,6 @@ onUnmounted(() => {
 
 .node-pop {
   transform-origin: center;
-  animation: popIn 0.3s ease-out forwards;
-}
-@keyframes popIn {
-  0% { opacity: 0; transform: scale(0.3); }
-  70% { transform: scale(1.08); }
-  100% { opacity: 1; transform: scale(1); }
-}
-
-.graph-row {
-  animation: rowFade 0.2s ease-out;
-}
-@keyframes rowFade {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .search-hit-row {

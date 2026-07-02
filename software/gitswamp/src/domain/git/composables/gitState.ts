@@ -28,6 +28,7 @@ export function createGitState() {
   const tags = shallowRef<TagInfo[]>([]);
   const loading = ref(false);
   const loadingMore = ref(false);
+  const commitWaveLoading = ref(false);
   const error = ref<string | null>(null);
   const searchQuery = ref("");
   const searchResults = shallowRef<CommitInfo[] | null>(null);
@@ -75,6 +76,7 @@ export function createGitState() {
     tags,
     loading,
     loadingMore,
+    commitWaveLoading,
     error,
     searchQuery,
     searchResults,

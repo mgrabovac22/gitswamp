@@ -5,9 +5,10 @@ use crate::services::git_service::GitService;
 pub async fn get_commits(
     path: String,
     max_count: Option<usize>,
+    quick: Option<bool>,
 ) -> Result<Vec<CommitInfo>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        GitService::commits(&path, max_count.unwrap_or(200))
+        GitService::commits_with_options(&path, max_count.unwrap_or(200), quick.unwrap_or(false))
     })
     .await
     .map_err(|e| e.to_string())?

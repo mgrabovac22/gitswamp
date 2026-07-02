@@ -5,7 +5,7 @@ import { createGhostActions } from "./composables/gitGhostActions";
 import { createHistoryActions } from "./composables/gitHistoryActions";
 import { createRefreshActions } from "./composables/gitRefreshActions";
 import { createRemoteActions } from "./composables/gitRemoteActions";
-import { createRepoActions } from "./composables/gitRepositoryActions";
+import { createRepoActions, type OpenRepositoryOptions } from "./composables/gitRepositoryActions";
 import { createGitState } from "./composables/gitState";
 import { createStashActions } from "./composables/gitStashActions";
 import { createStatusActions } from "./composables/gitStatusActions";
@@ -105,8 +105,18 @@ const terminal = createTerminalActions(
   },
 );
 
-async function openRepositoryWithGhost(path: string) {
-  await repo.openRepository(path);
+async function openRepositoryWithGhost(path: string, options?: OpenRepositoryOptions) {
+  const openPromise = repo.openRepository(path, options);
+  if (options?.background) {
+    void openPromise.finally(() => {
+      if (state.repoPath.value === path) {
+        void ghost.refreshGhostBranchState();
+      }
+    });
+    return;
+  }
+
+  await openPromise;
   void ghost.refreshGhostBranchState();
 }
 
@@ -231,6 +241,7 @@ export function useGit() {
     currentBranch: state.currentBranch,
     loading: state.loading,
     loadingMore: state.loadingMore,
+    commitWaveLoading: state.commitWaveLoading,
     error: state.error,
     searchQuery: state.searchQuery,
     searchResults: state.searchResults,

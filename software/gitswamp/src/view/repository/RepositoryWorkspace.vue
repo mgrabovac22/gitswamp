@@ -325,6 +325,7 @@ function handleRefreshState() {
           :has-conflicts="hasConflicts"
           :current-branch="props.git.currentBranch.value"
           :has-more="props.git.hasMoreCommits.value"
+          :commit-wave-loading="props.git.commitWaveLoading.value"
           :stashes="props.git.stashes.value"
           :tags="props.git.tags.value"
           :open-pull-request-branches="props.openPullRequestBranches || []"

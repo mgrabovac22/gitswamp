@@ -2,10 +2,10 @@ import type { BranchInfo, CommitInfo, FileStatusInfo, GithubRepo, RepoInfo, Stas
 
 import { callTauri } from "./gitCall";
 import { getTokenForUrl } from "./gitHelpers";
-import { PAGE_SIZE, type GitState } from "./gitState";
+import type { GitState } from "./gitState";
 
 type RefreshDeps = {
-  refreshCommits: () => Promise<void>;
+  refreshCommits: (options?: { progressive?: boolean }) => Promise<void>;
   refreshBranches: () => Promise<void>;
   refreshStatus: () => Promise<void>;
   refreshStashes: () => Promise<void>;
@@ -27,7 +27,17 @@ type RepositorySnapshot = {
   lastStatusHash: string;
 };
 
+export type OpenRepositoryOptions = {
+  optimisticRepoInfo?: RepoInfo | null;
+  background?: boolean;
+};
+
 const REPOSITORY_SNAPSHOT_LIMIT = 4;
+const SNAPSHOT_COMMIT_LIMIT = 120;
+const SNAPSHOT_STATUS_LIMIT = 600;
+const SNAPSHOT_BRANCH_LIMIT = 400;
+const SNAPSHOT_STASH_LIMIT = 80;
+const SNAPSHOT_TAG_LIMIT = 400;
 
 export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher: WatcherDeps) {
   const repositorySnapshots = new Map<string, RepositorySnapshot>();
@@ -35,6 +45,23 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
 
   function getRepositorySnapshotKey(path: string) {
     return path.trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+  }
+
+  function getRepositoryNameFromPath(path: string) {
+    const trimmed = path.trim().replace(/[\\/]+$/g, "");
+    const segments = trimmed.split(/[\\/]/).filter(Boolean);
+    return segments[segments.length - 1] || trimmed || "Repository";
+  }
+
+  function createOptimisticRepoInfo(path: string, repoInfo?: RepoInfo | null): RepoInfo {
+    return {
+      path,
+      name: repoInfo?.name || getRepositoryNameFromPath(path),
+      current_branch: repoInfo?.current_branch || "",
+      is_clean: repoInfo?.is_clean ?? true,
+      head_sha: repoInfo?.head_sha ?? null,
+      remotes: repoInfo?.remotes ? repoInfo.remotes.map((remote) => ({ ...remote })) : [],
+    };
   }
 
   function rememberRepositorySnapshot(path: string, snapshot: RepositorySnapshot) {
@@ -57,19 +84,22 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     const path = state.repoPath.value;
     if (!path) return;
 
-    const commits = state.commits.value.length > PAGE_SIZE
-      ? state.commits.value.slice(0, PAGE_SIZE)
+    const commits = state.commits.value.length > SNAPSHOT_COMMIT_LIMIT
+      ? state.commits.value.slice(0, SNAPSHOT_COMMIT_LIMIT)
       : state.commits.value;
+    const fileStatuses = state.fileStatuses.value.length <= SNAPSHOT_STATUS_LIMIT
+      ? state.fileStatuses.value
+      : [];
 
     const snapshot = {
       repoInfo: state.repoInfo.value,
       commits,
-      branches: state.branches.value,
-      fileStatuses: state.fileStatuses.value,
-      stashes: state.stashes.value,
-      tags: state.tags.value,
+      branches: state.branches.value.slice(0, SNAPSHOT_BRANCH_LIMIT),
+      fileStatuses,
+      stashes: state.stashes.value.slice(0, SNAPSHOT_STASH_LIMIT),
+      tags: state.tags.value.slice(0, SNAPSHOT_TAG_LIMIT),
       hasMoreCommits: state.hasMoreCommits.value || state.commits.value.length > commits.length,
-      lastStatusHash: state.lastStatusHash.value,
+      lastStatusHash: fileStatuses.length > 0 ? state.lastStatusHash.value : "",
     };
 
     rememberRepositorySnapshot(path, snapshot);
@@ -90,6 +120,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     state.stashes.value = snapshot.stashes;
     state.tags.value = snapshot.tags;
     state.hasMoreCommits.value = snapshot.hasMoreCommits;
+    state.commitWaveLoading.value = false;
     state.lastStatusHash.value = snapshot.lastStatusHash;
     return true;
   }
@@ -102,6 +133,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     state.stashes.value = [];
     state.tags.value = [];
     state.hasMoreCommits.value = true;
+    state.commitWaveLoading.value = false;
     state.lastStatusHash.value = "";
   }
 
@@ -111,6 +143,11 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
         state.loading.value = true;
       }
 
+      const commitRefresh = refresh.refreshCommits({ progressive: showLoading });
+      const statusRefresh = refresh.refreshStatus();
+      const branchRefresh = refresh.refreshBranches();
+      const stashRefresh = refresh.refreshStashes();
+      const tagRefresh = refresh.refreshTags();
       const repoInfo = await callTauri<RepoInfo>("get_repo_info", { path });
       if (runId !== openRepositoryRunId || state.repoPath.value !== path) {
         return;
@@ -118,11 +155,11 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
 
       state.repoInfo.value = repoInfo;
       await Promise.all([
-        refresh.refreshCommits(),
-        refresh.refreshBranches(),
-        refresh.refreshStatus(),
-        refresh.refreshStashes(),
-        refresh.refreshTags(),
+        commitRefresh,
+        branchRefresh,
+        statusRefresh,
+        stashRefresh,
+        tagRefresh,
       ]);
       if (runId !== openRepositoryRunId || state.repoPath.value !== path) {
         return;
@@ -140,7 +177,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     }
   }
 
-  async function openRepository(path: string) {
+  async function openRepository(path: string, options: OpenRepositoryOptions = {}) {
     if (
       state.repoInfo.value
       && getRepositorySnapshotKey(state.repoPath.value) === getRepositorySnapshotKey(path)
@@ -166,7 +203,16 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     }
 
     clearRepositorySnapshotState();
-    await refreshRepositoryFromDisk(path, runId, true);
+    if (options.optimisticRepoInfo) {
+      state.repoInfo.value = createOptimisticRepoInfo(path, options.optimisticRepoInfo);
+    }
+
+    const refreshPromise = refreshRepositoryFromDisk(path, runId, true);
+    if (options.background) {
+      return refreshPromise;
+    }
+
+    await refreshPromise;
   }
 
   async function cloneRepo(url: string, path: string, shallow = false, token?: string | null): Promise<string | null> {
