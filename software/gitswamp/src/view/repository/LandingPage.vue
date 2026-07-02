@@ -52,13 +52,13 @@ const filteredRecent = computed(() => {
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto bg-[var(--background)]">
-    <div class="max-w-7xl mx-auto px-8 py-6">
+  <div class="flex-1 min-h-0 overflow-y-auto xl:overflow-hidden bg-[var(--background)]">
+    <div class="max-w-7xl mx-auto px-8 py-6 h-full min-h-0 flex flex-col">
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-xl font-bold text-[var(--foreground)]">Repository Management</h1>
       </div>
 
-      <div class="flex items-center justify-between gap-2 mb-6">
+      <div class="flex items-center justify-between gap-2 mb-6 pb-5 border-b border-[var(--border)]">
         <div class="flex items-center gap-2">
           <button @click="emit('browse')" class="px-4 py-2 bg-[var(--secondary)] hover:opacity-80 text-[var(--foreground)] text-xs font-medium rounded-md border border-[var(--border)] transition-colors flex items-center gap-2">
             <FolderOpen class="w-3.5 h-3.5" />
@@ -85,15 +85,17 @@ const filteredRecent = computed(() => {
         </div>
       </div>
 
-      <div class="grid grid-cols-1 xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)] gap-6 items-start">
-        <LandingDashboard
-          :github-token="githubToken"
-          :open-repos="openRepos"
-          :recent-repos="recentRepos"
-          @settings="emit('settings')"
-        />
+      <div class="grid grid-cols-1 xl:grid-cols-[minmax(300px,390px)_minmax(0,1fr)] gap-6 items-stretch flex-1 min-h-0">
+        <div class="min-h-[420px] xl:min-h-0 xl:pr-6 xl:border-r border-[var(--border)]">
+          <LandingDashboard
+            :github-token="githubToken"
+            :open-repos="openRepos"
+            :recent-repos="recentRepos"
+            @settings="emit('settings')"
+          />
+        </div>
 
-        <div class="min-w-0">
+        <div class="landing-scroll-hidden min-w-0 min-h-0 xl:overflow-y-auto xl:pr-1">
           <div class="relative mb-6">
             <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--muted-foreground)]" />
             <input
@@ -208,3 +210,13 @@ const filteredRecent = computed(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.landing-scroll-hidden {
+  scrollbar-width: none;
+}
+
+.landing-scroll-hidden::-webkit-scrollbar {
+  display: none;
+}
+</style>

@@ -9,6 +9,7 @@ import {
   FolderOpen,
   GitPullRequest,
   RefreshCw,
+  Search,
   Settings,
   UserRound,
 } from "lucide-vue-next";
@@ -38,9 +39,15 @@ const emit = defineEmits<{
   settings: [];
 }>();
 
+const GITHUB_PAGE_SIZE = 100;
+const GITHUB_MAX_SEARCH_PAGES = 10;
+const GITHUB_MAX_ASSIGNED_PAGES = 20;
+
 const loading = ref(false);
 const error = ref("");
 const githubLogin = ref("");
+const pullRequestSearch = ref("");
+const issueSearch = ref("");
 const pullRequests = ref<DashboardItem[]>([]);
 const issues = ref<DashboardItem[]>([]);
 const lastLoadedAt = ref("");
@@ -54,6 +61,8 @@ const localStats = computed(() => [
 ]);
 
 const primaryLocalRepo = computed(() => props.openRepos[0] || props.recentRepos[0] || null);
+const filteredPullRequests = computed(() => filterDashboardItems(pullRequests.value, pullRequestSearch.value));
+const filteredIssues = computed(() => filterDashboardItems(issues.value, issueSearch.value));
 
 function githubHeaders(token: string): Record<string, string> {
   return {
@@ -118,14 +127,82 @@ function mapDashboardItem(item: unknown, allowPullRequest: boolean): DashboardIt
   };
 }
 
-function searchPullRequestUrl(login: string): string {
+function filterDashboardItems(items: DashboardItem[], query: string): DashboardItem[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return items;
+
+  return items.filter((item) =>
+    item.title.toLowerCase().includes(normalized) ||
+    item.repo.toLowerCase().includes(normalized) ||
+    String(item.number).includes(normalized),
+  );
+}
+
+function searchPullRequestUrl(login: string, page: number): string {
   const params = new URLSearchParams({
     q: `is:pr is:open author:${login}`,
     sort: "updated",
     order: "desc",
-    per_page: "6",
+    per_page: String(GITHUB_PAGE_SIZE),
+    page: String(page),
   });
   return `https://api.github.com/search/issues?${params.toString()}`;
+}
+
+function assignedIssuesUrl(page: number): string {
+  const params = new URLSearchParams({
+    filter: "assigned",
+    state: "open",
+    sort: "updated",
+    per_page: String(GITHUB_PAGE_SIZE),
+    page: String(page),
+  });
+  return `https://api.github.com/issues?${params.toString()}`;
+}
+
+async function fetchAssignedIssues(token: string, signal: AbortSignal): Promise<DashboardItem[]> {
+  const result: DashboardItem[] = [];
+
+  for (let page = 1; page <= GITHUB_MAX_ASSIGNED_PAGES; page += 1) {
+    const payload = await fetchGithubJson(assignedIssuesUrl(page), token, signal);
+    const rawItems = Array.isArray(payload) ? payload : [];
+
+    result.push(
+      ...rawItems
+        .map((item) => mapDashboardItem(item, false))
+        .filter((item): item is DashboardItem => item !== null),
+    );
+
+    if (rawItems.length < GITHUB_PAGE_SIZE) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+async function fetchAuthoredPullRequests(login: string, token: string, signal: AbortSignal): Promise<DashboardItem[]> {
+  const result: DashboardItem[] = [];
+  let totalCount = Number.POSITIVE_INFINITY;
+
+  for (let page = 1; page <= GITHUB_MAX_SEARCH_PAGES && result.length < totalCount; page += 1) {
+    const payload = await fetchGithubJson(searchPullRequestUrl(login, page), token, signal);
+    const searchPayload = payload as { items?: unknown[]; total_count?: number };
+    const rawItems = Array.isArray(searchPayload.items) ? searchPayload.items : [];
+    totalCount = Number.isFinite(searchPayload.total_count) ? Number(searchPayload.total_count) : totalCount;
+
+    result.push(
+      ...rawItems
+        .map((item) => mapDashboardItem(item, true))
+        .filter((item): item is DashboardItem => item !== null),
+    );
+
+    if (rawItems.length < GITHUB_PAGE_SIZE) {
+      break;
+    }
+  }
+
+  return result;
 }
 
 async function loadGithubDashboard() {
@@ -144,7 +221,7 @@ async function loadGithubDashboard() {
   loading.value = true;
   error.value = "";
   const controller = new AbortController();
-  const timeoutId = globalThis.setTimeout(() => controller.abort(), 5500);
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), 15000);
 
   try {
     const user = await fetchGithubJson("https://api.github.com/user", token, controller.signal) as Record<string, unknown>;
@@ -153,29 +230,18 @@ async function loadGithubDashboard() {
       throw new Error("GitHub user could not be read.");
     }
 
-    const [assignedPayload, pullRequestPayload] = await Promise.all([
-      fetchGithubJson("https://api.github.com/issues?filter=assigned&state=open&sort=updated&per_page=6", token, controller.signal),
-      fetchGithubJson(searchPullRequestUrl(login), token, controller.signal),
+    const [assignedItems, authoredPullRequests] = await Promise.all([
+      fetchAssignedIssues(token, controller.signal),
+      fetchAuthoredPullRequests(login, token, controller.signal),
     ]);
 
     if (sequence !== loadSequence) {
       return;
     }
 
-    const assignedItems = Array.isArray(assignedPayload) ? assignedPayload : [];
-    const searchItems = Array.isArray((pullRequestPayload as { items?: unknown }).items)
-      ? ((pullRequestPayload as { items: unknown[] }).items)
-      : [];
-
     githubLogin.value = login;
-    issues.value = assignedItems
-      .map((item) => mapDashboardItem(item, false))
-      .filter((item): item is DashboardItem => item !== null)
-      .slice(0, 6);
-    pullRequests.value = searchItems
-      .map((item) => mapDashboardItem(item, true))
-      .filter((item): item is DashboardItem => item !== null)
-      .slice(0, 6);
+    issues.value = assignedItems;
+    pullRequests.value = authoredPullRequests;
     lastLoadedAt.value = new Date().toLocaleTimeString();
   } catch (loadError) {
     if (sequence === loadSequence) {
@@ -223,127 +289,175 @@ watch(() => props.githubToken, () => {
 </script>
 
 <template>
-  <aside class="min-w-0 space-y-3">
-    <div class="rounded-lg border border-[var(--border)] bg-[var(--card)]">
-      <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between gap-3">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2 text-sm font-semibold text-[var(--foreground)]">
-            <UserRound class="w-4 h-4 text-[var(--primary)]" />
-            <span>Work Dashboard</span>
-          </div>
-          <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5 truncate">
-            <span v-if="hasGithubToken && githubLogin">GitHub: @{{ githubLogin }}</span>
-            <span v-else-if="hasGithubToken">GitHub work queue</span>
-            <span v-else>Local workspace overview</span>
-          </div>
+  <aside class="h-full min-h-0 flex flex-col">
+    <div class="flex items-start justify-between gap-3 pb-3">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 text-sm font-semibold text-[var(--foreground)]">
+          <UserRound class="w-4 h-4 text-[var(--primary)]" />
+          <span>Work Dashboard</span>
         </div>
-        <button
-          v-if="hasGithubToken"
-          class="p-1.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors disabled:opacity-50"
-          :disabled="loading"
-          title="Refresh dashboard"
-          @click="loadGithubDashboard"
-        >
-          <RefreshCw class="w-3.5 h-3.5" :class="loading ? 'animate-spin' : ''" />
-        </button>
-        <button
-          v-else
-          class="p-1.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-          title="Open settings"
-          @click="emit('settings')"
-        >
-          <Settings class="w-3.5 h-3.5" />
-        </button>
+        <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5 truncate">
+          <span v-if="hasGithubToken && githubLogin">GitHub: @{{ githubLogin }}</span>
+          <span v-else-if="hasGithubToken">GitHub work queue</span>
+          <span v-else>Local workspace overview</span>
+        </div>
       </div>
 
-      <div class="p-3 space-y-3">
-        <div class="grid grid-cols-3 gap-2">
-          <div class="rounded border border-[var(--border)] bg-[var(--background)] px-2 py-2">
-            <div class="text-[10px] text-[var(--muted-foreground)]">My PRs</div>
-            <div class="text-lg font-semibold text-[var(--foreground)]">{{ hasGithubToken ? pullRequests.length : "-" }}</div>
-          </div>
-          <div class="rounded border border-[var(--border)] bg-[var(--background)] px-2 py-2">
-            <div class="text-[10px] text-[var(--muted-foreground)]">Assigned</div>
-            <div class="text-lg font-semibold text-[var(--foreground)]">{{ hasGithubToken ? issues.length : "-" }}</div>
-          </div>
-          <div class="rounded border border-[var(--border)] bg-[var(--background)] px-2 py-2">
-            <div class="text-[10px] text-[var(--muted-foreground)]">Repos</div>
-            <div class="text-lg font-semibold text-[var(--foreground)]">{{ recentRepos.length }}</div>
-          </div>
-        </div>
+      <button
+        v-if="hasGithubToken"
+        class="p-1.5 rounded hover:bg-[var(--card)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors disabled:opacity-50"
+        :disabled="loading"
+        title="Refresh dashboard"
+        @click="loadGithubDashboard"
+      >
+        <RefreshCw class="w-3.5 h-3.5" :class="loading ? 'animate-spin' : ''" />
+      </button>
+      <button
+        v-else
+        class="p-1.5 rounded hover:bg-[var(--card)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+        title="Open settings"
+        @click="emit('settings')"
+      >
+        <Settings class="w-3.5 h-3.5" />
+      </button>
+    </div>
 
-        <div v-if="error" class="flex items-start gap-2 rounded border border-[#f59e0b]/30 bg-[#f59e0b]/10 px-2.5 py-2 text-[11px] text-[var(--foreground)]">
-          <AlertCircle class="w-3.5 h-3.5 mt-0.5 text-[#f59e0b] flex-shrink-0" />
-          <span class="min-w-0">{{ error }}</span>
-        </div>
+    <div class="grid grid-cols-3 gap-2 pb-3">
+      <div class="rounded-md bg-[var(--card)] px-2.5 py-2">
+        <div class="text-[10px] text-[var(--muted-foreground)]">My PRs</div>
+        <div class="text-base font-semibold text-[var(--foreground)]">{{ hasGithubToken ? pullRequests.length : "-" }}</div>
+      </div>
+      <div class="rounded-md bg-[var(--card)] px-2.5 py-2">
+        <div class="text-[10px] text-[var(--muted-foreground)]">Assigned</div>
+        <div class="text-base font-semibold text-[var(--foreground)]">{{ hasGithubToken ? issues.length : "-" }}</div>
+      </div>
+      <div class="rounded-md bg-[var(--card)] px-2.5 py-2">
+        <div class="text-[10px] text-[var(--muted-foreground)]">Repos</div>
+        <div class="text-base font-semibold text-[var(--foreground)]">{{ recentRepos.length }}</div>
+      </div>
+    </div>
 
-        <template v-if="hasGithubToken">
-          <section class="space-y-1.5">
-            <div class="flex items-center justify-between gap-2 text-[11px] font-semibold text-[var(--foreground)]">
-              <span class="flex items-center gap-1.5"><GitPullRequest class="w-3.5 h-3.5 text-[var(--primary)]" />My open pull requests</span>
-              <span v-if="lastLoadedAt" class="text-[9px] font-normal text-[var(--muted-foreground)]">{{ lastLoadedAt }}</span>
+    <div v-if="error" class="mb-3 flex items-start gap-2 rounded-md bg-[#f59e0b]/10 px-2.5 py-2 text-[11px] text-[var(--foreground)]">
+      <AlertCircle class="w-3.5 h-3.5 mt-0.5 text-[#f59e0b] flex-shrink-0" />
+      <span class="min-w-0">{{ error }}</span>
+    </div>
+
+    <div class="min-h-0 flex-1 overflow-y-auto pr-1 dashboard-scroll">
+      <template v-if="hasGithubToken">
+        <section class="space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--foreground)]">
+              <GitPullRequest class="w-3.5 h-3.5 text-[var(--primary)]" />
+              My open pull requests
             </div>
-            <button
-              v-for="item in pullRequests"
-              :key="`pr-${item.repo}-${item.number}`"
-              class="w-full text-left rounded border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 hover:border-[var(--primary)]/45 hover:bg-[var(--secondary)] transition-colors"
-              @click="openDashboardItem(item)"
-            >
-              <div class="flex items-center justify-between gap-2 text-[10px]">
-                <span class="text-[var(--primary)] font-semibold">#{{ item.number }} {{ item.repo }}</span>
-                <span class="text-[var(--muted-foreground)]">{{ formatDate(item.updatedAt) }}</span>
-              </div>
-              <div class="mt-0.5 text-[11px] text-[var(--foreground)] truncate">{{ item.title }}</div>
-            </button>
-            <div v-if="!loading && pullRequests.length === 0" class="rounded border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-[11px] text-[var(--muted-foreground)]">
-              No open pull requests authored by you.
+            <div class="flex items-center gap-2 text-[9px] text-[var(--muted-foreground)]">
+              <span>{{ filteredPullRequests.length }}/{{ pullRequests.length }}</span>
+              <span v-if="lastLoadedAt">{{ lastLoadedAt }}</span>
             </div>
-          </section>
+          </div>
 
-          <section class="space-y-1.5">
+          <div class="relative">
+            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--muted-foreground)]" />
+            <input
+              v-model="pullRequestSearch"
+              placeholder="Search pull requests..."
+              class="w-full pl-8 pr-2 py-1.5 bg-[var(--card)] rounded-md text-[11px] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+            />
+          </div>
+
+          <button
+            v-for="item in filteredPullRequests"
+            :key="`pr-${item.repo}-${item.number}`"
+            class="w-full text-left flex items-start gap-2 rounded-lg px-3 py-2 hover:bg-[var(--card)] transition-colors group"
+            @click="openDashboardItem(item)"
+          >
+            <GitPullRequest class="mt-0.5 w-3.5 h-3.5 text-[var(--primary)] flex-shrink-0" />
+            <span class="min-w-0 flex-1">
+              <span class="flex items-center justify-between gap-2 text-[10px]">
+                <span class="text-[var(--primary)] font-semibold truncate">#{{ item.number }} {{ item.repo }}</span>
+                <span class="text-[var(--muted-foreground)] flex-shrink-0">{{ formatDate(item.updatedAt) }}</span>
+              </span>
+              <span class="block mt-0.5 text-[11px] text-[var(--foreground)] truncate">{{ item.title }}</span>
+            </span>
+          </button>
+
+          <div v-if="!loading && pullRequests.length > 0 && filteredPullRequests.length === 0" class="px-3 py-2 text-[11px] text-[var(--muted-foreground)] italic">
+            No matching pull requests
+          </div>
+          <div v-if="!loading && pullRequests.length === 0" class="px-3 py-2 text-[11px] text-[var(--muted-foreground)] italic">
+            No open pull requests authored by you.
+          </div>
+        </section>
+
+        <section class="mt-4 pt-4 border-t border-[var(--border)]/70 space-y-2">
+          <div class="flex items-center justify-between gap-2">
             <div class="text-[11px] font-semibold text-[var(--foreground)] flex items-center gap-1.5">
               <CircleDot class="w-3.5 h-3.5 text-[var(--primary)]" />
               Issues assigned to me
             </div>
+            <span class="text-[9px] text-[var(--muted-foreground)]">{{ filteredIssues.length }}/{{ issues.length }}</span>
+          </div>
+
+          <div class="relative">
+            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--muted-foreground)]" />
+            <input
+              v-model="issueSearch"
+              placeholder="Search issues..."
+              class="w-full pl-8 pr-2 py-1.5 bg-[var(--card)] rounded-md text-[11px] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+            />
+          </div>
+
+          <button
+            v-for="item in filteredIssues"
+            :key="`issue-${item.repo}-${item.number}`"
+            class="w-full text-left flex items-start gap-2 rounded-lg px-3 py-2 hover:bg-[var(--card)] transition-colors group"
+            @click="openDashboardItem(item)"
+          >
+            <CircleDot class="mt-0.5 w-3.5 h-3.5 text-[var(--primary)] flex-shrink-0" />
+            <span class="min-w-0 flex-1">
+              <span class="flex items-center justify-between gap-2 text-[10px]">
+                <span class="text-[var(--primary)] font-semibold truncate">#{{ item.number }} {{ item.repo }}</span>
+                <span class="text-[var(--muted-foreground)] flex-shrink-0">{{ formatDate(item.updatedAt) }}</span>
+              </span>
+              <span class="block mt-0.5 text-[11px] text-[var(--foreground)] truncate">{{ item.title }}</span>
+            </span>
+          </button>
+
+          <div v-if="!loading && issues.length > 0 && filteredIssues.length === 0" class="px-3 py-2 text-[11px] text-[var(--muted-foreground)] italic">
+            No matching issues
+          </div>
+          <div v-if="!loading && issues.length === 0" class="px-3 py-2 text-[11px] text-[var(--muted-foreground)] italic">
+            No open issues assigned to you.
+          </div>
+        </section>
+      </template>
+
+      <template v-else>
+        <section class="space-y-2">
+          <div
+            v-for="stat in localStats"
+            :key="stat.label"
+            class="flex items-center justify-between gap-3 rounded-lg px-3 py-2 hover:bg-[var(--card)] transition-colors"
+          >
+            <span class="text-[11px] text-[var(--muted-foreground)]">{{ stat.label }}</span>
+            <span class="text-sm font-semibold text-[var(--foreground)]">{{ stat.value }}</span>
+          </div>
+
+          <div class="mt-3 pt-3 border-t border-[var(--border)]/70">
+            <div class="flex items-start gap-2 rounded-lg px-3 py-2 hover:bg-[var(--card)] transition-colors">
+              <FolderOpen class="mt-0.5 w-3.5 h-3.5 text-[var(--primary)] flex-shrink-0" />
+              <div class="min-w-0">
+                <div class="text-[11px] font-semibold text-[var(--foreground)] truncate">
+                  {{ primaryLocalRepo ? primaryLocalRepo.name : 'No active repository' }}
+                </div>
+                <div class="mt-0.5 text-[10px] text-[var(--muted-foreground)] truncate">
+                  {{ primaryLocalRepo ? primaryLocalRepo.path : 'Browse, clone, or init a repository to start.' }}
+                </div>
+              </div>
+            </div>
+
             <button
-              v-for="item in issues"
-              :key="`issue-${item.repo}-${item.number}`"
-              class="w-full text-left rounded border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 hover:border-[var(--primary)]/45 hover:bg-[var(--secondary)] transition-colors"
-              @click="openDashboardItem(item)"
-            >
-              <div class="flex items-center justify-between gap-2 text-[10px]">
-                <span class="text-[var(--primary)] font-semibold">#{{ item.number }} {{ item.repo }}</span>
-                <span class="text-[var(--muted-foreground)]">{{ formatDate(item.updatedAt) }}</span>
-              </div>
-              <div class="mt-0.5 text-[11px] text-[var(--foreground)] truncate">{{ item.title }}</div>
-            </button>
-            <div v-if="!loading && issues.length === 0" class="rounded border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-[11px] text-[var(--muted-foreground)]">
-              No open issues assigned to you.
-            </div>
-          </section>
-        </template>
-
-        <template v-else>
-          <section class="space-y-2">
-            <div class="grid grid-cols-3 gap-2">
-              <div v-for="stat in localStats" :key="stat.label" class="rounded border border-[var(--border)] bg-[var(--background)] px-2 py-2">
-                <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ stat.label }}</div>
-                <div class="text-base font-semibold text-[var(--foreground)]">{{ stat.value }}</div>
-              </div>
-            </div>
-
-            <div class="rounded border border-[var(--border)] bg-[var(--background)] px-3 py-2">
-              <div class="text-[11px] font-semibold text-[var(--foreground)] flex items-center gap-1.5">
-                <FolderOpen class="w-3.5 h-3.5 text-[var(--primary)]" />
-                {{ primaryLocalRepo ? primaryLocalRepo.name : 'No active repository' }}
-              </div>
-              <div class="mt-1 text-[10px] text-[var(--muted-foreground)] truncate">
-                {{ primaryLocalRepo ? primaryLocalRepo.path : 'Browse, clone, or init a repository to start.' }}
-              </div>
-            </div>
-
-            <button
-              class="w-full flex items-center justify-between gap-2 rounded border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-left hover:border-[var(--primary)]/45 hover:bg-[var(--secondary)] transition-colors"
+              class="mt-2 w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-left hover:bg-[var(--card)] transition-colors"
               @click="emit('settings')"
             >
               <span class="min-w-0">
@@ -352,26 +466,36 @@ watch(() => props.githubToken, () => {
               </span>
               <ExternalLink class="w-3.5 h-3.5 text-[var(--muted-foreground)] flex-shrink-0" />
             </button>
-          </section>
-        </template>
+          </div>
+        </section>
+      </template>
 
-        <div v-if="loading" class="flex items-center gap-2 text-[11px] text-[var(--muted-foreground)]">
-          <RefreshCw class="w-3.5 h-3.5 animate-spin" />
-          Loading GitHub dashboard...
+      <div v-if="loading" class="mt-3 flex items-center gap-2 text-[11px] text-[var(--muted-foreground)]">
+        <RefreshCw class="w-3.5 h-3.5 animate-spin" />
+        Loading GitHub dashboard...
+      </div>
+
+      <div class="mt-4 pt-3 border-t border-[var(--border)]/70">
+        <div class="flex items-center gap-2 text-[11px] font-semibold text-[var(--foreground)]">
+          <Clock class="w-3.5 h-3.5 text-[var(--primary)]" />
+          Current Session
         </div>
-      </div>
-    </div>
-
-    <div class="rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 py-3">
-      <div class="flex items-center gap-2 text-[11px] font-semibold text-[var(--foreground)]">
-        <Clock class="w-3.5 h-3.5 text-[var(--primary)]" />
-        Current Session
-      </div>
-      <div class="mt-2 space-y-1 text-[10px] text-[var(--muted-foreground)]">
-        <div class="flex justify-between gap-2"><span>Open repositories</span><span class="text-[var(--foreground)]">{{ openRepos.length }}</span></div>
-        <div class="flex justify-between gap-2"><span>Recent repositories</span><span class="text-[var(--foreground)]">{{ recentRepos.length }}</span></div>
-        <div class="flex justify-between gap-2"><span>GitHub dashboard</span><span class="text-[var(--foreground)]">{{ hasGithubToken ? 'Connected' : 'Local only' }}</span></div>
+        <div class="mt-2 space-y-1 text-[10px] text-[var(--muted-foreground)]">
+          <div class="flex justify-between gap-2"><span>Open repositories</span><span class="text-[var(--foreground)]">{{ openRepos.length }}</span></div>
+          <div class="flex justify-between gap-2"><span>Recent repositories</span><span class="text-[var(--foreground)]">{{ recentRepos.length }}</span></div>
+          <div class="flex justify-between gap-2"><span>GitHub dashboard</span><span class="text-[var(--foreground)]">{{ hasGithubToken ? 'Connected' : 'Local only' }}</span></div>
+        </div>
       </div>
     </div>
   </aside>
 </template>
+
+<style scoped>
+.dashboard-scroll {
+  scrollbar-width: none;
+}
+
+.dashboard-scroll::-webkit-scrollbar {
+  display: none;
+}
+</style>

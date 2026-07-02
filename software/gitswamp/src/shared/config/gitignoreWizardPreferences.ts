@@ -3,9 +3,10 @@ export const SMART_GITIGNORE_WIZARD_EVENT = "gitswamp-smart-gitignore-wizard-cha
 
 export function getStoredSmartGitignoreWizardEnabled(): boolean {
   try {
-    return localStorage.getItem(SMART_GITIGNORE_WIZARD_STORAGE_KEY) === "true";
+    const stored = localStorage.getItem(SMART_GITIGNORE_WIZARD_STORAGE_KEY);
+    return stored === null ? true : stored !== "false";
   } catch {
-    return false;
+    return true;
   }
 }
 

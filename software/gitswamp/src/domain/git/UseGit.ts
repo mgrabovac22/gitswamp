@@ -97,7 +97,13 @@ const history = createHistoryActions(
   toast,
 );
 
-const terminal = createTerminalActions(state);
+const terminal = createTerminalActions(
+  state,
+  {
+    refreshStatus: refresh.refreshStatus,
+    refreshStashes: refresh.refreshStashes,
+  },
+);
 
 async function openRepositoryWithGhost(path: string) {
   await repo.openRepository(path);

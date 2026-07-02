@@ -90,6 +90,12 @@ const hasWorkingChanges = computed(
 
 const hasConflicts = computed(() => props.git.hasConflicts.value);
 const selectedCommitCount = computed(() => props.git.selectedCommits.value.length);
+const terminalUntrackedFileCount = computed(() =>
+  props.git.unstagedFiles.value.filter((file: { status?: string; staged?: boolean; conflicted?: boolean }) => {
+    const status = (file.status || "").toLowerCase();
+    return !file.staged && !file.conflicted && (status === "new" || status === "added" || status === "untracked" || status === "??");
+  }).length,
+);
 
 const showDetailsPanel = computed(
   () => props.historyViewMode === "graph"
@@ -511,8 +517,12 @@ function handleRefreshState() {
         :output="props.git.terminalOutput.value"
         :repo-path="props.git.repoPath.value"
         :allow-all-commands="props.terminalAllowAll"
+        :staged-file-count="props.git.stagedFiles.value.length"
+        :unstaged-file-count="props.git.unstagedFiles.value.length"
+        :untracked-file-count="terminalUntrackedFileCount"
+        :conflict-file-count="props.git.conflictFiles.value.length"
         :style="terminalPanelStyle"
-        @run="props.git.runTerminalCommand($event.command, $event.allowAll)"
+        @run="props.git.runTerminalCommand($event.command, $event.allowAll, { safetyStashFirst: $event.safetyStashFirst })"
         @update:allow-all-commands="emit('update:terminalAllowAll', $event)"
         @close="emit('update:showTerminal', false)"
       />

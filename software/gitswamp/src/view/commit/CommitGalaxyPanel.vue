@@ -108,8 +108,10 @@ const showBranchAura = ref(true);
 const showDepthFog = ref(true);
 const showMiniMap = ref(true);
 const highlightMerges = ref(true);
+const showViewOptionsMenu = ref(false);
 const tooltip = ref({ x: 0, y: 0 });
 const isDragging = ref(false);
+const viewOptionsRef = ref<HTMLElement | null>(null);
 
 let ctx: CanvasRenderingContext2D | null = null;
 let resizeObserver: ResizeObserver | null = null;
@@ -394,20 +396,23 @@ const galaxyScene = computed<GalaxyScene>(() => {
       : smoothstep(0, 1, clamp((ageProgress - laneMeta.baseProgress) / branchSpan, 0, 1));
     const direction = laneOffset < 0 ? -1 : 1;
     const laneMagnitude = Math.max(1, Math.abs(laneOffset));
-    const branchReach = 74 + laneMagnitude * 64;
+    const branchEase = smoothstep(0, 1, treeBranchProgress);
+    const branchReach = 88 + laneMagnitude * 58;
     const treeNoise = ((Math.floor(hash / 31) % 1000) / 1000 - 0.5) * (laneMeta.isMain ? 7 : 18 + treeBranchProgress * 24);
     const trunkSway = Math.sin(ageProgress * Math.PI * 2 + branchSeed) * 8;
-    const branchArc = Math.sin(treeBranchProgress * Math.PI) * (32 + laneMagnitude * 10);
+    const branchArc = Math.sin(branchEase * Math.PI) * (44 + laneMagnitude * 9);
+    const forkWave = Math.sin(branchEase * Math.PI * (1.35 + (branchSeed % 5) * 0.08) + branchSeed) * (12 + laneMagnitude * 5);
+    const canopyLift = Math.sin(branchEase * Math.PI) * (112 + laneMagnitude * 14);
+    const branchYProgress = mix(laneMeta.baseProgress, laneMeta.tipProgress, branchEase);
     const treeX = laneMeta.isMain
       ? treeNoise + trunkSway * 0.4
-      : direction * (branchReach * treeBranchProgress + branchArc) + treeNoise;
-    const canopyProgress = mix(0.58, 0.98, treeBranchProgress);
+      : direction * (branchReach * (0.12 + branchEase * 0.88) + branchArc) + forkWave + treeNoise;
     const treeY = laneMeta.isMain
       ? (0.66 - ageProgress) * treeHeight
-      : (0.62 - canopyProgress) * treeHeight - Math.sin(treeBranchProgress * Math.PI) * 48;
+      : (0.66 - branchYProgress) * treeHeight - canopyLift - (branchSeed % 6) * 10;
     const treeZ = laneMeta.isMain
       ? ((Math.floor(hash / 101) % 80) - 40) * 0.28
-      : direction * laneMagnitude * 34 + ((Math.floor(hash / 101) % 140) - 70) * (0.26 + treeBranchProgress * 0.62);
+      : direction * laneMagnitude * 34 + ((Math.floor(hash / 101) % 140) - 70) * (0.22 + branchEase * 0.7);
     const colorKey = laneName === "history" && branchLabel ? branchLabel : laneName;
 
     const node: GalaxyNode = {
@@ -923,8 +928,12 @@ function drawTreeGuides(context: CanvasRenderingContext2D) {
     context.fill();
   }
 
-  context.globalAlpha = 0.28;
-  context.strokeStyle = "#8b5a2b";
+  const trunkGradient = context.createLinearGradient(trunkRoot.screenX, trunkRoot.screenY, trunkCrown.screenX, trunkCrown.screenY);
+  trunkGradient.addColorStop(0, "#5f3b1f");
+  trunkGradient.addColorStop(0.48, "#8b5a2b");
+  trunkGradient.addColorStop(1, "#b7791f");
+  context.globalAlpha = 0.36;
+  context.strokeStyle = trunkGradient;
   context.lineWidth = Math.max(7, Math.min(24, viewport.zoom * 10));
   context.lineCap = "round";
   context.beginPath();
@@ -938,6 +947,27 @@ function drawTreeGuides(context: CanvasRenderingContext2D) {
     trunkCrown.screenY,
   );
   context.stroke();
+
+  const rootCount = 5;
+  for (let index = 0; index < rootCount; index += 1) {
+    const offset = index - Math.floor(rootCount / 2);
+    if (offset === 0) continue;
+    const direction = offset < 0 ? -1 : 1;
+    const rootReach = (44 + Math.abs(offset) * 28) * viewport.zoom;
+    const rootDip = (18 + Math.abs(offset) * 9) * viewport.zoom;
+    context.globalAlpha = 0.2;
+    context.strokeStyle = "#6b4423";
+    context.lineWidth = Math.max(1.8, Math.min(8, viewport.zoom * (3.2 - Math.abs(offset) * 0.18)));
+    context.beginPath();
+    context.moveTo(trunkRoot.screenX, trunkRoot.screenY - 2 * viewport.zoom);
+    context.quadraticCurveTo(
+      trunkRoot.screenX + direction * rootReach * 0.42,
+      trunkRoot.screenY + rootDip * 0.24,
+      trunkRoot.screenX + direction * rootReach,
+      trunkRoot.screenY + rootDip,
+    );
+    context.stroke();
+  }
 
   for (const lane of scene.lanes) {
     if (lane.isMain || lane.name === "history") {
@@ -953,9 +983,24 @@ function drawTreeGuides(context: CanvasRenderingContext2D) {
     const end = projectLayoutPoint(direction * branchReach, endY, direction * laneMagnitude * 28);
     const midX = direction * branchReach * 0.42 * viewport.zoom;
 
-    context.globalAlpha = 0.18;
+    context.globalAlpha = 0.2;
+    context.strokeStyle = "#6b4423";
+    context.lineWidth = Math.max(2.8, Math.min(14, viewport.zoom * (5.2 - Math.min(2, laneMagnitude) * 0.42)));
+    context.beginPath();
+    context.moveTo(start.screenX, start.screenY);
+    context.bezierCurveTo(
+      start.screenX + midX,
+      mix(start.screenY, end.screenY, 0.2),
+      end.screenX - midX * 0.25,
+      mix(start.screenY, end.screenY, 0.82),
+      end.screenX,
+      end.screenY,
+    );
+    context.stroke();
+
+    context.globalAlpha = 0.22;
     context.strokeStyle = lane.color;
-    context.lineWidth = Math.max(2.2, Math.min(12, viewport.zoom * (4.4 - Math.min(2, laneMagnitude) * 0.5)));
+    context.lineWidth = Math.max(0.9, Math.min(4.5, viewport.zoom * 1.25));
     context.beginPath();
     context.moveTo(start.screenX, start.screenY);
     context.bezierCurveTo(
@@ -1125,15 +1170,27 @@ function drawTreeEdge(context: CanvasRenderingContext2D, from: ProjectedNode, to
   const midY = mix(from.screenY, to.screenY, 0.55);
   const curve = clamp((to.screenX - from.screenX) * 0.32, -90, 90);
   const mainEdge = from.isMainLane && to.isMainLane;
-  context.globalAlpha = mainEdge ? 0.2 + Math.min(0.18, viewport.zoom * 0.035) : 0.18 + Math.min(0.22, viewport.zoom * 0.04);
-  context.strokeStyle = mainEdge ? "#a16207" : color;
-  context.lineWidth = mainEdge
-    ? Math.max(1.6, Math.min(7, viewport.zoom * 2.2))
-    : Math.max(0.7, Math.min(5, viewport.zoom * (to.branchLabel ? 1.5 : 0.95)));
+  const branchWidth = mainEdge
+    ? Math.max(2.4, Math.min(8.5, viewport.zoom * 2.9))
+    : Math.max(1.2, Math.min(6.5, viewport.zoom * (to.branchLabel ? 2.1 : 1.35)));
+
+  context.globalAlpha = mainEdge ? 0.32 + Math.min(0.2, viewport.zoom * 0.035) : 0.2 + Math.min(0.2, viewport.zoom * 0.04);
+  context.strokeStyle = mainEdge ? "#9a5f24" : "#6b4423";
+  context.lineWidth = branchWidth;
   context.beginPath();
   context.moveTo(from.screenX, from.screenY);
   context.bezierCurveTo(from.screenX + curve, midY, to.screenX - curve, midY, to.screenX, to.screenY);
   context.stroke();
+
+  if (!mainEdge) {
+    context.globalAlpha = 0.28 + Math.min(0.22, viewport.zoom * 0.035);
+    context.strokeStyle = color;
+    context.lineWidth = Math.max(0.7, branchWidth * 0.34);
+    context.beginPath();
+    context.moveTo(from.screenX, from.screenY);
+    context.bezierCurveTo(from.screenX + curve, midY, to.screenX - curve, midY, to.screenX, to.screenY);
+    context.stroke();
+  }
 }
 
 function drawNode(context: CanvasRenderingContext2D, node: ProjectedNode) {
@@ -1263,7 +1320,7 @@ function drawScene() {
   scheduleCirclingFrame();
 }
 
-function pointerPosition(event: PointerEvent | WheelEvent): { x: number; y: number } {
+function pointerPosition(event: MouseEvent | PointerEvent | WheelEvent): { x: number; y: number } {
   const rect = canvasRef.value?.getBoundingClientRect();
   if (!rect) return { x: 0, y: 0 };
   return {
@@ -1272,20 +1329,51 @@ function pointerPosition(event: PointerEvent | WheelEvent): { x: number; y: numb
   };
 }
 
-function updateHover(event: PointerEvent) {
-  const pointer = pointerPosition(event);
-  tooltip.value = { x: pointer.x, y: pointer.y };
-  let nextHover: ProjectedNode | null = null;
-  const searchRadius = Math.max(8, 14 / Math.max(0.7, viewport.zoom));
+function nodeVisualRadius(node: ProjectedNode): number {
+  const selected = node.commit.sha === props.selectedSha;
+  const hovered = hoveredNode.value?.commit.sha === node.commit.sha;
+  const currentBranch = normalizeBranchName(node.laneName) === currentBranchName.value;
+  const treeLeafBoost = viewMode.value === "tree" ? 1.12 + node.ageProgress * 0.28 : 1;
+  return node.screenRadius * treeLeafBoost * (selected ? 1.75 : hovered ? 1.55 : currentBranch ? 1.25 : 1);
+}
+
+function findNodeAtPointer(pointer: { x: number; y: number }, strict = false): ProjectedNode | null {
+  let bestNode: ProjectedNode | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  const clickPadding = strict
+    ? (viewMode.value === "tree" ? 5 : 4)
+    : (viewMode.value === "tree" ? 8 : 7);
+  const maxRadius = strict
+    ? (viewMode.value === "tree" ? 14 : 12)
+    : (viewMode.value === "tree" ? 19 : 17);
+
   for (let i = projectedNodes.length - 1; i >= 0; i -= 1) {
     const node = projectedNodes[i];
     const dx = node.screenX - pointer.x;
     const dy = node.screenY - pointer.y;
-    if (Math.hypot(dx, dy) <= searchRadius + node.screenRadius) {
-      nextHover = node;
-      break;
+    const distance = Math.hypot(dx, dy);
+    const radius = clamp(nodeVisualRadius(node) + clickPadding, 5, maxRadius);
+
+    if (distance > radius) {
+      continue;
+    }
+
+    const frontBias = (i / Math.max(1, projectedNodes.length - 1)) * 0.035;
+    const focusBias = node.commit.sha === props.selectedSha ? 0.015 : 0;
+    const score = distance / radius - frontBias - focusBias;
+    if (score < bestScore) {
+      bestScore = score;
+      bestNode = node;
     }
   }
+
+  return bestNode;
+}
+
+function updateHover(event: PointerEvent) {
+  const pointer = pointerPosition(event);
+  tooltip.value = { x: pointer.x, y: pointer.y };
+  const nextHover = findNodeAtPointer(pointer);
 
   if (nextHover?.commit.sha !== hoveredNode.value?.commit.sha) {
     hoveredNode.value = nextHover;
@@ -1357,12 +1445,14 @@ function onClick(event: MouseEvent) {
     return;
   }
 
-  if (hoveredNode.value) {
-    focusedSha.value = hoveredNode.value.commit.sha;
+  const clickedNode = findNodeAtPointer(pointerPosition(event), true);
+  if (clickedNode) {
+    hoveredNode.value = clickedNode;
+    focusedSha.value = clickedNode.commit.sha;
     if (viewMode.value === "galaxy") {
-      focusNode(hoveredNode.value, true);
+      focusNode(clickedNode, true);
     }
-    emit("select", { commit: hoveredNode.value.commit, additive: event.ctrlKey || event.metaKey });
+    emit("select", { commit: clickedNode.commit, additive: event.ctrlKey || event.metaKey });
   }
 }
 
@@ -1453,8 +1543,26 @@ function toggleMerges() {
   scheduleDraw();
 }
 
+function toggleViewOptionsMenu() {
+  showViewOptionsMenu.value = !showViewOptionsMenu.value;
+}
+
+function closeViewOptionsMenu() {
+  showViewOptionsMenu.value = false;
+}
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  if (!showViewOptionsMenu.value) return;
+  const target = event.target as Node | null;
+  if (target && viewOptionsRef.value?.contains(target)) {
+    return;
+  }
+  closeViewOptionsMenu();
+}
+
 onMounted(async () => {
   await nextTick();
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   resizeCanvas();
   resizeObserver = new ResizeObserver(resizeCanvas);
   if (containerRef.value) {
@@ -1463,6 +1571,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
   resizeObserver?.disconnect();
   stopCirclingFrame();
   if (frameId !== null) {
@@ -1563,80 +1672,48 @@ watch(() => props.selectedSha, scheduleDraw);
       >
         {{ viewMode === "tree" ? "Galaxy View" : "Tree View" }}
       </button>
-      <button
-        type="button"
-        :class="[
-          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
-          showLabels ? 'border-sky-300/30 bg-sky-500/15 text-sky-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
-        ]"
-        @click="toggleLabels"
-      >
-        Labels
-      </button>
-      <button
-        type="button"
-        :class="[
-          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
-          showGuides ? 'border-emerald-300/30 bg-emerald-500/15 text-emerald-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
-        ]"
-        @click="toggleGuides"
-      >
-        Guides
-      </button>
-      <button
-        v-if="viewMode === 'galaxy'"
-        type="button"
-        :class="[
-          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
-          showTimeRings ? 'border-cyan-300/30 bg-cyan-500/15 text-cyan-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
-        ]"
-        @click="toggleTimeRings"
-      >
-        Rings
-      </button>
-      <button
-        v-if="viewMode === 'galaxy'"
-        type="button"
-        :class="[
-          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
-          showBranchAura ? 'border-fuchsia-300/30 bg-fuchsia-500/15 text-fuchsia-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
-        ]"
-        @click="toggleBranchAura"
-      >
-        Aura
-      </button>
-      <button
-        v-if="viewMode === 'galaxy'"
-        type="button"
-        :class="[
-          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
-          showDepthFog ? 'border-violet-300/30 bg-violet-500/15 text-violet-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
-        ]"
-        @click="toggleDepthFog"
-      >
-        Depth
-      </button>
-      <button
-        v-if="viewMode === 'galaxy'"
-        type="button"
-        :class="[
-          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
-          showMiniMap ? 'border-teal-300/30 bg-teal-500/15 text-teal-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
-        ]"
-        @click="toggleMiniMap"
-      >
-        Map
-      </button>
-      <button
-        type="button"
-        :class="[
-          'rounded border px-2.5 py-1 text-[11px] hover:bg-slate-800',
-          highlightMerges ? 'border-orange-300/30 bg-orange-500/15 text-orange-100' : 'border-white/10 bg-slate-950/70 text-slate-300',
-        ]"
-        @click="toggleMerges"
-      >
-        Merges
-      </button>
+      <div ref="viewOptionsRef" class="relative">
+        <button
+          type="button"
+          class="h-[26px] rounded border border-white/10 bg-slate-950/80 px-2.5 text-[11px] text-slate-100 outline-none hover:bg-slate-800"
+          @click="toggleViewOptionsMenu"
+        >
+          Options
+        </button>
+        <div
+          v-if="showViewOptionsMenu"
+          class="absolute right-0 top-8 z-[20] w-44 rounded-md border border-white/10 bg-slate-950/95 p-2 text-[11px] text-slate-100 shadow-2xl backdrop-blur"
+        >
+          <label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5">
+            <input type="checkbox" class="h-3 w-3 accent-sky-400" :checked="showLabels" @change="toggleLabels" />
+            <span>Labels</span>
+          </label>
+          <label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5">
+            <input type="checkbox" class="h-3 w-3 accent-emerald-400" :checked="showGuides" @change="toggleGuides" />
+            <span>Guides</span>
+          </label>
+          <label v-if="viewMode === 'galaxy'" class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5">
+            <input type="checkbox" class="h-3 w-3 accent-cyan-400" :checked="showTimeRings" @change="toggleTimeRings" />
+            <span>Rings</span>
+          </label>
+          <label v-if="viewMode === 'galaxy'" class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5">
+            <input type="checkbox" class="h-3 w-3 accent-fuchsia-400" :checked="showBranchAura" @change="toggleBranchAura" />
+            <span>Aura</span>
+          </label>
+          <label v-if="viewMode === 'galaxy'" class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5">
+            <input type="checkbox" class="h-3 w-3 accent-violet-400" :checked="showDepthFog" @change="toggleDepthFog" />
+            <span>Depth</span>
+          </label>
+          <label v-if="viewMode === 'galaxy'" class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5">
+            <input type="checkbox" class="h-3 w-3 accent-teal-400" :checked="showMiniMap" @change="toggleMiniMap" />
+            <span>Map</span>
+          </label>
+          <label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5">
+            <input type="checkbox" class="h-3 w-3 accent-orange-400" :checked="highlightMerges" @change="toggleMerges" />
+            <span>Merges</span>
+          </label>
+        </div>
+      </div>
       <button
         v-if="hasMore"
         type="button"

@@ -5,6 +5,15 @@ import type { FileStatusInfo, StashInfo } from "@/types";
 
 type QuoteMode = '"' | "'" | null;
 
+interface TerminalCommandOptions {
+  safetyStashFirst?: boolean;
+}
+
+type TerminalRefreshDeps = {
+  refreshStatus: () => Promise<void>;
+  refreshStashes: () => Promise<void>;
+};
+
 interface ParseState {
   args: string[];
   current: string;
@@ -186,6 +195,7 @@ function buildHelpText(allowAll: boolean): string {
     modeHint,
     "Built-ins: clear/cls, !!, help, tools, open <tool>",
     "Git shortcuts: st->status, br->branch, co->checkout, sw->switch, lg->log graph, last->log -1 --stat, rmc->rm -r --cached .",
+    "Safety: destructive terminal git commands show a preview and can create a safety stash first.",
     "Open tools: explorer, vscode, visualstudio, androidstudio, intellij (detected once and cached)",
     "Example: 'st' => git status, 'lg' => git log --oneline --graph --decorate -20",
   ].join("\n");
@@ -330,7 +340,12 @@ function formatNativeStatusOutput(files: FileStatusInfo[]): string {
     .join("\n");
 }
 
-export function createTerminalActions(state: GitState) {
+function buildSafetyStashMessage(command: string): string {
+  const compactCommand = command.length > 80 ? `${command.slice(0, 77)}...` : command;
+  return `GitSwamp safety stash before ${compactCommand}`;
+}
+
+export function createTerminalActions(state: GitState, refresh?: TerminalRefreshDeps) {
   let lastExecuted: { command: string; allowAll: boolean } | null = null;
   let cachedGitExecutable: string | null = null;
   let externalToolsCache: ExternalToolId[] | null = null;
@@ -402,6 +417,37 @@ export function createTerminalActions(state: GitState) {
       path,
       command,
     });
+  }
+
+  async function createSafetyStashBefore(command: string): Promise<boolean> {
+    if (!state.repoPath.value) {
+      appendOutput(`$ git stash push -u\nError: Open a repository before creating a safety stash.`);
+      return false;
+    }
+
+    if (state.hasConflicts.value) {
+      appendOutput(`$ git stash push -u\nError: Resolve conflicts before creating a safety stash.`);
+      return false;
+    }
+
+    const message = buildSafetyStashMessage(command);
+    appendOutput(`$ git stash push -u -m ${quoteForShell(message)}\nCreating safety stash before: ${command}`);
+
+    try {
+      const result = await callTauri<string>("stash_push", {
+        path: state.repoPath.value,
+        message,
+      });
+      appendOutput(result || "Safety stash created.");
+      await Promise.all([
+        refresh?.refreshStatus?.() ?? Promise.resolve(),
+        refresh?.refreshStashes?.() ?? Promise.resolve(),
+      ]);
+      return true;
+    } catch (error) {
+      appendOutput(`Safety stash failed. Command was not run.\nError: ${String(error)}`);
+      return false;
+    }
   }
 
   async function handleOpenToolCommand(trimmed: string): Promise<boolean> {
@@ -675,7 +721,7 @@ export function createTerminalActions(state: GitState) {
     await executeGitArgs(rawArgs, trimmed, false, commandNote);
   }
 
-  async function runTerminalCommand(command: string, allowAll = false) {
+  async function runTerminalCommand(command: string, allowAll = false, options: TerminalCommandOptions = {}) {
     const trimmed = command.trim();
     if (!trimmed) return;
 
@@ -694,6 +740,13 @@ export function createTerminalActions(state: GitState) {
     if (!state.repoPath.value) {
       appendOutput(`$ ${executableCommand}${normalized.note}\nError: Open a repository before using terminal commands.`);
       return;
+    }
+
+    if (options.safetyStashFirst) {
+      const stashed = await createSafetyStashBefore(executableCommand);
+      if (!stashed) {
+        return;
+      }
     }
 
     const parsed = parseCommandArgs(executableCommand);

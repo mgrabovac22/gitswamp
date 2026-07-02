@@ -48,7 +48,7 @@ const reducedMotion = ref(false);
 const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
-const smartGitignoreWizardEnabled = ref(false);
+const smartGitignoreWizardEnabled = ref(true);
 const commitAnalyzerEnabled = ref(true);
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
@@ -343,7 +343,7 @@ function handleDelete() {
           <div class="flex items-center justify-between py-2">
             <div>
               <div class="text-xs font-medium text-[var(--foreground)] block">Reduced Motion</div>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disable graph and UI animations</p>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disable graph and UI animations except the current HEAD branch ring</p>
             </div>
             <button
               @click="reducedMotion = !reducedMotion"
@@ -411,7 +411,7 @@ function handleDelete() {
           <div class="flex items-center justify-between py-2">
             <div>
               <div class="text-xs font-medium text-[var(--foreground)] block">Smart .gitignore Wizard</div>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Suggest ignore rules from untracked files only when enabled</p>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Suggest generated and private untracked files for .gitignore</p>
             </div>
             <button
               @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled"

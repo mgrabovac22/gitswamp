@@ -156,7 +156,7 @@ const reducedMotion = ref(false);
 const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
-const smartGitignoreWizardEnabled = ref(false);
+const smartGitignoreWizardEnabled = ref(true);
 const commitAnalyzerEnabled = ref(true);
 const disableGraphAnimations = ref(false);
 const smoothGraphScroll = ref(false);
@@ -2229,7 +2229,7 @@ watch(activePlatform, () => {
                 <div class="flex items-center justify-between py-2">
                   <div>
                     <div class="text-xs font-medium text-[var(--foreground)]">Smart .gitignore Wizard</div>
-                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Suggest ignore rules from untracked files only when enabled</p>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Suggest generated and private untracked files for .gitignore</p>
                   </div>
                   <button @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="smartGitignoreWizardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="smartGitignoreWizardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
@@ -2274,7 +2274,7 @@ watch(activePlatform, () => {
                 <div class="flex items-center justify-between py-2">
                   <div>
                     <div class="text-xs font-medium text-[var(--foreground)]">Disable Commit Graph Animations</div>
-                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disables animation only in the graph rows and graph lines.</p>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disables graph motion except the current HEAD branch ring.</p>
                   </div>
                   <button @click="disableGraphAnimations = !disableGraphAnimations" class="relative w-10 h-5 rounded-full transition-colors" :class="disableGraphAnimations ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="disableGraphAnimations ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />

@@ -34,11 +34,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   applied: [];
+  openGitignore: [];
 }>();
 
 const toast = useToast();
 const selectedSuggestionIds = ref<Set<string>>(new Set());
 const knownSuggestionIds = ref<Set<string>>(new Set());
+const dismissedSuggestionIds = ref<Set<string>>(new Set());
 const gitignoreContent = ref("");
 const loadingGitignore = ref(false);
 const applying = ref(false);
@@ -338,6 +340,7 @@ const existingPatterns = computed(() => parseIgnorePatterns(gitignoreContent.val
 
 const visibleSuggestions = computed(() =>
   suggestionState.value.suggestions.filter((suggestion) =>
+    !dismissedSuggestionIds.value.has(suggestion.id) &&
     suggestion.patterns.some((pattern) => !isPatternCovered(pattern, existingPatterns.value)),
   ),
 );
@@ -363,13 +366,20 @@ function uniquePatterns(patterns: string[]): string[] {
 const previewPatterns = computed(() => uniquePatterns(selectedSuggestions.value.flatMap((suggestion) => suggestion.patterns)));
 const visibleMatchCount = computed(() => visibleSuggestions.value.reduce((total, suggestion) => total + suggestion.fileCount, 0));
 const visibleGroupCount = computed(() => visibleSuggestions.value.length);
-const selectedGroupCount = computed(() => selectedSuggestions.value.length);
 
 const summaryText = computed(() => {
   const fileLabel = visibleMatchCount.value === 1 ? "match" : "matches";
   const groupLabel = visibleGroupCount.value === 1 ? "group" : "groups";
   return `Found ${visibleMatchCount.value} risky untracked ${fileLabel} in ${visibleGroupCount.value} ${groupLabel}.`;
 });
+
+watch(
+  () => props.repoPath,
+  () => {
+    dismissedSuggestionIds.value = new Set();
+    knownSuggestionIds.value = new Set();
+  },
+);
 
 watch(
   visibleSuggestions,
@@ -411,6 +421,24 @@ function toggleSuggestion(id: string): void {
 
 function isSelected(id: string): boolean {
   return selectedSuggestionIds.value.has(id);
+}
+
+function openGitignore(): void {
+  emit("openGitignore");
+}
+
+function keepTracking(): void {
+  const suggestionsToDismiss = selectedSuggestions.value.length > 0
+    ? selectedSuggestions.value
+    : visibleSuggestions.value;
+
+  if (suggestionsToDismiss.length === 0) return;
+
+  dismissedSuggestionIds.value = new Set([
+    ...dismissedSuggestionIds.value,
+    ...suggestionsToDismiss.map((suggestion) => suggestion.id),
+  ]);
+  toast.info("Smart .gitignore suggestions dismissed for this session.");
 }
 
 async function readGitignore(): Promise<string> {
@@ -501,22 +529,40 @@ async function applySelectedRules(): Promise<void> {
         </div>
         <div class="min-w-0">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-semibold text-[var(--foreground)]">Smart .gitignore Wizard</span>
+            <span class="text-xs font-semibold text-[var(--foreground)]">Smart .gitignore Assistant</span>
             <span class="text-[9px] uppercase tracking-wide text-[var(--primary)] bg-[var(--primary)]/10 border border-[var(--primary)]/20 rounded px-1.5 py-0.5">
-              opt-in
+              generated/private
             </span>
           </div>
+          <p class="text-[10px] text-[var(--foreground)] mt-0.5">These look like generated/private files. Add to .gitignore?</p>
           <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">{{ summaryText }}</p>
         </div>
       </div>
-      <button
-        type="button"
-        class="px-2.5 py-1 rounded-md text-[10px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[var(--primary)] text-[var(--primary-foreground)] hover:bg-[var(--primary)]/90"
-        :disabled="previewPatterns.length === 0 || applying || loadingGitignore"
-        @click="applySelectedRules"
-      >
-        {{ applying ? "Saving..." : `Ignore ${selectedGroupCount}` }}
-      </button>
+      <div class="flex flex-wrap items-center justify-end gap-1.5 flex-shrink-0">
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded-md text-[10px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[var(--primary)] text-[var(--primary-foreground)] hover:bg-[var(--primary)]/90"
+          :disabled="previewPatterns.length === 0 || applying || loadingGitignore"
+          @click="applySelectedRules"
+        >
+          {{ applying ? "Saving..." : "Ignore selected" }}
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded-md text-[10px] font-semibold border border-[var(--border)] text-[var(--foreground)] bg-[var(--background)] hover:bg-[var(--secondary)] transition-colors"
+          @click="openGitignore"
+        >
+          Open .gitignore
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded-md text-[10px] font-semibold border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] bg-transparent hover:bg-[var(--secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="visibleSuggestions.length === 0 || applying"
+          @click="keepTracking"
+        >
+          Keep tracking
+        </button>
+      </div>
     </div>
 
     <TransitionGroup name="smart-ignore" tag="div" class="mt-3 space-y-1.5">

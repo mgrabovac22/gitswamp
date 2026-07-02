@@ -1976,6 +1976,7 @@ onUnmounted(() => {
           :repo-path="props.repoPath"
           :unstaged-files="props.unstagedFiles"
           @applied="emit('refreshState')"
+          @open-gitignore="emit('viewDiff', { path: '.gitignore', sha: null, staged: false })"
         />
 
         <div v-if="unstagedFiles.length > 0" class="border-b border-[var(--border)]">

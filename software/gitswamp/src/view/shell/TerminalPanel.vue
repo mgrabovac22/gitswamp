@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { Terminal, X, RotateCcw, Eraser } from "lucide-vue-next";
+import { AlertTriangle, Terminal, X, RotateCcw, Eraser } from "lucide-vue-next";
 
 const props = defineProps<{
   output: string[];
   repoPath: string;
   allowAllCommands: boolean;
+  stagedFileCount: number;
+  unstagedFileCount: number;
+  untrackedFileCount: number;
+  conflictFileCount: number;
 }>();
 
 const emit = defineEmits<{
-  run: [payload: { command: string; allowAll: boolean }];
+  run: [payload: { command: string; allowAll: boolean; safetyStashFirst?: boolean }];
   "update:allowAllCommands": [value: boolean];
   close: [];
 }>();
@@ -22,6 +26,7 @@ const history = ref<string[]>([]);
 const historyIndex = ref(-1);
 const reverseSearchCursor = ref(-1);
 const reverseSearchNeedle = ref("");
+const pendingSafety = ref<TerminalSafetyPrompt | null>(null);
 const MAX_HISTORY_ITEMS = 180;
 const HISTORY_STORAGE_PREFIX = "gitswamp-terminal-history";
 const OPEN_TOOLS_CACHE_KEY = "gitswamp-open-tools-cache-v2";
@@ -34,6 +39,14 @@ interface ExternalToolOption {
   label: string;
 }
 
+interface TerminalSafetyPrompt {
+  command: string;
+  headline: string;
+  detail: string;
+  impacts: string[];
+  canCreateSafetyStash: boolean;
+  safetyStashDisabledReason: string;
+}
 const quickCommands = [
   { label: "Status", command: "git status -sb", title: "Show concise working tree status" },
   { label: "Branches", command: "git branch -vv", title: "Show local branches with tracking status" },
@@ -45,6 +58,9 @@ const quickCommands = [
 ] as const;
 
 const canRepeat = computed(() => history.value.length > 0);
+const hasLocalChanges = computed(() =>
+  props.stagedFileCount + props.unstagedFileCount + props.untrackedFileCount > 0,
+);
 const openToolOptions = ref<ExternalToolOption[]>([]);
 const selectedOpenTool = ref<ExternalToolId | "">("");
 
@@ -170,6 +186,225 @@ function historyStorageKey() {
   return `${HISTORY_STORAGE_PREFIX}:${props.repoPath || "global"}`;
 }
 
+function parseCommandArgsForSafety(input: string): string[] | null {
+  const args: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaping = false;
+
+  for (const char of input) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char.trim().length === 0) {
+      if (current.length > 0) {
+        args.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaping || quote) return null;
+  if (current.length > 0) args.push(current);
+  return args;
+}
+
+function stripSudoPrefix(value: string): string {
+  return value.replace(/^sudo(?:\s+|$)/i, "").trim();
+}
+
+function normalizeGitArgsForSafety(rawCommand: string, allowAll: boolean): string[] | null {
+  const parsed = parseCommandArgsForSafety(stripSudoPrefix(rawCommand));
+  if (!parsed || parsed.length === 0) return null;
+
+  const first = parsed[0].toLowerCase();
+  if (first === "git") {
+    return parsed.slice(1);
+  }
+
+  return allowAll ? null : parsed;
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+  const target = flag.toLowerCase();
+  return args.some((arg) => arg.toLowerCase() === target);
+}
+
+function hasCombinedShortFlag(args: string[], flag: string): boolean {
+  const normalized = flag.toLowerCase().replace(/^-+/, "");
+  return args.some((arg) => {
+    const lower = arg.toLowerCase();
+    return lower.startsWith("-") && !lower.startsWith("--") && lower.slice(1).includes(normalized);
+  });
+}
+
+function hasForceFlag(args: string[]): boolean {
+  return hasFlag(args, "--force") || hasCombinedShortFlag(args, "f");
+}
+
+function formatCount(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function localChangeImpacts(includeStaged: boolean, includeUnstaged: boolean, includeUntracked: boolean): string[] {
+  const impacts: string[] = [];
+  if (includeUnstaged) impacts.push(formatCount(props.unstagedFileCount, "unstaged file"));
+  if (includeStaged) impacts.push(formatCount(props.stagedFileCount, "staged file"));
+  if (includeUntracked) impacts.push(formatCount(props.untrackedFileCount, "untracked file"));
+  if (props.conflictFileCount > 0) impacts.push(formatCount(props.conflictFileCount, "conflicted file"));
+  return impacts.filter((impact) => !impact.startsWith("0 "));
+}
+
+function safetyStashDisabledReason(): string {
+  if (props.conflictFileCount > 0) {
+    return "Resolve conflicts before creating a safety stash.";
+  }
+  if (!hasLocalChanges.value) {
+    return "No local changes to stash.";
+  }
+  return "";
+}
+
+function buildSafetyPrompt(commandToRun: string, args: string[]): TerminalSafetyPrompt | null {
+  const subcommand = args[0]?.toLowerCase();
+  if (!subcommand) return null;
+
+  const disabledReason = safetyStashDisabledReason();
+  const canCreateSafetyStash = hasLocalChanges.value && props.conflictFileCount === 0;
+
+  if (subcommand === "reset" && hasFlag(args, "--hard")) {
+    const impacts = localChangeImpacts(true, true, false);
+    return {
+      command: commandToRun,
+      headline: "Hard reset",
+      detail: "This can discard staged and unstaged work before moving HEAD/index.",
+      impacts: impacts.length > 0 ? impacts : ["No staged or unstaged file changes detected"],
+      canCreateSafetyStash,
+      safetyStashDisabledReason: disabledReason,
+    };
+  }
+
+  if (subcommand === "clean" && hasForceFlag(args)) {
+    const includeIgnored = hasCombinedShortFlag(args, "x") || hasFlag(args, "-x");
+    const impacts = localChangeImpacts(false, false, true);
+    if (includeIgnored) impacts.push("ignored files matched by git clean -x");
+    return {
+      command: commandToRun,
+      headline: "Git clean",
+      detail: "This can permanently delete untracked files from the working tree.",
+      impacts: impacts.length > 0 ? impacts : ["No untracked files currently shown in GitSwamp"],
+      canCreateSafetyStash,
+      safetyStashDisabledReason: disabledReason,
+    };
+  }
+
+  if (subcommand === "restore") {
+    const stagedOnly = hasFlag(args, "--staged") && !hasFlag(args, "--worktree");
+    if (!stagedOnly) {
+      const touchesStaged = hasFlag(args, "--staged");
+      const impacts = localChangeImpacts(touchesStaged, true, false);
+      return {
+        command: commandToRun,
+        headline: "Restore working tree",
+        detail: "This can discard local file edits from the working tree.",
+        impacts: impacts.length > 0 ? impacts : ["No unstaged file changes detected"],
+        canCreateSafetyStash,
+        safetyStashDisabledReason: disabledReason,
+      };
+    }
+  }
+
+  if (subcommand === "checkout" && (hasFlag(args, "--") || hasForceFlag(args))) {
+    const impacts = localChangeImpacts(false, true, false);
+    return {
+      command: commandToRun,
+      headline: "Checkout overwrite",
+      detail: "This can overwrite local working-tree edits.",
+      impacts: impacts.length > 0 ? impacts : ["No unstaged file changes detected"],
+      canCreateSafetyStash,
+      safetyStashDisabledReason: disabledReason,
+    };
+  }
+
+  if (subcommand === "rm" && !hasFlag(args, "--cached")) {
+    return {
+      command: commandToRun,
+      headline: "Remove tracked files",
+      detail: "This can delete tracked files from the working tree.",
+      impacts: ["tracked files matched by this command"],
+      canCreateSafetyStash,
+      safetyStashDisabledReason: disabledReason,
+    };
+  }
+
+  if (subcommand === "stash" && ["pop", "drop", "clear"].includes(args[1]?.toLowerCase() || "")) {
+    return {
+      command: commandToRun,
+      headline: `Stash ${args[1]?.toLowerCase()}`,
+      detail: "This can remove stash entries or apply changes back into the worktree.",
+      impacts: ["stash entry state can change"],
+      canCreateSafetyStash: false,
+      safetyStashDisabledReason: "Safety stash is not useful for stash-entry operations.",
+    };
+  }
+
+  if (subcommand === "branch" && args.some((arg) => arg === "-D" || arg === "-d" || arg === "--delete")) {
+    return {
+      command: commandToRun,
+      headline: "Delete branch",
+      detail: "This can remove a local branch reference.",
+      impacts: ["local branch reference matched by this command"],
+      canCreateSafetyStash: false,
+      safetyStashDisabledReason: "Safety stash protects files, not deleted branch refs.",
+    };
+  }
+
+  if (subcommand === "push" && (hasFlag(args, "--force") || hasFlag(args, "--force-with-lease") || hasCombinedShortFlag(args, "f"))) {
+    return {
+      command: commandToRun,
+      headline: "Force push",
+      detail: "This can rewrite remote branch history.",
+      impacts: ["remote branch history can be overwritten"],
+      canCreateSafetyStash: false,
+      safetyStashDisabledReason: "Safety stash protects local files, not remote history.",
+    };
+  }
+
+  return null;
+}
+
+function safetyPromptForCommand(raw: string): TerminalSafetyPrompt | null {
+  const commandToRun = raw.trim() === "!!" ? history.value[history.value.length - 1] || raw.trim() : raw.trim();
+  const args = normalizeGitArgsForSafety(commandToRun, props.allowAllCommands);
+  if (!args || args.length === 0) return null;
+  return buildSafetyPrompt(commandToRun, args);
+}
+
 function persistHistory() {
   try {
     localStorage.setItem(historyStorageKey(), JSON.stringify(history.value.slice(-MAX_HISTORY_ITEMS)));
@@ -221,15 +456,50 @@ function pushHistory(cmd: string) {
   persistHistory();
 }
 
-function runCommand(raw: string) {
+function executeCommand(raw: string, options?: { safetyStashFirst?: boolean }) {
   const cmd = raw.trim();
   if (!cmd) return;
   pushHistory(cmd);
   historyIndex.value = -1;
   reverseSearchCursor.value = -1;
   reverseSearchNeedle.value = "";
-  emit("run", { command: cmd, allowAll: props.allowAllCommands });
+  pendingSafety.value = null;
+  emit("run", {
+    command: cmd,
+    allowAll: props.allowAllCommands,
+    safetyStashFirst: options?.safetyStashFirst,
+  });
   command.value = "";
+}
+
+function runCommand(raw: string) {
+  const cmd = raw.trim();
+  if (!cmd) return;
+
+  const safetyPrompt = safetyPromptForCommand(cmd);
+  if (safetyPrompt) {
+    pendingSafety.value = safetyPrompt;
+    command.value = "";
+    nextTick(focusInput);
+    return;
+  }
+
+  executeCommand(cmd);
+}
+
+function continueDangerousCommand() {
+  if (!pendingSafety.value) return;
+  executeCommand(pendingSafety.value.command);
+}
+
+function createSafetyStashAndContinue() {
+  if (!pendingSafety.value || !pendingSafety.value.canCreateSafetyStash) return;
+  executeCommand(pendingSafety.value.command, { safetyStashFirst: true });
+}
+
+function cancelDangerousCommand() {
+  pendingSafety.value = null;
+  nextTick(focusInput);
 }
 
 function submit() {
@@ -419,6 +689,58 @@ onMounted(() => {
             {{ part }}
           </div>
         </template>
+      </div>
+    </div>
+
+    <div
+      v-if="pendingSafety"
+      class="mx-3 mb-2 rounded-lg border border-[#f59e0b]/35 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[var(--foreground)]"
+    >
+      <div class="flex items-start gap-2">
+        <AlertTriangle class="w-4 h-4 text-[#f59e0b] mt-0.5 flex-shrink-0" />
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center justify-between gap-2">
+            <div class="font-semibold">{{ pendingSafety.headline }}</div>
+            <code class="text-[10px] text-[var(--muted-foreground)] truncate max-w-[45%]">{{ pendingSafety.command }}</code>
+          </div>
+          <div class="mt-1 text-[11px] text-[var(--muted-foreground)]">{{ pendingSafety.detail }}</div>
+          <div class="mt-2 text-[11px]">
+            <div class="font-medium mb-1">This can affect:</div>
+            <ul class="space-y-0.5 text-[var(--muted-foreground)]">
+              <li v-for="impact in pendingSafety.impacts" :key="impact">- {{ impact }}</li>
+            </ul>
+          </div>
+          <div
+            v-if="!pendingSafety.canCreateSafetyStash && pendingSafety.safetyStashDisabledReason"
+            class="mt-2 text-[10px] text-[var(--muted-foreground)]"
+          >
+            {{ pendingSafety.safetyStashDisabledReason }}
+          </div>
+        </div>
+      </div>
+      <div class="mt-3 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-colors"
+          @click.stop="cancelDangerousCommand"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded text-[11px] border border-[var(--border)] text-[var(--foreground)] hover:border-[var(--primary)]/45 hover:bg-[var(--primary)]/10 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
+          :disabled="!pendingSafety.canCreateSafetyStash"
+          @click.stop="createSafetyStashAndContinue"
+        >
+          Create safety stash first
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded text-[11px] bg-[#f59e0b] text-black font-semibold hover:opacity-90 transition-opacity"
+          @click.stop="continueDangerousCommand"
+        >
+          Continue
+        </button>
       </div>
     </div>
 

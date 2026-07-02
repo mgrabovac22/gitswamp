@@ -1352,14 +1352,11 @@ html.light .shadow-2xl {
   html.reduced-motion .node-pop,
   html.reduced-motion .graph-row,
   html.reduced-motion .working-node,
+  html.reduced-motion .selected-commit-row,
   html.graph-animations-off .node-pop,
   html.graph-animations-off .graph-row,
   html.graph-animations-off .working-node,
-  html.reduced-motion .current-branch-badge::after {
-    animation: none !important;
-  }
-
-  html.graph-animations-off .current-branch-badge::after {
+  html.graph-animations-off .selected-commit-row {
     animation: none !important;
   }
 
