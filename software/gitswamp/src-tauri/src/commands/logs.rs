@@ -68,8 +68,12 @@ pub fn append_app_log(channel: String, message: String) -> Result<(), String> {
         .open(&file_path)
         .map_err(|e| format!("Failed to open log file: {}", e))?;
 
-    writeln!(file, "[{}] [{}] {}", now, sanitized_channel, sanitized_message)
-        .map_err(|e| format!("Failed to append log entry: {}", e))
+    writeln!(
+        file,
+        "[{}] [{}] {}",
+        now, sanitized_channel, sanitized_message
+    )
+    .map_err(|e| format!("Failed to append log entry: {}", e))
 }
 
 #[tauri::command]

@@ -130,7 +130,8 @@ impl StashService {
 
     pub fn stash_drop(path: &str, index: usize) -> Result<String, String> {
         let mut repo = GitRepository::open(path)?;
-        repo.stash_drop(index).map_err(|e| e.message().to_string())?;
+        repo.stash_drop(index)
+            .map_err(|e| e.message().to_string())?;
         Ok(format!("Dropped stash@{{{}}}", index))
     }
 

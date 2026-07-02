@@ -38,7 +38,11 @@ pub fn build_remotes(repo: &Repository) -> Vec<RemoteInfo> {
     remotes
 }
 
-pub fn ahead_behind(repo: &Repository, branch: &Branch, upstream: &Option<String>) -> (usize, usize) {
+pub fn ahead_behind(
+    repo: &Repository,
+    branch: &Branch,
+    upstream: &Option<String>,
+) -> (usize, usize) {
     let Some(local_oid) = branch.get().target() else {
         return (0, 0);
     };
@@ -134,7 +138,8 @@ pub fn extract_file_diff(diff: &Diff, target_path: &str) -> Result<FileDiff, Str
             .and_then(|p| p.to_str())
             .unwrap_or("");
 
-        if file_path != target_path && old_file.path().and_then(|p| p.to_str()) != Some(target_path) {
+        if file_path != target_path && old_file.path().and_then(|p| p.to_str()) != Some(target_path)
+        {
             continue;
         }
 
@@ -148,7 +153,10 @@ pub fn extract_file_diff(diff: &Diff, target_path: &str) -> Result<FileDiff, Str
         };
 
         let old_path = if delta.status() == Delta::Renamed {
-            old_file.path().and_then(|p| p.to_str()).map(|s| s.to_string())
+            old_file
+                .path()
+                .and_then(|p| p.to_str())
+                .map(|s| s.to_string())
         } else {
             None
         };

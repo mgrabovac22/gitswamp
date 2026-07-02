@@ -2790,7 +2790,7 @@ watch(
             </div>
 
             <div
-              class="border-r border-[var(--diff-border)] overflow-x-auto overflow-y-hidden"
+              class="split-diff-scroll border-r border-[var(--diff-border)] overflow-x-auto overflow-y-hidden"
               :ref="(el) => setSplitPaneRef(hunkIdx, 'old', el)"
               @scroll="onSplitPaneScroll(hunkIdx, 'old', $event)"
             >
@@ -2809,7 +2809,7 @@ watch(
             </div>
 
             <div
-              class="overflow-x-auto overflow-y-hidden"
+              class="split-diff-scroll overflow-x-auto overflow-y-hidden"
               :ref="(el) => setSplitPaneRef(hunkIdx, 'new', el)"
               @scroll="onSplitPaneScroll(hunkIdx, 'new', $event)"
             >
@@ -3204,6 +3204,15 @@ watch(
 /* Performance hints */
 .diff-code-line {
   contain: layout style paint;
+}
+
+.split-diff-scroll {
+  scrollbar-width: none;
+}
+
+.split-diff-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 :deep(.diff-inline-add) {

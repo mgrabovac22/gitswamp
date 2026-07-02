@@ -2,7 +2,10 @@ use crate::models::CommitInfo;
 use crate::services::git_service::GitService;
 
 #[tauri::command]
-pub async fn get_commits(path: String, max_count: Option<usize>) -> Result<Vec<CommitInfo>, String> {
+pub async fn get_commits(
+    path: String,
+    max_count: Option<usize>,
+) -> Result<Vec<CommitInfo>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::commits(&path, max_count.unwrap_or(200))
     })

@@ -309,7 +309,8 @@ impl GitRepository {
             if candidate.exists() {
                 let exe_str = candidate.to_string_lossy().to_string();
                 if exe_str != primary {
-                    if let Ok(output) = Self::try_git_exec(&exe_str, cwd, args, full_path.as_str()) {
+                    if let Ok(output) = Self::try_git_exec(&exe_str, cwd, args, full_path.as_str())
+                    {
                         if output.status.success() {
                             let stdout = String::from_utf8_lossy(&output.stdout);
                             let stderr = String::from_utf8_lossy(&output.stderr);

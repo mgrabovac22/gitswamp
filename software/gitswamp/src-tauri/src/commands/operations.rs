@@ -105,22 +105,37 @@ pub fn delete_tag(path: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn search_github_repos(token: String, query: String, include_public: bool) -> Result<Vec<crate::models::GithubRepo>, String> {
+pub fn search_github_repos(
+    token: String,
+    query: String,
+    include_public: bool,
+) -> Result<Vec<crate::models::GithubRepo>, String> {
     crate::services::git_service::GitService::search_github_repos(&token, &query, include_public)
 }
 
 #[tauri::command]
-pub fn search_gitlab_repos(domain: String, token: String, query: String) -> Result<Vec<crate::models::GitlabRepo>, String> {
+pub fn search_gitlab_repos(
+    domain: String,
+    token: String,
+    query: String,
+) -> Result<Vec<crate::models::GitlabRepo>, String> {
     crate::services::git_service::GitService::search_gitlab_repos(&domain, &token, &query)
 }
 
 #[tauri::command]
-pub fn search_bitbucket_repos(token: String, query: String) -> Result<Vec<crate::models::BitbucketRepo>, String> {
+pub fn search_bitbucket_repos(
+    token: String,
+    query: String,
+) -> Result<Vec<crate::models::BitbucketRepo>, String> {
     crate::services::git_service::GitService::search_bitbucket_repos(&token, &query)
 }
 
 #[tauri::command]
-pub fn search_azure_repos(domain: String, token: String, query: String) -> Result<Vec<crate::models::AzureRepo>, String> {
+pub fn search_azure_repos(
+    domain: String,
+    token: String,
+    query: String,
+) -> Result<Vec<crate::models::AzureRepo>, String> {
     crate::services::git_service::GitService::search_azure_repos(&domain, &token, &query)
 }
 
@@ -130,7 +145,12 @@ pub fn generate_ssh_key(email: String, key_name: String) -> Result<(String, Stri
 }
 
 #[tauri::command]
-pub fn add_gitlab_ssh_key(domain: String, token: String, title: String, key: String) -> Result<(), String> {
+pub fn add_gitlab_ssh_key(
+    domain: String,
+    token: String,
+    title: String,
+    key: String,
+) -> Result<(), String> {
     crate::services::git_service::GitService::add_gitlab_ssh_key(&domain, &token, &title, &key)
 }
 
@@ -180,7 +200,11 @@ pub fn get_available_external_tools() -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn open_file_with_editor(path: String, file_path: String, editor: String) -> Result<(), String> {
+pub fn open_file_with_editor(
+    path: String,
+    file_path: String,
+    editor: String,
+) -> Result<(), String> {
     GitService::open_file_with_editor(&path, &file_path, &editor)
 }
 
@@ -195,7 +219,12 @@ pub fn rename_branch(path: String, old_name: String, new_name: String) -> Result
 }
 
 #[tauri::command]
-pub async fn delete_remote_branch(path: String, remote: String, branch: String, token: Option<String>) -> Result<String, String> {
+pub async fn delete_remote_branch(
+    path: String,
+    remote: String,
+    branch: String,
+    token: Option<String>,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::delete_remote_branch(&path, &remote, &branch, token.as_deref())
     })
@@ -209,12 +238,21 @@ pub fn set_upstream(path: String, branch: String, remote_branch: String) -> Resu
 }
 
 #[tauri::command]
-pub fn edit_commit_message(path: String, sha: String, new_message: String) -> Result<String, String> {
+pub fn edit_commit_message(
+    path: String,
+    sha: String,
+    new_message: String,
+) -> Result<String, String> {
     GitService::edit_commit_message(&path, &sha, &new_message)
 }
 
 #[tauri::command]
-pub fn create_annotated_tag(path: String, name: String, sha: String, message: String) -> Result<String, String> {
+pub fn create_annotated_tag(
+    path: String,
+    name: String,
+    sha: String,
+    message: String,
+) -> Result<String, String> {
     GitService::create_annotated_tag(&path, &name, &sha, &message)
 }
 
@@ -224,7 +262,12 @@ pub fn reset_branch_to_remote(path: String, branch: String) -> Result<String, St
 }
 
 #[tauri::command]
-pub async fn push_to_platform(path: String, platform: String, provider_token: String, repo_name: String) -> Result<String, String> {
+pub async fn push_to_platform(
+    path: String,
+    platform: String,
+    provider_token: String,
+    repo_name: String,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::push_to_platform(&path, &platform, &provider_token, &repo_name)
     })

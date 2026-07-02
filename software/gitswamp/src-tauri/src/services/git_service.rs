@@ -16,7 +16,9 @@ use crate::models::{
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
-use crate::services::helpers::{ahead_behind, build_ref_map, build_remotes, index_status_label, time_ago, wt_status_label};
+use crate::services::helpers::{
+    ahead_behind, build_ref_map, build_remotes, index_status_label, time_ago, wt_status_label,
+};
 use crate::services::integration_service::IntegrationService;
 use crate::services::remote_service::RemoteService;
 use crate::services::stash_service::StashService;
@@ -82,8 +84,7 @@ impl GitService {
     }
 
     fn normalize_relative_path(path: &Path) -> String {
-        path
-            .to_string_lossy()
+        path.to_string_lossy()
             .replace('\\', "/")
             .trim_matches('/')
             .to_string()
@@ -108,7 +109,11 @@ impl GitService {
         if path.contains("/db/") || path.contains("migration") {
             return "data";
         }
-        if path.contains("/test/") || path.contains("/tests/") || path.contains(".test.") || path.contains(".spec.") {
+        if path.contains("/test/")
+            || path.contains("/tests/")
+            || path.contains(".test.")
+            || path.contains(".spec.")
+        {
             return "tests";
         }
         "general"
@@ -151,10 +156,7 @@ impl GitService {
         let mut paths = HashSet::new();
 
         for delta in diff.deltas() {
-            let candidate = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path());
+            let candidate = delta.new_file().path().or_else(|| delta.old_file().path());
 
             let Some(path) = candidate else {
                 continue;
@@ -322,9 +324,12 @@ impl GitService {
             .find_reference(&remote_ref_name)
             .map_err(|_| format!("Remote branch 'origin/{}' was not found.", branch_name))?;
 
-        let target_oid = remote_ref
-            .target()
-            .ok_or_else(|| format!("Remote branch 'origin/{}' has no target commit.", branch_name))?;
+        let target_oid = remote_ref.target().ok_or_else(|| {
+            format!(
+                "Remote branch 'origin/{}' has no target commit.",
+                branch_name
+            )
+        })?;
         let target_commit = repo
             .find_commit(target_oid)
             .map_err(|e| e.message().to_string())?;
@@ -336,7 +341,9 @@ impl GitService {
 
     fn finish_rebase(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<(), String> {
         let sig = Self::rebase_signature(repo)?;
-        rebase.finish(Some(&sig)).map_err(|e| e.message().to_string())?;
+        rebase
+            .finish(Some(&sig))
+            .map_err(|e| e.message().to_string())?;
         repo.cleanup_state().map_err(|e| e.message().to_string())?;
         Ok(())
     }
@@ -373,7 +380,10 @@ impl GitService {
         }
     }
 
-    fn advance_rebase_operations(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<RebaseRunState, String> {
+    fn advance_rebase_operations(
+        repo: &Repository,
+        rebase: &mut git2::Rebase<'_>,
+    ) -> Result<RebaseRunState, String> {
         while let Some(step) = rebase.next() {
             step.map_err(|e| e.message().to_string())?;
 
@@ -417,7 +427,8 @@ impl GitService {
             .unwrap_or(false);
         let base_branch = Self::read_repo_config(&repo, GHOST_BASE_KEY).unwrap_or_default();
         let ghost_branch = Self::read_repo_config(&repo, GHOST_BRANCH_KEY).unwrap_or_default();
-        let branch_exists = !ghost_branch.is_empty() && repo.find_branch(&ghost_branch, BranchType::Local).is_ok();
+        let branch_exists =
+            !ghost_branch.is_empty() && repo.find_branch(&ghost_branch, BranchType::Local).is_ok();
 
         Ok(GhostBranchState {
             active: active && !ghost_branch.is_empty() && branch_exists,
@@ -502,10 +513,7 @@ impl GitService {
         Self::clear_repo_config(&repo_after, GHOST_BASE_KEY);
         Self::clear_repo_config(&repo_after, GHOST_BRANCH_KEY);
 
-        Ok(format!(
-            "Ghost branch materialized as '{}'.",
-            branch_name
-        ))
+        Ok(format!("Ghost branch materialized as '{}'.", branch_name))
     }
 
     pub fn discard_ghost_branch(path: &str) -> Result<String, String> {
@@ -532,13 +540,18 @@ impl GitService {
         let mut checkout = git2::build::CheckoutBuilder::new();
         checkout.force().remove_untracked(true);
         repo_ghost
-            .reset(head_commit.as_object(), git2::ResetType::Hard, Some(&mut checkout))
+            .reset(
+                head_commit.as_object(),
+                git2::ResetType::Hard,
+                Some(&mut checkout),
+            )
             .map_err(|e| e.message().to_string())?;
 
         Self::checkout_branch(path, &state.base_branch)?;
 
         let repo_after = GitRepository::open(path)?;
-        if let Ok(mut ghost_branch) = repo_after.find_branch(&state.ghost_branch, BranchType::Local) {
+        if let Ok(mut ghost_branch) = repo_after.find_branch(&state.ghost_branch, BranchType::Local)
+        {
             ghost_branch.delete().map_err(|e| e.message().to_string())?;
         }
 
@@ -707,7 +720,12 @@ impl GitService {
                 continue;
             }
 
-            let author = commit_object.author().name().unwrap_or("Unknown").trim().to_string();
+            let author = commit_object
+                .author()
+                .name()
+                .unwrap_or("Unknown")
+                .trim()
+                .to_string();
             let author = if author.is_empty() {
                 "Unknown".to_string()
             } else {
@@ -795,13 +813,15 @@ impl GitService {
 
         let mut hotspots: Vec<ConflictHotspot> = by_path
             .into_iter()
-            .map(|(path, (score, merge_touches, conflict_mentions))| ConflictHotspot {
-                path,
-                score,
-                merge_touches,
-                conflict_mentions,
-                collision_index: conflict_mentions,
-            })
+            .map(
+                |(path, (score, merge_touches, conflict_mentions))| ConflictHotspot {
+                    path,
+                    score,
+                    merge_touches,
+                    conflict_mentions,
+                    collision_index: conflict_mentions,
+                },
+            )
             .collect();
 
         hotspots.sort_by(|a, b| {
@@ -888,13 +908,15 @@ impl GitService {
 
         let mut pairs: Vec<ConflictPair> = by_pair
             .into_iter()
-            .map(|((left_path, right_path), (score, co_touches, conflict_touches))| ConflictPair {
-                left_path,
-                right_path,
-                co_touches,
-                conflict_touches,
-                score,
-            })
+            .map(
+                |((left_path, right_path), (score, co_touches, conflict_touches))| ConflictPair {
+                    left_path,
+                    right_path,
+                    co_touches,
+                    conflict_touches,
+                    score,
+                },
+            )
             .collect();
 
         pairs.sort_by(|a, b| {
@@ -976,7 +998,11 @@ impl GitService {
         Ok(files)
     }
 
-    fn resolve_branch_oid(repo: &Repository, branch_name: &str, remote: bool) -> Result<git2::Oid, String> {
+    fn resolve_branch_oid(
+        repo: &Repository,
+        branch_name: &str,
+        remote: bool,
+    ) -> Result<git2::Oid, String> {
         let trimmed = branch_name.trim();
         if trimmed.is_empty() {
             return Err("Branch name cannot be empty.".to_string());
@@ -1029,12 +1055,18 @@ impl GitService {
         let source_oid = Self::resolve_branch_oid(&repo, source_branch, source_remote)?;
         let target_oid = Self::resolve_branch_oid(&repo, target_branch, false)?;
 
-        let source_commit = repo.find_commit(source_oid).map_err(|e| e.message().to_string())?;
-        let target_commit = repo.find_commit(target_oid).map_err(|e| e.message().to_string())?;
+        let source_commit = repo
+            .find_commit(source_oid)
+            .map_err(|e| e.message().to_string())?;
+        let target_commit = repo
+            .find_commit(target_oid)
+            .map_err(|e| e.message().to_string())?;
         let base_oid = repo
             .merge_base(source_oid, target_oid)
             .map_err(|e| format!("Could not compute merge-base: {}", e.message()))?;
-        let base_commit = repo.find_commit(base_oid).map_err(|e| e.message().to_string())?;
+        let base_commit = repo
+            .find_commit(base_oid)
+            .map_err(|e| e.message().to_string())?;
 
         let source_tree = source_commit.tree().map_err(|e| e.message().to_string())?;
         let target_tree = target_commit.tree().map_err(|e| e.message().to_string())?;
@@ -1050,10 +1082,8 @@ impl GitService {
         let source_paths = Self::collect_diff_paths(&source_diff);
         let target_paths = Self::collect_diff_paths(&target_diff);
 
-        let shared_paths: HashSet<String> = source_paths
-            .intersection(&target_paths)
-            .cloned()
-            .collect();
+        let shared_paths: HashSet<String> =
+            source_paths.intersection(&target_paths).cloned().collect();
 
         let hotspots = Self::conflict_hotspots(path, max_count, lookback_months)?;
         let hotspots_by_path: HashMap<String, ConflictHotspot> = hotspots
@@ -1091,7 +1121,10 @@ impl GitService {
 
         Ok(MergeRiskPreflight {
             source_ref: if source_remote {
-                format!("origin/{}", source_branch.trim().trim_start_matches("origin/"))
+                format!(
+                    "origin/{}",
+                    source_branch.trim().trim_start_matches("origin/")
+                )
             } else {
                 source_branch.trim().to_string()
             },
@@ -1141,7 +1174,9 @@ impl GitService {
                     files.push(next_path);
                 }
                 Some(git2::ObjectType::Tree) => {
-                    let subtree = repo.find_tree(entry.id()).map_err(|e| e.message().to_string())?;
+                    let subtree = repo
+                        .find_tree(entry.id())
+                        .map_err(|e| e.message().to_string())?;
                     Self::collect_commit_tree_paths(repo, &subtree, &next_path, files)?;
                 }
                 _ => {}
@@ -1154,9 +1189,13 @@ impl GitService {
     pub fn branches(path: &str) -> Result<Vec<BranchInfo>, String> {
         let repo = GitRepository::open(path)?;
         let head = repo.head().ok();
-        let head_name = head
-            .as_ref()
-            .and_then(|h| if h.is_branch() { h.shorthand().map(|s| s.to_string()) } else { None });
+        let head_name = head.as_ref().and_then(|h| {
+            if h.is_branch() {
+                h.shorthand().map(|s| s.to_string())
+            } else {
+                None
+            }
+        });
 
         let mut result = Vec::new();
 
@@ -1311,7 +1350,10 @@ impl GitService {
                 let current = scope_hits.entry(scope).or_insert(0);
                 *current += 1;
 
-                if let Some(ext) = Path::new(&file_path).extension().and_then(|value| value.to_str()) {
+                if let Some(ext) = Path::new(&file_path)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                {
                     let cleaned = ext.trim().to_lowercase();
                     if !cleaned.is_empty() {
                         file_types.insert(format!(".{}", cleaned));
@@ -1470,7 +1512,9 @@ impl GitService {
         let repo = GitRepository::open(path)?;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
         let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
@@ -1550,7 +1594,9 @@ impl GitService {
             return Err("Cherry-pick has conflicts. Resolve them manually.".to_string());
         }
         let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
@@ -1572,18 +1618,15 @@ impl GitService {
             return Err("Revert has conflicts. Resolve them manually.".to_string());
         }
         let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
         let msg = format!(
             "Revert \"{}\"",
-            commit
-                .message()
-                .unwrap_or("")
-                .lines()
-                .next()
-                .unwrap_or("")
+            commit.message().unwrap_or("").lines().next().unwrap_or("")
         );
         repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&parent])
             .map_err(|e| e.message().to_string())?;
@@ -1718,7 +1761,9 @@ impl GitService {
         }
 
         match Self::advance_rebase_operations(&repo, &mut rebase)? {
-            RebaseRunState::Completed => Ok("Skipped current patch and continued rebase.".to_string()),
+            RebaseRunState::Completed => {
+                Ok("Skipped current patch and continued rebase.".to_string())
+            }
             RebaseRunState::Conflicts => Err(Self::rebase_conflict_error(
                 "Rebase stopped on another conflicting patch.",
             )),
@@ -1740,7 +1785,9 @@ impl GitService {
     pub fn create_tag_at(path: &str, name: &str, sha: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
-        let obj = repo.find_object(oid, None).map_err(|e| e.message().to_string())?;
+        let obj = repo
+            .find_object(oid, None)
+            .map_err(|e| e.message().to_string())?;
         repo.tag_lightweight(name, &obj, false)
             .map_err(|e| e.message().to_string())?;
         Ok(format!("Tag '{}' created.", name))
@@ -1756,7 +1803,11 @@ impl GitService {
     where
         F: FnMut(CloneProgressUpdate),
     {
-        let repo_name = url.split('/').last().unwrap_or("repo").trim_end_matches(".git");
+        let repo_name = url
+            .split('/')
+            .last()
+            .unwrap_or("repo")
+            .trim_end_matches(".git");
         let dest = Path::new(path).join(repo_name);
 
         let clone_url = url.to_string();
@@ -1903,7 +1954,9 @@ impl GitService {
             .map_err(|e| e.message().to_string())?
             .write_tree()
             .map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_id).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|e| e.message().to_string())?;
 
         repo.commit(
             Some(&format!("refs/heads/{}", branch)),
@@ -1923,7 +1976,11 @@ impl GitService {
         Ok(format!("Initialized repository with branch '{}'.", branch))
     }
 
-    pub fn search_commits(path: &str, query: &str, max_count: usize) -> Result<Vec<CommitInfo>, String> {
+    pub fn search_commits(
+        path: &str,
+        query: &str,
+        max_count: usize,
+    ) -> Result<Vec<CommitInfo>, String> {
         let repo = GitRepository::open(path)?;
         let q = query.trim().to_lowercase();
         if q.is_empty() {
@@ -2067,7 +2124,9 @@ impl GitService {
     pub fn create_branch(path: &str, name: &str, start_point: Option<&str>) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
         let commit = if let Some(sp) = start_point {
-            let obj = repo.revparse_single(sp).map_err(|e| e.message().to_string())?;
+            let obj = repo
+                .revparse_single(sp)
+                .map_err(|e| e.message().to_string())?;
             obj.peel_to_commit().map_err(|e| e.message().to_string())?
         } else {
             let head = repo.head().map_err(|e| e.message().to_string())?;
@@ -2190,11 +2249,14 @@ impl GitService {
         if is_untracked || !has_index_entry {
             Self::remove_worktree_path(repo_root, file_path)?;
         } else {
-            repo.checkout_index(None, Some(
-                git2::build::CheckoutBuilder::default()
-                    .path(file_path)
-                    .force(),
-            ))
+            repo.checkout_index(
+                None,
+                Some(
+                    git2::build::CheckoutBuilder::default()
+                        .path(file_path)
+                        .force(),
+                ),
+            )
             .map_err(|e| e.message().to_string())?;
         }
         Ok(())
@@ -2217,7 +2279,11 @@ impl GitService {
         Ok(())
     }
 
-    pub fn resolve_conflict_file(path: &str, file_path: &str, strategy: &str) -> Result<(), String> {
+    pub fn resolve_conflict_file(
+        path: &str,
+        file_path: &str,
+        strategy: &str,
+    ) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
         let full_path = Path::new(path).join(file_path);
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
@@ -2327,7 +2393,12 @@ impl GitService {
         }
     }
 
-    pub fn create_annotated_tag(path: &str, name: &str, sha: &str, message: &str) -> Result<String, String> {
+    pub fn create_annotated_tag(
+        path: &str,
+        name: &str,
+        sha: &str,
+        message: &str,
+    ) -> Result<String, String> {
         GitRepository::git_cli(path, &["tag", "-a", name, sha, "-m", message])
     }
 
@@ -2335,11 +2406,19 @@ impl GitService {
         RemoteService::reset_branch_to_remote(path, branch)
     }
 
-    pub fn search_github_repos(token: &str, query: &str, include_public: bool) -> Result<Vec<GithubRepo>, String> {
+    pub fn search_github_repos(
+        token: &str,
+        query: &str,
+        include_public: bool,
+    ) -> Result<Vec<GithubRepo>, String> {
         IntegrationService::search_github_repos(token, query, include_public)
     }
 
-    pub fn search_gitlab_repos(domain: &str, token: &str, query: &str) -> Result<Vec<GitlabRepo>, String> {
+    pub fn search_gitlab_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Vec<GitlabRepo>, String> {
         IntegrationService::search_gitlab_repos(domain, token, query)
     }
 
@@ -2347,7 +2426,11 @@ impl GitService {
         IntegrationService::search_bitbucket_repos(token, query)
     }
 
-    pub fn search_azure_repos(domain: &str, token: &str, query: &str) -> Result<Vec<AzureRepo>, String> {
+    pub fn search_azure_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Vec<AzureRepo>, String> {
         IntegrationService::search_azure_repos(domain, token, query)
     }
 
@@ -2355,7 +2438,12 @@ impl GitService {
         IntegrationService::generate_ssh_key(email, key_name)
     }
 
-    pub fn add_gitlab_ssh_key(domain: &str, token: &str, title: &str, key: &str) -> Result<(), String> {
+    pub fn add_gitlab_ssh_key(
+        domain: &str,
+        token: &str,
+        title: &str,
+        key: &str,
+    ) -> Result<(), String> {
         IntegrationService::add_gitlab_ssh_key(domain, token, title, key)
     }
 
@@ -2403,15 +2491,27 @@ impl GitService {
         IntegrationService::open_path_with_tool(path, tool)
     }
 
-    pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<crate::models::FileDiff, String> {
+    pub fn get_working_diff(
+        path: &str,
+        file_path: &str,
+        staged: bool,
+    ) -> Result<crate::models::FileDiff, String> {
         DiffService::get_working_diff(path, file_path, staged)
     }
 
-    pub fn get_commit_diff(path: &str, sha: &str, file_path: &str) -> Result<crate::models::FileDiff, String> {
+    pub fn get_commit_diff(
+        path: &str,
+        sha: &str,
+        file_path: &str,
+    ) -> Result<crate::models::FileDiff, String> {
         DiffService::get_commit_diff(path, sha, file_path)
     }
 
-    pub fn get_file_content(path: &str, file_path: &str, sha: Option<&str>) -> Result<String, String> {
+    pub fn get_file_content(
+        path: &str,
+        file_path: &str,
+        sha: Option<&str>,
+    ) -> Result<String, String> {
         DiffService::get_file_content(path, file_path, sha)
     }
 
@@ -2419,7 +2519,11 @@ impl GitService {
         DiffService::get_staged_file_content(path, file_path)
     }
 
-    pub fn get_file_blame(path: &str, file_path: &str, sha: Option<&str>) -> Result<Vec<crate::models::FileBlameLine>, String> {
+    pub fn get_file_blame(
+        path: &str,
+        file_path: &str,
+        sha: Option<&str>,
+    ) -> Result<Vec<crate::models::FileBlameLine>, String> {
         DiffService::get_file_blame(path, file_path, sha)
     }
 
@@ -2431,11 +2535,21 @@ impl GitService {
         DiffService::save_file_content(path, file_path, content)
     }
 
-    pub fn revert_hunk(path: &str, file_path: &str, hunk_index: usize, staged: bool) -> Result<(), String> {
+    pub fn revert_hunk(
+        path: &str,
+        file_path: &str,
+        hunk_index: usize,
+        staged: bool,
+    ) -> Result<(), String> {
         DiffService::revert_hunk(path, file_path, hunk_index, staged)
     }
 
-    pub fn push_to_platform(path: &str, platform: &str, token: &str, repo_name: &str) -> Result<String, String> {
+    pub fn push_to_platform(
+        path: &str,
+        platform: &str,
+        token: &str,
+        repo_name: &str,
+    ) -> Result<String, String> {
         RemoteService::push_to_platform(path, platform, token, repo_name)
     }
 

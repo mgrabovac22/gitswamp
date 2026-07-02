@@ -1,5 +1,5 @@
-use crate::models::StashInfo;
 use crate::models::CommitFileInfo;
+use crate::models::StashInfo;
 use crate::services::git_service::GitService;
 
 #[tauri::command]

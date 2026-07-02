@@ -42,9 +42,7 @@ impl RemoteService {
     }
 
     fn auth_username_candidates(remote_url: &str, username_from_url: Option<&str>) -> Vec<String> {
-        let host_and_path = remote_url
-            .strip_prefix(HTTPS_SCHEME)
-            .unwrap_or(remote_url);
+        let host_and_path = remote_url.strip_prefix(HTTPS_SCHEME).unwrap_or(remote_url);
         let host = host_and_path
             .split('/')
             .next()
@@ -98,7 +96,11 @@ impl RemoteService {
         candidates
     }
 
-    fn authenticated_url_with_username(remote_url: &str, username: &str, token: &str) -> Option<String> {
+    fn authenticated_url_with_username(
+        remote_url: &str,
+        username: &str,
+        token: &str,
+    ) -> Option<String> {
         if !remote_url.starts_with(HTTPS_SCHEME) || remote_url.contains('@') {
             return None;
         }
@@ -155,7 +157,8 @@ impl RemoteService {
             } else {
                 url
             };
-            let username_candidates = Self::auth_username_candidates(current_url, username_from_url);
+            let username_candidates =
+                Self::auth_username_candidates(current_url, username_from_url);
             let default_user = username_candidates
                 .first()
                 .map(|value| value.as_str())
@@ -227,12 +230,16 @@ impl RemoteService {
             let callbacks = Self::build_remote_callbacks(token, &configured_url);
             let mut fetch_opts = git2::FetchOptions::new();
             fetch_opts.remote_callbacks(callbacks);
+            fetch_opts.prune(git2::FetchPrune::On);
 
             remote
                 .fetch::<&str>(&[], Some(&mut fetch_opts), None)
                 .map_err(|e| format!("Fetch '{}' failed: {}", remote_name, e.message()))?;
         }
-        Ok(format!("Fetched {} remote(s).", remote_names.len()))
+        Ok(format!(
+            "Fetched {} remote(s) and pruned deleted remote branches.",
+            remote_names.len()
+        ))
     }
 
     pub fn pull(path: &str, token: Option<&str>) -> Result<String, String> {
@@ -275,7 +282,9 @@ impl RemoteService {
             }
             let mut index = repo.index().map_err(|e| e.message().to_string())?;
             let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-            let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+            let tree = repo
+                .find_tree(tree_oid)
+                .map_err(|e| e.message().to_string())?;
             let head_commit = repo
                 .head()
                 .map_err(|e| e.message().to_string())?
@@ -285,7 +294,10 @@ impl RemoteService {
                 .find_commit(remote_oid)
                 .map_err(|e| e.message().to_string())?;
             let sig = repo.signature().map_err(|e| e.message().to_string())?;
-            let msg = format!("Merge branch '{}' of origin into {}", branch_name, branch_name);
+            let msg = format!(
+                "Merge branch '{}' of origin into {}",
+                branch_name, branch_name
+            );
             repo.commit(
                 Some("HEAD"),
                 &sig,
@@ -331,7 +343,8 @@ impl RemoteService {
                 let mut last_error: Option<String> = None;
 
                 for user in users {
-                    let Some(authed_url) = Self::authenticated_url_with_username(&remote_url, &user, t)
+                    let Some(authed_url) =
+                        Self::authenticated_url_with_username(&remote_url, &user, t)
                     else {
                         continue;
                     };
@@ -340,11 +353,14 @@ impl RemoteService {
                         let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                     }
 
-                    let mut temp_remote = repo
-                        .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
-                        .map_err(|e| {
-                            format!("Failed to create temporary authenticated remote: {}", e.message())
-                        })?;
+                    let mut temp_remote =
+                        repo.remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to create temporary authenticated remote: {}",
+                                    e.message()
+                                )
+                            })?;
 
                     let callbacks = Self::build_remote_callbacks(Some(t), &authed_url);
                     let mut push_opts = git2::PushOptions::new();
@@ -431,7 +447,8 @@ impl RemoteService {
                 let mut last_error: Option<String> = None;
 
                 for user in users {
-                    let Some(authed_url) = Self::authenticated_url_with_username(&remote_url, &user, t)
+                    let Some(authed_url) =
+                        Self::authenticated_url_with_username(&remote_url, &user, t)
                     else {
                         continue;
                     };
@@ -440,11 +457,14 @@ impl RemoteService {
                         let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                     }
 
-                    let mut temp_remote = repo
-                        .remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
-                        .map_err(|e| {
-                            format!("Failed to create temporary authenticated remote: {}", e.message())
-                        })?;
+                    let mut temp_remote =
+                        repo.remote(TEMP_PUSH_REMOTE_AUTH, &authed_url)
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to create temporary authenticated remote: {}",
+                                    e.message()
+                                )
+                            })?;
 
                     let callbacks = Self::build_remote_callbacks(Some(t), &authed_url);
                     let mut push_opts = git2::PushOptions::new();
@@ -485,7 +505,10 @@ impl RemoteService {
     }
 
     pub fn set_upstream(path: &str, branch: &str, remote_branch: &str) -> Result<String, String> {
-        GitRepository::git_cli(path, &["branch", "--set-upstream-to", remote_branch, branch])
+        GitRepository::git_cli(
+            path,
+            &["branch", "--set-upstream-to", remote_branch, branch],
+        )
     }
 
     pub fn reset_branch_to_remote(path: &str, branch: &str) -> Result<String, String> {
@@ -507,9 +530,13 @@ impl RemoteService {
         }
 
         let remote_ref_name = format!("refs/remotes/origin/{}", branch);
-        let remote_ref = repo
-            .find_reference(&remote_ref_name)
-            .map_err(|e| format!("Cannot find remote branch origin/{}: {}", branch, e.message()))?;
+        let remote_ref = repo.find_reference(&remote_ref_name).map_err(|e| {
+            format!(
+                "Cannot find remote branch origin/{}: {}",
+                branch,
+                e.message()
+            )
+        })?;
         let remote_oid = remote_ref
             .target()
             .ok_or_else(|| format!("Remote branch origin/{} has no target", branch))?;
@@ -581,60 +608,58 @@ impl RemoteService {
         let remote_url = match platform {
             PLATFORM_GITHUB => {
                 if repo_name_part_count > 2 {
-                    return Err("Invalid repo_name format. Use username/repo for GitHub.".to_string());
+                    return Err(
+                        "Invalid repo_name format. Use username/repo for GitHub.".to_string()
+                    );
                 }
                 format!(
                     "{}{}:{}@{}/{}/{}.git",
-                    HTTPS_SCHEME,
-                    owner,
-                    enc_token,
-                    GITHUB_HOST,
-                    owner,
-                    actual_repo_name
+                    HTTPS_SCHEME, owner, enc_token, GITHUB_HOST, owner, actual_repo_name
                 )
             }
             PLATFORM_GITHUB_ENTERPRISE => {
                 if repo_name_part_count > 2 {
-                    return Err("Invalid repo_name format. Use username/repo@domain for GitHub Enterprise.".to_string());
+                    return Err(
+                        "Invalid repo_name format. Use username/repo@domain for GitHub Enterprise."
+                            .to_string(),
+                    );
                 }
-                let domain =
-                    domain.ok_or("GitHub Enterprise requires domain in format: username/repo@domain.com")?;
+                let domain = domain.ok_or(
+                    "GitHub Enterprise requires domain in format: username/repo@domain.com",
+                )?;
                 format!(
                     "{}{}:{}@{}/{}/{}.git",
-                    HTTPS_SCHEME,
-                    owner, enc_token, domain, owner, actual_repo_name
+                    HTTPS_SCHEME, owner, enc_token, domain, owner, actual_repo_name
                 )
             }
             PLATFORM_GITLAB => {
                 if repo_name_part_count > 2 {
-                    return Err("Invalid repo_name format. Use username/repo for GitLab.".to_string());
+                    return Err(
+                        "Invalid repo_name format. Use username/repo for GitLab.".to_string()
+                    );
                 }
                 format!(
                     "{}{}:{}@{}/{}/{}.git",
-                    HTTPS_SCHEME,
-                    AUTH_USER_GITLAB,
-                    enc_token,
-                    GITLAB_HOST,
-                    owner,
-                    actual_repo_name
+                    HTTPS_SCHEME, AUTH_USER_GITLAB, enc_token, GITLAB_HOST, owner, actual_repo_name
                 )
             }
             PLATFORM_GITLAB_SELF_HOSTED => {
                 if repo_name_part_count > 2 {
                     return Err("Invalid repo_name format. Use username/repo@domain for GitLab self-hosted.".to_string());
                 }
-                let domain =
-                    domain.ok_or("GitLab self-hosted requires domain in format: username/repo@domain.com")?;
+                let domain = domain.ok_or(
+                    "GitLab self-hosted requires domain in format: username/repo@domain.com",
+                )?;
                 format!(
                     "{}{}:{}@{}/{}/{}.git",
-                    HTTPS_SCHEME,
-                    AUTH_USER_GITLAB,
-                    enc_token, domain, owner, actual_repo_name
+                    HTTPS_SCHEME, AUTH_USER_GITLAB, enc_token, domain, owner, actual_repo_name
                 )
             }
             PLATFORM_BITBUCKET => {
                 if repo_name_part_count > 2 {
-                    return Err("Invalid repo_name format. Use workspace/repo for Bitbucket.".to_string());
+                    return Err(
+                        "Invalid repo_name format. Use workspace/repo for Bitbucket.".to_string(),
+                    );
                 }
                 format!(
                     "{}{}:{}@{}/{}/{}.git",
@@ -668,12 +693,7 @@ impl RemoteService {
 
                 format!(
                     "{}:{}@{}/{}/{}/_git/{}",
-                    HTTPS_SCHEME,
-                    enc_token,
-                    domain_host,
-                    owner,
-                    project,
-                    actual_repo_name
+                    HTTPS_SCHEME, enc_token, domain_host, owner, project, actual_repo_name
                 )
             }
             _ => return Err(format!("Unknown platform: {platform}")),

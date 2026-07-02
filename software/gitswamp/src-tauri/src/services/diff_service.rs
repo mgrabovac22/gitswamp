@@ -101,7 +101,11 @@ impl DiffService {
         }
     }
 
-    fn build_single_hunk_patch(diff_info: &FileDiff, file_path: &str, hunk_index: usize) -> Result<String, String> {
+    fn build_single_hunk_patch(
+        diff_info: &FileDiff,
+        file_path: &str,
+        hunk_index: usize,
+    ) -> Result<String, String> {
         let hunk = diff_info
             .hunks
             .get(hunk_index)
@@ -121,14 +125,26 @@ impl DiffService {
         };
 
         let mut patch = String::new();
-        patch.push_str(&format!("diff --git a/{} b/{}\n", old_diff_path, new_diff_path));
-        patch.push_str(&format!("--- {}\n", Self::patch_side_path("a", old_side_path)));
-        patch.push_str(&format!("+++ {}\n", Self::patch_side_path("b", new_side_path)));
+        patch.push_str(&format!(
+            "diff --git a/{} b/{}\n",
+            old_diff_path, new_diff_path
+        ));
+        patch.push_str(&format!(
+            "--- {}\n",
+            Self::patch_side_path("a", old_side_path)
+        ));
+        patch.push_str(&format!(
+            "+++ {}\n",
+            Self::patch_side_path("b", new_side_path)
+        ));
 
         let header_line = if hunk.header.trim_start().starts_with("@@") {
             hunk.header.trim_end_matches('\n').to_string()
         } else {
-            format!("@@ -{},{} +{},{} @@", hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines)
+            format!(
+                "@@ -{},{} +{},{} @@",
+                hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+            )
         };
 
         patch.push_str(&header_line);
@@ -171,11 +187,7 @@ impl DiffService {
                 patch_path_string,
             ]
         } else {
-            vec![
-                "apply".to_string(),
-                "-R".to_string(),
-                patch_path_string,
-            ]
+            vec!["apply".to_string(), "-R".to_string(), patch_path_string]
         };
         let args: Vec<&str> = args_owned.iter().map(|value| value.as_str()).collect();
 
@@ -204,7 +216,9 @@ impl DiffService {
         match extract_file_diff(&diff, file_path) {
             Ok(file_diff) => Ok(file_diff),
             Err(error) if !staged => {
-                let status = repo.status_file(Path::new(file_path)).map_err(|e| e.message().to_string())?;
+                let status = repo
+                    .status_file(Path::new(file_path))
+                    .map_err(|e| e.message().to_string())?;
                 if status.contains(git2::Status::WT_NEW) {
                     Self::build_untracked_file_diff(Path::new(path), file_path)
                 } else {
@@ -232,7 +246,11 @@ impl DiffService {
         extract_file_diff(&diff, file_path)
     }
 
-    pub fn get_file_content(path: &str, file_path: &str, sha: Option<&str>) -> Result<String, String> {
+    pub fn get_file_content(
+        path: &str,
+        file_path: &str,
+        sha: Option<&str>,
+    ) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
 
         if let Some(commit_sha) = sha {
@@ -242,7 +260,9 @@ impl DiffService {
             let entry = tree
                 .get_path(Path::new(file_path))
                 .map_err(|_| format!("File '{}' not found in commit", file_path))?;
-            let blob = repo.find_blob(entry.id()).map_err(|e| e.message().to_string())?;
+            let blob = repo
+                .find_blob(entry.id())
+                .map_err(|e| e.message().to_string())?;
             if blob.is_binary() {
                 return Err("Binary file".to_string());
             }
@@ -260,16 +280,23 @@ impl DiffService {
         let entry = index
             .get_path(Path::new(file_path), 0)
             .ok_or_else(|| format!("File '{}' not found in index", file_path))?;
-        let blob = repo.find_blob(entry.id).map_err(|e| e.message().to_string())?;
+        let blob = repo
+            .find_blob(entry.id)
+            .map_err(|e| e.message().to_string())?;
 
         if blob.is_binary() {
             return Err("Binary file".to_string());
         }
 
-        String::from_utf8(blob.content().to_vec()).map_err(|_| "File is not valid UTF-8".to_string())
+        String::from_utf8(blob.content().to_vec())
+            .map_err(|_| "File is not valid UTF-8".to_string())
     }
 
-    pub fn get_file_blame(path: &str, file_path: &str, sha: Option<&str>) -> Result<Vec<FileBlameLine>, String> {
+    pub fn get_file_blame(
+        path: &str,
+        file_path: &str,
+        sha: Option<&str>,
+    ) -> Result<Vec<FileBlameLine>, String> {
         let repo = GitRepository::open(path)?;
         let mut blame_options = git2::BlameOptions::new();
 
@@ -283,7 +310,10 @@ impl DiffService {
             .map_err(|e| e.message().to_string())?;
 
         let file_content = Self::get_file_content(path, file_path, sha)?;
-        let file_lines: Vec<String> = file_content.split('\n').map(|line| line.to_string()).collect();
+        let file_lines: Vec<String> = file_content
+            .split('\n')
+            .map(|line| line.to_string())
+            .collect();
 
         let mut commit_meta_cache: HashMap<String, BlameCommitMeta> = HashMap::new();
         let mut result: Vec<FileBlameLine> = Vec::new();
@@ -297,7 +327,12 @@ impl DiffService {
             let meta = if let Some(cached) = commit_meta_cache.get(&commit_sha) {
                 cached.clone()
             } else {
-                let computed = Self::build_blame_commit_meta(&repo, &commit_sha, commit_id, hunk.final_signature())?;
+                let computed = Self::build_blame_commit_meta(
+                    &repo,
+                    &commit_sha,
+                    commit_id,
+                    hunk.final_signature(),
+                )?;
                 commit_meta_cache.insert(commit_sha.clone(), computed.clone());
                 computed
             };
@@ -354,7 +389,10 @@ impl DiffService {
                 short_sha: commit_sha.chars().take(8).collect(),
                 author: author.name().unwrap_or("Unknown").to_string(),
                 author_email: author.email().unwrap_or("").to_string(),
-                summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+                summary: commit
+                    .summary()
+                    .unwrap_or("(no commit message)")
+                    .to_string(),
                 author_time: author.when().seconds(),
                 is_uncommitted: false,
             });
@@ -374,7 +412,9 @@ impl DiffService {
     pub fn has_conflict_markers(path: &str, file_path: &str) -> Result<bool, String> {
         let full_path = Path::new(path).join(file_path);
         let content = std::fs::read_to_string(&full_path).map_err(|e| e.to_string())?;
-        Ok(content.contains(CONFLICT_START) && content.contains(CONFLICT_MID) && content.contains(CONFLICT_END))
+        Ok(content.contains(CONFLICT_START)
+            && content.contains(CONFLICT_MID)
+            && content.contains(CONFLICT_END))
     }
 
     pub fn save_file_content(path: &str, file_path: &str, content: &str) -> Result<(), String> {
@@ -382,7 +422,12 @@ impl DiffService {
         std::fs::write(&full_path, content).map_err(|e| e.to_string())
     }
 
-    pub fn revert_hunk(path: &str, file_path: &str, hunk_index: usize, staged: bool) -> Result<(), String> {
+    pub fn revert_hunk(
+        path: &str,
+        file_path: &str,
+        hunk_index: usize,
+        staged: bool,
+    ) -> Result<(), String> {
         let diff_info = Self::get_working_diff(path, file_path, staged)?;
         if diff_info.is_binary {
             return Err("Cannot revert hunks in binary files".to_string());
