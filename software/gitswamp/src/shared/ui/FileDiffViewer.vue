@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History } from "lucide-vue-next";
+import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History, Paintbrush } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 import {
@@ -44,13 +44,13 @@ const showBlamePanel = ref(false);
 const blameLoading = ref(false);
 const blameError = ref<string | null>(null);
 const blameLines = ref<FileBlameLine[]>([]);
-const blameCache = ref(new Map<string, FileBlameLine[]>());
-const splitPaneRefs = ref(new Map<string, HTMLElement>());
+const blameCache = shallowRef(new Map<string, FileBlameLine[]>());
+const splitPaneRefs = shallowRef(new Map<string, HTMLElement>());
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
 const fileJourneyOpen = ref(false);
-const highlightedLineCache = ref(new Map<string, string>());
+const highlightedLineCache = shallowRef(new Map<string, string>());
 const toast = useToast();
 const git = useGit();
 const timeLapseScrollContainer = ref<HTMLElement | null>(null);
@@ -1097,6 +1097,36 @@ async function revertHunk(hunkIdx: number) {
     await reload();
   } catch (e) {
     error.value = `Failed to revert hunk: ${e}`;
+  }
+}
+
+async function stageHunk(hunkIdx: number) {
+  if (!diff.value || !isUnstaged.value) return;
+  try {
+    await invoke("stage_hunk", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      hunkIndex: hunkIdx,
+    });
+    emit("refresh");
+    await reload();
+  } catch (e) {
+    error.value = `Failed to stage hunk: ${e}`;
+  }
+}
+
+async function unstageHunk(hunkIdx: number) {
+  if (!diff.value || !isWorkingChanges.value || !props.staged) return;
+  try {
+    await invoke("unstage_hunk", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      hunkIndex: hunkIdx,
+    });
+    emit("refresh");
+    await reload();
+  } catch (e) {
+    error.value = `Failed to unstage hunk: ${e}`;
   }
 }
 
@@ -2658,14 +2688,32 @@ watch(
             <span class="text-xs text-[var(--diff-link)]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
             </span>
-            <button
-              v-if="isWorkingChanges"
-              @click="revertHunk(hunkIdx)"
-              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-            >
-              <Undo2 class="w-3 h-3" />
-              Revert Hunk
-            </button>
+            <div v-if="isWorkingChanges" class="flex items-center gap-1">
+              <button
+                v-if="isUnstaged"
+                @click="stageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Paintbrush class="w-3 h-3" />
+                Stage Hunk
+              </button>
+              <button
+                v-else-if="props.staged"
+                @click="unstageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Unstage Hunk
+              </button>
+              <button
+                v-if="isUnstaged"
+                @click="revertHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Discard Hunk
+              </button>
+            </div>
           </div>
 
           <div>
@@ -2756,14 +2804,32 @@ watch(
             <span class="text-xs text-[var(--diff-link)]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
             </span>
-            <button
-              v-if="isWorkingChanges"
-              @click="revertHunk(hunkIdx)"
-              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-            >
-              <Undo2 class="w-3 h-3" />
-              Revert Hunk
-            </button>
+            <div v-if="isWorkingChanges" class="flex items-center gap-1">
+              <button
+                v-if="isUnstaged"
+                @click="stageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Paintbrush class="w-3 h-3" />
+                Stage Hunk
+              </button>
+              <button
+                v-else-if="props.staged"
+                @click="unstageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Unstage Hunk
+              </button>
+              <button
+                v-if="isUnstaged"
+                @click="revertHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Discard Hunk
+              </button>
+            </div>
           </div>
 
           <div

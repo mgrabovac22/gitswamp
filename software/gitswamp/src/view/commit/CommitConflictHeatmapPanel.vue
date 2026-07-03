@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { FileCode2, Folder, FolderOpen } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
@@ -19,6 +19,49 @@ const loadingLetters = "LOADING".split("");
 const hotspotCache = new Map<string, ConflictHotspot[]>();
 const pairCache = new Map<string, ConflictPair[]>();
 const treeCache = new Map<string, string[]>();
+const HOTSPOT_CACHE_LIMIT = 3;
+const PAIR_CACHE_LIMIT = 3;
+const TREE_CACHE_LIMIT = 1;
+
+function getCachedEntry<T>(cache: Map<string, T>, key: string): T | null {
+  const value = cache.get(key);
+  if (!value) return null;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedEntry<T>(cache: Map<string, T>, key: string, value: T, limit: number) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
+}
+
+function pruneCachesForRepo(repoPath: string) {
+  const repoPrefix = `${repoPath}::`;
+  for (const key of hotspotCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      hotspotCache.delete(key);
+    }
+  }
+  for (const key of pairCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      pairCache.delete(key);
+    }
+  }
+  for (const key of treeCache.keys()) {
+    if (key !== repoPath) {
+      treeCache.delete(key);
+    }
+  }
+}
 
 type MergeWindowKey = (typeof MERGE_WINDOWS)[number]["key"];
 
@@ -530,7 +573,7 @@ async function loadHotspots() {
     return;
   }
 
-  const cachedRows = hotspotCache.get(cacheKey);
+  const cachedRows = getCachedEntry(hotspotCache, cacheKey);
   if (cachedRows) {
     hotspots.value = cachedRows;
     hotspotsLoading.value = false;
@@ -552,7 +595,7 @@ async function loadHotspots() {
     }
 
     hotspots.value = items;
-    hotspotCache.set(cacheKey, items);
+    setCachedEntry(hotspotCache, cacheKey, items, HOTSPOT_CACHE_LIMIT);
   } catch {
     if (runToken !== hotspotRunToken) {
       return;
@@ -579,7 +622,7 @@ async function loadRiskPairs() {
     return;
   }
 
-  const cachedRows = pairCache.get(cacheKey);
+  const cachedRows = getCachedEntry(pairCache, cacheKey);
   if (cachedRows) {
     riskyPairs.value = cachedRows;
     pairsLoading.value = false;
@@ -602,7 +645,7 @@ async function loadRiskPairs() {
 
     const limited = rows.slice(0, 36);
     riskyPairs.value = limited;
-    pairCache.set(cacheKey, limited);
+    setCachedEntry(pairCache, cacheKey, limited, PAIR_CACHE_LIMIT);
   } catch {
     if (runToken !== pairRunToken) {
       return;
@@ -629,7 +672,7 @@ async function loadRepositoryTree() {
     return;
   }
 
-  const cachedPaths = treeCache.get(cacheKey);
+  const cachedPaths = getCachedEntry(treeCache, cacheKey);
   if (cachedPaths) {
     repositoryPaths.value = cachedPaths;
     treeLoading.value = false;
@@ -651,7 +694,7 @@ async function loadRepositoryTree() {
     }
 
     repositoryPaths.value = paths;
-    treeCache.set(cacheKey, paths);
+    setCachedEntry(treeCache, cacheKey, paths, TREE_CACHE_LIMIT);
   } catch {
     if (runToken !== treeRunToken) {
       return;
@@ -668,7 +711,8 @@ async function loadRepositoryTree() {
 
 watch(
   () => props.repoPath,
-  () => {
+  (repoPath) => {
+    pruneCachesForRepo(repoPath);
     query.value = "";
     selectedTreePath.value = "";
     expandedNodeIds.value = [];
@@ -721,6 +765,15 @@ watch(
   },
   { immediate: true },
 );
+
+onUnmounted(() => {
+  hotspots.value = [];
+  riskyPairs.value = [];
+  repositoryPaths.value = [];
+  hotspotCache.clear();
+  pairCache.clear();
+  treeCache.clear();
+});
 </script>
 
 <template>

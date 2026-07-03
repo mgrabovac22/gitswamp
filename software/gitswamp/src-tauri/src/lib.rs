@@ -18,7 +18,7 @@ use commands::credentials::{
 use commands::diff::{
     get_commit_diff, get_file_blame, get_file_content, get_staged_diff_summary,
     get_staged_file_content, get_working_diff, has_conflict_markers, revert_hunk,
-    save_file_content,
+    save_file_content, stage_hunk, unstage_hunk,
 };
 use commands::ghost::{
     discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch,
@@ -34,7 +34,7 @@ use commands::operations::{
     rebase_branch_onto, rebase_continue, rebase_skip, remove_cached_all, rename_branch,
     reset_branch_to_remote, reset_to_commit, revert_commit, run_git_command, run_shell_command,
     search_azure_repos, search_bitbucket_repos, search_github_repos, search_gitlab_repos,
-    set_upstream, verify_github_token, verify_gitlab_token,
+    set_upstream, verify_github_token, verify_gitlab_token, write_text_file,
 };
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
@@ -94,6 +94,7 @@ pub fn run() {
             get_tags,
             run_git_command,
             run_shell_command,
+            write_text_file,
             remove_cached_all,
             discard_file,
             discard_files,
@@ -155,6 +156,8 @@ pub fn run() {
             get_file_blame,
             save_file_content,
             revert_hunk,
+            stage_hunk,
+            unstage_hunk,
             has_conflict_markers,
             append_app_log,
             get_app_log_path,

@@ -145,13 +145,13 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function mergeBranchIntoCurrent(sourceBranch: string, sourceRemote = false, targetBranch?: string) {
-    if (!state.repoPath.value) return;
+  async function mergeBranchIntoCurrent(sourceBranch: string, sourceRemote = false, targetBranch?: string): Promise<boolean> {
+    if (!state.repoPath.value) return false;
     const current = state.repoInfo.value?.current_branch || "";
     const target = (targetBranch || current).trim();
     if (!target) {
       toast.error("No active branch to merge into.");
-      return;
+      return false;
     }
     const sourceRef = sourceRemote ? `origin/${sourceBranch}` : sourceBranch;
 
@@ -163,7 +163,7 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
       if (!confirmed) {
         toast.info("Merge cancelled after risk pre-check.");
-        return;
+        return false;
       }
 
       toast.warning(
@@ -190,10 +190,12 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
       toast.success(`Merged ${sourceRef} into ${target}`);
+      return true;
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push(`$ git checkout ${target}\n$ git merge ${sourceRef}\nError: ${e}`);
       toast.error("Merge failed: " + String(e));
+      return false;
     } finally {
       state.loading.value = false;
       if (loadingToastId !== null) {

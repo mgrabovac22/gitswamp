@@ -20,6 +20,7 @@ import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
+import { clearDiffViewerCaches } from "@/shared/config/diffViewCache";
 import { handleRepositoryTabShortcut } from "@/features/repository/tabs/repositoryTabShortcuts";
 import { useRepositoryTabs } from "@/features/repository/tabs/useRepositoryTabs";
 import { useRecentRepositories } from "@/features/repository/recent/useRecentRepositories";
@@ -29,10 +30,16 @@ import {
   SMART_GITIGNORE_WIZARD_EVENT,
   getStoredSmartGitignoreWizardEnabled,
 } from "@/shared/config/gitignoreWizardPreferences";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  RELEASE_NOTES_LOG_FORMAT,
+  buildReleaseNotesMarkdown,
+  defaultReleaseNotesFileName,
+  parseReleaseNotesLog,
+} from "@/features/release-notes/releaseNotes";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
 import type { CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
@@ -186,8 +193,8 @@ const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
 let singleCommitLoadKey: string | null = null;
 let selectedCommitWatcherSkipSha: string | null = null;
-const COMMIT_FILES_CACHE_LIMIT = 24;
-const COMMIT_FILES_CACHE_MAX_FILES = 600;
+const COMMIT_FILES_CACHE_LIMIT = 12;
+const COMMIT_FILES_CACHE_MAX_FILES = 350;
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
 
 function getCommitFilesCacheKey(repoPath: string, sha: string) {
@@ -214,6 +221,15 @@ function cacheCommitFiles(repoPath: string, sha: string, files: CommitFileInfo[]
     const oldestKey = commitFilesCache.keys().next().value;
     if (!oldestKey) break;
     commitFilesCache.delete(oldestKey);
+  }
+}
+
+function clearCommitFilesCacheForOtherRepos(repoPath: string) {
+  const activePrefix = `${repoPath}\u0000`;
+  for (const key of commitFilesCache.keys()) {
+    if (!key.startsWith(activePrefix)) {
+      commitFilesCache.delete(key);
+    }
   }
 }
 
@@ -1802,6 +1818,8 @@ onUnmounted(() => {
   globalThis.removeEventListener("keydown", handleGlobalShortcuts);
   globalThis.removeEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   globalThis.removeEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
+  commitFilesCache.clear();
+  clearDiffViewerCaches();
   stopAutoFetchTimer();
   pullRequestFetchSequence++;
   if (pullRequestFetchTimer) {
@@ -1843,8 +1861,12 @@ watch(
 
 watch(
   () => git.repoPath.value,
-  () => {
+  (repoPath, previousRepoPath) => {
     restartAutoFetchTimer();
+    if (repoPath !== previousRepoPath) {
+      clearCommitFilesCacheForOtherRepos(repoPath);
+      clearDiffViewerCaches();
+    }
   },
 );
 
@@ -2367,6 +2389,108 @@ function onSelectStash(stash: StashInfo) {
   detailsPanelCollapsed.value = false;
 }
 
+interface MergeReleaseNotesRequest {
+  source: string;
+  sourceRemote: boolean;
+  target: string;
+  beforeTargetSha: string;
+  afterTargetSha: string;
+}
+
+function mergeSourceRef(payload: { source: string; sourceRemote: boolean }): string {
+  return payload.sourceRemote ? `origin/${payload.source}` : payload.source;
+}
+
+async function getGitRefSha(ref: string): Promise<string | null> {
+  if (!git.repoPath.value || !ref.trim()) return null;
+
+  try {
+    const result = await invoke<string>("run_git_command", {
+      path: git.repoPath.value,
+      args: ["rev-parse", "--verify", ref],
+    });
+    return result.trim().split(/\s+/)[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildMergeReleaseNotes(request: MergeReleaseNotesRequest): Promise<string> {
+  if (!git.repoPath.value) {
+    throw new Error("No active repository.");
+  }
+
+  const range = `${request.beforeTargetSha}..${request.afterTargetSha}`;
+  const logOutput = await invoke<string>("run_git_command", {
+    path: git.repoPath.value,
+    args: [
+      "log",
+      "--no-merges",
+      "--date=short",
+      `--format=${RELEASE_NOTES_LOG_FORMAT}`,
+      range,
+    ],
+  });
+
+  const commits = parseReleaseNotesLog(logOutput);
+  return buildReleaseNotesMarkdown(commits, {
+    sourceRef: mergeSourceRef(request),
+    targetRef: request.target,
+    fromSha: request.beforeTargetSha,
+    toSha: request.afterTargetSha,
+    generatedAt: new Date(),
+  });
+}
+
+async function downloadMergeReleaseNotes(request: MergeReleaseNotesRequest): Promise<void> {
+  try {
+    const content = await buildMergeReleaseNotes(request);
+    const defaultPath = defaultReleaseNotesFileName(mergeSourceRef(request), request.target);
+    const selectedPath = await saveDialog({
+      defaultPath,
+      filters: [
+        {
+          name: "Markdown",
+          extensions: ["md"],
+        },
+      ],
+    });
+
+    if (!selectedPath) {
+      return;
+    }
+
+    await invoke("write_text_file", {
+      path: selectedPath,
+      content,
+    });
+    toast.success("Release notes saved.");
+  } catch (error) {
+    toast.error(`Could not save release notes: ${String(error)}`);
+  }
+}
+
+function offerMergeReleaseNotes(request: MergeReleaseNotesRequest): void {
+  toast.action(
+    "success",
+    "Merge completed. Download release notes?",
+    [
+      {
+        label: "Download",
+        style: "primary",
+        onClick: () => downloadMergeReleaseNotes(request),
+      },
+      {
+        label: "Skip",
+        style: "neutral",
+        onClick: () => {},
+      },
+    ],
+    22000,
+    "GitSwamp will generate a local Markdown summary from the commits merged into the target branch.",
+  );
+}
+
 function handleRequestMerge(payload: { source: string; sourceRemote: boolean; target: string }) {
   if (!payload.source || !payload.target || payload.source === payload.target) return;
   toast.action(
@@ -2376,7 +2500,14 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
       {
         label: "Merge",
         style: "primary",
-        onClick: () => git.mergeBranchIntoCurrent(payload.source, payload.sourceRemote, payload.target),
+        onClick: async () => {
+          const beforeTargetSha = await getGitRefSha(payload.target);
+          const merged = await git.mergeBranchIntoCurrent(payload.source, payload.sourceRemote, payload.target);
+          const afterTargetSha = merged ? await getGitRefSha("HEAD") : null;
+          if (merged && beforeTargetSha && afterTargetSha && beforeTargetSha !== afterTargetSha) {
+            offerMergeReleaseNotes({ ...payload, beforeTargetSha, afterTargetSha });
+          }
+        },
       },
       {
         label: "Cancel",

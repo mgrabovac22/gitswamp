@@ -163,7 +163,13 @@ impl DiffService {
         Ok(patch)
     }
 
-    fn apply_reverse_hunk_patch(path: &str, patch_text: &str, staged: bool) -> Result<(), String> {
+    fn apply_hunk_patch(
+        path: &str,
+        patch_text: &str,
+        cached: bool,
+        reverse: bool,
+        action_label: &str,
+    ) -> Result<(), String> {
         let unique_suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
@@ -179,16 +185,14 @@ impl DiffService {
             .map_err(|e| format!("Failed to write temporary patch file: {}", e))?;
 
         let patch_path_string = patch_path.to_string_lossy().to_string();
-        let args_owned = if staged {
-            vec![
-                "apply".to_string(),
-                "--cached".to_string(),
-                "-R".to_string(),
-                patch_path_string,
-            ]
-        } else {
-            vec!["apply".to_string(), "-R".to_string(), patch_path_string]
-        };
+        let mut args_owned = vec!["apply".to_string()];
+        if cached {
+            args_owned.push("--cached".to_string());
+        }
+        if reverse {
+            args_owned.push("-R".to_string());
+        }
+        args_owned.push(patch_path_string);
         let args: Vec<&str> = args_owned.iter().map(|value| value.as_str()).collect();
 
         let apply_result = GitRepository::git_cli(path, &args);
@@ -196,7 +200,11 @@ impl DiffService {
 
         apply_result
             .map(|_| ())
-            .map_err(|e| format!("Failed to apply reverse patch for selected hunk: {}", e))
+            .map_err(|e| format!("Failed to {} selected hunk: {}", action_label, e))
+    }
+
+    fn apply_reverse_hunk_patch(path: &str, patch_text: &str, staged: bool) -> Result<(), String> {
+        Self::apply_hunk_patch(path, patch_text, staged, true, "revert")
     }
 
     pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<FileDiff, String> {
@@ -435,5 +443,25 @@ impl DiffService {
 
         let patch_text = Self::build_single_hunk_patch(&diff_info, file_path, hunk_index)?;
         Self::apply_reverse_hunk_patch(path, &patch_text, staged)
+    }
+
+    pub fn stage_hunk(path: &str, file_path: &str, hunk_index: usize) -> Result<(), String> {
+        let diff_info = Self::get_working_diff(path, file_path, false)?;
+        if diff_info.is_binary {
+            return Err("Cannot stage hunks in binary files".to_string());
+        }
+
+        let patch_text = Self::build_single_hunk_patch(&diff_info, file_path, hunk_index)?;
+        Self::apply_hunk_patch(path, &patch_text, true, false, "stage")
+    }
+
+    pub fn unstage_hunk(path: &str, file_path: &str, hunk_index: usize) -> Result<(), String> {
+        let diff_info = Self::get_working_diff(path, file_path, true)?;
+        if diff_info.is_binary {
+            return Err("Cannot unstage hunks in binary files".to_string());
+        }
+
+        let patch_text = Self::build_single_hunk_patch(&diff_info, file_path, hunk_index)?;
+        Self::apply_hunk_patch(path, &patch_text, true, true, "unstage")
     }
 }

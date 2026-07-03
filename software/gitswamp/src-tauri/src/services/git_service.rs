@@ -2562,6 +2562,14 @@ impl GitService {
         DiffService::revert_hunk(path, file_path, hunk_index, staged)
     }
 
+    pub fn stage_hunk(path: &str, file_path: &str, hunk_index: usize) -> Result<(), String> {
+        DiffService::stage_hunk(path, file_path, hunk_index)
+    }
+
+    pub fn unstage_hunk(path: &str, file_path: &str, hunk_index: usize) -> Result<(), String> {
+        DiffService::unstage_hunk(path, file_path, hunk_index)
+    }
+
     pub fn push_to_platform(
         path: &str,
         platform: &str,

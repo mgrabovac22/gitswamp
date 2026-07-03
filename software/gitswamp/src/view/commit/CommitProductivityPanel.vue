@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
 import type { CommitInfo, ConflictHotspot } from "@/types";
@@ -47,6 +47,48 @@ const selectedAuthor = ref("all");
 const commitCache = new Map<string, CommitInfo[]>();
 const killerCache = new Map<string, BugKillerRow[]>();
 const conflictCache = new Map<string, ConflictHotspot[]>();
+const COMMIT_CACHE_LIMIT = 2;
+const STATS_CACHE_LIMIT = 2;
+
+function getCachedEntry<T>(cache: Map<string, T>, key: string): T | null {
+  const value = cache.get(key);
+  if (!value) return null;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedEntry<T>(cache: Map<string, T>, key: string, value: T, limit: number) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
+}
+
+function pruneCachesForRepo(repoPath: string) {
+  const repoPrefix = `${repoPath}::`;
+  for (const key of commitCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      commitCache.delete(key);
+    }
+  }
+  for (const key of killerCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      killerCache.delete(key);
+    }
+  }
+  for (const key of conflictCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      conflictCache.delete(key);
+    }
+  }
+}
 
 let loadRunToken = 0;
 
@@ -634,7 +676,7 @@ function isRunActive(runToken: number): boolean {
 async function loadCommitsForRun(runToken: number, maxCount: number) {
   const cacheKey = `${props.repoPath}::${maxCount}`;
 
-  const cachedCommits = commitCache.get(cacheKey);
+  const cachedCommits = getCachedEntry(commitCache, cacheKey);
   if (cachedCommits) {
     historyCommits.value = cachedCommits;
     historyLoading.value = false;
@@ -649,7 +691,7 @@ async function loadCommitsForRun(runToken: number, maxCount: number) {
     });
     if (!isRunActive(runToken)) return;
     historyCommits.value = commits;
-    commitCache.set(cacheKey, commits);
+    setCachedEntry(commitCache, cacheKey, commits, COMMIT_CACHE_LIMIT);
   } catch {
     if (!isRunActive(runToken)) return;
     historyCommits.value = [];
@@ -664,7 +706,7 @@ async function loadCommitsForRun(runToken: number, maxCount: number) {
 async function loadBugKillerStatsForRun(runToken: number, maxCount: number) {
   const cacheKey = `${props.repoPath}::${maxCount}`;
 
-  const cachedRows = killerCache.get(cacheKey);
+  const cachedRows = getCachedEntry(killerCache, cacheKey);
   if (cachedRows) {
     bugKillers.value = cachedRows;
     bugKillerLoading.value = false;
@@ -680,7 +722,7 @@ async function loadBugKillerStatsForRun(runToken: number, maxCount: number) {
     if (!isRunActive(runToken)) return;
     const normalizedRows = normalizeBugKillerRows(killerRows);
     bugKillers.value = normalizedRows;
-    killerCache.set(cacheKey, normalizedRows);
+    setCachedEntry(killerCache, cacheKey, normalizedRows, STATS_CACHE_LIMIT);
   } catch {
     if (!isRunActive(runToken)) return;
     bugKillers.value = [];
@@ -695,7 +737,7 @@ async function loadBugKillerStatsForRun(runToken: number, maxCount: number) {
 async function loadConflictSignalsForRun(runToken: number, maxCount: number) {
   const cacheKey = `${props.repoPath}::${maxCount}`;
 
-  const cachedRows = conflictCache.get(cacheKey);
+  const cachedRows = getCachedEntry(conflictCache, cacheKey);
   if (cachedRows) {
     conflictHotspots.value = cachedRows;
     conflictLoading.value = false;
@@ -710,7 +752,7 @@ async function loadConflictSignalsForRun(runToken: number, maxCount: number) {
     });
     if (!isRunActive(runToken)) return;
     conflictHotspots.value = conflictRows;
-    conflictCache.set(cacheKey, conflictRows);
+    setCachedEntry(conflictCache, cacheKey, conflictRows, STATS_CACHE_LIMIT);
   } catch {
     if (!isRunActive(runToken)) return;
     conflictHotspots.value = [];
@@ -730,7 +772,8 @@ function enableLoadAllHistory() {
 
 watch(
   () => props.repoPath,
-  () => {
+  (repoPath) => {
+    pruneCachesForRepo(repoPath);
     loadAllHistory.value = false;
     selectedAuthor.value = "all";
     void loadArenaData();
@@ -743,6 +786,15 @@ watch(uniqueAuthorNames, (authorNames) => {
   if (!authorNames.includes(selectedAuthor.value)) {
     selectedAuthor.value = "all";
   }
+});
+
+onUnmounted(() => {
+  historyCommits.value = [];
+  bugKillers.value = [];
+  conflictHotspots.value = [];
+  commitCache.clear();
+  killerCache.clear();
+  conflictCache.clear();
 });
 </script>
 

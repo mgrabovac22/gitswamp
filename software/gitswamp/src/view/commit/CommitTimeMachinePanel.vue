@@ -56,6 +56,31 @@ const panelScrollContainer = ref<HTMLElement | null>(null);
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
 const commitTreeCache = new Map<string, string[]>();
 const fileContentCache = new Map<string, string>();
+const COMMIT_FILES_CACHE_LIMIT = 12;
+const COMMIT_TREE_CACHE_LIMIT = 3;
+const FILE_CONTENT_CACHE_LIMIT = 8;
+const FILE_CONTENT_CACHE_MAX_CHARS = 220_000;
+
+function getCachedEntry<T>(cache: Map<string, T>, key: string): T | null {
+  const value = cache.get(key);
+  if (value === undefined) return null;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedEntry<T>(cache: Map<string, T>, key: string, value: T, limit: number) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
+}
 
 let autoplayTimer: number | null = null;
 let snapshotScheduleTimer: number | null = null;
@@ -451,8 +476,8 @@ async function loadExplorerFile(path: string, shaOverride?: string) {
   selectedExplorerFilePath.value = path;
   explorerFileError.value = "";
 
-  const cachedContent = fileContentCache.get(cacheKey);
-  if (cachedContent !== undefined) {
+  const cachedContent = getCachedEntry(fileContentCache, cacheKey);
+  if (cachedContent !== null) {
     selectedExplorerFileContent.value = cachedContent;
     explorerFileLoading.value = false;
     return;
@@ -470,7 +495,9 @@ async function loadExplorerFile(path: string, shaOverride?: string) {
       return;
     }
 
-    fileContentCache.set(cacheKey, content);
+    if (content.length <= FILE_CONTENT_CACHE_MAX_CHARS) {
+      setCachedEntry(fileContentCache, cacheKey, content, FILE_CONTENT_CACHE_LIMIT);
+    }
     selectedExplorerFileContent.value = content;
   } catch {
     if (runToken === explorerRunToken && selectedExplorerFilePath.value === path) {
@@ -535,8 +562,8 @@ async function syncExplorerPreviewForCommit(sha: string) {
   selectedExplorerFilePath.value = preferredPath;
 
   if (autoPlay.value) {
-    const cachedContent = fileContentCache.get(`${props.repoPath}::${sha}::${preferredPath}`);
-    if (cachedContent !== undefined) {
+    const cachedContent = getCachedEntry(fileContentCache, `${props.repoPath}::${sha}::${preferredPath}`);
+    if (cachedContent !== null) {
       selectedExplorerFileContent.value = cachedContent;
       explorerFileError.value = "";
     }
@@ -568,8 +595,8 @@ async function loadSnapshotData() {
   }
 
   const cacheKey = snapshotCacheKey(commit.sha);
-  const cachedFiles = commitFilesCache.get(cacheKey);
-  const cachedTree = commitTreeCache.get(cacheKey);
+  const cachedFiles = getCachedEntry(commitFilesCache, cacheKey);
+  const cachedTree = getCachedEntry(commitTreeCache, cacheKey);
 
   filesError.value = "";
   treeError.value = "";
@@ -618,7 +645,7 @@ async function loadSnapshotData() {
 
   if (filesResult.status === "fulfilled") {
     selectedFiles.value = filesResult.value;
-    commitFilesCache.set(cacheKey, filesResult.value);
+    setCachedEntry(commitFilesCache, cacheKey, filesResult.value, COMMIT_FILES_CACHE_LIMIT);
     if (!filesResult.value.some((item) => item.path === selectedFilePath.value)) {
       selectedFilePath.value = filesResult.value[0]?.path || "";
     }
@@ -628,7 +655,7 @@ async function loadSnapshotData() {
 
   if (treeResult.status === "fulfilled") {
     snapshotPaths.value = treeResult.value;
-    commitTreeCache.set(cacheKey, treeResult.value);
+    setCachedEntry(commitTreeCache, cacheKey, treeResult.value, COMMIT_TREE_CACHE_LIMIT);
   } else {
     treeError.value = "Could not load directory snapshot for this commit.";
   }
@@ -772,6 +799,13 @@ watch(
 onUnmounted(() => {
   stopAutoplay();
   clearSnapshotScheduleTimer();
+  historyCommits.value = [];
+  selectedFiles.value = [];
+  snapshotPaths.value = [];
+  selectedExplorerFileContent.value = "";
+  commitFilesCache.clear();
+  commitTreeCache.clear();
+  fileContentCache.clear();
 });
 </script>
 

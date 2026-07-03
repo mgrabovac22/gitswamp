@@ -17,15 +17,15 @@ interface CachePolicy {
   maxTotalSize: number;
 }
 
-const TEXT_CACHE_TTL_MS = 45_000;
-const TEXT_CACHE_MAX_ENTRIES = 10;
-const TEXT_CACHE_MAX_TOTAL_CHARS = 900_000;
-const TEXT_CACHE_MAX_ITEM_CHARS = 450_000;
+const TEXT_CACHE_TTL_MS = 25_000;
+const TEXT_CACHE_MAX_ENTRIES = 6;
+const TEXT_CACHE_MAX_TOTAL_CHARS = 520_000;
+const TEXT_CACHE_MAX_ITEM_CHARS = 260_000;
 
-const DIFF_CACHE_TTL_MS = 35_000;
-const DIFF_CACHE_MAX_ENTRIES = 8;
-const DIFF_CACHE_MAX_TOTAL_CHARS = 700_000;
-const DIFF_CACHE_MAX_ITEM_CHARS = 280_000;
+const DIFF_CACHE_TTL_MS = 22_000;
+const DIFF_CACHE_MAX_ENTRIES = 4;
+const DIFF_CACHE_MAX_TOTAL_CHARS = 340_000;
+const DIFF_CACHE_MAX_ITEM_CHARS = 170_000;
 
 const textCache = new Map<string, CacheEntry<string>>();
 const diffCache = new Map<string, CacheEntry<FileDiff>>();
@@ -196,4 +196,11 @@ export function pruneDiffViewerCaches(): void {
   const now = Date.now();
   pruneCache(textCache, textStats, now, TEXT_CACHE_MAX_ENTRIES, TEXT_CACHE_MAX_TOTAL_CHARS);
   pruneCache(diffCache, diffStats, now, DIFF_CACHE_MAX_ENTRIES, DIFF_CACHE_MAX_TOTAL_CHARS);
+}
+
+export function clearDiffViewerCaches(): void {
+  textCache.clear();
+  diffCache.clear();
+  textStats.totalSize = 0;
+  diffStats.totalSize = 0;
 }

@@ -46,7 +46,13 @@ const loadingGitignore = ref(false);
 const applying = ref(false);
 let gitignoreLoadSequence = 0;
 
-const SAFE_ENV_FILES = new Set([".env.example", ".env.sample", ".env.template", ".env.defaults"]);
+const SAFE_ENV_FILES = new Set([
+  ".env.example",
+  ".env.sample",
+  ".env.template",
+  ".env.defaults",
+  ".env.dist",
+]);
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -72,7 +78,16 @@ function hasSegmentSequence(segments: string[], first: string, second: string): 
 }
 
 function isSafeEnvFile(fileName: string): boolean {
-  return SAFE_ENV_FILES.has(fileName);
+  if (SAFE_ENV_FILES.has(fileName)) return true;
+  return /^\.env\..*\.(example|sample|template|dist)$/.test(fileName);
+}
+
+function hasFileExtension(fileName: string, extensions: string[]): boolean {
+  return extensions.some((extension) => fileName.endsWith(extension));
+}
+
+function isRootFile(normalizedPath: string, fileName: string): boolean {
+  return normalizePath(normalizedPath).toLowerCase() === fileName.toLowerCase();
 }
 
 const IGNORE_DEFINITIONS: IgnoreDefinition[] = [
@@ -98,19 +113,55 @@ const IGNORE_DEFINITIONS: IgnoreDefinition[] = [
     match: (_path, segments) => hasSegmentSequence(segments, ".yarn", "cache"),
   },
   {
+    id: "dependencies-bower",
+    label: "Dependency folders",
+    description: "Installed Bower packages",
+    patterns: ["bower_components/"],
+    match: (_path, segments) => hasSegment(segments, "bower_components"),
+  },
+  {
+    id: "dependencies-cocoapods",
+    label: "Dependency folders",
+    description: "Installed iOS CocoaPods",
+    patterns: ["Pods/"],
+    match: (_path, segments) => hasSegment(segments, "pods"),
+  },
+  {
     id: "secrets-env",
     label: "Environment secrets",
     description: "Local .env files",
-    patterns: [".env", ".env.*", "!.env.example", "!.env.sample", "!.env.template"],
+    patterns: [".env", ".env.*", "!.env.example", "!.env.sample", "!.env.template", "!.env.defaults", "!.env.dist"],
     match: (_path, _segments, fileName) =>
       (fileName === ".env" || fileName.startsWith(".env.")) && !isSafeEnvFile(fileName),
+  },
+  {
+    id: "secrets-envrc",
+    label: "Environment secrets",
+    description: "Local shell environment files",
+    patterns: [".envrc", ".direnv/"],
+    match: (_path, segments, fileName) => fileName === ".envrc" || hasSegment(segments, ".direnv"),
+  },
+  {
+    id: "secrets-keys",
+    label: "Private keys",
+    description: "Credentials and signing keys",
+    patterns: ["*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "id_rsa", "id_ed25519"],
+    match: (_path, _segments, fileName) =>
+      hasFileExtension(fileName, [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"])
+      || fileName === "id_rsa"
+      || fileName === "id_ed25519",
   },
   {
     id: "logs-files",
     label: "Log files",
     description: "Generated runtime logs",
-    patterns: ["*.log"],
-    match: (_path, _segments, fileName) => fileName.endsWith(".log"),
+    patterns: ["*.log", "npm-debug.log*", "yarn-debug.log*", "yarn-error.log*", "pnpm-debug.log*", "lerna-debug.log*"],
+    match: (_path, _segments, fileName) =>
+      fileName.endsWith(".log")
+      || /^npm-debug\.log/.test(fileName)
+      || /^yarn-(debug|error)\.log/.test(fileName)
+      || /^pnpm-debug\.log/.test(fileName)
+      || /^lerna-debug\.log/.test(fileName),
   },
   {
     id: "logs-folders",
@@ -151,8 +202,12 @@ const IGNORE_DEFINITIONS: IgnoreDefinition[] = [
     id: "coverage",
     label: "Coverage output",
     description: "Generated coverage reports",
-    patterns: ["coverage/"],
-    match: (_path, segments) => hasSegment(segments, "coverage"),
+    patterns: ["coverage/", "htmlcov/", ".coverage", ".nyc_output/"],
+    match: (_path, segments, fileName) =>
+      hasSegment(segments, "coverage")
+      || hasSegment(segments, "htmlcov")
+      || hasSegment(segments, ".nyc_output")
+      || fileName === ".coverage",
   },
   {
     id: "framework-next",
@@ -197,18 +252,45 @@ const IGNORE_DEFINITIONS: IgnoreDefinition[] = [
     match: (_path, segments) => hasSegment(segments, ".turbo"),
   },
   {
+    id: "tool-cache-parcel",
+    label: "Tool cache",
+    description: "Parcel build cache",
+    patterns: [".parcel-cache/"],
+    match: (_path, segments) => hasSegment(segments, ".parcel-cache"),
+  },
+  {
+    id: "tool-cache-angular",
+    label: "Tool cache",
+    description: "Angular build cache",
+    patterns: [".angular/cache/"],
+    match: (_path, segments) => hasSegmentSequence(segments, ".angular", "cache"),
+  },
+  {
+    id: "tool-cache-eslint",
+    label: "Tool cache",
+    description: "Lint cache files",
+    patterns: [".eslintcache", ".stylelintcache"],
+    match: (_path, _segments, fileName) => fileName === ".eslintcache" || fileName === ".stylelintcache",
+  },
+  {
     id: "python-cache",
     label: "Python cache",
     description: "Compiled Python artifacts",
-    patterns: ["__pycache__/", "*.py[cod]"],
-    match: (_path, segments, fileName) => hasSegment(segments, "__pycache__") || /\.py[cod]$/.test(fileName),
+    patterns: ["__pycache__/", "*.py[cod]", ".pytest_cache/", ".mypy_cache/", ".ruff_cache/", ".tox/"],
+    match: (_path, segments, fileName) =>
+      hasSegment(segments, "__pycache__")
+      || hasSegment(segments, ".pytest_cache")
+      || hasSegment(segments, ".mypy_cache")
+      || hasSegment(segments, ".ruff_cache")
+      || hasSegment(segments, ".tox")
+      || /\.py[cod]$/.test(fileName),
   },
   {
     id: "python-venv",
     label: "Virtual environments",
     description: "Local Python environments",
-    patterns: [".venv/", "venv/"],
-    match: (_path, segments) => hasSegment(segments, ".venv") || hasSegment(segments, "venv"),
+    patterns: [".venv/", "venv/", "env/"],
+    match: (_path, segments) => hasSegment(segments, ".venv") || hasSegment(segments, "venv") || hasSegment(segments, "env"),
   },
   {
     id: "gradle-cache",
@@ -228,8 +310,8 @@ const IGNORE_DEFINITIONS: IgnoreDefinition[] = [
     id: "os-thumbs",
     label: "OS files",
     description: "Windows thumbnail metadata",
-    patterns: ["Thumbs.db"],
-    match: (_path, _segments, fileName) => fileName === "thumbs.db",
+    patterns: ["Thumbs.db", "Desktop.ini"],
+    match: (_path, _segments, fileName) => fileName === "thumbs.db" || fileName === "desktop.ini",
   },
   {
     id: "editor-idea",
@@ -242,9 +324,39 @@ const IGNORE_DEFINITIONS: IgnoreDefinition[] = [
     id: "temp-files",
     label: "Temporary files",
     description: "Scratch and swap files",
-    patterns: ["*.tmp", "*.temp", "*.swp", "*~"],
+    patterns: ["*.tmp", "*.temp", "*.swp", "*.swo", "*~"],
     match: (_path, _segments, fileName) =>
-      fileName.endsWith(".tmp") || fileName.endsWith(".temp") || fileName.endsWith(".swp") || fileName.endsWith("~"),
+      fileName.endsWith(".tmp")
+      || fileName.endsWith(".temp")
+      || fileName.endsWith(".swp")
+      || fileName.endsWith(".swo")
+      || fileName.endsWith("~"),
+  },
+  {
+    id: "database-local",
+    label: "Local databases",
+    description: "Generated local database files",
+    patterns: ["*.sqlite", "*.sqlite3", "*.db", "*.db-wal", "*.db-shm"],
+    match: (_path, _segments, fileName) =>
+      hasFileExtension(fileName, [".sqlite", ".sqlite3", ".db", ".db-wal", ".db-shm"]),
+  },
+  {
+    id: "terraform-local-state",
+    label: "Terraform state",
+    description: "Local infrastructure state and cache",
+    patterns: [".terraform/", "*.tfstate", "*.tfstate.*"],
+    match: (_path, segments, fileName) =>
+      hasSegment(segments, ".terraform") || fileName.endsWith(".tfstate") || fileName.includes(".tfstate."),
+  },
+  {
+    id: "docker-local",
+    label: "Local Docker state",
+    description: "Docker compose override and local env files",
+    patterns: ["docker-compose.override.yml", "docker-compose.override.yaml"],
+    match: (path, _segments, fileName) =>
+      isRootFile(path, "docker-compose.override.yml") || isRootFile(path, "docker-compose.override.yaml")
+      || fileName === "docker-compose.override.yml"
+      || fileName === "docker-compose.override.yaml",
   },
 ];
 
@@ -316,7 +428,17 @@ const suggestionState = computed<SuggestionState>(() => {
 });
 
 function normalizePatternForCompare(pattern: string): string {
-  return pattern.trim().replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase();
+  const trimmed = pattern.trim().replace(/\\/g, "/");
+  const negated = trimmed.startsWith("!");
+  const body = negated ? trimmed.slice(1) : trimmed;
+  const normalized = body
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .replace(/^\*\*\//, "")
+    .replace(/\/\*\*$/, "")
+    .replace(/\/\*$/, "")
+    .toLowerCase();
+  return `${negated ? "!" : ""}${normalized}`;
 }
 
 function parseIgnorePatterns(content: string): Set<string> {
@@ -333,6 +455,8 @@ function isPatternCovered(pattern: string, existingPatterns: Set<string>): boole
   const normalized = normalizePatternForCompare(pattern);
   if (existingPatterns.has(normalized)) return true;
   if ((normalized === ".env" || normalized === ".env.*") && existingPatterns.has(".env*")) return true;
+  if (normalized.endsWith("/*") && existingPatterns.has(normalized.slice(0, -2))) return true;
+  if (existingPatterns.has(`${normalized}/*`) || existingPatterns.has(`${normalized}/**`)) return true;
   return false;
 }
 

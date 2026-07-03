@@ -104,3 +104,25 @@ pub async fn revert_hunk(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub async fn stage_hunk(path: String, file_path: String, hunk_index: usize) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::stage_hunk(&path, &file_path, hunk_index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn unstage_hunk(
+    path: String,
+    file_path: String,
+    hunk_index: usize,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::unstage_hunk(&path, &file_path, hunk_index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

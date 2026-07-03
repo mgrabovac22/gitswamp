@@ -376,11 +376,14 @@ const activeCommits = computed(() => {
   return props.commits.filter((commit) => isolated.has(commit.sha));
 });
 
+const COMMIT_DATE_CACHE_LIMIT = 1800;
 const commitDateCache = new Map<number, string>();
 
 function commitDateLabel(timestamp: number): string {
   const cached = commitDateCache.get(timestamp);
   if (cached) {
+    commitDateCache.delete(timestamp);
+    commitDateCache.set(timestamp, cached);
     return cached;
   }
 
@@ -397,7 +400,15 @@ function commitDateLabel(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+  if (commitDateCache.has(timestamp)) {
+    commitDateCache.delete(timestamp);
+  }
   commitDateCache.set(timestamp, formatted);
+  while (commitDateCache.size > COMMIT_DATE_CACHE_LIMIT) {
+    const oldestTimestamp = commitDateCache.keys().next().value;
+    if (oldestTimestamp === undefined) break;
+    commitDateCache.delete(oldestTimestamp);
+  }
   return formatted;
 }
 

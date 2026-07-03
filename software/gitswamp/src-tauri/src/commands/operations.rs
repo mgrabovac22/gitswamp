@@ -40,6 +40,15 @@ pub fn run_shell_command(path: String, command: String) -> Result<String, String
 }
 
 #[tauri::command]
+pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn remove_cached_all(path: String) -> Result<String, String> {
     GitService::remove_cached_all(&path)
 }
