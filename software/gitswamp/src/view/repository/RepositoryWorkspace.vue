@@ -10,7 +10,7 @@ import { useResizableWorkspace } from "@/features/repository/workspace/useResiza
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burndown" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 
@@ -19,6 +19,7 @@ const CommitGalaxyPanel = defineAsyncComponent(() => import("@/view/commit/Commi
 const CommitProductivityPanel = defineAsyncComponent(() => import("@/view/commit/CommitProductivityPanel.vue"));
 const CommitTimeMachinePanel = defineAsyncComponent(() => import("@/view/commit/CommitTimeMachinePanel.vue"));
 const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/commit/CommitConflictHeatmapPanel.vue"));
+const CommitBurndownAnalyticsPanel = defineAsyncComponent(() => import("@/view/commit/CommitBurndownAnalyticsPanel.vue"));
 const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository/RemoteInsightsPanel.vue"));
 
 const props = defineProps<{
@@ -402,6 +403,14 @@ function handleRefreshState() {
           v-else-if="props.historyViewMode === 'conflict-heatmap'"
           class="flex-1"
           :repo-path="props.git.repoPath.value"
+          @close="emit('setHistoryView', 'graph')"
+        />
+
+        <CommitBurndownAnalyticsPanel
+          v-else-if="props.historyViewMode === 'burndown'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :commits="props.git.displayedCommits.value"
           @close="emit('setHistoryView', 'graph')"
         />
 

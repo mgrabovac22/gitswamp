@@ -6,7 +6,7 @@ import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import type { RepoInfo } from "@/types";
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burndown";
 
 interface MenuAction {
   id: string;
@@ -235,6 +235,14 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Alt+5",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "conflict-heatmap"),
+    },
+    {
+      id: "view-burndown",
+      label: "Burndown Analytics",
+      description: "Show contributor focus, after-hours rhythm and hot-file ownership pressure.",
+      shortcut: "Alt+6",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "burndown"),
     },
     {
       id: "open-explorer",
@@ -516,6 +524,7 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in folder explorer</span><span class="text-[var(--muted-foreground)] font-mono">Alt+O</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Galaxy View</span><span class="text-[var(--muted-foreground)] font-mono">Alt+2</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+5</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Burndown Analytics</span><span class="text-[var(--muted-foreground)] font-mono">Alt+6</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open integrations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+I</span></div>

@@ -86,7 +86,7 @@ const {
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burndown" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -1592,6 +1592,14 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       disabled: !hasRepo,
       run: () => setHistoryViewMode("galaxy"),
     },
+    {
+      id: "view-burndown",
+      label: "Burndown Analytics",
+      description: "Show contributor focus, after-hours rhythm and ownership pressure.",
+      shortcut: "Alt 6",
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("burndown"),
+    },
   ];
 });
 
@@ -1610,6 +1618,7 @@ function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
     "3": "productivity",
     "4": "time-machine",
     "5": "conflict-heatmap",
+    "6": "burndown",
   };
 
   const nextMode = viewByKey[key];
