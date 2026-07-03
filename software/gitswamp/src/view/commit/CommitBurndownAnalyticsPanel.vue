@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { Activity, AlertTriangle, Clock3, Flame, GitCommit, Users, X, Zap } from "lucide-vue-next";
+import { AlertTriangle, Clock3, Flame, GitCommit, Users, X, Zap } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
 import type { CommitInfo } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
 const HOT_FILE_SCAN_LIMIT = 2500;
 const RECENT_WEEK_COUNT = 12;
-const RECENT_DAY_COUNT = 30;
 const HISTORY_FORMAT = "__GITSWAMP_ANALYTICS__%x1f%an%x1f%ae%x1f%ct%x1f%s";
 const HOT_FILE_FORMAT = "__GITSWAMP_COMMIT__%x1f%an%x1f%ae%x1f%s";
 const FIELD_SEPARATOR = "\x1f";
@@ -58,33 +57,32 @@ interface AuthorStats {
   weekendCommits: number;
   saturdayNightCommits: number;
   lateNightWeekStreak: number;
-  currentWeekCommits: number;
-  previousWeekCommits: number;
   hotFileCount: number;
   hotFileTouches: number;
   riskScore: number;
   riskLevel: "low" | "medium" | "high";
-  hourly: number[];
-  weekdays: number[];
   afterHoursHourly: number[];
   afterHoursWeekdays: number[];
   peakAfterHoursHour: number | null;
   peakAfterHoursWeekday: number | null;
   maxAfterHoursHourCount: number;
-  maxRecentDayCount: number;
   recentWeeks: number[];
   recentAfterHoursWeeks: number[];
-  recentDays: number[];
 }
 
 const historyCommits = ref<AnalyticsCommit[]>([]);
+const authors = ref<AuthorStats[]>([]);
+const totalCommitCount = ref(0);
+const recentWeekStarts = ref<Date[]>([]);
 const hotFiles = ref<HotFileInsight[]>([]);
 const historyLoading = ref(false);
 const hotFilesLoading = ref(false);
+const statsLoading = ref(false);
 const historyError = ref("");
 const hotFilesError = ref("");
 let historyLoadToken = 0;
 let hotFilesLoadToken = 0;
+let statsBuildToken = 0;
 
 function toMillis(timestamp: number): number {
   return Math.abs(timestamp) < 1000000000000 ? timestamp * 1000 : timestamp;
@@ -163,6 +161,12 @@ function peakIndex(values: number[]): number | null {
   return index;
 }
 
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+}
+
 function capCache<T>(cache: Map<string, T>, key: string, value: T) {
   if (cache.has(key)) {
     cache.delete(key);
@@ -184,9 +188,17 @@ function commitToAnalytics(commit: CommitInfo): AnalyticsCommit {
   };
 }
 
-function parseHistoryLog(output: string): AnalyticsCommit[] {
+async function parseHistoryLog(output: string, token: number): Promise<AnalyticsCommit[] | null> {
   const rows: AnalyticsCommit[] = [];
-  for (const rawLine of output.split(/\r?\n/)) {
+  const lines = output.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (token !== historyLoadToken) return null;
+    if (index > 0 && index % 2500 === 0) {
+      await yieldToUi();
+    }
+
+    const rawLine = lines[index];
     const line = rawLine.trim();
     if (!line.startsWith("__GITSWAMP_ANALYTICS__")) continue;
 
@@ -207,11 +219,14 @@ function parseHistoryLog(output: string): AnalyticsCommit[] {
 function setInitialCommits() {
   if (!props.repoPath) {
     historyCommits.value = [];
+    authors.value = [];
+    totalCommitCount.value = 0;
     return;
   }
 
   const cached = historyCache.get(props.repoPath);
   historyCommits.value = cached || props.commits.map(commitToAnalytics);
+  void rebuildAuthorStats();
 }
 
 async function loadFullHistory() {
@@ -221,6 +236,7 @@ async function loadFullHistory() {
   const cached = historyCache.get(repoPath);
   if (cached) {
     historyCommits.value = cached;
+    void rebuildAuthorStats();
     return;
   }
 
@@ -239,9 +255,11 @@ async function loadFullHistory() {
       ],
     });
     if (token !== historyLoadToken || repoPath !== props.repoPath) return;
-    const commits = parseHistoryLog(output);
+    const commits = await parseHistoryLog(output, token);
+    if (!commits) return;
     historyCommits.value = commits;
     capCache(historyCache, repoPath, commits);
+    void rebuildAuthorStats();
   } catch {
     if (token !== historyLoadToken) return;
     historyError.value = "Could not load full repository history.";
@@ -324,6 +342,7 @@ async function loadHotFiles() {
   const cached = hotFileCache.get(repoPath);
   if (cached) {
     hotFiles.value = cached;
+    void rebuildAuthorStats();
     return;
   }
 
@@ -347,6 +366,7 @@ async function loadHotFiles() {
     const parsed = parseHotFileLog(output);
     hotFiles.value = parsed;
     capCache(hotFileCache, repoPath, parsed);
+    void rebuildAuthorStats();
   } catch {
     if (token !== hotFilesLoadToken) return;
     hotFilesError.value = "Hot file scan skipped.";
@@ -357,17 +377,29 @@ async function loadHotFiles() {
   }
 }
 
-function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsight[]): AuthorStats[] {
+function weekStartsForCommits(commits: AnalyticsCommit[]): Date[] {
+  let newest = 0;
+  for (const commit of commits) {
+    newest = Math.max(newest, toMillis(commit.timestamp));
+  }
+  if (newest <= 0) {
+    newest = Date.now();
+  }
+
+  const start = weekStart(new Date(newest));
+  return Array.from({ length: RECENT_WEEK_COUNT }, (_, index) =>
+    shiftDays(start, (index - RECENT_WEEK_COUNT + 1) * 7),
+  );
+}
+
+async function buildAuthorStats(
+  commits: AnalyticsCommit[],
+  hotFileRows: HotFileInsight[],
+  token: number,
+): Promise<AuthorStats[] | null> {
   if (commits.length === 0) return [];
 
-  const newest = Math.max(...commits.map((commit) => toMillis(commit.timestamp)));
-  const newestDate = new Date(newest);
-  const recentWeeks = Array.from({ length: RECENT_WEEK_COUNT }, (_, index) =>
-    weekKey(shiftDays(weekStart(newestDate), (index - RECENT_WEEK_COUNT + 1) * 7)),
-  );
-  const recentDays = Array.from({ length: RECENT_DAY_COUNT }, (_, index) =>
-    dayKey(shiftDays(newestDate, index - RECENT_DAY_COUNT + 1)),
-  );
+  const recentWeeks = weekStartsForCommits(commits).map(weekKey);
 
   const hotByOwner = new Map<string, { files: number; touches: number }>();
   for (const file of hotFileRows) {
@@ -382,7 +414,13 @@ function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsigh
     lateWeeks: Set<string>;
   }>();
 
-  for (const commit of commits) {
+  for (let commitIndex = 0; commitIndex < commits.length; commitIndex += 1) {
+    if (token !== statsBuildToken) return null;
+    if (commitIndex > 0 && commitIndex % 2500 === 0) {
+      await yieldToUi();
+    }
+
+    const commit = commits[commitIndex];
     const millis = toMillis(commit.timestamp);
     const date = new Date(millis);
     const key = authorKey(commit.authorName, commit.authorEmail);
@@ -391,7 +429,6 @@ function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsigh
     const hour = date.getHours();
     const weekday = date.getDay();
     const recentWeekIndex = recentWeeks.indexOf(week);
-    const recentDayIndex = recentDays.indexOf(day);
     const afterHours = hour < 7 || hour >= 20;
     const lateNight = hour < 5;
     const weekend = weekday === 0 || weekday === 6;
@@ -409,23 +446,17 @@ function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsigh
       weekendCommits: 0,
       saturdayNightCommits: 0,
       lateNightWeekStreak: 0,
-      currentWeekCommits: 0,
-      previousWeekCommits: 0,
       hotFileCount: 0,
       hotFileTouches: 0,
       riskScore: 0,
       riskLevel: "low",
-      hourly: Array.from({ length: 24 }, () => 0),
-      weekdays: Array.from({ length: 7 }, () => 0),
       afterHoursHourly: Array.from({ length: 24 }, () => 0),
       afterHoursWeekdays: Array.from({ length: 7 }, () => 0),
       peakAfterHoursHour: null,
       peakAfterHoursWeekday: null,
       maxAfterHoursHourCount: 0,
-      maxRecentDayCount: 0,
       recentWeeks: Array.from({ length: RECENT_WEEK_COUNT }, () => 0),
       recentAfterHoursWeeks: Array.from({ length: RECENT_WEEK_COUNT }, () => 0),
-      recentDays: Array.from({ length: RECENT_DAY_COUNT }, () => 0),
       activeDaySet: new Set<string>(),
       lateWeeks: new Set<string>(),
     };
@@ -433,8 +464,6 @@ function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsigh
     stats.commits += 1;
     stats.firstCommit = Math.min(stats.firstCommit, millis);
     stats.lastCommit = Math.max(stats.lastCommit, millis);
-    stats.hourly[hour] += 1;
-    stats.weekdays[weekday] += 1;
     stats.activeDaySet.add(day);
     if (afterHours) {
       stats.afterHoursCommits += 1;
@@ -451,14 +480,18 @@ function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsigh
       stats.recentWeeks[recentWeekIndex] += 1;
       if (afterHours) stats.recentAfterHoursWeeks[recentWeekIndex] += 1;
     }
-    if (recentDayIndex >= 0) {
-      stats.recentDays[recentDayIndex] += 1;
-    }
     byAuthor.set(key, stats);
   }
 
-  return Array.from(byAuthor.values())
-    .map((stats) => {
+  const rows: AuthorStats[] = [];
+  const rawStats = Array.from(byAuthor.values());
+  for (let statsIndex = 0; statsIndex < rawStats.length; statsIndex += 1) {
+    if (token !== statsBuildToken) return null;
+    if (statsIndex > 0 && statsIndex % 40 === 0) {
+      await yieldToUi();
+    }
+
+    const stats = rawStats[statsIndex];
       let streak = 0;
       for (let index = recentWeeks.length - 1; index >= 0; index -= 1) {
         if (!stats.lateWeeks.has(recentWeeks[index])) break;
@@ -475,9 +508,8 @@ function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsigh
       ));
       const riskLevel: AuthorStats["riskLevel"] = riskScore >= 65 ? "high" : riskScore >= 35 ? "medium" : "low";
       const maxAfterHoursHourCount = Math.max(0, ...stats.afterHoursHourly);
-      const maxRecentDayCount = Math.max(1, ...stats.recentDays);
 
-      return {
+      rows.push({
         key: stats.key,
         name: stats.name,
         email: stats.email,
@@ -490,43 +522,48 @@ function buildAuthorStats(commits: AnalyticsCommit[], hotFileRows: HotFileInsigh
         weekendCommits: stats.weekendCommits,
         saturdayNightCommits: stats.saturdayNightCommits,
         lateNightWeekStreak: streak,
-        currentWeekCommits: stats.recentWeeks[stats.recentWeeks.length - 1] || 0,
-        previousWeekCommits: stats.recentWeeks[stats.recentWeeks.length - 2] || 0,
         hotFileCount: hot.files,
         hotFileTouches: hot.touches,
         riskScore,
         riskLevel,
-        hourly: stats.hourly,
-        weekdays: stats.weekdays,
         afterHoursHourly: stats.afterHoursHourly,
         afterHoursWeekdays: stats.afterHoursWeekdays,
         peakAfterHoursHour: peakIndex(stats.afterHoursHourly),
         peakAfterHoursWeekday: peakIndex(stats.afterHoursWeekdays),
         maxAfterHoursHourCount,
-        maxRecentDayCount,
         recentWeeks: stats.recentWeeks,
         recentAfterHoursWeeks: stats.recentAfterHoursWeeks,
-        recentDays: stats.recentDays,
-      };
-    })
-    .sort((a, b) => b.riskScore - a.riskScore || b.commits - a.commits || a.name.localeCompare(b.name));
+      });
+  }
+
+  return rows.sort((a, b) => b.riskScore - a.riskScore || b.commits - a.commits || a.name.localeCompare(b.name));
 }
 
-const authors = computed(() => buildAuthorStats(historyCommits.value, hotFiles.value));
-const totalCommits = computed(() => historyCommits.value.length);
+async function rebuildAuthorStats() {
+  const token = ++statsBuildToken;
+  const commits = historyCommits.value;
+  totalCommitCount.value = commits.length;
+  recentWeekStarts.value = weekStartsForCommits(commits);
+
+  if (commits.length === 0) {
+    authors.value = [];
+    statsLoading.value = false;
+    return;
+  }
+
+  statsLoading.value = true;
+  await yieldToUi();
+  const rows = await buildAuthorStats(commits, hotFiles.value, token);
+  if (token !== statsBuildToken || rows === null) return;
+  authors.value = rows;
+  statsLoading.value = false;
+}
+
+const totalCommits = computed(() => totalCommitCount.value);
 const highRiskAuthors = computed(() => authors.value.filter((author) => author.riskLevel === "high").length);
 const mediumRiskAuthors = computed(() => authors.value.filter((author) => author.riskLevel === "medium").length);
 const afterHoursCommitCount = computed(() => authors.value.reduce((sum, author) => sum + author.afterHoursCommits, 0));
 const weekendCommitCount = computed(() => authors.value.reduce((sum, author) => sum + author.weekendCommits, 0));
-const aggregateHours = computed(() => {
-  const hours = Array.from({ length: 24 }, () => 0);
-  for (const author of authors.value) {
-    author.hourly.forEach((count, index) => {
-      hours[index] += count;
-    });
-  }
-  return hours;
-});
 const aggregateWeeks = computed(() => {
   const weeks = Array.from({ length: RECENT_WEEK_COUNT }, () => 0);
   for (const author of authors.value) {
@@ -545,34 +582,29 @@ const aggregateAfterHoursWeeks = computed(() => {
   }
   return weeks;
 });
-const aggregateWeekdays = computed(() => {
+const aggregateAfterHoursHours = computed(() => {
+  const hours = Array.from({ length: 24 }, () => 0);
+  for (const author of authors.value) {
+    author.afterHoursHourly.forEach((count, index) => {
+      hours[index] += count;
+    });
+  }
+  return hours;
+});
+const aggregateAfterHoursWeekdays = computed(() => {
   const days = Array.from({ length: 7 }, () => 0);
   for (const author of authors.value) {
-    author.weekdays.forEach((count, index) => {
+    author.afterHoursWeekdays.forEach((count, index) => {
       days[index] += count;
     });
   }
   return days;
 });
-const recentWeekStarts = computed(() => {
-  if (historyCommits.value.length === 0) {
-    const start = weekStart(new Date());
-    return Array.from({ length: RECENT_WEEK_COUNT }, (_, index) =>
-      shiftDays(start, (index - RECENT_WEEK_COUNT + 1) * 7),
-    );
-  }
-
-  const newest = Math.max(...historyCommits.value.map((commit) => toMillis(commit.timestamp)));
-  const start = weekStart(new Date(newest));
-  return Array.from({ length: RECENT_WEEK_COUNT }, (_, index) =>
-    shiftDays(start, (index - RECENT_WEEK_COUNT + 1) * 7),
-  );
-});
-const maxHourCount = computed(() => Math.max(1, ...aggregateHours.value));
 const maxWeekCount = computed(() => Math.max(1, ...aggregateWeeks.value));
-const maxWeekdayCount = computed(() => Math.max(1, ...aggregateWeekdays.value));
+const maxAfterHoursCount = computed(() => Math.max(1, ...aggregateAfterHoursHours.value));
+const maxAfterHoursWeekdayCount = computed(() => Math.max(1, ...aggregateAfterHoursWeekdays.value));
 const isUsingInitialHistory = computed(() =>
-  historyLoading.value && historyCommits.value.length > 0 && !historyCache.has(props.repoPath),
+  (historyLoading.value || statsLoading.value) && historyCommits.value.length > 0 && !historyCache.has(props.repoPath),
 );
 
 function barHeight(value: number, max: number, min = 6): string {
@@ -626,7 +658,9 @@ watch(
 onUnmounted(() => {
   historyLoadToken += 1;
   hotFilesLoadToken += 1;
+  statsBuildToken += 1;
   historyCommits.value = [];
+  authors.value = [];
   hotFiles.value = [];
 });
 </script>
@@ -641,7 +675,7 @@ onUnmounted(() => {
           <p class="hero-copy">Repository-wide rhythm, after-hours load, and ownership pressure.</p>
         </div>
         <div class="hero-actions">
-          <div v-if="historyLoading || hotFilesLoading" class="loading-pill">
+          <div v-if="historyLoading || hotFilesLoading || statsLoading" class="loading-pill">
             <img :src="logoCrocLoading" alt="" />
             <span>{{ isUsingInitialHistory ? "Refining" : "Loading" }}</span>
           </div>
@@ -692,31 +726,37 @@ onUnmounted(() => {
       <section class="analytics-section">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Repository Clock</p>
-            <h3>Commit Time Distribution</h3>
+            <p class="eyebrow">Focus Load</p>
+            <h3>Team After-Hours Pattern</h3>
           </div>
           <span class="section-note">{{ percent(weekendCommitCount, totalCommits) }}% weekend commits</span>
         </div>
         <p class="chart-explain">
-          Hour bars show when commits usually land. The weekday chart helps separate normal team rhythm from weekend concentration.
+          This only shows work outside normal hours, so it stays focused on team fatigue instead of repeating Productivity Arena.
         </p>
-        <div class="clock-grid">
-          <div class="hour-chart" aria-label="Commit hours">
-            <div v-for="(count, hour) in aggregateHours" :key="hour" class="hour-column">
-              <div class="hour-bar-wrap">
-                <div class="hour-bar" :style="{ height: barHeight(count, maxHourCount) }" />
+        <div class="stress-grid">
+          <div>
+            <h4>Late work by hour</h4>
+            <div class="team-hour-chart" aria-label="After-hours commits by hour">
+              <div v-for="hour in AFTER_HOURS_HOURS" :key="hour" class="team-hour-column">
+                <div class="team-hour-bar-wrap">
+                  <div class="team-hour-bar" :style="{ height: barHeight(aggregateAfterHoursHours[hour], maxAfterHoursCount, 5) }" />
+                </div>
+                <span>{{ hour }}</span>
               </div>
-              <span>{{ hour }}</span>
             </div>
           </div>
 
-          <div class="weekday-chart" aria-label="Commit weekdays">
-            <div v-for="dayIndex in WEEKDAY_ORDER" :key="dayIndex" class="weekday-row">
-              <span>{{ DAY_LABELS[dayIndex] }}</span>
-              <div class="weekday-track">
-                <div class="weekday-fill" :style="{ width: barWidth(aggregateWeekdays[dayIndex], maxWeekdayCount) }" />
+          <div>
+            <h4>Late work by day</h4>
+            <div class="late-day-chart" aria-label="After-hours commits by weekday">
+              <div v-for="dayIndex in WEEKDAY_ORDER" :key="dayIndex" class="late-day-row">
+                <span>{{ DAY_LABELS[dayIndex] }}</span>
+                <div class="late-day-track">
+                  <div class="late-day-fill" :style="{ width: barWidth(aggregateAfterHoursWeekdays[dayIndex], maxAfterHoursWeekdayCount) }" />
+                </div>
+                <strong>{{ aggregateAfterHoursWeekdays[dayIndex] }}</strong>
               </div>
-              <strong>{{ aggregateWeekdays[dayIndex] }}</strong>
             </div>
           </div>
         </div>
@@ -731,7 +771,7 @@ onUnmounted(() => {
           <span class="section-note">last {{ RECENT_WEEK_COUNT }} weeks</span>
         </div>
         <p class="chart-explain">
-          Each row is a Monday-Sunday week. The blue bar is total commits; the red overlay is after-hours commits in that week.
+          Each row is a Monday-Sunday week, the cool line is total work, the warm line is after-hours load.
         </p>
         <div class="week-bars">
           <div v-for="(count, index) in aggregateWeeks" :key="index" class="week-row">
@@ -786,18 +826,8 @@ onUnmounted(() => {
             <div class="signal-grid">
               <span><Clock3 class="h-3 w-3" /> {{ percent(author.afterHoursCommits, author.commits) }}% after hours</span>
               <span><Flame class="h-3 w-3" /> {{ author.lateNightWeekStreak }} late-week streak</span>
-              <span><Activity class="h-3 w-3" /> {{ author.currentWeekCommits }} this week</span>
               <span><Zap class="h-3 w-3" /> {{ author.hotFileCount }} hot files</span>
               <span><Clock3 class="h-3 w-3" /> Peak {{ peakAfterHoursLabel(author) }}</span>
-              <span><Activity class="h-3 w-3" /> {{ author.previousWeekCommits }} previous week</span>
-            </div>
-
-            <div class="mini-bars" title="Recent weekly commits">
-              <span
-                v-for="(count, index) in author.recentWeeks"
-                :key="`${author.key}-week-${index}`"
-                :style="{ height: barHeight(count, Math.max(1, ...author.recentWeeks), 8) }"
-              />
             </div>
 
             <div class="focus-debt" title="Recent after-hours commits">
@@ -810,8 +840,8 @@ onUnmounted(() => {
 
             <div class="author-detail-row">
               <div class="author-insight">
-                <strong>After-hours window</strong>
-                <span>{{ author.afterHoursCommits }} commits · {{ author.saturdayNightCommits }} Saturday night · {{ peakAfterHoursLabel(author) }}</span>
+                <strong>Most common off-hour work time</strong>
+                <span>{{ author.afterHoursCommits }} after-hours commits, most often {{ peakAfterHoursLabel(author) }}, {{ author.saturdayNightCommits }} on Saturday night</span>
               </div>
 
               <div class="after-hour-bars" title="After-hours distribution">
@@ -822,14 +852,6 @@ onUnmounted(() => {
                 >
                   <small>{{ hour }}</small>
                 </span>
-              </div>
-
-              <div class="daily-activity" title="Last 30 days">
-                <span
-                  v-for="(count, index) in author.recentDays"
-                  :key="`${author.key}-day-${index}`"
-                  :style="{ opacity: count > 0 ? 0.42 + Math.min(0.58, count / author.maxRecentDayCount) : 0.16 }"
-                />
               </div>
             </div>
           </article>
@@ -1036,23 +1058,29 @@ h3 {
   margin: 8px 0 0;
 }
 
-.clock-grid {
+.stress-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(180px, 0.55fr);
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.7fr);
   gap: 18px;
   align-items: stretch;
 }
 
-.hour-chart {
-  height: 176px;
-  display: grid;
-  grid-template-columns: repeat(24, minmax(10px, 1fr));
-  gap: 5px;
-  align-items: end;
-  padding-top: 14px;
+.stress-grid h4 {
+  margin: 12px 0 8px;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 750;
 }
 
-.hour-column {
+.team-hour-chart {
+  height: 118px;
+  display: grid;
+  grid-template-columns: repeat(11, minmax(14px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.team-hour-column {
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -1062,27 +1090,27 @@ h3 {
   color: var(--muted-foreground);
 }
 
-.hour-bar-wrap {
+.team-hour-bar-wrap {
   flex: 1;
   width: 100%;
   display: flex;
   align-items: end;
 }
 
-.hour-bar {
+.team-hour-bar {
   width: 100%;
-  border-radius: 4px 4px 0 0;
-  background: linear-gradient(180deg, #38bdf8, #2563eb);
+  border-radius: 5px 5px 0 0;
+  background: linear-gradient(180deg, #fbbf24 0%, #fb7185 52%, #be123c 100%);
+  box-shadow: 0 0 12px rgba(251, 113, 133, 0.18);
 }
 
-.weekday-chart {
+.late-day-chart {
   display: grid;
   align-content: center;
   gap: 8px;
-  padding-top: 14px;
 }
 
-.weekday-row {
+.late-day-row {
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr) 36px;
   align-items: center;
@@ -1091,17 +1119,17 @@ h3 {
   font-size: 10px;
 }
 
-.weekday-track {
+.late-day-track {
   height: 8px;
   border-radius: 999px;
-  background: var(--secondary);
+  background: color-mix(in srgb, var(--secondary) 82%, #0f172a);
   overflow: hidden;
 }
 
-.weekday-fill {
+.late-day-fill {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #14b8a6, #22c55e);
+  background: linear-gradient(90deg, #f59e0b 0%, #f43f5e 65%, #a855f7 100%);
 }
 
 .week-bars {
@@ -1138,9 +1166,9 @@ h3 {
 }
 
 .week-track {
-  height: 8px;
+  height: 9px;
   border-radius: 999px;
-  background: var(--secondary);
+  background: color-mix(in srgb, var(--secondary) 84%, #111827);
   overflow: hidden;
   position: relative;
 }
@@ -1155,13 +1183,15 @@ h3 {
 .week-fill {
   top: 0;
   height: 100%;
-  background: linear-gradient(90deg, #38bdf8, #2563eb);
+  background: linear-gradient(90deg, #67e8f9 0%, #38bdf8 38%, #6366f1 100%);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.18);
 }
 
 .week-after-fill {
   bottom: 0;
   height: 4px;
-  background: linear-gradient(90deg, #f97316, #ef4444);
+  background: linear-gradient(90deg, #fbbf24 0%, #fb7185 54%, #be123c 100%);
+  box-shadow: 0 0 10px rgba(251, 113, 133, 0.2);
 }
 
 .author-list,
@@ -1173,7 +1203,7 @@ h3 {
 
 .author-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.2fr) 90px minmax(260px, 1.3fr) 130px 116px;
+  grid-template-columns: minmax(190px, 1.15fr) 90px minmax(260px, 1.35fr) 124px;
   align-items: center;
   gap: 12px;
   border: 1px solid var(--border);
@@ -1251,19 +1281,6 @@ h3 {
   min-width: 0;
 }
 
-.mini-bars {
-  height: 38px;
-  display: flex;
-  align-items: end;
-  gap: 3px;
-}
-
-.mini-bars span {
-  width: 7px;
-  border-radius: 3px 3px 0 0;
-  background: color-mix(in srgb, var(--primary) 72%, var(--foreground));
-}
-
 .focus-debt {
   display: grid;
   grid-template-columns: repeat(12, 1fr);
@@ -1303,7 +1320,7 @@ h3 {
   width: 14px;
   min-height: 5px;
   border-radius: 4px 4px 0 0;
-  background: linear-gradient(180deg, #f97316, #ef4444);
+  background: linear-gradient(180deg, #fbbf24, #fb7185 62%, #be123c);
   position: relative;
 }
 
@@ -1314,19 +1331,6 @@ h3 {
   transform: translateX(-50%);
   color: var(--muted-foreground);
   font-size: 8px;
-}
-
-.daily-activity {
-  display: grid;
-  grid-template-columns: repeat(30, 1fr);
-  gap: 3px;
-  align-items: end;
-}
-
-.daily-activity span {
-  height: 16px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--primary) 75%, var(--foreground));
 }
 
 .hot-file-row {
@@ -1365,7 +1369,7 @@ h3 {
   }
 
   .explain-grid,
-  .clock-grid,
+  .stress-grid,
   .author-detail-row {
     grid-template-columns: minmax(0, 1fr);
   }
