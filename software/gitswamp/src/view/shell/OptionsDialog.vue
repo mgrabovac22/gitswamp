@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -23,11 +23,19 @@ import {
   getStoredSmartGitignoreWizardEnabled,
   storeSmartGitignoreWizardEnabled,
 } from "@/shared/config/gitignoreWizardPreferences";
+import {
+  BACKGROUND_MAINTENANCE_EVENT,
+  DEFAULT_BACKGROUND_MAINTENANCE_SETTINGS,
+  getStoredBackgroundMaintenanceSettings,
+  storeBackgroundMaintenanceSettings,
+  type BackgroundMaintenanceSettings,
+} from "@/shared/config/backgroundMaintenancePreferences";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
 import AppButton from "@/shared/ui/AppButton.vue";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import {
   Check,
   ExternalLink,
@@ -56,6 +64,7 @@ type OrganisationProvider = "github" | "gitlab" | "bitbucket" | "azure";
 type OrganisationSearchProvider = OrganisationProvider | "all";
 type OrganisationVisibilityFilter = "all" | "private" | "public";
 type OrganisationSortMode = "stars-desc" | "name-asc";
+type BackgroundMaintenancePreset = "quiet" | "guard" | "speed" | "off";
 
 interface GithubRepo {
   full_name: string;
@@ -63,6 +72,10 @@ interface GithubRepo {
   description: string;
   is_private: boolean;
   stars: number;
+  owner_login?: string;
+  owner_type?: string;
+  viewer_login?: string;
+  is_public_search_result?: boolean;
 }
 
 interface GitlabRepo {
@@ -105,6 +118,10 @@ interface OrganisationRepoCandidate {
   id: string;
   provider: OrganisationProvider;
   fullName: string;
+  ownerName: string;
+  repoName: string;
+  ownerType: "organization" | "user" | "project";
+  accessSource: "connected" | "public";
   cloneUrlHttps: string;
   cloneUrlSsh: string;
   webUrl: string;
@@ -162,6 +179,17 @@ const disableGraphAnimations = ref(false);
 const smoothGraphScroll = ref(false);
 const autoFetchEnabled = ref(true);
 const autoFetchIntervalMinutes = ref(3);
+const backgroundHealthRefreshEnabled = ref(false);
+const backgroundRemoteHygieneEnabled = ref(false);
+const backgroundFocusSyncEnabled = ref(false);
+const backgroundIdleOnlyEnabled = ref(false);
+const backgroundStaleWorkReminderEnabled = ref(false);
+const backgroundBehindBranchReminderEnabled = ref(false);
+const backgroundLargeChangeReminderEnabled = ref(false);
+const backgroundLargeChangeThreshold = ref(40);
+const backgroundConflictReminderEnabled = ref(false);
+const backgroundCommitDetailsPreloadEnabled = ref(false);
+const backgroundMaintenanceIntervalMinutes = ref(10);
 
 const gitPathBusy = ref(false);
 const installGitBusy = ref(false);
@@ -180,6 +208,10 @@ const organisationError = ref<string | null>(null);
 const organisationCloneBusy = ref(false);
 const organisationCloneDone = ref(0);
 const organisationCloneFailed = ref(0);
+const organisationAutoSelectConnected = ref(false);
+const organisationClearSelectionAfterClone = ref(false);
+const organisationRememberDestination = ref(false);
+const confirmExternalRepositoryLinks = ref(false);
 
 const organisationProfiles = ref<OrganisationProfile[]>([]);
 const organisationFormProvider = ref<OrganisationProvider>("github");
@@ -188,6 +220,11 @@ const organisationFormTeam = ref("");
 const organisationFormRepoFilter = ref("");
 
 const OPTIONS_ORGANISATION_PROFILES_KEY = "gitswamp-organisation-profiles";
+const OPTIONS_ORGANISATION_AUTO_SELECT_CONNECTED_KEY = "gitswamp-organisation-auto-select-connected";
+const OPTIONS_ORGANISATION_CLEAR_AFTER_CLONE_KEY = "gitswamp-organisation-clear-selection-after-clone";
+const OPTIONS_ORGANISATION_REMEMBER_DESTINATION_KEY = "gitswamp-organisation-remember-destination";
+const OPTIONS_ORGANISATION_DESTINATION_KEY = "gitswamp-organisation-destination";
+const OPTIONS_CONFIRM_EXTERNAL_REPOSITORY_LINKS_KEY = "gitswamp-confirm-external-repository-links";
 const OPTIONS_SMOOTH_GRAPH_SCROLL_KEY = "gitswamp-graph-smooth-scroll";
 const OPTIONS_AUTO_FETCH_ENABLED_KEY = "gitswamp-auto-fetch-enabled";
 const OPTIONS_AUTO_FETCH_INTERVAL_KEY = "gitswamp-auto-fetch-interval-minutes";
@@ -256,9 +293,50 @@ const commitFontLabel = computed(() => {
 
 const generalFontLabel = computed(() => `${generalFontSizePx.value}px`);
 const selectedOrganisationCount = computed(() => organisationSelectedRepoIds.value.length);
+const backgroundMaintenanceEnabledCount = computed(() => [
+  backgroundHealthRefreshEnabled.value,
+  backgroundRemoteHygieneEnabled.value,
+  backgroundFocusSyncEnabled.value,
+  backgroundStaleWorkReminderEnabled.value,
+  backgroundBehindBranchReminderEnabled.value,
+  backgroundLargeChangeReminderEnabled.value,
+  backgroundConflictReminderEnabled.value,
+  backgroundCommitDetailsPreloadEnabled.value,
+].filter(Boolean).length);
+
+function organisationOwnerFromFullName(fullName: string): string {
+  return fullName.split(/[\\/]/).filter(Boolean)[0] || fullName;
+}
+
+function organisationRepoNameFromFullName(fullName: string): string {
+  const parts = fullName.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || fullName;
+}
+
+function normaliseOrganisationOwnerType(value: string | undefined, fallback: OrganisationRepoCandidate["ownerType"] = "organization"): OrganisationRepoCandidate["ownerType"] {
+  const normalized = (value || "").toLowerCase();
+  if (normalized === "user") return "user";
+  if (normalized === "project") return "project";
+  return fallback;
+}
+
+function organisationSearchTerms(value = organisationQuery.value): string[] {
+  return value
+    .toLowerCase()
+    .split(/[\s,;/]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function organisationRepoMatchesTerms(repo: OrganisationRepoCandidate, terms: string[]): boolean {
+  if (terms.length === 0) return true;
+  const haystack = `${repo.fullName} ${repo.ownerName} ${repo.repoName} ${repo.description} ${repo.provider}`.toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
 
 const filteredOrganisationRepos = computed(() => {
-  const query = organisationLocalFilter.value.trim().toLowerCase();
+  const localTerms = organisationSearchTerms(organisationLocalFilter.value);
+  const searchTerms = organisationSearchTerms();
 
   let repos = organisationRepos.value.filter((repo) => {
     if (organisationVisibilityFilter.value === "private") {
@@ -272,11 +350,8 @@ const filteredOrganisationRepos = computed(() => {
     return true;
   });
 
-  if (query) {
-    repos = repos.filter((repo) => {
-      const haystack = `${repo.fullName} ${repo.description} ${repo.provider}`.toLowerCase();
-      return haystack.includes(query);
-    });
+  if (localTerms.length > 0) {
+    repos = repos.filter((repo) => organisationRepoMatchesTerms(repo, localTerms));
   }
 
   const sorted = [...repos];
@@ -284,6 +359,12 @@ const filteredOrganisationRepos = computed(() => {
     sorted.sort((a, b) => a.fullName.localeCompare(b.fullName));
   } else {
     sorted.sort((a, b) => {
+      const leftRank = getOrganisationRepoSortRank(a, searchTerms);
+      const rightRank = getOrganisationRepoSortRank(b, searchTerms);
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+
       if (b.stars !== a.stars) {
         return b.stars - a.stars;
       }
@@ -293,6 +374,45 @@ const filteredOrganisationRepos = computed(() => {
 
   return sorted;
 });
+
+const organisationResultGroups = computed<OrganisationRepoGroup[]>(() => {
+  const groups = new Map<string, OrganisationRepoGroup>();
+  for (const repo of filteredOrganisationRepos.value) {
+    const key = `${repo.provider}:${repo.ownerName.toLowerCase()}`;
+    const existing = groups.get(key) || {
+      key,
+      provider: repo.provider,
+      ownerName: repo.ownerName,
+      ownerType: repo.ownerType,
+      connectedCount: 0,
+      publicCount: 0,
+      repos: [],
+    };
+    if (repo.accessSource === "connected") {
+      existing.connectedCount += 1;
+    } else {
+      existing.publicCount += 1;
+    }
+    existing.repos.push(repo);
+    groups.set(key, existing);
+  }
+
+  return Array.from(groups.values()).sort((left, right) => {
+    const leftConnected = left.connectedCount > 0 ? 0 : 1;
+    const rightConnected = right.connectedCount > 0 ? 0 : 1;
+    if (leftConnected !== rightConnected) return leftConnected - rightConnected;
+
+    const leftOrg = left.ownerType === "organization" || left.ownerType === "project" ? 0 : 1;
+    const rightOrg = right.ownerType === "organization" || right.ownerType === "project" ? 0 : 1;
+    if (leftOrg !== rightOrg) return leftOrg - rightOrg;
+
+    return left.ownerName.localeCompare(right.ownerName);
+  });
+});
+
+const organisationHasSearchContext = computed(() =>
+  organisationQuery.value.trim().length > 0 || organisationLocalFilter.value.trim().length > 0,
+);
 
 const allVisibleOrganisationReposSelected = computed(() => {
   if (filteredOrganisationRepos.value.length === 0) {
@@ -327,6 +447,117 @@ function normalizeAutoFetchIntervalMinutes(value: string | null): number {
     return 3;
   }
   return Math.max(1, Math.min(60, parsed));
+}
+
+function normalizeBackgroundMaintenanceIntervalMinutes(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 10;
+  }
+  return Math.max(2, Math.min(60, Math.round(value)));
+}
+
+function normalizeBackgroundLargeChangeThreshold(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 40;
+  }
+  return Math.max(8, Math.min(500, Math.round(value)));
+}
+
+function setBackgroundMaintenanceInterval(event: Event): void {
+  backgroundMaintenanceIntervalMinutes.value = normalizeBackgroundMaintenanceIntervalMinutes(
+    Number((event.target as HTMLInputElement).value),
+  );
+}
+
+function setBackgroundLargeChangeThreshold(event: Event): void {
+  backgroundLargeChangeThreshold.value = normalizeBackgroundLargeChangeThreshold(
+    Number((event.target as HTMLInputElement).value),
+  );
+}
+
+function applyBackgroundMaintenanceSettingsToRefs(settings: BackgroundMaintenanceSettings): void {
+  backgroundHealthRefreshEnabled.value = settings.healthRefreshEnabled;
+  backgroundRemoteHygieneEnabled.value = settings.remoteHygieneEnabled;
+  backgroundFocusSyncEnabled.value = settings.focusSyncEnabled;
+  backgroundIdleOnlyEnabled.value = settings.idleOnlyEnabled;
+  backgroundStaleWorkReminderEnabled.value = settings.staleWorkReminderEnabled;
+  backgroundBehindBranchReminderEnabled.value = settings.behindBranchReminderEnabled;
+  backgroundLargeChangeReminderEnabled.value = settings.largeChangeReminderEnabled;
+  backgroundLargeChangeThreshold.value = settings.largeChangeThreshold;
+  backgroundConflictReminderEnabled.value = settings.conflictReminderEnabled;
+  backgroundCommitDetailsPreloadEnabled.value = settings.commitDetailsPreloadEnabled;
+  backgroundMaintenanceIntervalMinutes.value = settings.intervalMinutes;
+}
+
+function applyBackgroundMaintenancePreset(preset: BackgroundMaintenancePreset): void {
+  const currentInterval = normalizeBackgroundMaintenanceIntervalMinutes(backgroundMaintenanceIntervalMinutes.value);
+  const currentThreshold = normalizeBackgroundLargeChangeThreshold(backgroundLargeChangeThreshold.value);
+  const base: BackgroundMaintenanceSettings = {
+    ...DEFAULT_BACKGROUND_MAINTENANCE_SETTINGS,
+    intervalMinutes: currentInterval,
+    largeChangeThreshold: currentThreshold,
+  };
+
+  const presets: Record<BackgroundMaintenancePreset, BackgroundMaintenanceSettings> = {
+    quiet: {
+      ...base,
+      healthRefreshEnabled: true,
+      focusSyncEnabled: true,
+      idleOnlyEnabled: true,
+      staleWorkReminderEnabled: true,
+      conflictReminderEnabled: true,
+      intervalMinutes: Math.max(15, currentInterval),
+      largeChangeThreshold: Math.max(60, currentThreshold),
+    },
+    guard: {
+      ...base,
+      healthRefreshEnabled: true,
+      remoteHygieneEnabled: true,
+      focusSyncEnabled: true,
+      idleOnlyEnabled: true,
+      staleWorkReminderEnabled: true,
+      behindBranchReminderEnabled: true,
+      largeChangeReminderEnabled: true,
+      conflictReminderEnabled: true,
+      intervalMinutes: Math.max(10, currentInterval),
+      largeChangeThreshold: currentThreshold,
+    },
+    speed: {
+      ...base,
+      healthRefreshEnabled: true,
+      focusSyncEnabled: true,
+      idleOnlyEnabled: true,
+      commitDetailsPreloadEnabled: true,
+      intervalMinutes: Math.max(15, currentInterval),
+    },
+    off: {
+      ...DEFAULT_BACKGROUND_MAINTENANCE_SETTINGS,
+      intervalMinutes: currentInterval,
+      largeChangeThreshold: currentThreshold,
+    },
+  };
+
+  applyBackgroundMaintenanceSettingsToRefs(presets[preset]);
+  const presetLabels: Record<BackgroundMaintenancePreset, string> = {
+    quiet: "Quiet",
+    guard: "Guard",
+    speed: "Speed",
+    off: "Off",
+  };
+  toast.success(`Background preset applied: ${presetLabels[preset]}`);
+}
+
+function handleBackgroundMaintenanceSettingsEvent(event: Event): void {
+  if (event instanceof CustomEvent) {
+    applyBackgroundMaintenanceSettingsToRefs(event.detail as BackgroundMaintenanceSettings);
+    return;
+  }
+
+  applyBackgroundMaintenanceSettingsToRefs(getStoredBackgroundMaintenanceSettings());
+}
+
+function readDefaultOffFlag(storageKey: string): boolean {
+  return localStorage.getItem(storageKey) === "true";
 }
 
 function emitAutoFetchSettingsChanged() {
@@ -404,6 +635,24 @@ function addOrganisationProfile(): void {
   toast.success("Organisation profile saved.");
 }
 
+function saveCurrentOrganisationProfile(): void {
+  const terms = organisationSearchTerms();
+  const firstGroup = organisationResultGroups.value[0];
+  const provider = firstGroup?.provider || (organisationProvider.value === "all" ? "github" : organisationProvider.value);
+  const organisation = (firstGroup?.ownerName || terms[0] || organisationFormName.value).trim();
+
+  if (!organisation) {
+    toast.warning("Search an organisation or enter its name before saving a profile.");
+    return;
+  }
+
+  organisationFormProvider.value = provider;
+  organisationFormName.value = organisation;
+  organisationFormTeam.value = firstGroup ? "" : terms.slice(1).join(" ");
+  organisationFormRepoFilter.value = organisationLocalFilter.value.trim();
+  addOrganisationProfile();
+}
+
 function removeOrganisationProfile(profileId: string): void {
   organisationProfiles.value = organisationProfiles.value.filter((item) => item.id !== profileId);
   persistOrganisationProfiles();
@@ -414,6 +663,29 @@ function useOrganisationProfile(profile: OrganisationProfile): void {
   organisationQuery.value = [profile.organisation, profile.team, profile.repositoryFilter].filter(Boolean).join(" ").trim();
   organisationLocalFilter.value = profile.repositoryFilter.trim();
   organisationVisibilityFilter.value = "all";
+  void searchOrganisationRepos();
+}
+
+function toggleOrganisationGroup(group: OrganisationRepoGroup): void {
+  const selected = new Set(organisationSelectedRepoIds.value);
+  const groupIds = group.repos.map((repo) => repo.id);
+  const allSelected = groupIds.every((repoId) => selected.has(repoId));
+
+  for (const repoId of groupIds) {
+    if (allSelected) {
+      selected.delete(repoId);
+    } else {
+      selected.add(repoId);
+    }
+  }
+
+  organisationSelectedRepoIds.value = Array.from(selected);
+}
+
+function isOrganisationGroupSelected(group: OrganisationRepoGroup): boolean {
+  if (group.repos.length === 0) return false;
+  const selected = new Set(organisationSelectedRepoIds.value);
+  return group.repos.every((repo) => selected.has(repo.id));
 }
 
 function getOrganisationProviderToken(provider: OrganisationProvider): string | null {
@@ -454,34 +726,49 @@ function dedupeOrganisationRepos(items: OrganisationRepoCandidate[]): Organisati
   return Array.from(merged.values());
 }
 
-function getOrganisationRepoSortRank(repo: OrganisationRepoCandidate, query: string): number {
-  const normalizedQuery = query.trim().toLowerCase();
+function getOrganisationRepoSortRank(repo: OrganisationRepoCandidate, terms: string[]): number {
   const normalizedFullName = repo.fullName.toLowerCase();
-  const [ownerPart = "", repoPart = ""] = repo.fullName.split("/");
-  const normalizedOwnerPart = ownerPart.toLowerCase();
-  const normalizedRepoPart = repoPart.toLowerCase();
 
-  if (!normalizedQuery) {
-    return 2;
+  if (terms.length === 0) {
+    return repo.accessSource === "connected" ? 2 : 5;
   }
 
-  if (normalizedOwnerPart.includes(normalizedQuery)) {
+  if (terms.some((term) => repo.ownerName.toLowerCase() === term)) {
     return 0;
   }
 
-  if (normalizedFullName.includes(normalizedQuery) || normalizedRepoPart.includes(normalizedQuery)) {
+  if (terms.every((term) => repo.ownerName.toLowerCase().includes(term))) {
     return 1;
   }
 
-  return 2;
+  if (terms.every((term) => repo.repoName.toLowerCase().includes(term) || normalizedFullName.includes(term))) {
+    return 2;
+  }
+
+  if (organisationRepoMatchesTerms(repo, terms)) {
+    return 3;
+  }
+
+  return 6;
 }
 
 function sortOrganisationRepos(items: OrganisationRepoCandidate[], query: string): OrganisationRepoCandidate[] {
+  const terms = organisationSearchTerms(query);
   return [...items].sort((left, right) => {
-    const leftRank = getOrganisationRepoSortRank(left, query);
-    const rightRank = getOrganisationRepoSortRank(right, query);
+    const leftRank = getOrganisationRepoSortRank(left, terms);
+    const rightRank = getOrganisationRepoSortRank(right, terms);
     if (leftRank !== rightRank) {
       return leftRank - rightRank;
+    }
+
+    if (left.accessSource !== right.accessSource) {
+      return left.accessSource === "connected" ? -1 : 1;
+    }
+
+    const leftOrgRank = left.ownerType === "organization" || left.ownerType === "project" ? 0 : 1;
+    const rightOrgRank = right.ownerType === "organization" || right.ownerType === "project" ? 0 : 1;
+    if (leftOrgRank !== rightOrgRank) {
+      return leftOrgRank - rightOrgRank;
     }
 
     if (left.provider !== right.provider) {
@@ -501,6 +788,10 @@ function mappedOrganisationReposFromGithub(items: GithubRepo[]): OrganisationRep
     id: `github:${repo.full_name}`,
     provider: "github",
     fullName: repo.full_name,
+    ownerName: repo.owner_login || organisationOwnerFromFullName(repo.full_name),
+    repoName: organisationRepoNameFromFullName(repo.full_name),
+    ownerType: normaliseOrganisationOwnerType(repo.owner_type),
+    accessSource: repo.is_public_search_result ? "public" : "connected",
     cloneUrlHttps: repo.clone_url,
     cloneUrlSsh: `git@github.com:${repo.full_name}.git`,
     webUrl: `https://github.com/${repo.full_name}`,
@@ -515,6 +806,10 @@ function mappedOrganisationReposFromGitlab(items: GitlabRepo[]): OrganisationRep
     id: `gitlab:${repo.full_name}`,
     provider: "gitlab",
     fullName: repo.full_name,
+    ownerName: organisationOwnerFromFullName(repo.full_name),
+    repoName: organisationRepoNameFromFullName(repo.full_name),
+    ownerType: "organization",
+    accessSource: "connected",
     cloneUrlHttps: repo.clone_url_https,
     cloneUrlSsh: repo.clone_url_ssh,
     webUrl: `https://gitlab.com/${repo.path_with_namespace}`,
@@ -529,6 +824,10 @@ function mappedOrganisationReposFromBitbucket(items: BitbucketRepo[]): Organisat
     id: `bitbucket:${repo.full_name}`,
     provider: "bitbucket",
     fullName: repo.full_name,
+    ownerName: organisationOwnerFromFullName(repo.full_name),
+    repoName: organisationRepoNameFromFullName(repo.full_name),
+    ownerType: "organization",
+    accessSource: "connected",
     cloneUrlHttps: repo.clone_url_https,
     cloneUrlSsh: repo.clone_url_ssh,
     webUrl: `https://bitbucket.org/${repo.full_name}`,
@@ -543,6 +842,10 @@ function mappedOrganisationReposFromAzure(items: AzureRepo[]): OrganisationRepoC
     id: `azure:${repo.full_name}`,
     provider: "azure",
     fullName: repo.full_name,
+    ownerName: organisationOwnerFromFullName(repo.full_name),
+    repoName: organisationRepoNameFromFullName(repo.full_name),
+    ownerType: "project",
+    accessSource: "connected",
     cloneUrlHttps: repo.clone_url_https,
     cloneUrlSsh: repo.clone_url_ssh,
     webUrl: stripGitSuffix(repo.clone_url_https),
@@ -644,7 +947,13 @@ async function searchOrganisationRepos(): Promise<void> {
       ? await searchAllOrganisationProviders(query)
       : await searchSingleOrganisationProvider(provider, query);
 
-    organisationRepos.value = sortOrganisationRepos(repos, query).slice(0, 240);
+    const sortedRepos = sortOrganisationRepos(repos, query).slice(0, 240);
+    organisationRepos.value = sortedRepos;
+    if (organisationAutoSelectConnected.value) {
+      organisationSelectedRepoIds.value = sortedRepos
+        .filter((repo) => repo.accessSource === "connected")
+        .map((repo) => repo.id);
+    }
   } catch (e) {
     organisationError.value = String(e);
     organisationRepos.value = [];
@@ -706,6 +1015,10 @@ function openOrganisationRepository(repo: OrganisationRepoCandidate): void {
     return;
   }
 
+  if (confirmExternalRepositoryLinks.value && !window.confirm(`Open ${repo.fullName} in your browser?`)) {
+    return;
+  }
+
   openUrl(repo.webUrl).catch(() => {
     toast.error("Failed to open repository URL.");
   });
@@ -720,6 +1033,9 @@ async function browseOrganisationDestination(): Promise<void> {
 
   if (selected && !Array.isArray(selected)) {
     organisationDestination.value = selected;
+    if (organisationRememberDestination.value) {
+      localStorage.setItem(OPTIONS_ORGANISATION_DESTINATION_KEY, selected);
+    }
   }
 }
 
@@ -775,6 +1091,9 @@ async function cloneSelectedOrganisationRepos(): Promise<void> {
     await Promise.all(Array.from({ length: maxWorkers }, () => runWorker()));
     if (organisationCloneFailed.value === 0) {
       toast.success(`Batch clone finished. ${organisationCloneDone.value} repositories cloned.`);
+      if (organisationClearSelectionAfterClone.value) {
+        organisationSelectedRepoIds.value = [];
+      }
     } else {
       toast.warning(`Batch clone finished with failures (${organisationCloneFailed.value}/${organisationCloneDone.value}).`);
     }
@@ -1345,6 +1664,16 @@ function toggleThemeMode() {
   appPalette.value = nextMode === "dark" ? DEFAULT_DARK_PALETTE : DEFAULT_LIGHT_PALETTE;
 }
 
+interface OrganisationRepoGroup {
+  key: string;
+  provider: OrganisationProvider;
+  ownerName: string;
+  ownerType: "organization" | "user" | "project";
+  connectedCount: number;
+  publicCount: number;
+  repos: OrganisationRepoCandidate[];
+}
+
 function formatGithubKeyMeta(item: GithubSshKey): string {
   const timestamp = item.created_at ? new Date(item.created_at).toLocaleDateString() : "Unknown date";
   const fp = item.fingerprint || "No fingerprint";
@@ -1414,10 +1743,33 @@ onMounted(() => {
 
   autoFetchIntervalMinutes.value = normalizeAutoFetchIntervalMinutes(localStorage.getItem(OPTIONS_AUTO_FETCH_INTERVAL_KEY));
 
+  organisationAutoSelectConnected.value = readDefaultOffFlag(OPTIONS_ORGANISATION_AUTO_SELECT_CONNECTED_KEY);
+  organisationClearSelectionAfterClone.value = readDefaultOffFlag(OPTIONS_ORGANISATION_CLEAR_AFTER_CLONE_KEY);
+  organisationRememberDestination.value = readDefaultOffFlag(OPTIONS_ORGANISATION_REMEMBER_DESTINATION_KEY);
+  confirmExternalRepositoryLinks.value = readDefaultOffFlag(OPTIONS_CONFIRM_EXTERNAL_REPOSITORY_LINKS_KEY);
+  if (organisationRememberDestination.value) {
+    const savedOrganisationDestination = localStorage.getItem(OPTIONS_ORGANISATION_DESTINATION_KEY);
+    if (savedOrganisationDestination) {
+      organisationDestination.value = savedOrganisationDestination;
+    }
+  }
+
   organisationProfiles.value = readOrganisationProfilesFromStorage();
 
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
+  const backgroundMaintenanceSettings = getStoredBackgroundMaintenanceSettings();
+  backgroundHealthRefreshEnabled.value = backgroundMaintenanceSettings.healthRefreshEnabled;
+  backgroundRemoteHygieneEnabled.value = backgroundMaintenanceSettings.remoteHygieneEnabled;
+  backgroundFocusSyncEnabled.value = backgroundMaintenanceSettings.focusSyncEnabled;
+  backgroundIdleOnlyEnabled.value = backgroundMaintenanceSettings.idleOnlyEnabled;
+  backgroundStaleWorkReminderEnabled.value = backgroundMaintenanceSettings.staleWorkReminderEnabled;
+  backgroundBehindBranchReminderEnabled.value = backgroundMaintenanceSettings.behindBranchReminderEnabled;
+  backgroundLargeChangeReminderEnabled.value = backgroundMaintenanceSettings.largeChangeReminderEnabled;
+  backgroundLargeChangeThreshold.value = backgroundMaintenanceSettings.largeChangeThreshold;
+  backgroundConflictReminderEnabled.value = backgroundMaintenanceSettings.conflictReminderEnabled;
+  backgroundCommitDetailsPreloadEnabled.value = backgroundMaintenanceSettings.commitDetailsPreloadEnabled;
+  backgroundMaintenanceIntervalMinutes.value = backgroundMaintenanceSettings.intervalMinutes;
   applySettings();
 
   azureDomainInput.value = git.providerTokens.value["azure-domain"] || "";
@@ -1428,10 +1780,15 @@ onMounted(() => {
 
   void refreshGitPath(true);
   void refreshGithubUser();
+  globalThis.addEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsEvent);
 
   queueMicrotask(() => {
     isHydrating = false;
   });
+});
+
+onUnmounted(() => {
+  globalThis.removeEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsEvent);
 });
 
 watch([
@@ -1503,6 +1860,61 @@ watch(smartGitignoreWizardEnabled, (value) => {
   storeSmartGitignoreWizardEnabled(value);
 });
 
+watch([
+  backgroundHealthRefreshEnabled,
+  backgroundRemoteHygieneEnabled,
+  backgroundFocusSyncEnabled,
+  backgroundIdleOnlyEnabled,
+  backgroundStaleWorkReminderEnabled,
+  backgroundBehindBranchReminderEnabled,
+  backgroundLargeChangeReminderEnabled,
+  backgroundLargeChangeThreshold,
+  backgroundConflictReminderEnabled,
+  backgroundCommitDetailsPreloadEnabled,
+  backgroundMaintenanceIntervalMinutes,
+], () => {
+  if (isHydrating) {
+    return;
+  }
+
+  backgroundMaintenanceIntervalMinutes.value = normalizeBackgroundMaintenanceIntervalMinutes(backgroundMaintenanceIntervalMinutes.value);
+  backgroundLargeChangeThreshold.value = normalizeBackgroundLargeChangeThreshold(backgroundLargeChangeThreshold.value);
+  storeBackgroundMaintenanceSettings({
+    healthRefreshEnabled: backgroundHealthRefreshEnabled.value,
+    remoteHygieneEnabled: backgroundRemoteHygieneEnabled.value,
+    focusSyncEnabled: backgroundFocusSyncEnabled.value,
+    idleOnlyEnabled: backgroundIdleOnlyEnabled.value,
+    staleWorkReminderEnabled: backgroundStaleWorkReminderEnabled.value,
+    behindBranchReminderEnabled: backgroundBehindBranchReminderEnabled.value,
+    largeChangeReminderEnabled: backgroundLargeChangeReminderEnabled.value,
+    largeChangeThreshold: backgroundLargeChangeThreshold.value,
+    conflictReminderEnabled: backgroundConflictReminderEnabled.value,
+    commitDetailsPreloadEnabled: backgroundCommitDetailsPreloadEnabled.value,
+    intervalMinutes: backgroundMaintenanceIntervalMinutes.value,
+  });
+});
+
+watch([
+  organisationAutoSelectConnected,
+  organisationClearSelectionAfterClone,
+  organisationRememberDestination,
+  confirmExternalRepositoryLinks,
+  organisationDestination,
+], () => {
+  if (isHydrating) {
+    return;
+  }
+
+  localStorage.setItem(OPTIONS_ORGANISATION_AUTO_SELECT_CONNECTED_KEY, String(organisationAutoSelectConnected.value));
+  localStorage.setItem(OPTIONS_ORGANISATION_CLEAR_AFTER_CLONE_KEY, String(organisationClearSelectionAfterClone.value));
+  localStorage.setItem(OPTIONS_ORGANISATION_REMEMBER_DESTINATION_KEY, String(organisationRememberDestination.value));
+  localStorage.setItem(OPTIONS_CONFIRM_EXTERNAL_REPOSITORY_LINKS_KEY, String(confirmExternalRepositoryLinks.value));
+
+  if (organisationRememberDestination.value) {
+    localStorage.setItem(OPTIONS_ORGANISATION_DESTINATION_KEY, organisationDestination.value);
+  }
+});
+
 watch(
   () => [git.providerTokens.value["gitlab-self"], git.providerTokens.value["azure-domain"]],
   () => {
@@ -1552,9 +1964,7 @@ watch(activePlatform, () => {
           <Settings2 class="w-4 h-4 text-[var(--primary)]" />
           <h2 class="text-sm font-semibold text-[var(--foreground)]">Options</h2>
         </div>
-        <button @click="emit('close')" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors">
-          <X class="w-4 h-4 text-[var(--muted-foreground)]" />
-        </button>
+        <CloseIconButton title="Close options" @click="emit('close')" />
       </div>
 
       <div class="flex flex-1 min-h-0">
@@ -2247,6 +2657,53 @@ watch(activePlatform, () => {
                 </div>
               </div>
 
+              <div class="border-t border-[var(--border)] pt-4 space-y-3">
+                <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">
+                  <SlidersHorizontal class="w-3 h-3" />
+                  Optional Helpers
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Auto-select Connected Organisation Repos</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">After organisation search, select only repositories you already have access to. Default off.</p>
+                  </div>
+                  <button @click="organisationAutoSelectConnected = !organisationAutoSelectConnected" class="relative w-10 h-5 rounded-full transition-colors" :class="organisationAutoSelectConnected ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="organisationAutoSelectConnected ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Clear Organisation Selection After Clone</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">When a batch clone fully succeeds, clear the selected repository checkboxes. Default off.</p>
+                  </div>
+                  <button @click="organisationClearSelectionAfterClone = !organisationClearSelectionAfterClone" class="relative w-10 h-5 rounded-full transition-colors" :class="organisationClearSelectionAfterClone ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="organisationClearSelectionAfterClone ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Remember Organisation Clone Folder</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Keep the last batch-clone destination for the next app session. Default off.</p>
+                  </div>
+                  <button @click="organisationRememberDestination = !organisationRememberDestination" class="relative w-10 h-5 rounded-full transition-colors" :class="organisationRememberDestination ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="organisationRememberDestination ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Confirm External Repository Links</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Ask before opening organisation repository pages in the browser. Default off.</p>
+                  </div>
+                  <button @click="confirmExternalRepositoryLinks = !confirmExternalRepositoryLinks" class="relative w-10 h-5 rounded-full transition-colors" :class="confirmExternalRepositoryLinks ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="confirmExternalRepositoryLinks ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+              </div>
+
               <div class="border-t border-[var(--border)] pt-4">
                 <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider mb-3">
                   <Layout class="w-3 h-3" />
@@ -2292,8 +2749,169 @@ watch(activePlatform, () => {
                 </div>
               </div>
 
+              <div class="border-t border-[var(--border)] pt-4 space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">
+                      <PlugZap class="w-3 h-3" />
+                      Background Maintenance
+                    </div>
+                    <div class="text-[10px] text-[var(--muted-foreground)] mt-1">{{ backgroundMaintenanceEnabledCount }} active</div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] text-[var(--muted-foreground)]">Every</span>
+                    <input
+                      type="number"
+                      min="2"
+                      max="60"
+                      step="1"
+                      :value="backgroundMaintenanceIntervalMinutes"
+                      @input="setBackgroundMaintenanceInterval"
+                      class="w-16 px-2 py-1.5 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                    />
+                    <span class="text-[10px] text-[var(--muted-foreground)]">min</span>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-4 gap-2">
+                  <button
+                    type="button"
+                    class="px-2.5 py-1.5 text-[11px] rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--foreground)] hover:border-[var(--primary)]/35"
+                    title="Quiet preset: lightweight refresh and only calm safety reminders."
+                    @click="applyBackgroundMaintenancePreset('quiet')"
+                  >
+                    Quiet
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1.5 text-[11px] rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--foreground)] hover:border-[var(--primary)]/35"
+                    title="Guard preset: sync, branch, conflict and review-size reminders."
+                    @click="applyBackgroundMaintenancePreset('guard')"
+                  >
+                    Guard
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1.5 text-[11px] rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--foreground)] hover:border-[var(--primary)]/35"
+                    title="Speed preset: preloads small commit details cache without remote work."
+                    @click="applyBackgroundMaintenancePreset('speed')"
+                  >
+                    Speed
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1.5 text-[11px] rounded border border-[var(--border)] bg-[var(--background)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    title="Turn all background maintenance helpers off."
+                    @click="applyBackgroundMaintenancePreset('off')"
+                  >
+                    Off
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Silent Repository Health Refresh</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Quietly refresh status, branches, tags and stashes while the app is visible. Default off.</p>
+                  </div>
+                  <button @click="backgroundHealthRefreshEnabled = !backgroundHealthRefreshEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundHealthRefreshEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundHealthRefreshEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Remote Hygiene Pulse</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Run silent fetch/prune on a low-frequency pulse or when returning to the app. Default off.</p>
+                  </div>
+                  <button @click="backgroundRemoteHygieneEnabled = !backgroundRemoteHygieneEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundRemoteHygieneEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundRemoteHygieneEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Focus Sync Pulse</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">When you return to GitSwamp, quickly refresh status and lightweight repo metadata. Default off.</p>
+                  </div>
+                  <button @click="backgroundFocusSyncEnabled = !backgroundFocusSyncEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundFocusSyncEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundFocusSyncEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Idle-only Background Work</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Run maintenance only after a short quiet moment, so typing and scrolling stay untouched. Default off.</p>
+                  </div>
+                  <button @click="backgroundIdleOnlyEnabled = !backgroundIdleOnlyEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundIdleOnlyEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundIdleOnlyEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Stale Work Reminder</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">If the same uncommitted work sits for 30 minutes, show a quiet review/stash reminder. Default off.</p>
+                  </div>
+                  <button @click="backgroundStaleWorkReminderEnabled = !backgroundStaleWorkReminderEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundStaleWorkReminderEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundStaleWorkReminderEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Behind Branch Reminder</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">After background refresh, warn when the current branch is behind its upstream. Default off.</p>
+                  </div>
+                  <button @click="backgroundBehindBranchReminderEnabled = !backgroundBehindBranchReminderEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundBehindBranchReminderEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundBehindBranchReminderEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2 gap-4">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Large Worktree Reminder</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warn when changed files pass the threshold, before a commit becomes hard to review. Default off.</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="8"
+                      max="500"
+                      step="1"
+                      :value="backgroundLargeChangeThreshold"
+                      @input="setBackgroundLargeChangeThreshold"
+                      class="w-16 px-2 py-1.5 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                    />
+                    <button @click="backgroundLargeChangeReminderEnabled = !backgroundLargeChangeReminderEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundLargeChangeReminderEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                      <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundLargeChangeReminderEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                    </button>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Conflict Reminder Pulse</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">If background status sees unresolved conflicts, surface a small resolver reminder. Default off.</p>
+                  </div>
+                  <button @click="backgroundConflictReminderEnabled = !backgroundConflictReminderEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundConflictReminderEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundConflictReminderEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Commit Detail Preloader</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warm the existing tiny commit-file cache for the newest commits so first click feels instant. Default off.</p>
+                  </div>
+                  <button @click="backgroundCommitDetailsPreloadEnabled = !backgroundCommitDetailsPreloadEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundCommitDetailsPreloadEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundCommitDetailsPreloadEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+              </div>
+
               <div class="text-[10px] leading-relaxed text-[var(--muted-foreground)] border border-[var(--border)] rounded-lg p-3 bg-[var(--popover)]/40">
-                Advanced controls are limited to graph animation and scroll behavior to keep runtime overhead low.
+                Background maintenance is skipped while another Git operation is running, while the app is hidden, or when no repository is open.
               </div>
             </div>
           </template>
@@ -2301,9 +2919,19 @@ watch(activePlatform, () => {
           <template v-else-if="activeSection === 'organisations'">
             <div class="space-y-4">
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
-                <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">
-                  <Users class="w-3.5 h-3.5" />
-                  Organisation Repositories
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2 text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">
+                      <Users class="w-3.5 h-3.5" />
+                      Organisation Repositories
+                    </div>
+                    <p class="mt-1 text-[11px] text-[var(--muted-foreground)]">
+                      Search an organisation, team, project, or repo. Connected/private repositories are ranked first, public matches come after.
+                    </p>
+                  </div>
+                  <div class="text-[10px] text-[var(--muted-foreground)]">
+                    {{ selectedOrganisationCount }} selected, {{ organisationRepos.length }} loaded
+                  </div>
                 </div>
 
                 <div class="flex items-center gap-2 flex-wrap">
@@ -2320,12 +2948,13 @@ watch(activePlatform, () => {
                   </button>
                 </div>
 
-                <div class="flex items-center gap-2">
+                <div class="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
                   <input
                     v-model="organisationQuery"
                     type="text"
-                    placeholder="Search organisations, teams, projects or repositories"
+                    placeholder="Type org, team, project or repo, e.g. acme frontend api"
                     class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                    @keydown.enter.prevent="searchOrganisationRepos"
                   />
                   <AppButton
                     class="h-8 text-xs bg-[var(--primary)] text-white"
@@ -2335,9 +2964,16 @@ watch(activePlatform, () => {
                     <Loader2 v-if="organisationLoading" class="w-3.5 h-3.5 animate-spin" />
                     <template v-else>Search</template>
                   </AppButton>
+                  <AppButton
+                    class="h-8 text-xs bg-[var(--secondary)] text-[var(--foreground)]"
+                    :disabled="!organisationHasSearchContext"
+                    @click="saveCurrentOrganisationProfile"
+                  >
+                    Save search
+                  </AppButton>
                 </div>
 
-                <div class="grid grid-cols-4 gap-2">
+                <div class="grid grid-cols-[minmax(140px,0.7fr)_minmax(140px,0.7fr)_minmax(0,1fr)] gap-2">
                   <select
                     v-model="organisationCloneProtocol"
                     class="px-2.5 py-2 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
@@ -2353,17 +2989,10 @@ watch(activePlatform, () => {
                     <option value="private">Visibility: private</option>
                     <option value="public">Visibility: public</option>
                   </select>
-                  <select
-                    v-model="organisationSortMode"
-                    class="px-2.5 py-2 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
-                  >
-                    <option value="stars-desc">Sort: stars</option>
-                    <option value="name-asc">Sort: name</option>
-                  </select>
                   <input
                     v-model="organisationLocalFilter"
                     type="text"
-                    placeholder="Filter loaded repos"
+                    placeholder="Filter loaded results without searching again"
                     class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
                   />
                 </div>
@@ -2397,36 +3026,69 @@ watch(activePlatform, () => {
 
                 <div class="border border-[var(--border)] rounded p-2.5 max-h-[280px] overflow-y-auto bg-[var(--card)]/50">
                   <div v-if="!filteredOrganisationRepos.length && !organisationLoading" class="text-[11px] text-[var(--muted-foreground)] py-2">
-                    No repositories match the current query/filters.
+                    No repositories match the current search. Try the organisation name first, then narrow with the local filter.
                   </div>
-                  <div v-else class="space-y-1.5">
-                    <label
-                      v-for="repo in filteredOrganisationRepos"
-                      :key="repo.id"
-                      class="flex items-start gap-2 p-2 rounded border border-[var(--border)] hover:bg-[var(--secondary)]/40"
+                  <div v-else class="space-y-3">
+                    <div
+                      v-for="group in organisationResultGroups"
+                      :key="group.key"
+                      class="rounded border border-[var(--border)] bg-[var(--background)]/55"
                     >
-                      <input
-                        v-model="organisationSelectedRepoIds"
-                        type="checkbox"
-                        :value="repo.id"
-                        class="mt-0.5"
-                      />
-                      <div class="min-w-0 flex-1">
-                        <div class="text-[11px] font-medium text-[var(--foreground)] truncate">{{ repo.fullName }}</div>
-                        <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5 inline-flex items-center gap-1.5">
-                          <span class="px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[9px] uppercase tracking-wide">{{ repo.provider }}</span>
-                          <span class="px-1.5 py-0.5 rounded" :class="repo.isPrivate ? 'bg-[#ef4444]/15 text-[#ef4444]' : 'bg-[#10b981]/15 text-[#10b981]'">
-                            {{ repo.isPrivate ? 'private' : 'public' }}
-                          </span>
+                      <div class="flex items-center justify-between gap-2 border-b border-[var(--border)] px-2.5 py-2">
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-1.5">
+                            <span class="text-[11px] font-semibold text-[var(--foreground)] truncate">{{ group.ownerName }}</span>
+                            <span class="px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[9px] uppercase tracking-wide text-[var(--muted-foreground)]">{{ group.provider }}</span>
+                            <span class="px-1.5 py-0.5 rounded bg-[var(--primary)]/12 text-[9px] uppercase tracking-wide text-[var(--primary)]">{{ group.ownerType }}</span>
+                          </div>
+                          <div class="mt-0.5 text-[10px] text-[var(--muted-foreground)]">
+                            {{ group.connectedCount }} connected, {{ group.publicCount }} public, {{ group.repos.length }} repositories
+                          </div>
                         </div>
-                        <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ repo.description || 'No description' }}</div>
-                        <div class="flex items-center gap-1.5 mt-1">
-                          <button class="text-[10px] px-2 py-0.5 rounded bg-[var(--secondary)] text-[var(--foreground)]" type="button" @click.prevent="copyOrganisationCloneUrl(repo)">Copy clone URL</button>
-                          <button class="text-[10px] px-2 py-0.5 rounded bg-[var(--secondary)] text-[var(--foreground)]" type="button" @click.prevent="openOrganisationRepository(repo)">Open</button>
-                        </div>
+                        <button
+                          type="button"
+                          class="text-[10px] px-2 py-1 rounded bg-[var(--secondary)] text-[var(--foreground)] hover:opacity-90"
+                          @click="toggleOrganisationGroup(group)"
+                        >
+                          {{ isOrganisationGroupSelected(group) ? 'Clear group' : 'Select group' }}
+                        </button>
                       </div>
-                      <div class="text-[10px] text-[var(--muted-foreground)] whitespace-nowrap">★ {{ repo.stars }}</div>
-                    </label>
+
+                      <div class="divide-y divide-[var(--border)]/70">
+                        <label
+                          v-for="repo in group.repos"
+                          :key="repo.id"
+                          class="flex items-start gap-2 p-2 hover:bg-[var(--secondary)]/35"
+                        >
+                          <input
+                            v-model="organisationSelectedRepoIds"
+                            type="checkbox"
+                            :value="repo.id"
+                            class="mt-0.5"
+                          />
+                          <div class="min-w-0 flex-1">
+                            <div class="flex items-center gap-1.5 min-w-0">
+                              <div class="text-[11px] font-medium text-[var(--foreground)] truncate">{{ repo.repoName }}</div>
+                              <span
+                                class="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide"
+                                :class="repo.accessSource === 'connected' ? 'bg-[#10b981]/15 text-[#10b981]' : 'bg-[var(--secondary)] text-[var(--muted-foreground)]'"
+                              >
+                                {{ repo.accessSource === 'connected' ? 'yours' : 'public' }}
+                              </span>
+                              <span class="px-1.5 py-0.5 rounded" :class="repo.isPrivate ? 'bg-[#ef4444]/15 text-[#ef4444]' : 'bg-[#10b981]/15 text-[#10b981]'">
+                                {{ repo.isPrivate ? 'private' : 'public' }}
+                              </span>
+                            </div>
+                            <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ repo.description || repo.fullName }}</div>
+                            <div class="flex items-center gap-1.5 mt-1">
+                              <button class="text-[10px] px-2 py-0.5 rounded bg-[var(--secondary)] text-[var(--foreground)]" type="button" @click.prevent="copyOrganisationCloneUrl(repo)">Copy URL</button>
+                              <button class="text-[10px] px-2 py-0.5 rounded bg-[var(--secondary)] text-[var(--foreground)]" type="button" @click.prevent="openOrganisationRepository(repo)">Open</button>
+                            </div>
+                          </div>
+                          <div class="text-[10px] text-[var(--muted-foreground)] whitespace-nowrap">★ {{ repo.stars }}</div>
+                        </label>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -2446,7 +3108,21 @@ watch(activePlatform, () => {
               </div>
 
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
-                <div class="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">Organisation / Team Data</div>
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div class="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">Organisation Profiles</div>
+                    <p class="mt-1 text-[11px] text-[var(--muted-foreground)]">
+                      A profile is a saved organisation search. Use it when you often clone from the same organisation, team, project, or repo prefix.
+                    </p>
+                  </div>
+                  <AppButton
+                    class="h-8 text-xs bg-[var(--secondary)] text-[var(--foreground)]"
+                    :disabled="!organisationHasSearchContext"
+                    @click="saveCurrentOrganisationProfile"
+                  >
+                    Save current search
+                  </AppButton>
+                </div>
 
                 <div class="grid grid-cols-4 gap-2">
                   <select
@@ -2461,20 +3137,23 @@ watch(activePlatform, () => {
                   <input
                     v-model="organisationFormName"
                     type="text"
-                    placeholder="Organisation"
+                    placeholder="Organisation or project"
                     class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                    @keydown.enter.prevent="addOrganisationProfile"
                   />
                   <input
                     v-model="organisationFormTeam"
                     type="text"
-                    placeholder="Team"
+                    placeholder="Team, optional"
                     class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                    @keydown.enter.prevent="addOrganisationProfile"
                   />
                   <input
                     v-model="organisationFormRepoFilter"
                     type="text"
-                    placeholder="Repo filter"
+                    placeholder="Repo filter, optional"
                     class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                    @keydown.enter.prevent="addOrganisationProfile"
                   />
                 </div>
 
@@ -2486,13 +3165,15 @@ watch(activePlatform, () => {
 
                 <div class="border border-[var(--border)] rounded p-2.5 max-h-[180px] overflow-y-auto bg-[var(--card)]/50">
                   <div v-if="!organisationProfiles.length" class="text-[11px] text-[var(--muted-foreground)] py-2">
-                    No saved organisation profiles.
+                    No saved organisation profiles yet. Save the current search after you find a useful organisation.
                   </div>
                   <div v-else class="space-y-2">
                     <div v-for="profile in organisationProfiles" :key="profile.id" class="flex items-center justify-between gap-2 border border-[var(--border)] rounded p-2">
                       <div class="min-w-0">
                         <div class="text-[11px] font-medium text-[var(--foreground)] truncate">{{ profile.organisation }} <span class="text-[var(--muted-foreground)]">({{ profile.provider }})</span></div>
-                        <div class="text-[10px] text-[var(--muted-foreground)] truncate">Team: {{ profile.team || 'n/a' }} • Repo filter: {{ profile.repositoryFilter || 'n/a' }}</div>
+                        <div class="text-[10px] text-[var(--muted-foreground)] truncate">
+                          Search: {{ [profile.organisation, profile.team, profile.repositoryFilter].filter(Boolean).join(' ') }}
+                        </div>
                       </div>
                       <div class="flex items-center gap-1">
                         <button class="text-[10px] px-2 py-1 rounded bg-[var(--secondary)] text-[var(--foreground)]" @click="useOrganisationProfile(profile)">Use</button>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ExternalLink, GitPullRequest, X, CircleDot, ArrowLeft } from "lucide-vue-next";
+import { ExternalLink, GitPullRequest, CircleDot, ArrowLeft } from "lucide-vue-next";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { BranchInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
@@ -187,12 +188,7 @@ function openInBrowser(url: string) {
         </div>
       </div>
 
-      <button
-        class="h-7 w-7 rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:opacity-90 transition-colors inline-flex items-center justify-center"
-        @click="emit('close')"
-      >
-        <X class="w-3.5 h-3.5" />
-      </button>
+      <CloseIconButton size="sm" title="Back to Git Graph" @click="emit('close')" />
     </div>
 
     <div class="flex-1 min-h-0 overflow-y-auto p-4">

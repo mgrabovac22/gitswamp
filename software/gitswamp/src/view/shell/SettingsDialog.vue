@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
-import { Shield, Eye, EyeOff, Check, Trash2, X, Layout, Monitor, Sun, Moon } from "lucide-vue-next";
+import { Shield, Eye, EyeOff, Check, Trash2, Layout, Monitor, Sun, Moon } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import {
   APP_THEME_OPTIONS,
   applyAppPalettePreference,
@@ -197,9 +198,7 @@ function handleDelete() {
           <Shield class="w-4 h-4 text-[var(--primary)]" />
           <h2 class="text-sm font-semibold text-[var(--foreground)]">Settings</h2>
         </div>
-        <button @click="emit('close')" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors">
-          <X class="w-4 h-4 text-[var(--muted-foreground)]" />
-        </button>
+        <CloseIconButton title="Close settings" @click="emit('close')" />
       </div>
 
       <div class="p-5 space-y-4 overflow-y-auto flex-1">

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Clock3, Flame, GitCommit, Users, X, Zap } from "lucide-vue-next";
+import { AlertTriangle, Clock3, Flame, GitCommit, Users, Zap } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { CommitInfo } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
@@ -679,9 +680,7 @@ onUnmounted(() => {
             <img :src="logoCrocLoading" alt="" />
             <span>{{ isUsingInitialHistory ? "Refining" : "Loading" }}</span>
           </div>
-          <button class="close-button" title="Back to Git Graph" @click="emit('close')">
-            <X class="h-4 w-4" />
-          </button>
+          <CloseIconButton title="Back to Git Graph" @click="emit('close')" />
         </div>
       </section>
 
@@ -972,23 +971,6 @@ h3 {
 .loading-pill img {
   width: 18px;
   height: 18px;
-}
-
-.close-button {
-  display: inline-flex;
-  width: 30px;
-  height: 30px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--background);
-  color: var(--muted-foreground);
-}
-
-.close-button:hover {
-  color: var(--foreground);
-  background: var(--secondary);
 }
 
 .metric-grid {

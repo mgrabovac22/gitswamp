@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { Command, Search, X } from "lucide-vue-next";
+import { Command, Search } from "lucide-vue-next";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
 interface CommandPaletteAction {
   id: string;
@@ -119,14 +120,7 @@ function toneClass(action: CommandPaletteAction): string {
               <div class="text-[10px] text-[var(--muted-foreground)]">Run common GitSwamp actions</div>
             </div>
           </div>
-          <button
-            type="button"
-            class="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
-            title="Close"
-            @click="close"
-          >
-            <X class="h-4 w-4" />
-          </button>
+          <CloseIconButton size="sm" title="Close command palette" @click="close" />
         </div>
 
         <div class="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">

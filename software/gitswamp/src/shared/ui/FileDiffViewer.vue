@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History, Paintbrush } from "lucide-vue-next";
+import { FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History, Paintbrush } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 import {
@@ -13,6 +13,7 @@ import {
 } from "@/shared/config/diffViewCache";
 import { useToast } from "@/shared/notifications/useToast";
 import { useGit } from "@/domain/git/UseGit";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import logoCrocGif from "@/assets/logo_croc.gif";
 import logoCrocLoadingGif from "@/assets/logo_croc_loading.gif";
 
@@ -2617,12 +2618,7 @@ watch(
           </button>
         </div>
 
-        <button
-          @click="emit('close')"
-          class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-        >
-          <X class="w-5 h-5" />
-        </button>
+        <CloseIconButton title="Close diff view" @click="emit('close')" />
       </div>
     </div>
 
@@ -3133,14 +3129,7 @@ watch(
           <FileText class="h-3.5 w-3.5 text-[var(--primary)]" />
           <span class="truncate">File Journey</span>
         </div>
-        <button
-          type="button"
-          class="rounded p-0.5 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
-          title="Hide file journey"
-          @click="fileJourneyOpen = false"
-        >
-          <X class="h-3.5 w-3.5" />
-        </button>
+        <CloseIconButton size="sm" subtle title="Hide file journey" @click="fileJourneyOpen = false" />
       </div>
       <dl class="grid grid-cols-[64px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-snug">
         <dt class="text-[var(--muted-foreground)]">Created</dt>

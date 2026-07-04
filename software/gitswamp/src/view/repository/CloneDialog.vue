@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { homeDir, join } from "@tauri-apps/api/path";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  X,
   Globe,
   Github,
   GitBranch,
@@ -17,6 +16,7 @@ import {
 import type { AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo } from "@/types";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
 const props = defineProps<{
   visible: boolean;
@@ -697,9 +697,7 @@ onMounted(() => {
           </button>
           <span class="text-sm font-semibold text-[var(--foreground)]">Clone a Repository</span>
         </div>
-        <button @click="emit('close')" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors">
-          <X class="w-4 h-4 text-[var(--muted-foreground)]" />
-        </button>
+        <CloseIconButton title="Close clone dialog" @click="emit('close')" />
       </div>
 
       <div v-if="showGrid" class="p-6">

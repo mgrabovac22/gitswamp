@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, ref, watch, type Component } from "vue
 import { invoke } from "@tauri-apps/api/core";
 import { FileArchive, FileCode2, FileImage, FileText, Folder } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { CommitInfo, CommitFileInfo } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
@@ -823,13 +824,7 @@ onUnmounted(() => {
             <div class="px-3 py-1.5 rounded-md border border-[var(--border)] bg-[var(--secondary)]">
               <span class="text-[11px] font-semibold text-[var(--primary)]">Frame {{ hasCommits ? selectedIndex + 1 : 0 }} / {{ historyCommits.length }}</span>
             </div>
-            <button
-              class="tm-close"
-              title="Back to Git Graph"
-              @click="emit('close')"
-            >
-              x
-            </button>
+            <CloseIconButton title="Back to Git Graph" @click="emit('close')" />
           </div>
         </div>
       </section>
@@ -1139,25 +1134,6 @@ onUnmounted(() => {
   border-color: color-mix(in srgb, var(--primary) 52%, var(--border));
   color: var(--foreground);
   background: color-mix(in srgb, var(--secondary) 70%, var(--primary) 30%);
-}
-
-.tm-close {
-  width: 28px;
-  height: 28px;
-  border-radius: 0.45rem;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--secondary) 78%, transparent);
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.tm-close:hover {
-  color: var(--foreground);
-  border-color: color-mix(in srgb, var(--destructive) 60%, var(--border));
-  background: color-mix(in srgb, var(--destructive) 16%, var(--secondary));
 }
 
 .tm-loader-logo {

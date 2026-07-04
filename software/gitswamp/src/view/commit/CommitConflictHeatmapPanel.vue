@@ -3,6 +3,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { FileCode2, Folder, FolderOpen } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { ConflictHotspot, ConflictPair } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
@@ -786,13 +787,7 @@ onUnmounted(() => {
             <h2 class="text-lg md:text-xl font-bold text-[var(--foreground)]">Integration Signals</h2>
             <p class="text-xs text-[var(--muted-foreground)] mt-1">Repository tree heatmap, collision index, and coupling pairs.</p>
           </div>
-          <button
-            class="h-7 w-7 rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:border-[var(--destructive)]/50 transition-colors"
-            title="Back to Git Graph"
-            @click="emit('close')"
-          >
-            x
-          </button>
+          <CloseIconButton title="Back to Git Graph" @click="emit('close')" />
         </div>
       </section>
 

@@ -30,6 +30,13 @@ import {
   SMART_GITIGNORE_WIZARD_EVENT,
   getStoredSmartGitignoreWizardEnabled,
 } from "@/shared/config/gitignoreWizardPreferences";
+import {
+  BACKGROUND_MAINTENANCE_EVENT,
+  getStoredBackgroundMaintenanceSettings,
+  hasBackgroundMaintenanceEnabled,
+  updateBackgroundMaintenanceSettings,
+  type BackgroundMaintenanceSettings,
+} from "@/shared/config/backgroundMaintenancePreferences";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
@@ -42,7 +49,7 @@ import {
 } from "@/features/release-notes/releaseNotes";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
-import type { CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
+import type { BranchInfo, CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
 
 const git = useGit();
 const toast = useToast();
@@ -107,6 +114,14 @@ const AUTO_FETCH_SETTINGS_EVENT = "gitswamp:auto-fetch-settings-changed";
 const AUTO_FETCH_ENABLED_KEY = "gitswamp-auto-fetch-enabled";
 const AUTO_FETCH_INTERVAL_KEY = "gitswamp-auto-fetch-interval-minutes";
 const AUTO_FETCH_DEFAULT_INTERVAL_MINUTES = 3;
+const BACKGROUND_STALE_WORK_MIN_MS = 30 * 60 * 1000;
+const BACKGROUND_STALE_WORK_TOAST_COOLDOWN_MS = 45 * 60 * 1000;
+const BACKGROUND_FOCUS_REMOTE_COOLDOWN_MS = 5 * 60 * 1000;
+const BACKGROUND_COMMIT_PRELOAD_LIMIT = 3;
+const BACKGROUND_IDLE_MIN_MS = 20 * 1000;
+const BACKGROUND_BRANCH_REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
+const BACKGROUND_LARGE_CHANGE_REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
+const BACKGROUND_CONFLICT_REMINDER_COOLDOWN_MS = 20 * 60 * 1000;
 
 interface CloneProgressEventPayload {
   url: string;
@@ -138,6 +153,8 @@ const optionsMounted = ref(false);
 const optionsInitialSection = ref<OptionsInitialSection>("integrations");
 const autoFetchTimerId = ref<number | null>(null);
 const autoFetchInFlight = ref(false);
+const backgroundMaintenanceTimerId = ref<number | null>(null);
+const backgroundMaintenanceInFlight = ref(false);
 const newBranchName = ref("");
 const stashMessage = ref("");
 const showEditMessageDialog = ref(false);
@@ -193,6 +210,18 @@ const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
 let singleCommitLoadKey: string | null = null;
 let selectedCommitWatcherSkipSha: string | null = null;
+let backgroundRemoteHygieneLastRunAt = 0;
+let backgroundStaleWorkSignature = "";
+let backgroundStaleWorkStartedAt = 0;
+let backgroundStaleWorkLastToastAt = 0;
+let backgroundCommitPreloadRunKey = "";
+let backgroundLastUserActivityAt = Date.now();
+let backgroundBehindBranchSignature = "";
+let backgroundBehindBranchLastToastAt = 0;
+let backgroundLargeChangeSignature = "";
+let backgroundLargeChangeLastToastAt = 0;
+let backgroundConflictSignature = "";
+let backgroundConflictLastToastAt = 0;
 const COMMIT_FILES_CACHE_LIMIT = 12;
 const COMMIT_FILES_CACHE_MAX_FILES = 350;
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
@@ -1223,6 +1252,431 @@ function handleSmartGitignoreWizardChanged(event: Event): void {
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
 }
 
+function isAppHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function isGitOperationBusyForBackground(): boolean {
+  return autoFetchInFlight.value
+    || activeRemoteAction.value !== null
+    || git.loading.value
+    || git.loadingMore.value;
+}
+
+function isBackgroundMaintenanceBusy(): boolean {
+  return backgroundMaintenanceInFlight.value || isGitOperationBusyForBackground();
+}
+
+function hasTimedBackgroundMaintenanceEnabled(settings: BackgroundMaintenanceSettings): boolean {
+  return settings.healthRefreshEnabled
+    || settings.remoteHygieneEnabled
+    || settings.staleWorkReminderEnabled
+    || settings.behindBranchReminderEnabled
+    || settings.largeChangeReminderEnabled
+    || settings.conflictReminderEnabled
+    || settings.commitDetailsPreloadEnabled;
+}
+
+function stopBackgroundMaintenanceTimer(): void {
+  if (backgroundMaintenanceTimerId.value === null) {
+    return;
+  }
+
+  clearInterval(backgroundMaintenanceTimerId.value);
+  backgroundMaintenanceTimerId.value = null;
+}
+
+function restartBackgroundMaintenanceTimer(): void {
+  stopBackgroundMaintenanceTimer();
+
+  const settings = getStoredBackgroundMaintenanceSettings();
+  if (!hasTimedBackgroundMaintenanceEnabled(settings)) {
+    return;
+  }
+
+  backgroundMaintenanceTimerId.value = globalThis.setInterval(() => {
+    void runBackgroundMaintenance("timer");
+  }, settings.intervalMinutes * 60 * 1000);
+}
+
+function handleBackgroundMaintenanceSettingsChanged(): void {
+  primeBackgroundMaintenanceBaselines();
+  restartBackgroundMaintenanceTimer();
+}
+
+function handleVisibilityChanged(): void {
+  if (!isAppHidden()) {
+    void runBackgroundMaintenance("visible");
+  }
+}
+
+function handleBackgroundUserActivity(): void {
+  backgroundLastUserActivityAt = Date.now();
+}
+
+function primeBackgroundMaintenanceBaselines(): void {
+  const now = Date.now();
+  const settings = getStoredBackgroundMaintenanceSettings();
+  const dirtySignature = dirtyWorkSignature();
+  if (dirtySignature) {
+    backgroundStaleWorkSignature = dirtySignature;
+    backgroundStaleWorkStartedAt = now;
+    backgroundLargeChangeSignature = `${settings.largeChangeThreshold}\u0000${dirtySignature}`;
+    backgroundLargeChangeLastToastAt = now;
+  }
+
+  const currentBranch = git.branches.value.find((branch) => branch.is_head && !branch.is_remote);
+  if (currentBranch && currentBranch.behind > 0) {
+    backgroundBehindBranchSignature = behindBranchSignature(currentBranch);
+    backgroundBehindBranchLastToastAt = now;
+  }
+
+  if (git.conflictFiles.value.length > 0) {
+    backgroundConflictSignature = conflictSignature();
+    backgroundConflictLastToastAt = now;
+  }
+}
+
+async function runBackgroundMaintenance(reason: "timer" | "settings" | "visible" | "repo"): Promise<void> {
+  const settings = getStoredBackgroundMaintenanceSettings();
+  if (
+    !hasBackgroundMaintenanceEnabled(settings)
+    || (reason !== "visible" && !hasTimedBackgroundMaintenanceEnabled(settings))
+    || !git.repoPath.value
+    || isAppHidden()
+    || isBackgroundMaintenanceBusy()
+  ) {
+    return;
+  }
+
+  if (settings.idleOnlyEnabled && Date.now() - backgroundLastUserActivityAt < BACKGROUND_IDLE_MIN_MS) {
+    return;
+  }
+
+  backgroundMaintenanceInFlight.value = true;
+  try {
+    const remoteRan = await maybeRunBackgroundRemoteHygiene(settings, reason);
+    const shouldRefreshLightweightState = settings.healthRefreshEnabled
+      || (settings.focusSyncEnabled && reason === "visible")
+      || settings.staleWorkReminderEnabled
+      || settings.behindBranchReminderEnabled
+      || settings.largeChangeReminderEnabled
+      || settings.conflictReminderEnabled;
+
+    if (shouldRefreshLightweightState) {
+      await runBackgroundHealthRefresh(remoteRan, settings, reason);
+    }
+
+    const allowReminderToasts = reason === "timer" || reason === "visible";
+    if (!allowReminderToasts) {
+      primeBackgroundMaintenanceBaselines();
+    }
+
+    if (allowReminderToasts && settings.staleWorkReminderEnabled) {
+      maybeShowStaleWorkReminder();
+    }
+
+    if (allowReminderToasts && settings.behindBranchReminderEnabled) {
+      maybeShowBehindBranchReminder();
+    }
+
+    if (allowReminderToasts && settings.largeChangeReminderEnabled) {
+      maybeShowLargeChangeReminder(settings.largeChangeThreshold);
+    }
+
+    if (allowReminderToasts && settings.conflictReminderEnabled) {
+      maybeShowConflictReminder();
+    }
+
+    if (settings.commitDetailsPreloadEnabled) {
+      await warmCommitDetailsCache();
+    }
+  } finally {
+    backgroundMaintenanceInFlight.value = false;
+  }
+}
+
+async function maybeRunBackgroundRemoteHygiene(
+  settings: BackgroundMaintenanceSettings,
+  reason: "timer" | "settings" | "visible" | "repo",
+): Promise<boolean> {
+  if (!settings.remoteHygieneEnabled || !git.repoPath.value) {
+    return false;
+  }
+
+  const now = Date.now();
+  const intervalMs = settings.intervalMinutes * 60 * 1000;
+  const cooldownMs = reason === "visible" ? Math.min(intervalMs, BACKGROUND_FOCUS_REMOTE_COOLDOWN_MS) : intervalMs;
+  if (backgroundRemoteHygieneLastRunAt > 0 && now - backgroundRemoteHygieneLastRunAt < cooldownMs) {
+    return false;
+  }
+
+  try {
+    await git.backgroundFetchAll();
+    backgroundRemoteHygieneLastRunAt = now;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runBackgroundHealthRefresh(
+  remoteAlreadyRefreshed: boolean,
+  settings: BackgroundMaintenanceSettings,
+  reason: "timer" | "settings" | "visible" | "repo",
+): Promise<void> {
+  if (!git.repoPath.value) {
+    return;
+  }
+
+  const focusSyncActive = settings.focusSyncEnabled && reason === "visible";
+  const needsStatus = settings.healthRefreshEnabled
+    || focusSyncActive
+    || settings.staleWorkReminderEnabled
+    || settings.largeChangeReminderEnabled
+    || settings.conflictReminderEnabled;
+  const needsBranches = settings.healthRefreshEnabled
+    || focusSyncActive
+    || settings.behindBranchReminderEnabled;
+  const needsTags = settings.healthRefreshEnabled || focusSyncActive;
+  const tasks: Promise<void>[] = [];
+
+  if (needsStatus) {
+    tasks.push(git.refreshStatus());
+  }
+
+  if (settings.healthRefreshEnabled) {
+    tasks.push(git.refreshStashes());
+  }
+
+  if (!remoteAlreadyRefreshed && needsBranches) {
+    tasks.push(git.refreshBranches());
+  }
+
+  if (!remoteAlreadyRefreshed && needsTags) {
+    tasks.push(git.refreshTags());
+  }
+
+  if (tasks.length === 0) {
+    return;
+  }
+
+  try {
+    await Promise.all(tasks);
+  } catch {
+    // Individual refresh actions already capture errors on the git state.
+  }
+}
+
+function dirtyWorkSignature(): string {
+  if (!git.repoPath.value || git.fileStatuses.value.length === 0) {
+    return "";
+  }
+
+  return buildStatusSignature(
+    git.fileStatuses.value.map((file) => `${file.staged ? "S" : "W"}:${file.status}:${file.path}`),
+  );
+}
+
+function buildStatusSignature(values: string[]): string {
+  let hash = 2166136261;
+  const sorted = [...values].sort();
+
+  for (const value of sorted) {
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+  }
+
+  return `${git.repoPath.value || ""}\u0000${sorted.length}\u0000${(hash >>> 0).toString(16)}`;
+}
+
+function maybeShowStaleWorkReminder(): void {
+  const signature = dirtyWorkSignature();
+  const now = Date.now();
+
+  if (!signature) {
+    backgroundStaleWorkSignature = "";
+    backgroundStaleWorkStartedAt = 0;
+    return;
+  }
+
+  if (signature !== backgroundStaleWorkSignature) {
+    backgroundStaleWorkSignature = signature;
+    backgroundStaleWorkStartedAt = now;
+    return;
+  }
+
+  if (
+    now - backgroundStaleWorkStartedAt < BACKGROUND_STALE_WORK_MIN_MS
+    || now - backgroundStaleWorkLastToastAt < BACKGROUND_STALE_WORK_TOAST_COOLDOWN_MS
+  ) {
+    return;
+  }
+
+  backgroundStaleWorkLastToastAt = now;
+  const stagedCount = git.stagedFiles.value.length;
+  const unstagedCount = git.unstagedFiles.value.length;
+  const conflictCount = git.conflictFiles.value.length;
+  toast.action(
+    "info",
+    "Same uncommitted work has been sitting for 30 minutes.",
+    [
+      { label: "Review", style: "primary", onClick: onSelectWorkingChanges },
+      {
+        label: "Stash",
+        style: "neutral",
+        onClick: () => {
+          stashMessage.value = `WIP ${new Date().toLocaleString()}`;
+          showStashDialog.value = true;
+        },
+      },
+      { label: "Mute", style: "neutral", onClick: () => muteBackgroundReminder({ staleWorkReminderEnabled: false }, "Stale work") },
+    ],
+    16000,
+    `${stagedCount} staged, ${unstagedCount} unstaged, ${conflictCount} conflicts.`,
+  );
+}
+
+function behindBranchSignature(branch: BranchInfo): string {
+  return `${git.repoPath.value}\u0000${branch.name}\u0000${branch.upstream || ""}\u0000${branch.behind}`;
+}
+
+function conflictSignature(): string {
+  return buildStatusSignature(git.conflictFiles.value.map((file) => `C:${file.status}:${file.path}`));
+}
+
+function muteBackgroundReminder(partial: Partial<BackgroundMaintenanceSettings>, label: string): void {
+  updateBackgroundMaintenanceSettings(partial);
+  toast.info(`${label} reminder muted.`);
+}
+
+function maybeShowBehindBranchReminder(): void {
+  const currentBranch = git.branches.value.find((branch) => branch.is_head && !branch.is_remote);
+  if (!git.repoPath.value || !currentBranch || currentBranch.behind <= 0) {
+    backgroundBehindBranchSignature = "";
+    return;
+  }
+
+  const now = Date.now();
+  const signature = behindBranchSignature(currentBranch);
+  if (signature === backgroundBehindBranchSignature && now - backgroundBehindBranchLastToastAt < BACKGROUND_BRANCH_REMINDER_COOLDOWN_MS) {
+    return;
+  }
+
+  backgroundBehindBranchSignature = signature;
+  backgroundBehindBranchLastToastAt = now;
+  toast.action(
+    "warning",
+    `${currentBranch.name} is ${currentBranch.behind} commit${currentBranch.behind === 1 ? "" : "s"} behind.`,
+    [
+      { label: "Pull", style: "primary", onClick: () => void handlePull() },
+      { label: "Fetch", style: "neutral", onClick: () => void handleFetch() },
+      { label: "Mute", style: "neutral", onClick: () => muteBackgroundReminder({ behindBranchReminderEnabled: false }, "Behind branch") },
+    ],
+    15000,
+    currentBranch.upstream ? `Upstream: ${currentBranch.upstream}` : "No upstream metadata was reported.",
+  );
+}
+
+function maybeShowLargeChangeReminder(threshold: number): void {
+  const changedCount = git.fileStatuses.value.length;
+  if (!git.repoPath.value || changedCount < threshold) {
+    backgroundLargeChangeSignature = "";
+    return;
+  }
+
+  const now = Date.now();
+  const signature = `${threshold}\u0000${dirtyWorkSignature()}`;
+  if (signature === backgroundLargeChangeSignature && now - backgroundLargeChangeLastToastAt < BACKGROUND_LARGE_CHANGE_REMINDER_COOLDOWN_MS) {
+    return;
+  }
+
+  backgroundLargeChangeSignature = signature;
+  backgroundLargeChangeLastToastAt = now;
+  toast.action(
+    "warning",
+    `${changedCount} changed files are waiting in this worktree.`,
+    [
+      { label: "Review", style: "primary", onClick: onSelectWorkingChanges },
+      {
+        label: "Stash",
+        style: "neutral",
+        onClick: () => {
+          stashMessage.value = `WIP ${new Date().toLocaleString()}`;
+          showStashDialog.value = true;
+        },
+      },
+      { label: "Mute", style: "neutral", onClick: () => muteBackgroundReminder({ largeChangeReminderEnabled: false }, "Large worktree") },
+    ],
+    16000,
+    `Current threshold: ${threshold} files.`,
+  );
+}
+
+function maybeShowConflictReminder(): void {
+  const conflicts = git.conflictFiles.value;
+  if (!git.repoPath.value || conflicts.length === 0) {
+    backgroundConflictSignature = "";
+    return;
+  }
+
+  const now = Date.now();
+  const signature = conflictSignature();
+  if (signature === backgroundConflictSignature && now - backgroundConflictLastToastAt < BACKGROUND_CONFLICT_REMINDER_COOLDOWN_MS) {
+    return;
+  }
+
+  backgroundConflictSignature = signature;
+  backgroundConflictLastToastAt = now;
+  toast.action(
+    "warning",
+    `${conflicts.length} unresolved conflict${conflicts.length === 1 ? "" : "s"} detected.`,
+    [
+      { label: "Resolve", style: "primary", onClick: onSelectConflicts },
+      { label: "Review", style: "neutral", onClick: onSelectWorkingChanges },
+      { label: "Mute", style: "neutral", onClick: () => muteBackgroundReminder({ conflictReminderEnabled: false }, "Conflict") },
+    ],
+    18000,
+    conflicts.slice(0, 3).map((file) => file.path).join(", "),
+  );
+}
+
+async function warmCommitDetailsCache(): Promise<void> {
+  const repoPath = git.repoPath.value;
+  if (!repoPath || git.commits.value.length === 0) {
+    return;
+  }
+
+  const commitsToInspect = git.commits.value.slice(0, BACKGROUND_COMMIT_PRELOAD_LIMIT);
+  const runKey = `${repoPath}\u0000${commitsToInspect.map((commit) => commit.sha).join(",")}`;
+  if (runKey === backgroundCommitPreloadRunKey) {
+    return;
+  }
+
+  backgroundCommitPreloadRunKey = runKey;
+  for (const commit of commitsToInspect) {
+    if (isAppHidden() || git.repoPath.value !== repoPath || isGitOperationBusyForBackground()) {
+      return;
+    }
+
+    if (getCachedCommitFiles(repoPath, commit.sha)) {
+      continue;
+    }
+
+    try {
+      const files = await invoke<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha: commit.sha });
+      if (git.repoPath.value !== repoPath) {
+        return;
+      }
+      cacheCommitFiles(repoPath, commit.sha, files);
+    } catch {
+      // Best-effort preloader; selected-commit loading still works normally on click.
+    }
+  }
+}
+
 async function handlePull() {
   appendLog("user", "Pull triggered.");
   activeRemoteAction.value = "pull";
@@ -1756,6 +2210,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
+  handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
 
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && key === "k") {
@@ -1794,8 +2249,14 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
 
 onMounted(() => {
   globalThis.addEventListener("keydown", handleGlobalShortcuts);
+  globalThis.addEventListener("pointerdown", handleBackgroundUserActivity);
+  globalThis.addEventListener("wheel", handleBackgroundUserActivity);
   globalThis.addEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   globalThis.addEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
+  globalThis.addEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handleVisibilityChanged);
+  }
   appendLog("app", "Application started.");
 
   const restoreSession = shouldRestoreSession();
@@ -1820,16 +2281,24 @@ onMounted(() => {
   }
 
   restartAutoFetchTimer();
+  restartBackgroundMaintenanceTimer();
 
 });
 
 onUnmounted(() => {
   globalThis.removeEventListener("keydown", handleGlobalShortcuts);
+  globalThis.removeEventListener("pointerdown", handleBackgroundUserActivity);
+  globalThis.removeEventListener("wheel", handleBackgroundUserActivity);
   globalThis.removeEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   globalThis.removeEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
+  globalThis.removeEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", handleVisibilityChanged);
+  }
   commitFilesCache.clear();
   clearDiffViewerCaches();
   stopAutoFetchTimer();
+  stopBackgroundMaintenanceTimer();
   pullRequestFetchSequence++;
   if (pullRequestFetchTimer) {
     clearTimeout(pullRequestFetchTimer);
@@ -1872,9 +2341,18 @@ watch(
   () => git.repoPath.value,
   (repoPath, previousRepoPath) => {
     restartAutoFetchTimer();
+    restartBackgroundMaintenanceTimer();
     if (repoPath !== previousRepoPath) {
       clearCommitFilesCacheForOtherRepos(repoPath);
       clearDiffViewerCaches();
+      backgroundCommitPreloadRunKey = "";
+      backgroundRemoteHygieneLastRunAt = 0;
+      backgroundStaleWorkSignature = "";
+      backgroundStaleWorkStartedAt = 0;
+      backgroundBehindBranchSignature = "";
+      backgroundLargeChangeSignature = "";
+      backgroundConflictSignature = "";
+      void runBackgroundMaintenance("repo");
     }
   },
 );

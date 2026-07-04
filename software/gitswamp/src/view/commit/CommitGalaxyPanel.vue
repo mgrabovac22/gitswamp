@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { BranchInfo, CommitInfo } from "@/types";
 
 type ViewMode = "galaxy" | "tree";
@@ -1730,13 +1731,7 @@ watch(() => props.selectedSha, scheduleDraw);
       >
         Load All
       </button>
-      <button
-        type="button"
-        class="rounded border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[11px] text-slate-100 hover:bg-slate-800"
-        @click="emit('close')"
-      >
-        Close
-      </button>
+      <CloseIconButton title="Back to Git Graph" @click="emit('close')" />
     </div>
 
     <div

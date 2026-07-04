@@ -18,7 +18,6 @@ import {
   Trash2,
   Archive,
   Eye,
-  X,
   Folder,
   File,
   FolderTree,
@@ -27,6 +26,7 @@ import {
   Map as MapIcon,
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
 import SmartGitignoreWizard from "@/view/commit/SmartGitignoreWizard.vue";
 import { splitFilePath } from "@/shared/codeView";
@@ -3080,13 +3080,7 @@ onUnmounted(() => {
             <Hammer class="h-3.5 w-3.5 text-[var(--primary)]" />
             <div class="text-xs font-semibold text-[var(--foreground)]">Visual Commit Builder</div>
           </div>
-          <button
-            type="button"
-            class="rounded p-0.5 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
-            @click="showCommitBuilder = false"
-          >
-            <X class="h-3.5 w-3.5" />
-          </button>
+          <CloseIconButton size="sm" subtle title="Close commit builder" @click="showCommitBuilder = false" />
         </div>
 
         <div class="grid grid-cols-3 gap-2">
@@ -3216,12 +3210,7 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
-          <button
-            @click="cancelDiscard"
-            class="p-0.5 rounded hover:bg-white/10 transition-colors flex-shrink-0"
-          >
-            <X class="w-4 h-4 text-[var(--muted-foreground)]" />
-          </button>
+          <CloseIconButton size="sm" subtle title="Close discard confirmation" @click="cancelDiscard" />
         </div>
       </div>
     </Teleport>

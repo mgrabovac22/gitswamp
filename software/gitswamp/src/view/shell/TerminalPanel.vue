@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Terminal, X, RotateCcw, Eraser } from "lucide-vue-next";
+import { AlertTriangle, Terminal, RotateCcw, Eraser } from "lucide-vue-next";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
 const props = defineProps<{
   output: string[];
@@ -634,12 +635,7 @@ onMounted(() => {
           />
           Allow all commands
         </label>
-        <button
-          @click="emit('close')"
-          class="p-1 rounded hover:bg-[var(--secondary)] transition-colors"
-        >
-          <X class="w-3.5 h-3.5 text-[var(--muted-foreground)]" />
-        </button>
+        <CloseIconButton size="sm" title="Close terminal panel" @click="emit('close')" />
       </div>
     </div>
 

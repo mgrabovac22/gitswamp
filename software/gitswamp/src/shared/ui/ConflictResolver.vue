@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { X, Check, ChevronLeft, ChevronRight, Save, RotateCcw, AlertTriangle } from "lucide-vue-next";
+import { Check, ChevronLeft, ChevronRight, Save, RotateCcw, AlertTriangle } from "lucide-vue-next";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
 const props = defineProps<{
   repoPath: string;
@@ -440,12 +441,7 @@ watch(() => props.filePath, () => {
             <Save class="w-3.5 h-3.5" />
             {{ saving ? 'Saving...' : 'Save & Stage' }}
           </button>
-          <button
-            @click="emit('close')"
-            class="p-1.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-          >
-            <X class="w-5 h-5" />
-          </button>
+          <CloseIconButton title="Close conflict resolver" @click="emit('close')" />
         </div>
       </div>
 
