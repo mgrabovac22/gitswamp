@@ -10,16 +10,17 @@
 ┃  ┌─────────────────────────────────────────────────────┐  ┃
 ┃  │         Vue 3 Frontend (TypeScript)                  │  ┃
 ┃  │  ┌──────────────────────────────────────────────┐   │  ┃
-┃  │  │  Components (19 total)                       │   │  ┃
-┃  │  │  ├─ Layout (TitleBar, Header, etc.)         │   │  ┃
-┃  │  │  ├─ Repository (Sidebar, Dialogs)           │   │  ┃
-┃  │  │  ├─ Commits (Graph, Details, FileItem)      │   │  ┃
+┃  │  │  Components (41 Vue files)                   │   │  ┃
+┃  │  │  ├─ Shell (TitleBar, Header, Terminal)      │   │  ┃
+┃  │  │  ├─ Repository (Tabs, Dashboard, Dialogs)   │   │  ┃
+┃  │  │  ├─ Commits (Graph, Galaxy, Analytics)      │   │  ┃
 ┃  │  │  └─ UI (Button, Input, DiffViewer, etc.)    │   │  ┃
 ┃  │  └──────────────────────────────────────────────┘   │  ┃
 ┃  │  ┌──────────────────────────────────────────────┐   │  ┃
-┃  │  │  Composables                                 │   │  ┃
-┃  │  │  ├─ useGit() - Core operations              │   │  ┃
-┃  │  │  └─ useToast() - Notifications              │   │  ┃
+┃  │  │  Domain + Shared Modules                     │   │  ┃
+┃  │  │  ├─ UseGit + Git action composables         │   │  ┃
+┃  │  │  ├─ Toasts + undoable destructive actions   │   │  ┃
+┃  │  │  └─ Config/preferences/cache helpers        │   │  ┃
 ┃  │  └──────────────────────────────────────────────┘   │  ┃
 ┃  └─────────────────────────────────────────────────────┘  ┃
 ┃                         ↓↑                                   ┃
@@ -29,12 +30,12 @@
 ┃  ┌─────────────────────────────────────────────────────┐  ┃
 ┃  │      Rust Backend (Command Handlers)                │  ┃
 ┃  │  ┌──────────────────────────────────────────────┐   │  ┃
-┃  │  │  12 Command Modules (69 commands)           │   │  ┃
+┃  │  │  14 Command Modules (102 commands)          │   │  ┃
 ┃  │  │  ├─ Repository, Commits, Branches           │   │  ┃
 ┃  │  │  ├─ Status, Diff, Stash, Tags               │   │  ┃
 ┃  │  │  ├─ Clone/Init, Operations                  │   │  ┃
-┃  │  │  ├─ Credentials, GitHub/GitLab              │   │  ┃
-┃  │  │  └─ More...                                 │   │  ┃
+┃  │  │  ├─ Credentials, Providers, Logs            │   │  ┃
+┃  │  │  └─ Terminal, analytics, external tools     │   │  ┃
 ┃  │  └──────────────────────────────────────────────┘   │  ┃
 ┃  │  ┌──────────────────────────────────────────────┐   │  ┃
 ┃  │  │  Services Layer (7 modules)                 │   │  ┃

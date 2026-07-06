@@ -2,19 +2,24 @@
 
 ## 1. Scope
 
-GitSwamp exposes three history-focused panels from the View menu and repository menu:
+GitSwamp originally exposed three history-focused panels from the View menu and repository menu:
 
-- **Productivity Arena** - Alt+2
-- **Time Machine** - Alt+3
-- **Usual Conflict Suspects** - Alt+4
+- **Productivity Arena** - Alt+3
+- **Time Machine** - Alt+4
+- **Usual Conflict Suspects** - Alt+5
 
 They are implemented as view modes inside the repository workspace, not as floating dialogs. The active panel is selected through `historyViewMode` in `RepositoryWorkspace.vue`, and each panel loads its own data independently.
 
 This document explains how each panel works, which backend commands it uses, how state is cached, and what the user can do inside each view.
 
+The current app also includes two adjacent history-intelligence modes in the same workspace:
+
+- **Galaxy View** - Alt+2, canvas-based commit/branch topology with galaxy and tree layouts
+- **Burndown Analytics** - Alt+6, team focus and after-hours analytics that complement Productivity Arena
+
 ## 2. Shared Architecture
 
-All three panels follow the same high-level pattern:
+The commit-intelligence panels follow the same high-level pattern:
 
 1. The workspace switches into a dedicated history mode.
 2. The Vue panel triggers one or more Tauri `invoke(...)` calls.
@@ -38,6 +43,51 @@ The panels rely on these backend commands:
 - `get_file_content`
 
 The backend data is routed through Tauri commands and backed by Rust services in the Git service layer.
+
+### 2.2 Code ownership map
+
+This ownership map describes where code should live. It is separate from Git author ownership shown in analytics panels.
+
+| Area | Owner module | Responsibility |
+|------|--------------|----------------|
+| Workspace routing | `RepositoryWorkspace.vue` | Owns history view mode selection, lazy-loaded panel wiring, and shared repository props |
+| View menu and shortcuts | `RepositoryTabs.vue` | Owns Alt shortcuts, View menu entries, and tab-level actions |
+| Productivity analytics UI | `CommitProductivityPanel.vue` | Owns rhythm, contribution balance, pressure, stability, and author-filtered metrics |
+| Time Machine UI | `CommitTimeMachinePanel.vue` | Owns timeline frames, autoplay, SHA search, snapshot explorer, and rollback command preview |
+| Conflict suspects UI | `CommitConflictHeatmapPanel.vue` | Owns hotspot rendering, pair rendering, tree heatmap roll-up, search, filters, and risk labels |
+| Burndown and code ownership UI | `CommitBurndownAnalyticsPanel.vue` | Owns after-hours analytics, hot-file ownership, contributor risk rows, and team pulse charts |
+| Tauri command boundary | `src-tauri/src/commands/conflicts.rs`, `commits.rs`, `commit_files.rs`, `diff.rs` | Owns async command wrappers, thread offloading, and payload return boundaries |
+| Git analytics engine | `src-tauri/src/services/git_service.rs` | Owns canonical Git scans, conflict scoring, merge preflight scoring, deletion statistics, and tree reads |
+| Payload contracts | `src-tauri/src/models/conflict_hotspot.rs`, `src/types/models/conflictHotspot.ts`, `src/types/models/conflictAnalytics.ts` | Owns shared data shape between Rust and Vue |
+
+The rule is simple: Rust owns expensive Git facts, Vue owns presentation, normalization, cache keys, and user-facing interpretation. If a calculation needs raw repository traversal, it belongs in `GitService`. If a calculation only turns loaded facts into a score, label, color, or chart, it can stay in the panel that renders it.
+
+### 2.3 Shared algorithm principles
+
+All commit-intelligence views use the same performance principles:
+
+- Load a bounded preview first, then let the user request deeper history.
+- Keep old successful data visible while a newer request is loading.
+- Use run tokens so stale async responses cannot overwrite the current repository.
+- Cache by stable scope, usually repository, repository plus window, repository plus SHA, or repository plus SHA plus file path.
+- Split expensive work into independent streams so one slow source does not block the whole view.
+- Keep backend payloads factual and small, then derive UI labels and percentages in the frontend.
+- Treat analytics as guidance, not as absolute truth, because Git history can be squashed, rebased, renamed, or imported from another system.
+
+### 2.4 User-facing interpretation layer
+
+The panels intentionally avoid raw-only numbers. Every score should answer one user question:
+
+| Signal | User question |
+|--------|---------------|
+| Health score | Is the repository moving at a stable pace? |
+| Balance score | Is work distributed across contributors? |
+| Bottleneck score | Is too much work concentrated in bursts or one contributor? |
+| Stability risk | Are recent commits showing bug-fix pressure or repeated conflict pressure? |
+| Hotspot score | Which files most often show up in merge-risk situations? |
+| Pair score | Which file pairs become risky when touched together? |
+| Time Machine frame | What did the repository look like at this exact historical point? |
+| Hot-file owner | Who currently carries most of the touches on a frequently changed file? |
 
 ## 3. Productivity Arena
 
@@ -106,6 +156,45 @@ The panel is most useful when you want a quick qualitative read of repository mo
 - a high bottleneck score usually means work is arriving in bursts or a single contributor dominates output
 - a high stability risk score points to regression-like activity or repeated conflict pressure
 
+### 3.7 Productivity algorithm
+
+Productivity Arena starts from commit history and turns it into rhythm, ownership, and stability signals.
+
+1. **Choose history depth.** Preview mode uses a small window for fast first render. Full mode expands to the larger history limit used by the panel.
+2. **Normalize commits.** Each commit is mapped to a day key, hour, weekday, author name, timestamp, merge flag, and message text.
+3. **Apply author filter.** When the user selects an author, every metric recalculates from only that author's commits.
+4. **Build rhythm metrics.** The panel counts active days, current streak, longest streak, average commits per active day, peak hour, and top weekday.
+5. **Build contribution metrics.** It counts commits per author, unique authors, top contributor share, and a normalized balance score.
+6. **Build pressure metrics.** It calculates weekend ratio, off-hours ratio, top-three-day load share, and throughput volatility.
+7. **Build stability metrics.** It looks for regression-like commit messages and combines that with conflict hotspot pressure.
+8. **Render derived labels.** Scores are converted into low, moderate, high, or critical labels so the user does not have to interpret raw percentages.
+
+The current streak is calculated from the newest active day backward until a day has no commits. The longest streak is calculated by sorting unique active days and finding the longest consecutive sequence.
+
+### 3.8 Productivity formulas and ownership signals
+
+The panel uses these practical formulas:
+
+| Metric | Formula |
+|--------|---------|
+| Top contributor share | `topAuthorCommitCount / totalCommits * 100` |
+| Balance score | normalized Shannon entropy of commit distribution, scaled to 0-100 |
+| Arena health | `streakPart + mergePart + activityPart`, capped at 100 |
+| Collaboration intensity | author count, merge ratio, and average commits per active day, capped at 100 |
+| Bottleneck score | burst concentration, top contributor share, off-hours ratio, and daily volatility, capped at 100 |
+| Stability risk | regression-message rate, conflict mention density, and bottleneck score, capped at 100 |
+| Recovery pressure | weighted mix of regression-message rate and conflict mention density |
+| Context-switch pressure | weighted mix of off-hours ratio and top-three-day load share |
+
+The ownership signal in Productivity Arena is repository-wide. A low balance score or high top contributor share means one person is carrying a large part of the commit stream. That is useful for planning reviews, pairing, and vacation risk, but it does not mean that person owns every file. File-level ownership is handled by Burndown Analytics.
+
+The score bands are intentionally coarse:
+
+- 75 and above is critical
+- 55 to 74 is high
+- 30 to 54 is moderate
+- below 30 is low
+
 ## 4. Time Machine
 
 ### 4.1 Purpose
@@ -173,6 +262,46 @@ Time Machine is best used for:
 - reproducing older snapshots of a file quickly
 - verifying how a specific file evolved over time
 
+### 4.8 Time Machine algorithm
+
+Time Machine treats history as a sequence of frames.
+
+1. **Load commit frames.** The panel loads commit history for the active repository and stores it as an ordered timeline.
+2. **Select a frame.** The selected index points at exactly one commit SHA.
+3. **Load snapshot facts.** For the selected SHA, the panel requests changed files and repository tree paths in parallel.
+4. **Build explorer rows.** Tree paths are split by directory, merged into a breadcrumb-style explorer, sorted with folders before files.
+5. **Choose preview file.** The panel prefers the already selected file if it still exists, otherwise it falls back to the selected changed file or the first available path.
+6. **Load file content.** File preview calls `get_file_content` with repository path, file path, and selected SHA.
+7. **Generate rollback command.** The selected SHA and optional file path are turned into a copyable checkout command.
+
+The panel uses three cache scopes:
+
+| Cache | Key |
+|-------|-----|
+| Commit files | repository plus commit SHA |
+| Commit tree paths | repository plus commit SHA |
+| File preview content | repository plus commit SHA plus file path |
+
+File contents are cached only when they are small enough to stay safe for memory. Large previews can still render, but they should not permanently inflate the cache.
+
+### 4.9 Autoplay, search, and stale-load safety
+
+Autoplay is designed to feel smooth without overwhelming the backend:
+
+- Manual frame changes schedule snapshot refresh quickly.
+- Autoplay frame changes use a slightly longer delay to prevent preview flicker.
+- A run token invalidates older snapshot requests when the user scrubs quickly.
+- The explorer keeps scroll and directory context when possible.
+
+SHA search matches short and full hashes. The panel also reports match count, distinct authors, oldest match, and newest match, so search feels like navigation rather than a raw text filter.
+
+Rollback guidance is intentionally explicit:
+
+- commit-level rollback uses `git checkout <sha>`
+- file-level rollback uses `git checkout <sha> -- <path>`
+
+The panel only prepares the command. It does not execute rollback automatically.
+
 ## 5. Usual Conflict Suspects
 
 ### 5.1 Purpose
@@ -233,51 +362,219 @@ Use this panel when you want to plan merges or refactors. It is especially usefu
 - directories with repeated merge pressure
 - pairs of files that should not be edited together without review
 
-## 6. How the Three Panels Fit Together
+### 5.8 Hotspot algorithm
 
-The three panels are intentionally complementary:
+Conflict hotspots are calculated from merge commits, not from every regular commit.
+
+1. The backend chooses a scan limit from the selected merge window.
+2. It loads enough recent commits to find merge commits inside that window.
+3. It skips commits outside the optional lookback period.
+4. For each merge commit, it loads changed files.
+5. Each unique file touched in that merge gets one merge touch and one score point.
+6. If the merge commit message contains `conflict`, the file gets two extra score points and one conflict mention.
+7. The final `collision_index` is the number of conflict mentions.
+8. Results are sorted by score, merge touches, conflict mentions, and path.
+
+This makes the hotspot score intuitive: a file rises when it repeatedly appears in merge commits, and it rises faster when those merge commits explicitly mention conflicts.
+
+### 5.9 Pair algorithm
+
+Conflict pairs answer a different question: which files become risky together?
+
+1. The backend uses the same merge-commit window and lookback period.
+2. It collects unique changed paths for each merge commit.
+3. Very large merge commits are capped to keep pair generation bounded.
+4. Every pair of changed files receives one co-touch and one score point.
+5. If the merge message mentions `conflict`, the pair receives two extra score points and one conflict touch.
+6. Pairs are sorted by score, conflict touches, co-touches, and path.
+7. The returned list is capped so the UI stays responsive.
+
+The top pair coupling ratio is `conflictTouches / coTouches`. A high ratio means the pair is not merely changed together often, it is changed together in merges that often mention conflict.
+
+### 5.10 Tree roll-up and preflight risk
+
+The repository tree heatmap is built in two passes:
+
+1. The backend scans repository paths and skips heavy/generated folders such as `.git`, `node_modules`, `target`, `dist`, `build`, and common IDE folders.
+2. The frontend builds a tree skeleton from those paths.
+3. File nodes receive their own hotspot score and collision index.
+4. Directory nodes inherit the highest child risk score and sum child collision pressure.
+5. Directories are sorted before files, then by risk, then by name.
+
+Risk color is normalized inside the current result set. The list uses stronger bands than the tree because file rows show direct suspects, while folders summarize children:
+
+| Surface | Critical | High | Moderate |
+|---------|----------|------|----------|
+| Hotspot list | 82% of max score | 64% of max score | 36% of max score |
+| Tree heatmap | 62% of max score | 38% of max score | 16% of max score |
+
+Merge preflight uses real branch overlap:
+
+1. Resolve source and target branch commits.
+2. Compute the merge base.
+3. Diff merge base to source and merge base to target.
+4. Intersect changed paths from both sides.
+5. Keep shared paths that are also known hotspots.
+6. Score risk as hotspot score sum, plus shared path count, plus overlap density bonus.
+7. Convert the score into low, moderate, high, or critical.
+
+Preflight risk levels are:
+
+- 170 and above is critical
+- 95 to 169 is high
+- 45 to 94 is moderate
+- below 45 is low
+
+The conflict panel is a risk map, not a guarantee. It does not replay every historical textual conflict. It uses merge history, changed files, conflict mentions, and branch overlap to show where attention is most likely needed.
+
+## 6. Burndown Analytics and Code Ownership
+
+### 6.1 Purpose
+
+Burndown Analytics complements Productivity Arena. Productivity focuses on repository rhythm and balance, while Burndown focuses on team focus, after-hours load, and hot-file ownership.
+
+### 6.2 Data loading strategy
+
+The panel loads two independent streams:
+
+- full repository history, capped by the panel history limit
+- hot-file scan from recent non-merge commits
+
+The hot-file scan uses `git log --all --no-merges --name-only`, groups paths by touches, and keeps only files touched at least three times. The scan is capped so it stays fast and does not turn the panel into a full blame replacement.
+
+### 6.3 Code ownership algorithm
+
+Code ownership in Burndown is file-level and touch-based:
+
+1. For every scanned non-merge commit, the parser stores current author and whether the subject looks fix-like.
+2. Each changed file receives one touch.
+3. If the subject contains words such as `fix`, `bug`, `hotfix`, `regression`, `revert`, `crash`, `broken`, `repair`, or `patch`, the file receives one fix touch.
+4. The panel counts touches per author for each file.
+5. The owner is the author with the most touches on that file.
+6. Owner share is `ownerTouches / fileTouches * 100`.
+7. Files are ranked by `touches + fixTouches * 2`, so repeatedly changed files with fix pressure rise first.
+
+This is intentionally lightweight. It does not claim permanent ownership. It answers a practical question: who currently has the most recent working context for a hot file?
+
+### 6.4 Burnout and focus algorithm
+
+For each author, the panel calculates:
+
+- commits
+- active days
+- first and last commit timestamps
+- after-hours commits, before 07:00 or at/after 20:00
+- late-night commits, before 05:00
+- weekend commits
+- Saturday-night commits
+- recent weekly commit counts
+- recent weekly after-hours counts
+- peak after-hours hour and weekday
+- hot files owned and hot-file touches
+
+Author risk score is capped at 100 and combines:
+
+| Signal | Weight |
+|--------|--------|
+| After-hours share | 30% of the percentage |
+| Weekend share | 24% of the percentage |
+| Late-night share | 28% of the percentage |
+| Consecutive recent late-night weeks | 8 points per week, capped at 24 |
+| Hot files owned | 3 points per file, capped at 18 |
+
+Risk labels are:
+
+- 65 and above is high
+- 35 to 64 is watch
+- below 35 is steady
+
+The panel yields back to the UI while building large author stats, so scrolling and tab switching stay responsive during long scans.
+
+### 6.5 How to read ownership safely
+
+Ownership should be used as a coordination signal, not as blame. A high owner share can mean:
+
+- one person has useful context for review
+- a file needs pairing or documentation
+- a hot file may need refactoring
+- a team may need to spread knowledge before a release
+
+It should not be used to judge quality by itself. Pair ownership with Productivity balance, Conflict hotspots, and Time Machine history before making process decisions.
+
+## 7. How the Panels Fit Together
+
+The panels are intentionally complementary:
 
 - Productivity Arena answers “how is the repository moving?”
 - Time Machine answers “what did the repository look like at a specific point in history?”
 - Usual Conflict Suspects answers “where are merges likely to hurt us?”
 
+Two newer modes extend this layer:
+
+- Galaxy View answers “how do branches and commits visually relate?”
+- Burndown Analytics answers “where are team focus, after-hours work, and workload pressure changing?”
+
 Together they form the commit-intelligence layer of GitSwamp.
 
-## 7. Implementation Notes
+### 7.1 Useful reading recipes
 
-### 7.1 Vue state model
+Use these combinations when diagnosing a repository:
+
+| Situation | Read these signals |
+|-----------|--------------------|
+| Preparing a risky merge | Conflict hotspots, conflict pairs, merge preflight, then Time Machine for suspect files |
+| Planning a refactor | Conflict tree heatmap, hot-file ownership, top contributor share, and Time Machine snapshots |
+| Investigating a regression | Productivity stability risk, Time Machine frame search, then file-level snapshot preview |
+| Checking team sustainability | Burndown after-hours risk, Productivity bottleneck score, ownership concentration |
+| Finding knowledge silos | Productivity balance score, Burndown owner share, hot files owned |
+
+## 8. Implementation Notes
+
+### 8.1 Vue state model
 
 Each panel keeps its own reactive state and uses run tokens to prevent stale async responses from replacing current data. This is important because users can switch repositories or filters while a load is still in flight.
 
-### 7.2 Cache model
+Galaxy View and Burndown Analytics follow the same repository workspace mode model. `RepositoryWorkspace.vue` lazy-loads their panel components, and `RepositoryTabs.vue` exposes their shortcuts from the View menu.
+
+### 8.2 Cache model
 
 The panel caches are keyed by repository and the relevant scope:
 
 - Productivity Arena: repository + active commit window
 - Time Machine: repository + commit SHA (+ file path for file preview)
 - Conflict Suspects: repository + merge window
+- Galaxy View: loaded commit/branch state and canvas-local layout state
+- Burndown Analytics: repository + recent analytics window
 
 This avoids repeating expensive scans when the user revisits the same data.
 
-### 7.3 UX behavior
+### 8.3 UX behavior
 
-All three panels use loader overlays rather than full-screen blocking states. The UI keeps the structure visible so the user understands what is loading and what is already available.
+All commit-intelligence panels use loader overlays rather than full-screen blocking states. The UI keeps the structure visible so the user understands what is loading and what is already available.
 
-### 7.4 Keyboard access
+### 8.4 Keyboard access
 
 The panels are reachable through the View menu and the following shortcuts:
 
-- Alt+2 - Productivity Arena
-- Alt+3 - Time Machine
-- Alt+4 - Usual Conflict Suspects
+- Alt+2 - Galaxy View
+- Alt+3 - Productivity Arena
+- Alt+4 - Time Machine
+- Alt+5 - Usual Conflict Suspects
+- Alt+6 - Burndown Analytics
 
-## 8. Related Files
+## 9. Related Files
 
 - [RepositoryWorkspace.vue](../software/gitswamp/src/view/repository/RepositoryWorkspace.vue)
 - [RepositoryTabs.vue](../software/gitswamp/src/view/repository/RepositoryTabs.vue)
+- [CommitGalaxyPanel.vue](../software/gitswamp/src/view/commit/CommitGalaxyPanel.vue)
 - [CommitProductivityPanel.vue](../software/gitswamp/src/view/commit/CommitProductivityPanel.vue)
 - [CommitTimeMachinePanel.vue](../software/gitswamp/src/view/commit/CommitTimeMachinePanel.vue)
 - [CommitConflictHeatmapPanel.vue](../software/gitswamp/src/view/commit/CommitConflictHeatmapPanel.vue)
+- [CommitBurndownAnalyticsPanel.vue](../software/gitswamp/src/view/commit/CommitBurndownAnalyticsPanel.vue)
+- [GitService](../software/gitswamp/src-tauri/src/services/git_service.rs)
+- [Conflict commands](../software/gitswamp/src-tauri/src/commands/conflicts.rs)
+- [Commit commands](../software/gitswamp/src-tauri/src/commands/commits.rs)
+- [Conflict hotspot model](../software/gitswamp/src-tauri/src/models/conflict_hotspot.rs)
 - [Backend overview](DOCUMENTATION_08_BACKEND_OVERVIEW.md)
 - [Frontend overview](DOCUMENTATION_04_FRONTEND_OVERVIEW.md)
 - [Core features](DOCUMENTATION_11_CORE_FEATURES.md)

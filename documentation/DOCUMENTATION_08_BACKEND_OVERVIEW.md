@@ -275,14 +275,14 @@ RepoInfo {
 ### 5.11 Credentials Commands (credentials.rs)
 
 **Functions:**
-- `save_token(provider: String, token: String) -> Result<(), String>`
-- `load_token(provider: String) -> Result<Option<String>, String>`
-- `delete_token(provider: String) -> Result<(), String>`
-- `save_provider_token(provider: String, username: String, token: String, expires_at: Option<i64>) -> Result<(), String>`
-- `load_provider_token(provider: String) -> Result<Option<ProviderToken>, String>`
+- `save_token(token: String) -> Result<(), String>`
+- `load_token() -> Result<Option<String>, String>`
+- `delete_token() -> Result<(), String>`
+- `save_provider_token(provider: String, token: String) -> Result<(), String>`
+- `load_provider_token(provider: String) -> Result<Option<String>, String>`
 - `delete_provider_token(provider: String) -> Result<(), String>`
 
-**Purpose:** Token and credential management
+**Purpose:** Token and credential management. Tokens are stored per provider key under `.gitswamp/credentials_<provider>` and are obfuscated with base64 plus an application XOR key.
 
 ### 5.12 GitHub/GitLab Integration (operations.rs)
 
@@ -446,13 +446,13 @@ pub async fn checkout_branch(
     tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open(&repo_path)
             .map_err(|e| e.to_string())?;
-        
+
         let obj = repo.revparse_single(&branch_name)
             .map_err(|e| format!("Branch not found: {}", e))?;
-        
+
         repo.set_head_detached(obj.id())
             .map_err(|e| format!("Failed to checkout: {}", e))?;
-        
+
         Ok(())
     })
     .await
@@ -486,9 +486,9 @@ fn validate_path(path: &str) -> Result<(), String> {
 ### 11.2 Credential Security
 
 Credentials are:
-- Stored encrypted on disk
+- Stored locally per provider key with lightweight obfuscation, not OS keychain encryption
 - Never logged
-- Cleared from memory after use
+- Loaded only when provider workflows need them
 - Protected with file permissions
 
 ## 12. Performance Optimization

@@ -34,6 +34,10 @@
    - **Open Repository** - Load existing Git repository
    - **Clone Repository** - Clone from GitHub/GitLab
    - **Initialize Repository** - Create new repository
+3. Use the start dashboard:
+   - If a GitHub token is configured, review pull requests authored by you and issues assigned to you
+   - If no token is configured, use the local repository summary and recent repositories
+   - Use Settings when you want to connect provider tokens
 
 ## 2. Opening a Repository
 
@@ -85,12 +89,17 @@
 - Tags section
 
 **Main Area:**
-- Commit graph (center)
+- Commit graph or selected history/analytics view (center)
 - Commit details (right panel)
 
 **Bottom:**
 - Status bar
-- Terminal output (if visible)
+- Integrated terminal output (if visible)
+
+**Start Dashboard:**
+- Shows GitHub work items when authenticated
+- Shows local repository context and recent repositories when offline or unauthenticated
+- Provides search for pull requests and assigned issues
 
 ### 3.2 Quick Menu (Hamburger ☰)
 
@@ -110,9 +119,11 @@ Click the top-left hamburger icon to open the quick menu with 4 sections:
 **View:**
 - **Toggle Terminal** (Ctrl+`) - Show or hide integrated git terminal
 - **Visualize Commit History** (Alt+1) - Switch to Graph view (commit history visualization)
-- **Productivity Arena** (Alt+2) - View developer productivity metrics and activity
-- **Time Machine** (Alt+3) - Navigate through repository history frames
-- **Usual Conflict Suspects** (Alt+4) - View merge conflict hotspots (heatmap)
+- **Galaxy View** (Alt+2) - Explore commit history as an interactive canvas galaxy/tree
+- **Productivity Arena** (Alt+3) - View developer productivity metrics and activity
+- **Time Machine** (Alt+4) - Navigate through repository history frames
+- **Usual Conflict Suspects** (Alt+5) - View merge conflict hotspots (heatmap)
+- **Burndown Analytics** (Alt+6) - View team focus, after-hours, and repository pulse signals
 - **Open Folder Explorer** (Alt+O) - Open repository folder in system explorer
 - **Open Settings** (Ctrl+,) - Open app settings dialog
 
@@ -148,18 +159,26 @@ Right panel shows selected commit:
 - **Files:** List of changed files
 - **Stats:** Total insertions/deletions
 
-## 4.3 History View Modes
+### 4.3 History View Modes
 
 GitSwamp provides multiple ways to visualize your repository history. Switch between them using the View menu or keyboard shortcuts:
 
-### Graph View (Alt+1) - Default
+#### Graph View (Alt+1) - Default
 The interactive commit history graph showing:
 - Branch structure and merges
 - Commit timeline
 - All commits in chronological order
 - Interactive commit selection and navigation
 
-### Productivity Arena (Alt+2)
+#### Galaxy View (Alt+2)
+Explore history on a canvas-based map:
+- Spiral, layered, and constellation layouts
+- 3D, balanced, and circling motion modes
+- Tree mode for branch hierarchy visualization
+- Zoom, pan, click-to-focus, and hover details
+- Useful for understanding how branches and commits relate visually
+
+#### Productivity Arena (Alt+3)
 Visualize developer activity and metrics:
 - Start in preview mode, then use **Load all** for the full commit history
 - Filter metrics by author to compare one contributor against the whole team
@@ -170,7 +189,7 @@ Visualize developer activity and metrics:
 - Stability indicators derived from conflict pressure and regression-like commit messages
 - Useful for performance analysis and sprint planning
 
-### Time Machine (Alt+3)
+#### Time Machine (Alt+4)
 Navigate through repository history frame-by-frame:
 - View repository state at specific commits
 - Move backward and forward one frame at a time
@@ -184,7 +203,7 @@ Navigate through repository history frame-by-frame:
 - Snapshot panels keep context and update progressively with section loaders and caches
 - Useful for forensic analysis and understanding repository evolution
 
-### Usual Conflict Suspects (Alt+4)
+#### Usual Conflict Suspects (Alt+5)
 See merge conflict hotspots and risky areas:
 - Files with highest conflict frequency
 - Conflict risk assessment
@@ -195,6 +214,14 @@ See merge conflict hotspots and risky areas:
 - Merge-window selector for 300, 500, 1000, or all history
 - Search filtering and tree-scope filtering for focused investigation
 - Helps prevent conflicting changes
+
+#### Burndown Analytics (Alt+6)
+Understand team focus and repository pulse:
+- Recent weekly repository activity
+- After-hours and weekend indicators
+- Contributor workload and focus-risk signals
+- Hot-file and bottleneck context
+- Uses readable labels and lightweight loading so scrolling stays responsive
 
 ## 5. Managing Branches
 
@@ -254,6 +281,17 @@ See merge conflict hotspots and risky areas:
 1. Click "Stage All" button
 2. All changes staged
 
+**Stage a Hunk:**
+1. Open a changed file in the diff viewer
+2. Find the hunk header
+3. Click "Stage hunk"
+4. Only that hunk moves into the staged version
+
+**Unstage a Hunk:**
+1. Open a staged diff
+2. Click "Unstage hunk"
+3. Only that hunk returns to unstaged changes
+
 ### 6.3 View Diffs
 
 **Working Directory Diff:**
@@ -268,6 +306,18 @@ See merge conflict hotspots and risky areas:
 2. Click file in file list
 3. Shows changes in that commit
 
+**File Journey:**
+1. Open a file diff
+2. Click the small File Journey icon in the diff toolbar
+3. Review quick created-by and last-changed context
+4. Close the small panel with its X button
+
+**Smart .gitignore Assistant:**
+1. Leave generated/private files untracked
+2. If GitSwamp detects common patterns such as `node_modules/`, `dist/`, `target/`, `.env`, or `*.log`, the assistant appears in the changes panel
+3. Choose **Ignore selected**, **Open .gitignore**, or **Keep tracking**
+4. Existing `.gitignore` rules are respected and duplicate patterns are skipped
+
 ### 6.4 Create Commit
 
 1. Stage desired files
@@ -277,9 +327,14 @@ See merge conflict hotspots and risky areas:
 5. Click "Commit"
 6. New commit appears in graph
 
+**Visual Commit Builder:**
+1. Click the builder icon beside the commit analyzer/message area
+2. Pick a type, scope, optional issue number, and summary
+3. Click Save to place the generated subject into the commit input
+
 **Commit Message Format:**
 ```
-feat: add new feature
+Feat(frontend): #123 add new feature
 
 This is the detailed description.
 It can span multiple lines.
@@ -301,13 +356,15 @@ Each line should be under 72 characters.
 2. Fetches and merges from remote
 3. Local branch updates
 4. Commit graph refreshes
+5. After a successful merge flow, GitSwamp may offer to download generated release notes
 
 ### 7.3 Fetch Changes
 
 1. Click "Fetch" button
 2. Downloads latest remote info
-3. No merge (safe operation)
-4. Check differences before pulling
+3. Prunes deleted remote branches when the fetch flow is configured to do so
+4. No merge (safe operation)
+5. Check differences before pulling
 
 ## 8. Working with Stashes
 
@@ -384,6 +441,16 @@ Each line should be under 72 characters.
 3. UI reduces padding and margins
 4. More content visible
 
+### 10.5 Safety and Background Preferences
+
+Settings also include optional workflow helpers:
+- Smart .gitignore Wizard, enabled by default
+- Reduced motion and graph animation preferences
+- Background maintenance reminders, off by default
+- Large change reminders with a configurable threshold
+- Conflict, stale work, and behind-branch reminders shown as toasts
+- Commit details preload, off by default for lower RAM usage
+
 ## 11. Searching Commits
 
 ### 11.1 Search by Message
@@ -429,20 +496,28 @@ If conflicts occur during pull/merge:
 | Shortcut | Action | Menu Location |
 |----------|--------|---------------|
 | `F1` | Open in-app help and shortcuts panel | Help → Features and Shortcuts |
+| `Ctrl+K` | Open command palette | Global |
 | `Ctrl+T` | New repository tab | File → New Tab |
 | `Ctrl+O` | Open repository | File → Open Repository |
 | `Ctrl+W` | Close current tab | File → Close Current Tab |
+| `Ctrl+Tab` | Switch to next repository tab | Global |
+| `Ctrl+Shift+T` | Reopen last closed repository tab | File → Reopen Closed Tab |
 | `Ctrl+,` | Open settings | View → Open Settings |
 | `Ctrl+`` | Toggle terminal panel | View → Toggle Terminal |
 | `Ctrl+Shift+C` | Copy repository path | Edit → Copy Repository Path |
 | `Ctrl+Shift+R` | Refresh repository | Edit → Refresh Repository |
 | `Ctrl+Shift+O` | Open in VS Code | Edit → Open in VS Code |
 | `Ctrl+Shift+G` | Open Gist creator | File → Create a Gist |
+| `Ctrl+Shift+I` | Open integrations/options | View/Options |
+| `Ctrl+Shift+K` | Open settings/preferences | View/Options |
+| `Ctrl+Shift+L` | Toggle logs | Help/Debug |
 | `Alt+O` | Open in folder explorer | View → Open Folder Explorer |
 | `Alt+1` | Switch to Graph view (Commit history) | View → Visualize Commit History |
-| `Alt+2` | Switch to Productivity Arena | View → Productivity Arena |
-| `Alt+3` | Switch to Time Machine | View → Time Machine |
-| `Alt+4` | Switch to Conflict Heatmap | View → Usual Conflict Suspects |
+| `Alt+2` | Switch to Galaxy View | View → Galaxy View |
+| `Alt+3` | Switch to Productivity Arena | View → Productivity Arena |
+| `Alt+4` | Switch to Time Machine | View → Time Machine |
+| `Alt+5` | Switch to Conflict Heatmap | View → Usual Conflict Suspects |
+| `Alt+6` | Switch to Burndown Analytics | View → Burndown Analytics |
 | `Ctrl+R` | Focus commit search | (Global) |
 
 **Note:** `Ctrl+`` means Ctrl + Backtick (key below Esc on most layouts).
@@ -469,6 +544,8 @@ If conflicts occur during pull/merge:
 - Most menu actions have keyboard shortcuts displayed in-menu
 - Combine with global shortcuts for efficient workflow:
   - **Ctrl+T** → (work in new tab) → **Ctrl+W** (close when done)
+  - **Ctrl+Tab** → move through open repositories
+  - **Ctrl+K** → search actions directly
   - **Ctrl+Shift+R** → Refresh → **Alt+O** → Browse files in explorer
 
 ### 14.4 In-App Help
@@ -490,7 +567,7 @@ If conflicts occur during pull/merge:
 3. Push branch
 4. Create pull request on GitHub
 
-### 14.2 Viewing History
+### 14.5 Viewing History
 
 **See who changed what:**
 1. Click file in commit
@@ -502,13 +579,19 @@ If conflicts occur during pull/merge:
 2. View branch history
 3. See commits on this branch
 
-### 14.3 Safe Operations
+### 14.6 Safe Operations
 
 **Before dangerous operations:**
 1. Create backup branch
 2. Stash uncommitted changes
 3. Verify you're on correct branch
 4. Review changes before committing
+
+**GitSwamp safety helpers:**
+- UI destructive actions such as discard run after a short undo toast window
+- The integrated terminal previews destructive commands such as `git reset --hard`, forced `git clean`, destructive restore, branch delete, stash pop/drop/clear, and force push
+- When possible, the terminal safety prompt can create a safety stash before continuing
+- Discard actions for changes are scoped to the intended unstaged working-tree changes, not staged changes
 
 ## 15. Troubleshooting
 
@@ -539,7 +622,7 @@ If conflicts occur during pull/merge:
 - Check file permissions
 - Run `git fsck` to check integrity
 
-### 15.5 Folder Explorer Does Not Open
+### 15.3 Folder Explorer Does Not Open
 
 **Symptoms:**
 - Clicking "Open in Folder Explorer" does nothing
@@ -550,7 +633,7 @@ If conflicts occur during pull/merge:
 - Retry from the hamburger menu: View -> Open in Folder Explorer
 - Update to the latest GitSwamp build where explorer opening uses backend tool integration
 
-### 15.3 Can't Push/Pull
+### 15.4 Can't Push/Pull
 
 **Common Issues:**
 - Authentication failed
@@ -563,7 +646,7 @@ If conflicts occur during pull/merge:
 - Fetch to see remote status
 - Delete and recreate remote if needed
 
-### 15.4 Commits Not Showing
+### 15.5 Commits Not Showing
 
 **Causes:**
 - Filter applied

@@ -6,17 +6,18 @@ Complete software documentation for the GitSwamp Git client application built wi
 
 ## Latest Updates
 
-- **Hamburger menu (☰)** exposes File, Edit, View, and Help sections with actionable items
-- **Help panel (F1)** shows keyboard shortcuts and quick start guide in-app
-- **Open folder explorer** now uses backend tool integration (Alt+O) for reliable path opening
-- **System explorer integration** works across Windows (explorer), macOS (open), Linux (xdg-open)
-- **69 Tauri commands** provide comprehensive Git operations and system integration
-- **Multi-tab support** with quick actions for repository management
-- **GitHub/GitLab search** and authentication flows built in
+- **Work Dashboard** on the start screen lists GitHub pull requests authored by the signed-in user and issues assigned to them, with local repository context when no token is configured
+- **Command Palette (Ctrl+K)** centralizes common repository, view, terminal, settings, and analysis actions
+- **Galaxy View (Alt+2)** and **Burndown Analytics (Alt+6)** extend the history tools alongside Productivity Arena, Time Machine, and Conflict Suspects
+- **Smart .gitignore Wizard** is enabled by default and suggests generated/private untracked files such as `node_modules/`, `dist/`, `target/`, `.env`, and logs
+- **Micro-staging** supports hunk-level stage, unstage, and discard actions directly in the diff viewer
+- **Terminal Command Safety Layer** previews destructive manual Git commands and can create a safety stash before continuing
+- **Release Notes Generator** offers a Markdown download after successful merge flows
+- **102 Tauri commands** provide comprehensive Git operations, analytics, diff tooling, terminal support, and system integration
 
 ## Documentation Overview
 
-This comprehensive documentation package contains **11 main document files** organized into logical sections covering all aspects of the GitSwamp project from user guide to developer documentation.
+This comprehensive documentation package contains the active GitSwamp documentation set organized into logical sections covering project overview, user workflows, frontend architecture, backend commands, security, and commit intelligence features.
 
 ## Quick Links
 
@@ -31,7 +32,7 @@ This comprehensive documentation package contains **11 main document files** org
 ### Implementation Guides
 - **[Frontend Overview](./documentation/DOCUMENTATION_04_FRONTEND_OVERVIEW.md)** - Vue 3 frontend architecture and components
 - **[Backend Overview](./documentation/DOCUMENTATION_08_BACKEND_OVERVIEW.md)** - Rust backend and Tauri integration
-- **[Commands Reference](./documentation/DOCUMENTATION_09_COMMANDS_REFERENCE.md)** - All 69 Tauri commands with examples
+- **[Commands Reference](./documentation/DOCUMENTATION_09_COMMANDS_REFERENCE.md)** - All 102 Tauri commands with examples
 
 ### Features & Operations
 - **[Core Features](./documentation/DOCUMENTATION_11_CORE_FEATURES.md)** - Main application functionality
@@ -80,7 +81,7 @@ This comprehensive documentation package contains **11 main document files** org
 ### 4. Frontend Overview (DOCUMENTATION_04_FRONTEND_OVERVIEW.md)
 - Frontend technology stack
 - Project structure
-- Component overview (19 total)
+- Component overview (41 Vue components)
 - Composables documentation
 - Type system details
 - Styling system (Tailwind CSS)
@@ -89,7 +90,7 @@ This comprehensive documentation package contains **11 main document files** org
 - Performance optimization
 - Accessibility features
 
-**Size:** ~14 KB | **Sections:** 12
+**Size:** ~18 KB | **Sections:** 13
 
 ### 5. Backend Overview (DOCUMENTATION_08_BACKEND_OVERVIEW.md)
 - Backend architecture
@@ -108,7 +109,7 @@ This comprehensive documentation package contains **11 main document files** org
 **Size:** ~15 KB | **Sections:** 12
 
 ### 6. Commands Reference (DOCUMENTATION_09_COMMANDS_REFERENCE.md)
-- Complete command listing (69 commands)
+- Complete command listing (102 Tauri commands)
 - Repository commands
 - Commit commands
 - Branch commands
@@ -129,10 +130,11 @@ This comprehensive documentation package contains **11 main document files** org
 - Repository management
 - Commit history visualization
 - Branch management (create, delete, rename, track)
-- File operations (stage, unstage, diff)
+- File operations (stage, unstage, hunk-level micro-staging, diff)
 - Commit creation workflow
 - Remote operations (push, pull, fetch)
 - Advanced operations (cherry-pick, revert, reset)
+- Start dashboard, command palette, Smart .gitignore Wizard, terminal safety, release notes, and analytics views
 
 **Size:** ~14 KB | **Sections:** 9
 
@@ -207,10 +209,10 @@ This comprehensive documentation package contains **11 main document files** org
 | Total Documentation Size | ~130 KB |
 | Code Examples | 100+ |
 | Diagrams & Flowcharts | 10+ |
-| Commands Documented | 47 |
-| Components Documented | 19 |
+| Commands Documented | 102 |
+| Components Documented | 41 Vue components |
 | Data Models | 10+ |
-| Keyboard Shortcuts | 12 |
+| Keyboard Shortcuts | 20+ |
 
 ## By User Role
 
@@ -251,13 +253,20 @@ This comprehensive documentation package contains **11 main document files** org
 ### User Features Documented
 - Repository management (open, clone, init)
 - Commit visualization and history
+- Galaxy view, Burndown Analytics, Productivity Arena, Time Machine, and Conflict Suspects
 - Branch operations (create, delete, rename, checkout)
 - File staging and unstaging
+- Hunk-level micro-staging and hunk discard
+- Smart .gitignore suggestions for generated/private files
 - Diff viewing and editing
 - Commit creation and messaging
+- Visual Commit Builder with issue tag support
 - Push/pull/fetch operations
 - Stash management
 - Tag operations
+- Terminal command safety with optional safety stash
+- Undo toast delay for destructive UI actions
+- Release notes download after successful merge flows
 - Merge conflict resolution
 - Repository settings
 - GitHub/GitLab integration
@@ -333,14 +342,14 @@ This comprehensive documentation package contains **11 main document files** org
 ## Quick Reference
 
 **Important Files in Source:**
-- Frontend: `src/components/`, `src/composables/`
+- Frontend: `software/gitswamp/src/view/`, `software/gitswamp/src/shared/`, `software/gitswamp/src/domain/`
 - Backend: `src-tauri/src/commands/`, `src-tauri/src/services/`
 - Config: `package.json`, `vite.config.ts`, `src-tauri/Cargo.toml`
 - Types: `src/types/index.ts`
 
 **Key Directories:**
-- Frontend components: 19 Vue files
-- Backend commands: 12 Rust modules (47 commands)
+- Frontend components: 41 Vue files
+- Backend commands: 14 Rust command modules (102 commands)
 - Models: 10+ TypeScript/Rust types
 - Styles: Tailwind CSS configuration
 

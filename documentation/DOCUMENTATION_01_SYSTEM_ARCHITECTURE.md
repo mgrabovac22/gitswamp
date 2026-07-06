@@ -163,7 +163,7 @@ Vue Component
 |-----------|---------|-----------|
 | Repository State | Memory | Reactive refs in composable |
 | Preferences | File System | Tauri config |
-| Credentials | File System | Encrypted token storage |
+| Credentials | File System | Provider-key files with lightweight obfuscation |
 | Session State | Memory | Browser storage (app specific) |
 
 ## 5. Tauri Command Architecture
@@ -353,7 +353,7 @@ User clicks Hamburger Button (☰)
                     - Edit
                     - View
                     - Help
-                    
+
 User hovers section
     │
     └──> activeSection updates
@@ -547,16 +547,18 @@ User Input Credential
     │
     └─> validate
             │
-            └─> encrypt (optional)
+            └─> obfuscate locally
                     │
-                    └─> save to secure storage
+                    └─> save to provider-key file
                             │
                             └─> when needed:
                                 ├─> retrieve from storage
-                                ├─> decrypt
+                                ├─> de-obfuscate
                                 ├─> use in operation
                                 └─> forget from memory
 ```
+
+Current credential storage is local file storage under `.gitswamp/credentials_<provider>` using base64 plus an application XOR key. It is intended to avoid plain-text display, not to replace OS keychain encryption.
 
 ### 12.2 Access Control
 

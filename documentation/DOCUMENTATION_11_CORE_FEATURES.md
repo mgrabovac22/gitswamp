@@ -2,7 +2,17 @@
 
 ## 1. Feature Overview
 
-GitSwamp provides comprehensive Git repository management through 69 integrated Tauri commands and a user-friendly interface designed for both simple and advanced workflows.
+GitSwamp provides comprehensive Git repository management through 102 integrated Tauri commands and a user-friendly interface designed for both simple and advanced workflows.
+
+The current frontend combines classic Git GUI workflows with lightweight safety and intelligence layers:
+- Start dashboard for local repository context plus GitHub pull requests authored by the user and issues assigned to them
+- Command Palette for quickly opening views and running common repository actions
+- Graph, Galaxy, Productivity Arena, Time Machine, Conflict Suspects, and Burndown Analytics history modes
+- Smart .gitignore Wizard for generated/private untracked files
+- Hunk-level micro-staging in the diff viewer
+- Terminal safety previews for destructive manual Git commands
+- Undo toast delay for destructive UI actions
+- Release Notes generator after successful merge flows
 
 ## 2. Repository Management
 
@@ -32,6 +42,7 @@ async function openRepository(path: string) {
 - Repository path displayed in header
 - Commit graph loads
 - Branches appear in sidebar
+- Working changes load progressively after the initial commit list
 
 ### 2.2 Clone Repository
 
@@ -98,6 +109,22 @@ async function initRepository(path: string) {
 
 **Updated:** Real-time (via file watcher)
 
+### 2.5 Start Dashboard
+
+**Purpose:** Give users useful context before opening or while switching repositories.
+
+**Displays:**
+- Open repository count, recent repositories, and active local branch context
+- GitHub pull requests authored by the signed-in user
+- GitHub issues assigned to the signed-in user
+- Search boxes for pull requests and issues
+- A settings prompt when no GitHub token is configured
+
+**Loading Strategy:**
+- GitHub data is fetched in pages with cancellation support
+- Pull requests and issues load independently from local recent repositories
+- If no token exists, the dashboard stays useful with local repository summaries
+
 ## 3. Commit History Visualization
 
 ### 3.1 Commit Graph
@@ -157,6 +184,37 @@ async function searchCommits(query: string) {
 ```
 
 **Backend:** `invoke("search_commits", { repo_path, query })`
+
+### 3.4 Galaxy View
+
+**Purpose:** Visualize branches and commits as an interactive canvas map for exploratory history understanding.
+
+**Features:**
+- Spiral, layered, and constellation layouts
+- 3D, balanced, and circling motion modes
+- Tree mode for branch/commit hierarchy visualization
+- Zoom, pan, click-to-focus, hover details, and branch lane context
+- Load-all support for larger histories with memory-aware rendering
+
+**Performance Rules:**
+- Canvas drawing stays local to the panel
+- Motion is lightweight and can be reduced, while head-branch circling remains available as a visual anchor
+- Data is derived from already loaded commit/branch state where possible
+
+### 3.5 Burndown Analytics
+
+**Purpose:** Show team focus, after-hours work, repository pulse, and contributor workload signals from Git history.
+
+**Displays:**
+- Repository burndown pulse over recent weeks
+- After-hours and weekend work indicators
+- Contributor-level activity windows
+- Hot-file and bottleneck signals not already covered by Productivity Arena
+
+**Loading Strategy:**
+- Uses fast commit metadata first
+- Avoids blocking scroll while deeper analytics are computed
+- Keeps labels human-readable instead of shorthand week codes
 
 ## 4. Branch Management
 
@@ -310,6 +368,7 @@ async function setUpstream(branch: string, upstream: string) {
 - Stage individual files
 - Stage all changes
 - Stage by hunk (in diff viewer)
+- Stage new files and modified files from the changes panel
 
 **UI:**
 - Click file + "Stage" button
@@ -354,20 +413,41 @@ async function unstageFile(path: string) {
 
 **Features:**
 - Discard single file
-- Discard all changes
-- Confirmation required
+- Discard all unstaged working-tree changes
+- Does not discard staged changes when the user requests unstaged discard
+- Undo toast delay before destructive UI discard runs
+- Confirmation or warning for irreversible paths
 
 **Implementation:**
 ```typescript
 async function discardFile(path: string) {
-  if (confirm("Discard changes to " + path + "?")) {
-    await useGit().discardFile(path);
-    await updateStatus();
-  }
+  scheduleDestructiveAction({
+    message: "Discard changes?",
+    run: async () => {
+      await useGit().discardFile(path);
+      await updateStatus();
+    },
+  });
 }
 ```
 
 **Backend:** `invoke("discard_file", { repo_path, file_path })`
+
+### 5.5 Smart .gitignore Wizard
+
+**Purpose:** Prevent accidental commits of generated files, local secrets, caches, logs, and dependency folders.
+
+**Behavior:**
+- Enabled by default and configurable in Settings/Preferences
+- Scans untracked files already present in the working changes list
+- Groups matches such as `node_modules/`, `.env`, `*.log`, `dist/`, `target/`, framework caches, Python caches, local databases, and private key formats
+- Offers **Ignore selected**, **Open .gitignore**, and **Keep tracking**
+- Adds only missing ignore patterns and preserves existing `.gitignore` content
+
+**Performance:**
+- Uses existing status data, not a full filesystem crawl
+- Samples only a few paths per suggestion group
+- Avoids suggestions already covered by existing patterns
 
 ## 6. Diff Viewing
 
@@ -422,7 +502,9 @@ async function getCommitDiff(commitId: string, filePath?: string) {
 
 **Features:**
 - View individual hunks
-- Apply/discard hunks
+- Stage hunks
+- Unstage hunks
+- Discard hunks
 - Edit hunk content
 - Preview changes
 
@@ -430,6 +512,7 @@ async function getCommitDiff(commitId: string, filePath?: string) {
 - Stage partial changes
 - Review changes before commit
 - Fix conflicts selectively
+- Separate unrelated edits in the same file into different commits
 
 ### 6.4 File Editing in Diff Viewer
 
@@ -449,6 +532,20 @@ async function saveFileContent(filePath: string, content: string) {
 ```
 
 **Backend:** `invoke("save_file_content", { repo_path, file_path, content })`
+
+### 6.5 File Journey
+
+**Purpose:** Provide a small, optional summary for the currently inspected file.
+
+**Displays:**
+- Created by
+- Last changed by
+- Recent commit context when available quickly
+
+**Rules:**
+- Hidden by default behind a small diff-toolbar icon
+- Can be closed from the panel
+- Skips expensive work rather than blocking the diff viewer
 
 ## 7. Commit Creation
 
@@ -485,11 +582,29 @@ async function createCommit(message: string, coAuthors?: string[]) {
 - Undo/Redo
 - Message templates
 - Character counter
+- Visual Commit Builder with conventional type, scope, issue tag, and summary fields
+- Commit Analyzer indicator and message quality feedback
 
 **Best Practices:**
 - First line < 50 characters
 - Blank line after first line
 - Detailed description (72 characters per line)
+
+### 7.3 Visual Commit Builder
+
+**Purpose:** Help users compose consistent commit subjects without memorizing commit conventions.
+
+**Behavior:**
+- Opens from the builder icon beside the commit analyzer/message area
+- Uses capitalized commit types to match analyzer rules
+- Supports a wide scope list plus custom scope input
+- Supports issue tags such as `#123`
+- Saves the generated subject back into the commit input
+
+**Subject Shape:**
+```text
+Type(scope): #123 concise summary
+```
 
 ## 8. Remote Operations
 
@@ -567,6 +682,18 @@ async function fetchAll() {
 ```
 
 **Backend:** `invoke("fetch_all", { repo_path })`
+
+### 8.4 Release Notes After Merge
+
+**Purpose:** Generate a structured Markdown summary after a successful merge scenario.
+
+**Behavior:**
+- Triggered only after a positive merge completion path
+- Asks whether the user wants to download release notes
+- Uses commits between source and target refs
+- Groups changes into Breaking Changes, Features, Bug Fixes, Performance, Documentation, and Other Changes
+- Adds executive summary, readiness notes, suggested verification, contributors, highlights, and commit appendix
+- Saves the Markdown file to the user-selected path
 
 ## 9. Advanced Operations
 
@@ -656,8 +783,10 @@ async function checkoutCommit(commitId: string) {
 **Features:**
 - File section: tab management and repository open actions
 - Edit section: copy path, refresh repository, open in VS Code
-- View section: toggle terminal, open folder explorer, open settings
+- View section: toggle terminal, open folder explorer, open settings, and switch between Graph, Galaxy, Productivity, Time Machine, Conflict Suspects, and Burndown Analytics
 - Help section: in-app help panel, online guide, issue reporting
+- Middle-click closes a repository tab
+- Ctrl+Tab switches to the next repository tab
 
 ### 10.2 In-App Help and Shortcuts
 
@@ -671,6 +800,7 @@ async function checkoutCommit(commitId: string) {
 - Core feature overview
 - Keyboard shortcuts table
 - Quick navigation tips for repository workflows
+- Command Palette shortcut and view-mode shortcuts
 
 ### 10.3 Open Repository with External Tools
 
@@ -685,17 +815,78 @@ async function checkoutCommit(commitId: string) {
 
 **Backend Command:** `invoke("open_path_with_tool", { path, tool })`
 
+### 10.4 Command Palette
+
+**Purpose:** Search common commands and open views with minimal clicks.
+
+**Access:**
+- Ctrl+K
+
+**Common Actions:**
+- Refresh repository
+- Toggle terminal
+- Open repository
+- Open folder explorer
+- Open settings
+- Open logs
+- Switch to Graph, Galaxy, or Burndown Analytics
+
+### 10.5 Terminal Command Safety Layer
+
+**Purpose:** Protect manual terminal usage from accidental destructive Git commands.
+
+**Guarded Commands:**
+- `git reset --hard`
+- forced `git clean`
+- destructive `git restore`
+- checkout overwrite patterns
+- `git rm` without `--cached`
+- `git stash pop`, `drop`, or `clear`
+- local branch delete
+- force push
+
+**Safety UX:**
+- Shows a preview of likely staged, unstaged, untracked, or branch/remote impact
+- Offers Continue, Cancel, and Create safety stash first when applicable
+- Disables safety stash if conflicts are present or if a stash is not useful for that command type
+
+### 10.6 Background Maintenance Preferences
+
+**Purpose:** Optional background mechanisms for users who want proactive repository reminders without changing the normal Git workflow.
+
+**Defaults:**
+- Off by default
+
+**Available Mechanisms:**
+- Repository health refresh
+- Remote hygiene
+- Focus sync
+- Idle-only mode
+- Stale work reminder
+- Behind-branch reminder
+- Large change reminder with configurable threshold
+- Conflict reminder
+- Commit details preload
+
+**UX Rule:** Enabled reminders surface through toasts and should stay non-invasive.
+
 ## 11. Commit Intelligence Modules (Conflict + Productivity + Time Machine)
 
 This section documents updated module ownership and where each module must live.
+
+For detailed scoring formulas, code ownership interpretation, conflict hotspot algorithms, merge preflight risk, Productivity Arena metrics, Burndown Analytics, and Time Machine snapshot behavior, use [36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md) as the canonical deep dive.
 
 ### 11.1 Frontend Ownership Map
 
 | Feature Area | Module File | Must Own |
 |-------------|-------------|----------|
+| Galaxy view | `src/view/commit/CommitGalaxyPanel.vue` | Canvas galaxy, tree mode, zoom/focus, layout controls, branch/commit hover details |
 | Conflict suspects panel | `src/view/commit/CommitConflictHeatmapPanel.vue` | Hotspots stream, pairs stream, repository tree stream, merge-window filtering, tree roll-up, per-element loaders, conflict diagnostics cards |
 | Productivity arena | `src/view/commit/CommitProductivityPanel.vue` | Preview/full-history loading, author filter, streak and rhythm metrics, stability scoring, section-level performance caching |
 | Time machine | `src/view/commit/CommitTimeMachinePanel.vue` | Full-history timeline loading, autoplay, SHA search, snapshot explorer, rollback command copy, cached commit snapshots |
+| Burndown analytics | `src/view/commit/CommitBurndownAnalyticsPanel.vue` | Repository pulse, after-hours windows, contributor workload, focus and risk charts |
+| Smart .gitignore assistant | `src/view/commit/SmartGitignoreWizard.vue` | Generated/private file grouping, pattern coverage checks, `.gitignore` updates |
+| Release notes | `src/features/release-notes/releaseNotes.ts` | Markdown grouping, summaries, contributors, readiness and verification notes |
 | Merge preflight bridge | `src/domain/git/composables/gitBranchActions.ts` | Merge-risk pre-check orchestration and user confirmation prompt flow |
 | Shared analytics models | `src/types/models/conflictHotspot.ts`, `src/types/models/conflictAnalytics.ts` | Typed contracts shared between panels and Tauri payloads |
 
@@ -716,6 +907,8 @@ This section documents updated module ownership and where each module must live.
 3. Keep backend command handlers thin; move heavy compute to `src-tauri/src/services/git_service.rs`.
 4. Add or change payload shape only in model files under `src-tauri/src/models/` and `src/types/models/`.
 5. Wire every new command in `src-tauri/src/lib.rs` and update `DOCUMENTATION_09_COMMANDS_REFERENCE.md` in the same change.
+6. Keep terminal safety prompt detection in `src/view/shell/TerminalPanel.vue` and command execution/safety stash orchestration in `src/domain/git/composables/gitTerminalActions.ts`.
+7. Keep undoable destructive UI actions behind `src/shared/notifications/useUndoableDestructiveAction.ts`.
 
 ### 11.4 Performance Baseline for These Features
 
@@ -724,6 +917,8 @@ This section documents updated module ownership and where each module must live.
 3. Use stale-run tokens for async stream safety.
 4. Time Machine autoplay must use scheduled snapshot refresh to reduce frame flicker.
 5. Keep conflict-tree roll-up logic aligned between the repository tree and hotspot scoring so folder nodes inherit child pressure consistently.
+6. Prefer existing status/commit data for dashboard and assistant features before adding new filesystem or Git scans.
+7. If a feature cannot load quickly, show the useful partial state and continue work in the background.
 
 ---
 

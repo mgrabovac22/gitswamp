@@ -19,7 +19,7 @@
 **Supported Methods:**
 - HTTPS with credentials
 - SSH with key-based authentication
-- OAuth tokens (GitHub, GitLab)
+- Personal access tokens for provider APIs (GitHub, GitLab, Bitbucket, Azure DevOps)
 
 **Implementation:**
 ```rust
@@ -33,22 +33,34 @@ let cred = cred_helper.resolve(&url, None, &capabilities)?;
 ### 2.1 Token Storage
 
 **Security Measures:**
-- Tokens stored in encrypted format
+- Tokens are stored locally per provider key with lightweight obfuscation
 - Protected by file system permissions
 - Never logged or displayed
-- Cleared from memory after use
+- Loaded only when a provider integration needs them
+
+**Important:** The current implementation uses base64 plus an application XOR key for obfuscation, not OS keychain storage and not cryptographic encryption. Treat local machine access as trusted and use scoped, revocable provider tokens.
 
 **Storage Locations:**
-- Windows: `%APPDATA%\GitSwamp\tokens`
-- macOS: `~/Library/Application Support/GitSwamp/tokens`
-- Linux: `~/.config/GitSwamp/tokens`
+- Windows: `%APPDATA%\.gitswamp\credentials_<provider>`
+- macOS/Linux: `$HOME/.config/.gitswamp/credentials_<provider>`
+
+**Provider Keys:**
+- `github`
+- `github-enterprise`
+- `gitlab`
+- `gitlab-self`
+- `bitbucket`
+- `bitbucket-dc`
+- `azure`
+- `azure-domain`
+
+Self-hosted GitLab token data is stored as `domain|token` so the frontend can match the token to the configured instance.
 
 ### 2.2 GitHub Integration
 
 **Authentication Methods:**
-- OAuth token with minimal permissions
 - Personal access token
-- GitHub App authentication
+- GitHub Enterprise token when a custom domain is configured
 
 **Recommended Scopes:**
 ```
@@ -61,8 +73,8 @@ read:user - User profile
 
 **Authentication Methods:**
 - Private access token
-- OAuth 2.0
 - Personal access token with api scope
+- Self-managed GitLab token stored with normalized domain
 
 **Recommended Scopes:**
 ```
@@ -70,6 +82,18 @@ api - Full API access
 read_user - Read user profile
 read_repository - Read repository
 ```
+
+### 2.4 Other Provider Integration
+
+**Bitbucket:**
+- Uses app passwords or HTTP access tokens depending on provider mode
+- Store only repository-scoped credentials where possible
+
+**Azure DevOps:**
+- Uses personal access tokens
+- Stores the Azure organization/domain separately under `azure-domain`
+
+**Recommendation:** Prefer the smallest scopes that support clone/search/push workflows, rotate tokens periodically, and revoke unused tokens from the provider UI.
 
 ## 3. Input Validation
 
@@ -87,16 +111,16 @@ fn validate_repository_path(path: &str) -> Result<(), String> {
     if path.contains("..") {
         return Err("Invalid path: contains parent directory references".into());
     }
-    
+
     let path = std::path::Path::new(path);
     if !path.exists() {
         return Err("Repository path does not exist".into());
     }
-    
+
     if !path.is_dir() {
         return Err("Path is not a directory".into());
     }
-    
+
     Ok(())
 }
 ```
@@ -116,15 +140,15 @@ fn validate_branch_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Branch name cannot be empty".into());
     }
-    
+
     if name.starts_with('-') {
         return Err("Branch name cannot start with '-'".into());
     }
-    
+
     if name.contains("..") || name.contains("//") {
         return Err("Invalid branch name pattern".into());
     }
-    
+
     Ok(())
 }
 ```
@@ -149,15 +173,15 @@ fn validate_repository_url(url: &str) -> Result<(), String> {
     if url.is_empty() {
         return Err("URL cannot be empty".into());
     }
-    
+
     // Allow common Git URL formats
-    if !url.starts_with("https://") && 
-       !url.starts_with("git://") && 
+    if !url.starts_with("https://") &&
+       !url.starts_with("git://") &&
        !url.starts_with("ssh://") &&
        !url.contains('@') {
         return Err("Invalid repository URL".into());
     }
-    
+
     Ok(())
 }
 ```
@@ -176,7 +200,7 @@ fn validate_repository_url(url: &str) -> Result<(), String> {
 fn is_file_in_repository(repo_path: &str, file_path: &str) -> Result<bool, String> {
     let repo = std::path::PathBuf::from(repo_path);
     let file = std::path::PathBuf::from(file_path);
-    
+
     // Check if file is within repository
     file.starts_with(&repo)
         .then_some(true)
@@ -393,7 +417,7 @@ npm update
 fn check_write_permission(repo_path: &str) -> Result<(), String> {
     let metadata = std::fs::metadata(repo_path)
         .map_err(|e| e.to_string())?;
-    
+
     if !metadata.permissions().readonly() {
         Ok(())
     } else {
