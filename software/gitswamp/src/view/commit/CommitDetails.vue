@@ -24,6 +24,7 @@ import {
   Files,
   Hammer,
   Map as MapIcon,
+  Bug,
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -41,6 +42,7 @@ import {
   COMMIT_ANALYZER_SETTINGS_EVENT,
   getStoredCommitAnalyzerSettings,
 } from "@/shared/config/commitAnalyzerPreferences";
+import type { ManualBisectDetailsState } from "@/features/repository/manual-bisect/useManualBisect";
 import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo, StagedDiffSummary } from "@/types";
 
 const props = defineProps<{
@@ -58,6 +60,8 @@ const props = defineProps<{
   stashFiles?: CommitFileInfo[];
   repoPath: string;
   smartGitignoreWizardEnabled?: boolean;
+  bugAutopsyEnabled?: boolean;
+  manualBisect?: ManualBisectDetailsState | null;
 }>();
 
 const emit = defineEmits<{
@@ -78,6 +82,8 @@ const emit = defineEmits<{
   closeDiffViewer: [];
   amendCommitMessage: [newMessage: string];
   refreshState: [];
+  startManualBisect: [sha: string];
+  selectManualBisectGood: [sha: string];
 }>();
 
 const commitSummary = ref("");
@@ -224,6 +230,29 @@ function enterChangesPanelAndSelectFile(index = 0) {
 
 function hasNavigableCommitFiles(): boolean {
   return !!props.commit && !props.isWorkingChanges && !props.isStash && props.commitFiles.length > 0;
+}
+
+const canStartManualBisect = computed(() =>
+  props.bugAutopsyEnabled === true && !!props.commit && !props.isWorkingChanges && !props.isStash && !isMultiCommitSelection.value && !props.manualBisect,
+);
+
+const showManualBisectPanel = computed(() => canStartManualBisect.value || !!props.manualBisect);
+
+const canUseCommitAsManualBisectGood = computed(() => {
+  if (!props.commit || !props.manualBisect || props.manualBisect.phase !== "select-good") {
+    return false;
+  }
+  return props.commit.sha !== props.manualBisect.badSha;
+});
+
+function startManualBisectFromCommit() {
+  if (!props.commit) return;
+  emit("startManualBisect", props.commit.sha);
+}
+
+function useCommitAsManualBisectGood() {
+  if (!props.commit || !canUseCommitAsManualBisectGood.value) return;
+  emit("selectManualBisectGood", props.commit.sha);
 }
 
 function handleCommitFileArrowRight(event: KeyboardEvent) {
@@ -2759,6 +2788,55 @@ onUnmounted(() => {
             </span>
           </div>
         </div>
+
+        <template v-if="showManualBisectPanel">
+          <div class="h-px bg-[var(--border)]" />
+          <div class="rounded-md border border-[var(--primary)]/20 bg-[var(--primary)]/8 p-2.5">
+            <div class="flex items-start gap-2.5">
+              <div class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded bg-[var(--primary)]/12 text-[var(--primary)]">
+                <Bug class="h-3.5 w-3.5" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-[11px] font-semibold text-[var(--foreground)]">Bug Autopsy</div>
+                <p v-if="!manualBisect" class="mt-0.5 text-[10px] leading-snug text-[var(--muted-foreground)]">
+                  Use this commit as broken, then pick an older working commit.
+                </p>
+                <p v-else-if="manualBisect.phase === 'select-good'" class="mt-0.5 text-[10px] leading-snug text-[var(--muted-foreground)]">
+                  Broken endpoint: {{ manualBisect.badSha.slice(0, 7) }}. Select the older commit that worked.
+                </p>
+                <p v-else-if="manualBisect.phase === 'testing'" class="mt-0.5 text-[10px] leading-snug text-[var(--muted-foreground)]">
+                  Follow the floating panel and mark each checkout result.
+                </p>
+                <p v-else class="mt-0.5 text-[10px] leading-snug text-[var(--muted-foreground)]">
+                  Candidate: {{ manualBisect.culpritSha?.slice(0, 7) || "unknown" }}.
+                </p>
+              </div>
+            </div>
+
+            <div class="mt-2 flex flex-wrap gap-1.5">
+              <button
+                v-if="canStartManualBisect"
+                class="rounded bg-[var(--primary)] px-2 py-1 text-[10px] font-semibold text-white transition-opacity hover:opacity-90"
+                @click="startManualBisectFromCommit"
+              >
+                Start Bug Autopsy
+              </button>
+              <button
+                v-else-if="canUseCommitAsManualBisectGood"
+                class="rounded border border-[#10b981]/40 bg-[#10b981]/14 px-2 py-1 text-[10px] font-semibold text-[#10b981] transition-colors hover:bg-[#10b981]/22"
+                @click="useCommitAsManualBisectGood"
+              >
+                Use as worked commit
+              </button>
+              <span
+                v-else-if="manualBisect?.phase === 'select-good' && commit.sha === manualBisect.badSha"
+                class="rounded border border-[#ef4444]/30 bg-[#ef4444]/10 px-2 py-1 text-[10px] font-semibold text-[#ef4444]"
+              >
+                Broken endpoint
+              </span>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
 

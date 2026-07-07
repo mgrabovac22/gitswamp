@@ -667,12 +667,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="burndown-surface flex-1 min-h-0 overflow-y-auto">
+  <div class="burnout-surface flex-1 min-h-0 overflow-y-auto">
     <div class="p-4 md:p-5 space-y-4">
-      <section class="burndown-hero">
+      <section class="burnout-hero">
         <div class="min-w-0">
           <p class="eyebrow">Team Focus</p>
-          <h2>Burndown Analytics</h2>
+          <h2>Burnout Analytics</h2>
           <p class="hero-copy">Repository-wide rhythm, after-hours load, and ownership pressure.</p>
         </div>
         <div class="hero-actions">
@@ -765,7 +765,7 @@ onUnmounted(() => {
         <div class="section-head">
           <div>
             <p class="eyebrow">Trend</p>
-            <h3>Repository Burndown Pulse</h3>
+            <h3>Repository Burnout Pulse</h3>
           </div>
           <span class="section-note">last {{ RECENT_WEEK_COUNT }} weeks</span>
         </div>
@@ -888,21 +888,21 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.burndown-surface {
+.burnout-surface {
   background:
     radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 12%, transparent), transparent 34%),
     var(--background);
   color: var(--foreground);
 }
 
-.burndown-hero,
+.burnout-hero,
 .analytics-section {
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--card) 86%, transparent);
   padding: 16px;
 }
 
-.burndown-hero {
+.burnout-hero {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;

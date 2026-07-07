@@ -154,7 +154,7 @@ src/
        - Productivity Arena (Alt+3)
        - Time Machine (Alt+4)
        - Usual Conflict Suspects/Heatmap (Alt+5)
-       - Burndown Analytics (Alt+6)
+       - Burnout Analytics (Alt+6)
        - Open in Folder Explorer (Alt+O)
        - Open integrations/options (Ctrl+Shift+I)
        - Open Settings (Ctrl+,)
@@ -173,7 +173,7 @@ src/
    - Main workspace container for repository content
    - Integrates all visualization and editing panels
    - Manages layout: Sidebar, Graph/Panels, Details
-   - Handles multiple history view modes (graph, galaxy, productivity, time-machine, conflict-heatmap, burndown, remote-insights, conflict-resolve)
+   - Handles multiple history view modes (graph, galaxy, productivity, time-machine, conflict-heatmap, burnout, remote-insights, conflict-resolve)
    - Terminal panel integration
    - Diff viewer modal
    - Conflict resolver modal
@@ -323,8 +323,8 @@ src/
   - Risk scoring cards and top-suspect explanations
   - Expandable tree visualization for conflict pressure hotspots
 
-21. **CommitBurndownAnalyticsPanel.vue** (Team Focus Analytics)
-  - Repository burndown pulse with readable week labels
+21. **CommitBurnoutAnalyticsPanel.vue** (Team Focus Analytics)
+  - Repository burnout pulse with readable week labels
   - After-hours and weekend work windows
   - Contributor focus and workload indicators
   - Hot-file and bottleneck context not duplicated from Productivity Arena
@@ -487,8 +487,8 @@ GitSwamp provides 8 history/workspace modes, accessible from the **View** menu a
 - Search-based filtering plus tree-scope filtering
 - Helps prevent problematic merges
 
-#### 6. **Burndown Analytics** - Alt+6
-- Repository burndown pulse for recent weeks
+#### 6. **Burnout Analytics** - Alt+6
+- Repository burnout pulse for recent weeks
 - After-hours and weekend activity signals
 - Contributor focus and workload risk summaries
 - Hot-file ownership and bottleneck context
@@ -548,7 +548,7 @@ App.vue (Root)
     │   ├─ CommitProductivityPanel (mode: productivity)
     │   ├─ CommitTimeMachinePanel (mode: time-machine)
     │   ├─ CommitConflictHeatmapPanel (mode: conflict-heatmap)
-    │   ├─ CommitBurndownAnalyticsPanel (mode: burndown)
+    │   ├─ CommitBurnoutAnalyticsPanel (mode: burnout)
     │   ├─ RemoteInsightsPanel (mode: remote-insights)
     │   │
     │   ├─> CommitDetails

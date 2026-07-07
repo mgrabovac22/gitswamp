@@ -45,14 +45,14 @@ Temporary experimental workflow allowing you to:
   - **Productivity Arena** - commit rhythm, author balance, bottleneck, and stability scoring
   - **Time Machine** - frame-by-frame history playback, snapshot explorer, and rollback command guidance
   - **Usual Conflict Suspects** - conflict hotspot heatmap, tree roll-up, and risky file-pair diagnostics
-  - **Burndown Analytics** - repository pulse, after-hours work windows, and contributor focus signals
+  - **Burnout Analytics** - repository pulse, after-hours work windows, and contributor focus signals
 - Visual Commit Builder with conventional type, scope, optional issue tag, and summary fields
 - Release Notes generator for successful merge flows
 
 #### Productivity Insights
 - **Commit Productivity Panel**: Visualization of commit activity and code change trends
 - **Conflict Heatmap**: Identify files and areas with frequent conflicts
-- **Burndown Analytics**: Visualize repository pace, after-hours risk, and team focus signals
+- **Burnout Analytics**: Visualize repository pace, after-hours risk, and team focus signals
 - **Expert Advisor**: Find who knows a file best based on recent commits
 
 ### Platform Integrations
@@ -193,7 +193,7 @@ src/
 └── view/                            # Vue views and pages
     ├── AppView.vue                 # Main application layout
     ├── commit/                      # Commit-related views
-    │   ├── CommitBurndownAnalyticsPanel.vue
+    │   ├── CommitBurnoutAnalyticsPanel.vue
     │   ├── CommitConflictHeatmapPanel.vue
     │   ├── CommitDetails.vue
     │   ├── CommitGalaxyPanel.vue
@@ -309,7 +309,7 @@ npm run tauri build
 | `Alt+3` | Productivity Arena |
 | `Alt+4` | Time Machine |
 | `Alt+5` | Usual Conflict Suspects |
-| `Alt+6` | Burndown Analytics |
+| `Alt+6` | Burnout Analytics |
 
 ## Authentication & Token Management
 

@@ -28,7 +28,7 @@ The project focuses on delivering a comprehensive Git management solution that:
 4. **Resolve Conflicts** - Built-in merge conflict resolution interface
 5. **Integrate with Remote Services** - GitHub and GitLab repository search and authentication
 6. **Support Advanced Operations** - Stashing, tagging, cherry-picking, rebasing, and more
-7. **Analyze Repository Motion** - Graph, Galaxy, Productivity, Time Machine, Conflict Suspects, and Burndown views for history intelligence
+7. **Analyze Repository Motion** - Graph, Galaxy, Productivity, Time Machine, Conflict Suspects, and Burnout views for history intelligence
 8. **Protect Destructive Workflows** - Undoable destructive UI actions and terminal safety previews with optional safety stash
 
 ### 3.2 Target Users
@@ -184,7 +184,7 @@ gitswamp/
 - **Hamburger Menu (☰)** - Quick access to File, Edit, View, and Help sections
   - File: New Tab, Open Repository, Close Tab, Create Gist
   - Edit: Copy Repository Path, Refresh Repository, Open in VS Code
-  - View: Toggle Terminal, Commit Graph, Galaxy View, Productivity Arena, Time Machine, Usual Conflict Suspects, Burndown Analytics, Open in Folder Explorer, Open Settings
+  - View: Toggle Terminal, Commit Graph, Galaxy View, Productivity Arena, Time Machine, Usual Conflict Suspects, Burnout Analytics, Open in Folder Explorer, Open Settings
   - Help: In-app Shortcuts, Online Guide, Report Issue
 - **In-App Help Panel (F1)** - Shortcut guide and quick start guide
 - **Folder Explorer Shortcut (Alt+O)** - Open active repository in system explorer
@@ -203,7 +203,7 @@ gitswamp/
 - **Productivity Arena** - Commit rhythm, author balance, streaks, and stability scoring
 - **Time Machine** - Commit-by-commit history playback with snapshot explorer and rollback guidance
 - **Usual Conflict Suspects** - Merge-window hotspot analysis, tree heatmap, and risky pair detection
-- **Burndown Analytics** - Contributor workload, after-hours trends, repository burndown pulse, and team focus risk signals
+- **Burnout Analytics** - Contributor workload, after-hours trends, repository burnout pulse, and team focus risk signals
 
 ## 7. Architecture Overview
 
@@ -246,7 +246,7 @@ gitswamp/
 **Frontend Components (41 Vue components):**
 - Shell components for title bar, header, settings, command palette, terminal, logs, and branch actions
 - Repository components for tabs, landing dashboard, clone/init/auth/action dialogs, sidebar, workspace, and remote insights
-- Commit components for graph, galaxy, productivity, time machine, conflict suspects, burndown analytics, details, file items, and Smart .gitignore
+- Commit components for graph, galaxy, productivity, time machine, conflict suspects, burnout analytics, details, file items, and Smart .gitignore
 - Shared UI components for buttons, inputs, close icon buttons, diff viewer, conflict resolver, toasts, and provider icons
 
 **Backend Commands (102 total):**

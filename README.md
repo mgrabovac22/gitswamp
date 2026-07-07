@@ -8,7 +8,7 @@ Complete software documentation for the GitSwamp Git client application built wi
 
 - **Work Dashboard** on the start screen lists GitHub pull requests authored by the signed-in user and issues assigned to them, with local repository context when no token is configured
 - **Command Palette (Ctrl+K)** centralizes common repository, view, terminal, settings, and analysis actions
-- **Galaxy View (Alt+2)** and **Burndown Analytics (Alt+6)** extend the history tools alongside Productivity Arena, Time Machine, and Conflict Suspects
+- **Galaxy View (Alt+2)** and **Burnout Analytics (Alt+6)** extend the history tools alongside Productivity Arena, Time Machine, and Conflict Suspects
 - **Smart .gitignore Wizard** is enabled by default and suggests generated/private untracked files such as `node_modules/`, `dist/`, `target/`, `.env`, and logs
 - **Micro-staging** supports hunk-level stage, unstage, and discard actions directly in the diff viewer
 - **Terminal Command Safety Layer** previews destructive manual Git commands and can create a safety stash before continuing
@@ -253,7 +253,7 @@ This comprehensive documentation package contains the active GitSwamp documentat
 ### User Features Documented
 - Repository management (open, clone, init)
 - Commit visualization and history
-- Galaxy view, Burndown Analytics, Productivity Arena, Time Machine, and Conflict Suspects
+- Galaxy view, Burnout Analytics, Productivity Arena, Time Machine, and Conflict Suspects
 - Branch operations (create, delete, rename, checkout)
 - File staging and unstaging
 - Hunk-level micro-staging and hunk discard

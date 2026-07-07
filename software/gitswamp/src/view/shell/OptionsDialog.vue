@@ -24,6 +24,10 @@ import {
   storeSmartGitignoreWizardEnabled,
 } from "@/shared/config/gitignoreWizardPreferences";
 import {
+  getStoredBugAutopsyEnabled,
+  storeBugAutopsyEnabled,
+} from "@/shared/config/bugAutopsyPreferences";
+import {
   BACKGROUND_MAINTENANCE_EVENT,
   DEFAULT_BACKGROUND_MAINTENANCE_SETTINGS,
   getStoredBackgroundMaintenanceSettings,
@@ -174,6 +178,7 @@ const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
 const smartGitignoreWizardEnabled = ref(true);
+const bugAutopsyEnabled = ref(false);
 const commitAnalyzerEnabled = ref(true);
 const disableGraphAnimations = ref(false);
 const smoothGraphScroll = ref(false);
@@ -1757,6 +1762,7 @@ onMounted(() => {
   organisationProfiles.value = readOrganisationProfilesFromStorage();
 
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
+  bugAutopsyEnabled.value = getStoredBugAutopsyEnabled();
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
   const backgroundMaintenanceSettings = getStoredBackgroundMaintenanceSettings();
   backgroundHealthRefreshEnabled.value = backgroundMaintenanceSettings.healthRefreshEnabled;
@@ -1858,6 +1864,13 @@ watch(smartGitignoreWizardEnabled, (value) => {
     return;
   }
   storeSmartGitignoreWizardEnabled(value);
+});
+
+watch(bugAutopsyEnabled, (value) => {
+  if (isHydrating) {
+    return;
+  }
+  storeBugAutopsyEnabled(value);
 });
 
 watch([
@@ -2643,6 +2656,16 @@ watch(activePlatform, () => {
                   </div>
                   <button @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="smartGitignoreWizardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="smartGitignoreWizardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Bug Autopsy</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Enable guided manual bisect from the commit info panel. Default off.</p>
+                  </div>
+                  <button @click="bugAutopsyEnabled = !bugAutopsyEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="bugAutopsyEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="bugAutopsyEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
                   </button>
                 </div>
 

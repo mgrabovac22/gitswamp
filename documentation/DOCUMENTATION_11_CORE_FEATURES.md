@@ -7,7 +7,7 @@ GitSwamp provides comprehensive Git repository management through 102 integrated
 The current frontend combines classic Git GUI workflows with lightweight safety and intelligence layers:
 - Start dashboard for local repository context plus GitHub pull requests authored by the user and issues assigned to them
 - Command Palette for quickly opening views and running common repository actions
-- Graph, Galaxy, Productivity Arena, Time Machine, Conflict Suspects, and Burndown Analytics history modes
+- Graph, Galaxy, Productivity Arena, Time Machine, Conflict Suspects, and Burnout Analytics history modes
 - Smart .gitignore Wizard for generated/private untracked files
 - Hunk-level micro-staging in the diff viewer
 - Terminal safety previews for destructive manual Git commands
@@ -201,12 +201,12 @@ async function searchCommits(query: string) {
 - Motion is lightweight and can be reduced, while head-branch circling remains available as a visual anchor
 - Data is derived from already loaded commit/branch state where possible
 
-### 3.5 Burndown Analytics
+### 3.5 Burnout Analytics
 
 **Purpose:** Show team focus, after-hours work, repository pulse, and contributor workload signals from Git history.
 
 **Displays:**
-- Repository burndown pulse over recent weeks
+- Repository burnout pulse over recent weeks
 - After-hours and weekend work indicators
 - Contributor-level activity windows
 - Hot-file and bottleneck signals not already covered by Productivity Arena
@@ -783,7 +783,7 @@ async function checkoutCommit(commitId: string) {
 **Features:**
 - File section: tab management and repository open actions
 - Edit section: copy path, refresh repository, open in VS Code
-- View section: toggle terminal, open folder explorer, open settings, and switch between Graph, Galaxy, Productivity, Time Machine, Conflict Suspects, and Burndown Analytics
+- View section: toggle terminal, open folder explorer, open settings, and switch between Graph, Galaxy, Productivity, Time Machine, Conflict Suspects, and Burnout Analytics
 - Help section: in-app help panel, online guide, issue reporting
 - Middle-click closes a repository tab
 - Ctrl+Tab switches to the next repository tab
@@ -829,7 +829,7 @@ async function checkoutCommit(commitId: string) {
 - Open folder explorer
 - Open settings
 - Open logs
-- Switch to Graph, Galaxy, or Burndown Analytics
+- Switch to Graph, Galaxy, or Burnout Analytics
 
 ### 10.5 Terminal Command Safety Layer
 
@@ -874,7 +874,7 @@ async function checkoutCommit(commitId: string) {
 
 This section documents updated module ownership and where each module must live.
 
-For detailed scoring formulas, code ownership interpretation, conflict hotspot algorithms, merge preflight risk, Productivity Arena metrics, Burndown Analytics, and Time Machine snapshot behavior, use [36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md) as the canonical deep dive.
+For detailed scoring formulas, code ownership interpretation, conflict hotspot algorithms, merge preflight risk, Productivity Arena metrics, Burnout Analytics, and Time Machine snapshot behavior, use [36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md) as the canonical deep dive.
 
 ### 11.1 Frontend Ownership Map
 
@@ -884,7 +884,7 @@ For detailed scoring formulas, code ownership interpretation, conflict hotspot a
 | Conflict suspects panel | `src/view/commit/CommitConflictHeatmapPanel.vue` | Hotspots stream, pairs stream, repository tree stream, merge-window filtering, tree roll-up, per-element loaders, conflict diagnostics cards |
 | Productivity arena | `src/view/commit/CommitProductivityPanel.vue` | Preview/full-history loading, author filter, streak and rhythm metrics, stability scoring, section-level performance caching |
 | Time machine | `src/view/commit/CommitTimeMachinePanel.vue` | Full-history timeline loading, autoplay, SHA search, snapshot explorer, rollback command copy, cached commit snapshots |
-| Burndown analytics | `src/view/commit/CommitBurndownAnalyticsPanel.vue` | Repository pulse, after-hours windows, contributor workload, focus and risk charts |
+| Burnout analytics | `src/view/commit/CommitBurnoutAnalyticsPanel.vue` | Repository pulse, after-hours windows, contributor workload, focus and risk charts |
 | Smart .gitignore assistant | `src/view/commit/SmartGitignoreWizard.vue` | Generated/private file grouping, pattern coverage checks, `.gitignore` updates |
 | Release notes | `src/features/release-notes/releaseNotes.ts` | Markdown grouping, summaries, contributors, readiness and verification notes |
 | Merge preflight bridge | `src/domain/git/composables/gitBranchActions.ts` | Merge-risk pre-check orchestration and user confirmation prompt flow |

@@ -8,18 +8,37 @@ import LogsPanel from "@/view/shell/LogsPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
 import { useResizableWorkspace } from "@/features/repository/workspace/useResizableWorkspace";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
-import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
+import ManualBisectOverlay from "@/features/repository/manual-bisect/ManualBisectOverlay.vue";
+import { useManualBisect } from "@/features/repository/manual-bisect/useManualBisect";
+import type {
+  CommitInfo,
+  StashInfo,
+  IssueInfo,
+  PullRequestInfo,
+  GistInfo,
+  RemoteIssueCreatePayload,
+  RemotePullRequestCreatePayload,
+  RemoteLabelInfo,
+  RemoteMilestoneInfo,
+  RemoteUserInfo,
+} from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burndown" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
+interface RemoteCreateOptions {
+  labels: RemoteLabelInfo[];
+  milestones: RemoteMilestoneInfo[];
+  assignees: RemoteUserInfo[];
+  reviewers: RemoteUserInfo[];
+}
 
 const FileDiffViewer = defineAsyncComponent(() => import("@/shared/ui/FileDiffViewer.vue"));
 const CommitGalaxyPanel = defineAsyncComponent(() => import("@/view/commit/CommitGalaxyPanel.vue"));
 const CommitProductivityPanel = defineAsyncComponent(() => import("@/view/commit/CommitProductivityPanel.vue"));
 const CommitTimeMachinePanel = defineAsyncComponent(() => import("@/view/commit/CommitTimeMachinePanel.vue"));
 const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/commit/CommitConflictHeatmapPanel.vue"));
-const CommitBurndownAnalyticsPanel = defineAsyncComponent(() => import("@/view/commit/CommitBurndownAnalyticsPanel.vue"));
+const CommitBurnoutAnalyticsPanel = defineAsyncComponent(() => import("@/view/commit/CommitBurnoutAnalyticsPanel.vue"));
 const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository/RemoteInsightsPanel.vue"));
 
 const props = defineProps<{
@@ -29,8 +48,16 @@ const props = defineProps<{
   openPullRequestBranches?: string[];
   issues?: IssueInfo[];
   pullRequests?: PullRequestInfo[];
+  gists?: GistInfo[];
+  issuesHasMore?: boolean;
+  pullRequestsHasMore?: boolean;
+  issuesLoadingAll?: boolean;
+  pullRequestsLoadingAll?: boolean;
   selectedIssue?: IssueInfo | null;
   selectedPullRequest?: PullRequestInfo | null;
+  remoteInsightDetailLoading?: boolean;
+  remoteCreateOptions?: RemoteCreateOptions;
+  remoteCreateOptionsLoading?: boolean;
   remoteInsightsMode?: RemoteInsightsViewMode;
   showDiffViewer: boolean;
   diffFilePath: string;
@@ -47,6 +74,7 @@ const props = defineProps<{
   userLogs: string[];
   errorLogs: string[];
   smartGitignoreWizardEnabled?: boolean;
+  bugAutopsyEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -66,10 +94,13 @@ const emit = defineEmits<{
   selectStash: [stash: StashInfo];
   selectIssue: [issueNumber: number];
   selectPullRequest: [pullRequestNumber: number];
+  loadAllIssues: [];
+  loadAllPullRequests: [];
+  openGist: [url: string];
   openCreateIssue: [];
   openCreatePullRequest: [];
-  createIssue: [payload: { title: string; description: string }];
-  createPullRequest: [payload: { title: string; description: string; sourceBranch: string; targetBranch: string }];
+  createIssue: [payload: RemoteIssueCreatePayload];
+  createPullRequest: [payload: RemotePullRequestCreatePayload];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   checkoutRemoteBranch: [name: string];
@@ -126,6 +157,35 @@ const {
 } = useResizableWorkspace(() => props.showTerminal);
 
 const { scheduleDestructiveAction } = useUndoableDestructiveAction();
+const {
+  session: manualBisectSession,
+  busy: manualBisectBusy,
+  detailsState: manualBisectDetailsState,
+  remaining: manualBisectRemaining,
+  currentCommit: manualBisectCurrentCommit,
+  badBound: manualBisectBadBound,
+  goodBound: manualBisectGoodBound,
+  culprit: manualBisectCulprit,
+  start: startManualBisect,
+  selectGood: selectManualBisectGood,
+  mark: markManualBisect,
+  retryCheckout: retryManualBisectCheckout,
+  cancel: cancelManualBisect,
+  close: closeManualBisect,
+  checkoutCulprit: checkoutManualBisectCulprit,
+  returnToOriginalBranch: returnManualBisectToOriginalBranch,
+} = useManualBisect({
+  commits: props.git.commits,
+  displayedCommits: props.git.displayedCommits,
+  currentBranch: props.git.currentBranch,
+  hasWorkingChanges,
+  hasConflicts,
+  gitError: props.git.error,
+  checkoutCommit: props.git.checkoutCommit,
+  checkoutBranch: props.git.checkoutBranch,
+  ensureCommitLoaded: props.git.ensureCommitLoaded,
+  selectCommit: (commit) => emit("selectCommit", { commit, additive: false }),
+});
 
 function toggleDetailsPanel() {
   emit("update:detailsPanelCollapsed", !props.detailsPanelCollapsed);
@@ -256,7 +316,7 @@ function handleRefreshState() {
 </script>
 
 <template>
-  <div class="flex-1 flex overflow-hidden">
+  <div class="relative flex-1 flex overflow-hidden">
     <div class="h-full flex-shrink-0" :style="{ width: `${sidebarWidth}px` }">
       <RepositorySidebar
         :branches="props.git.localBranches.value"
@@ -267,6 +327,11 @@ function handleRefreshState() {
         :open-pull-request-branches="props.openPullRequestBranches || []"
         :issues="props.issues || []"
         :pull-requests="props.pullRequests || []"
+        :gists="props.gists || []"
+        :issues-has-more="props.issuesHasMore"
+        :pull-requests-has-more="props.pullRequestsHasMore"
+        :issues-loading-all="props.issuesLoadingAll"
+        :pull-requests-loading-all="props.pullRequestsLoadingAll"
         :selected-issue-number="props.selectedIssue?.number || null"
         :selected-pull-request-number="props.selectedPullRequest?.number || null"
         :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
@@ -278,6 +343,9 @@ function handleRefreshState() {
         @stash-drop="scheduleStashDrop($event)"
         @select-issue="emit('selectIssue', $event)"
         @select-pull-request="emit('selectPullRequest', $event)"
+        @load-all-issues="emit('loadAllIssues')"
+        @load-all-pull-requests="emit('loadAllPullRequests')"
+        @open-gist="emit('openGist', $event)"
         @open-create-issue="emit('openCreateIssue')"
         @open-create-pull-request="emit('openCreatePullRequest')"
         @create-gist="emit('createGist')"
@@ -406,8 +474,8 @@ function handleRefreshState() {
           @close="emit('setHistoryView', 'graph')"
         />
 
-        <CommitBurndownAnalyticsPanel
-          v-else-if="props.historyViewMode === 'burndown'"
+        <CommitBurnoutAnalyticsPanel
+          v-else-if="props.historyViewMode === 'burnout'"
           class="flex-1"
           :repo-path="props.git.repoPath.value"
           :commits="props.git.displayedCommits.value"
@@ -420,6 +488,9 @@ function handleRefreshState() {
           :mode="props.remoteInsightsMode || 'pull-request-detail'"
           :pull-request="props.selectedPullRequest || null"
           :issue="props.selectedIssue || null"
+          :detail-loading="props.remoteInsightDetailLoading"
+          :create-options="props.remoteCreateOptions"
+          :create-options-loading="props.remoteCreateOptionsLoading"
           :remote-branches="props.git.remoteBranches.value"
           :current-branch="props.git.currentBranch.value"
           @close="emit('setHistoryView', 'graph')"
@@ -475,6 +546,8 @@ function handleRefreshState() {
             :stash-files="props.git.selectedStashFiles.value"
             :repo-path="props.git.repoPath.value"
             :smart-gitignore-wizard-enabled="props.smartGitignoreWizardEnabled"
+            :bug-autopsy-enabled="props.bugAutopsyEnabled"
+            :manual-bisect="manualBisectDetailsState"
             @stage="props.git.stageFile($event)"
             @unstage="props.git.unstageFile($event)"
             @stage-all="props.git.stageAll()"
@@ -491,6 +564,8 @@ function handleRefreshState() {
             @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
             @refresh-state="handleRefreshState"
+            @start-manual-bisect="startManualBisect($event)"
+            @select-manual-bisect-good="selectManualBisectGood($event)"
           />
         </div>
 
@@ -537,5 +612,22 @@ function handleRefreshState() {
         @close="emit('update:showTerminal', false)"
       />
     </div>
+
+    <ManualBisectOverlay
+      v-if="manualBisectSession"
+      :session="manualBisectSession"
+      :busy="manualBisectBusy"
+      :remaining="manualBisectRemaining"
+      :current-commit="manualBisectCurrentCommit"
+      :bad-bound="manualBisectBadBound"
+      :good-bound="manualBisectGoodBound"
+      :culprit="manualBisectCulprit"
+      @cancel="cancelManualBisect"
+      @retry-checkout="retryManualBisectCheckout"
+      @mark="markManualBisect($event)"
+      @checkout-culprit="checkoutManualBisectCulprit"
+      @return-to-original-branch="returnManualBisectToOriginalBranch"
+      @close="closeManualBisect"
+    />
   </div>
 </template>

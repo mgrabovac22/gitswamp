@@ -9,7 +9,7 @@ The active GitSwamp application includes the following documented feature areas:
 - Start dashboard with GitHub-authenticated pull requests authored by the user, assigned issues, and local repository context
 - Multi-tab repository workspace with Ctrl+Tab switching, middle-click close, and restore/reopen support
 - Command Palette (Ctrl+K) for common repository, view, settings, terminal, and analytics actions
-- Graph, Galaxy View, Productivity Arena, Time Machine, Usual Conflict Suspects, Burndown Analytics, Remote Insights, and Conflict Resolve modes
+- Graph, Galaxy View, Productivity Arena, Time Machine, Usual Conflict Suspects, Burnout Analytics, Remote Insights, and Conflict Resolve modes
 - Smart .gitignore Wizard for generated/private untracked files, enabled by default
 - Diff viewer micro-staging with hunk-level stage, unstage, and discard
 - Visual Commit Builder with conventional type, scope, optional issue tag, and summary composition
@@ -47,7 +47,7 @@ This documentation is organized into the following modules:
 - **[13_COMMIT_OPERATIONS.md](./DOCUMENTATION_13_COMMIT_OPERATIONS.md)** - Commit history and management
 - **[14_FILE_OPERATIONS.md](./DOCUMENTATION_14_FILE_OPERATIONS.md)** - Staging, diffing, and file operations
 - **[15_ADVANCED_FEATURES.md](./DOCUMENTATION_15_ADVANCED_FEATURES.md)** - Stashing, tagging, conflict resolution
-- **[36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md)** - Productivity, Time Machine, Conflict Suspects, Burndown Analytics, code ownership, and scoring algorithms
+- **[36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md)** - Productivity, Time Machine, Conflict Suspects, Burnout Analytics, code ownership, and scoring algorithms
   - Also see [04_FRONTEND_OVERVIEW.md](./DOCUMENTATION_04_FRONTEND_OVERVIEW.md) and [11_CORE_FEATURES.md](./DOCUMENTATION_11_CORE_FEATURES.md) for module placement and UI structure
 
 ### 6. Integration & APIs

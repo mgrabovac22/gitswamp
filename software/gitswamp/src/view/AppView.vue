@@ -31,6 +31,10 @@ import {
   getStoredSmartGitignoreWizardEnabled,
 } from "@/shared/config/gitignoreWizardPreferences";
 import {
+  BUG_AUTOPSY_EVENT,
+  getStoredBugAutopsyEnabled,
+} from "@/shared/config/bugAutopsyPreferences";
+import {
   BACKGROUND_MAINTENANCE_EVENT,
   getStoredBackgroundMaintenanceSettings,
   hasBackgroundMaintenanceEnabled,
@@ -47,9 +51,31 @@ import {
   defaultReleaseNotesFileName,
   parseReleaseNotesLog,
 } from "@/features/release-notes/releaseNotes";
+import {
+  buildGitRpgProfile,
+  gitRpgProfileDetailLines,
+  summarizeCommitFilesForRpg,
+  type GitRpgCommitStats,
+  type GitRpgProfile,
+} from "@/features/repository/rpg/gitRpgProfiler";
 
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
-import type { BranchInfo, CommitFileInfo, CommitInfo, StashInfo, RemoteInfo, IssueInfo, PullRequestInfo } from "@/types";
+import type {
+  BranchInfo,
+  CommitFileInfo,
+  CommitInfo,
+  StashInfo,
+  RemoteInfo,
+  IssueInfo,
+  PullRequestInfo,
+  GistInfo,
+  RemoteReferenceInfo,
+  RemoteLabelInfo,
+  RemoteMilestoneInfo,
+  RemoteUserInfo,
+  RemoteIssueCreatePayload,
+  RemotePullRequestCreatePayload,
+} from "@/types";
 
 const git = useGit();
 const toast = useToast();
@@ -93,7 +119,7 @@ const {
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burndown" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -122,6 +148,12 @@ const BACKGROUND_IDLE_MIN_MS = 20 * 1000;
 const BACKGROUND_BRANCH_REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
 const BACKGROUND_LARGE_CHANGE_REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
 const BACKGROUND_CONFLICT_REMINDER_COOLDOWN_MS = 20 * 60 * 1000;
+const GITHUB_INITIAL_INSIGHT_LIMIT = 50;
+const GITHUB_DETAIL_REFERENCE_LIMIT = 16;
+const GIT_RPG_PROFILE_CACHE_LIMIT = 8;
+const GIT_RPG_COMMIT_SCAN_LIMIT = 160;
+const GIT_RPG_STAT_SCAN_LIMIT = 70;
+const GIT_RPG_ANALYZE_DELAY_MS = 850;
 
 interface CloneProgressEventPayload {
   url: string;
@@ -161,6 +193,7 @@ const showEditMessageDialog = ref(false);
 const editMessageSha = ref("");
 const editMessageText = ref("");
 const smartGitignoreWizardEnabled = ref(getStoredSmartGitignoreWizardEnabled());
+const bugAutopsyEnabled = ref(getStoredBugAutopsyEnabled());
 const showRenameDialog = ref(false);
 const renameBranchOld = ref("");
 const renameBranchNew = ref("");
@@ -194,11 +227,27 @@ const detailsPanelCollapsed = ref(true);
 const openPullRequestBranches = ref<string[]>([]);
 const githubIssues = ref<IssueInfo[]>([]);
 const githubPullRequests = ref<PullRequestInfo[]>([]);
+const githubGists = ref<GistInfo[]>([]);
+const githubIssuesHasMore = ref(false);
+const githubPullRequestsHasMore = ref(false);
+const githubIssuesLoadingAll = ref(false);
+const githubPullRequestsLoadingAll = ref(false);
+const githubIssueDetail = ref<IssueInfo | null>(null);
+const githubPullRequestDetail = ref<PullRequestInfo | null>(null);
+const remoteInsightDetailLoading = ref(false);
+const remoteCreateOptions = ref<RemoteCreateOptions>(createEmptyRemoteCreateOptions());
+const remoteCreateOptionsLoading = ref(false);
+const gitRpgProfile = ref<GitRpgProfile | null>(null);
+const gitRpgLoading = ref(false);
 const selectedIssueNumber = ref<number | null>(null);
 const selectedPullRequestNumber = ref<number | null>(null);
 const remoteInsightsMode = ref<RemoteInsightsViewMode>("pull-request-detail");
 let pullRequestFetchSequence = 0;
 let pullRequestFetchTimer: ReturnType<typeof setTimeout> | null = null;
+let remoteInsightDetailSequence = 0;
+let remoteCreateOptionsSequence = 0;
+let gitRpgProfileSequence = 0;
+let gitRpgProfileTimer: ReturnType<typeof setTimeout> | null = null;
 
 const showAuthRequiredDialog = ref(false);
 const authProvider = ref<"github" | "gitlab" | "gitlab-self" | "bitbucket" | "azure">("github");
@@ -225,6 +274,7 @@ let backgroundConflictLastToastAt = 0;
 const COMMIT_FILES_CACHE_LIMIT = 12;
 const COMMIT_FILES_CACHE_MAX_FILES = 350;
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
+const gitRpgProfileCache = new Map<string, GitRpgProfile>();
 
 function getCommitFilesCacheKey(repoPath: string, sha: string) {
   return `${repoPath}\u0000${sha}`;
@@ -685,7 +735,10 @@ function explainGitState() {
           : clean
             ? "clean"
             : "local changes";
+  const rpgLines = gitRpgProfileDetailLines(gitRpgProfile.value);
   const lines = [
+    ...rpgLines,
+    "",
     `State: ${state}.`,
     `Branch: ${branch}.`,
     `Files: ${pluralCount(staged, "staged file")}, ${pluralCount(unstaged, "unstaged file")}, ${pluralCount(conflicts, "conflict")}.`,
@@ -720,7 +773,128 @@ function explainGitState() {
     lines.push(`Warning: ${originConflictRisk.value.label}`);
   }
 
-  toast.infoDetail(`Git State: ${branch}`, lines.join("\n"), 14000);
+  const title = gitRpgProfile.value
+    ? `Git RPG: ${gitRpgProfile.value.primaryRole.title}`
+    : `Git State: ${branch}`;
+  toast.infoDetail(title, lines.join("\n"), 16000);
+}
+
+function gitRpgProfileCacheKey(repoPath: string, commits: CommitInfo[]): string {
+  const head = commits[0]?.sha || "empty";
+  const sampleSize = Math.min(commits.length, GIT_RPG_COMMIT_SCAN_LIMIT);
+  return `${repoPath}\u0000${head}\u0000${sampleSize}`;
+}
+
+function rememberGitRpgProfile(key: string, profile: GitRpgProfile): void {
+  if (gitRpgProfileCache.has(key)) {
+    gitRpgProfileCache.delete(key);
+  }
+  gitRpgProfileCache.set(key, profile);
+  while (gitRpgProfileCache.size > GIT_RPG_PROFILE_CACHE_LIMIT) {
+    const oldestKey = gitRpgProfileCache.keys().next().value;
+    if (!oldestKey) break;
+    gitRpgProfileCache.delete(oldestKey);
+  }
+}
+
+function scheduleGitRpgProfileRefresh(delay = GIT_RPG_ANALYZE_DELAY_MS): void {
+  if (gitRpgProfileTimer) {
+    clearTimeout(gitRpgProfileTimer);
+  }
+
+  gitRpgProfileTimer = setTimeout(() => {
+    void refreshGitRpgProfile();
+  }, delay);
+}
+
+async function getGitRpgCommitSample(repoPath: string, seed: CommitInfo[], sequence: number): Promise<CommitInfo[]> {
+  if (seed.length >= GIT_RPG_COMMIT_SCAN_LIMIT || seed.length >= 50) {
+    return seed.slice(0, GIT_RPG_COMMIT_SCAN_LIMIT);
+  }
+
+  try {
+    const commits = await invoke<CommitInfo[]>("get_commits", {
+      path: repoPath,
+      maxCount: GIT_RPG_COMMIT_SCAN_LIMIT,
+      quick: true,
+    });
+    if (sequence !== gitRpgProfileSequence || git.repoPath.value !== repoPath) {
+      return [];
+    }
+    return commits.length > 0 ? commits.slice(0, GIT_RPG_COMMIT_SCAN_LIMIT) : seed;
+  } catch {
+    return seed.slice(0, GIT_RPG_COMMIT_SCAN_LIMIT);
+  }
+}
+
+async function collectGitRpgStats(repoPath: string, commits: CommitInfo[], sequence: number): Promise<Map<string, GitRpgCommitStats>> {
+  const statsBySha = new Map<string, GitRpgCommitStats>();
+  const sample = commits.slice(0, GIT_RPG_STAT_SCAN_LIMIT);
+
+  for (let index = 0; index < sample.length; index += 1) {
+    if (sequence !== gitRpgProfileSequence || git.repoPath.value !== repoPath) {
+      return statsBySha;
+    }
+
+    const commit = sample[index];
+    if (!commit) continue;
+
+    try {
+      const files = await invoke<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha: commit.sha });
+      statsBySha.set(commit.sha, summarizeCommitFilesForRpg(files));
+    } catch {
+      // Best-effort RPG metadata: message/time based roles still work if a commit diff is unavailable.
+    }
+
+    if (index > 0 && index % 8 === 0) {
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+    }
+  }
+
+  return statsBySha;
+}
+
+async function refreshGitRpgProfile(): Promise<void> {
+  const repoPath = git.repoPath.value;
+  const seedCommits = git.commits.value;
+
+  if (!repoPath || seedCommits.length === 0) {
+    gitRpgProfileSequence += 1;
+    gitRpgProfile.value = null;
+    gitRpgLoading.value = false;
+    return;
+  }
+
+  const cacheKey = gitRpgProfileCacheKey(repoPath, seedCommits);
+  const cached = gitRpgProfileCache.get(cacheKey);
+  if (cached) {
+    gitRpgProfile.value = cached;
+    gitRpgLoading.value = false;
+    return;
+  }
+
+  const sequence = ++gitRpgProfileSequence;
+  gitRpgLoading.value = true;
+
+  try {
+    const commits = await getGitRpgCommitSample(repoPath, seedCommits, sequence);
+    if (sequence !== gitRpgProfileSequence || git.repoPath.value !== repoPath || commits.length === 0) return;
+
+    const statsBySha = await collectGitRpgStats(repoPath, commits, sequence);
+    if (sequence !== gitRpgProfileSequence || git.repoPath.value !== repoPath) return;
+
+    const profile = buildGitRpgProfile({
+      repoPath,
+      commits,
+      statsBySha,
+    });
+    rememberGitRpgProfile(cacheKey, profile);
+    gitRpgProfile.value = profile;
+  } finally {
+    if (sequence === gitRpgProfileSequence) {
+      gitRpgLoading.value = false;
+    }
+  }
 }
 
 interface GithubApiContext {
@@ -728,6 +902,27 @@ interface GithubApiContext {
   owner: string;
   repo: string;
   token: string;
+}
+
+interface GithubListResult<T> {
+  items: T[];
+  hasMore: boolean;
+}
+
+interface RemoteCreateOptions {
+  labels: RemoteLabelInfo[];
+  milestones: RemoteMilestoneInfo[];
+  assignees: RemoteUserInfo[];
+  reviewers: RemoteUserInfo[];
+}
+
+function createEmptyRemoteCreateOptions(): RemoteCreateOptions {
+  return {
+    labels: [],
+    milestones: [],
+    assignees: [],
+    reviewers: [],
+  };
 }
 
 async function fetchJsonWithTimeout(url: string, headers: Record<string, string>): Promise<unknown> {
@@ -778,6 +973,75 @@ function githubHeaders(token: string): Record<string, string> {
   return headers;
 }
 
+function githubUserLogin(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  return String((value as Record<string, unknown>).login || "").trim();
+}
+
+function githubUserLogins(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(githubUserLogin)
+    .filter((login) => login.length > 0);
+}
+
+function mapGithubLabels(value: unknown): NonNullable<IssueInfo["labels"]> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const label = item as Record<string, unknown>;
+      const name = String(label.name || "").trim();
+      if (!name) return null;
+      return {
+        name,
+        color: String(label.color || "64748b").replace(/^#/, ""),
+        description: String(label.description || ""),
+      };
+    })
+    .filter((item): item is NonNullable<IssueInfo["labels"]>[number] => item !== null);
+}
+
+function mapGithubMilestone(value: unknown): IssueInfo["milestone"] {
+  if (!value || typeof value !== "object") return null;
+  const milestone = value as Record<string, unknown>;
+  const title = String(milestone.title || "").trim();
+  if (!title) return null;
+  return {
+    number: Number(milestone.number) || undefined,
+    title,
+    state: String(milestone.state || ""),
+    description: String(milestone.description || ""),
+    dueOn: String(milestone.due_on || ""),
+    openIssues: Number(milestone.open_issues) || 0,
+    closedIssues: Number(milestone.closed_issues) || 0,
+  };
+}
+
+function mapGithubUserInfo(item: unknown): RemoteUserInfo | null {
+  if (!item || typeof item !== "object") return null;
+  const user = item as Record<string, unknown>;
+  const login = String(user.login || "").trim();
+  if (!login) return null;
+  return {
+    login,
+    avatarUrl: String(user.avatar_url || ""),
+    url: String(user.html_url || ""),
+  };
+}
+
+function uniqueGithubReferences(items: RemoteReferenceInfo[]): RemoteReferenceInfo[] {
+  const seen = new Set<string>();
+  const unique: RemoteReferenceInfo[] = [];
+  for (const item of items) {
+    const key = `${item.kind}:${item.number ?? item.sha ?? item.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique.slice(0, GITHUB_DETAIL_REFERENCE_LIMIT);
+}
+
 function mapGithubPullRequest(item: unknown): PullRequestInfo | null {
   if (!item || typeof item !== "object") return null;
   const value = item as Record<string, unknown>;
@@ -805,6 +1069,21 @@ function mapGithubPullRequest(item: unknown): PullRequestInfo | null {
     updatedAt: String(value.updated_at || ""),
     url: String(value.html_url || ""),
     description: String(value.body || ""),
+    assignees: githubUserLogins(value.assignees),
+    requestedReviewers: githubUserLogins(value.requested_reviewers),
+    labels: mapGithubLabels(value.labels),
+    milestone: mapGithubMilestone(value.milestone),
+    comments: Number(value.comments) || 0,
+    reviewComments: Number(value.review_comments) || 0,
+    commitsCount: Number(value.commits) || 0,
+    changedFiles: Number(value.changed_files) || 0,
+    additions: Number(value.additions) || 0,
+    deletions: Number(value.deletions) || 0,
+    mergeable: typeof value.mergeable === "boolean" ? value.mergeable : null,
+    mergeableState: String(value.mergeable_state || ""),
+    merged: Boolean(value.merged),
+    mergedAt: String(value.merged_at || ""),
+    mergedBy: githubUserLogin(value.merged_by),
   };
 }
 
@@ -833,56 +1112,379 @@ function mapGithubIssue(item: unknown): IssueInfo | null {
     updatedAt: String(value.updated_at || ""),
     url: String(value.html_url || ""),
     description: String(value.body || ""),
+    assignees: githubUserLogins(value.assignees),
+    labels: mapGithubLabels(value.labels),
+    milestone: mapGithubMilestone(value.milestone),
+    comments: Number(value.comments) || 0,
+    closedAt: String(value.closed_at || ""),
+    stateReason: String(value.state_reason || ""),
   };
 }
 
-async function fetchGithubPullRequests(remoteUrl: string): Promise<PullRequestInfo[]> {
+function mapGithubGist(item: unknown): GistInfo | null {
+  if (!item || typeof item !== "object") return null;
+  const value = item as Record<string, unknown>;
+  const id = String(value.id || "").trim();
+  const url = String(value.html_url || "").trim();
+  if (!id || !url) return null;
+
+  const files = value.files && typeof value.files === "object"
+    ? Object.values(value.files as Record<string, unknown>)
+    : [];
+  const filenames = files
+    .map((file) => {
+      if (!file || typeof file !== "object") return "";
+      return String((file as Record<string, unknown>).filename || "").trim();
+    })
+    .filter(Boolean);
+
+  return {
+    id,
+    description: String(value.description || "").trim(),
+    filename: filenames[0] || "gist",
+    fileCount: filenames.length,
+    public: Boolean(value.public),
+    updatedAt: String(value.updated_at || ""),
+    url,
+  };
+}
+
+async function fetchGithubPullRequests(remoteUrl: string): Promise<GithubListResult<PullRequestInfo>> {
+  const context = getGithubApiContext(remoteUrl);
+  if (!context) return { items: [], hasMore: false };
+
+  const payload = await fetchJsonWithTimeout(
+    `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls?state=open&per_page=${GITHUB_INITIAL_INSIGHT_LIMIT + 1}`,
+    githubHeaders(context.token),
+  );
+
+  if (!Array.isArray(payload)) return { items: [], hasMore: false };
+  const mapped = payload
+    .map(mapGithubPullRequest)
+    .filter((item): item is PullRequestInfo => item !== null);
+
+  return {
+    items: mapped.slice(0, GITHUB_INITIAL_INSIGHT_LIMIT),
+    hasMore: mapped.length > GITHUB_INITIAL_INSIGHT_LIMIT,
+  };
+}
+
+async function fetchAllGithubPullRequests(remoteUrl: string): Promise<PullRequestInfo[]> {
   const context = getGithubApiContext(remoteUrl);
   if (!context) return [];
 
+  const pullRequests: PullRequestInfo[] = [];
+  for (let page = 1; page <= 20; page += 1) {
+    const payload = await fetchJsonWithTimeout(
+      `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls?state=open&per_page=100&page=${page}`,
+      githubHeaders(context.token),
+    );
+    if (!Array.isArray(payload) || payload.length === 0) break;
+    pullRequests.push(
+      ...payload
+        .map(mapGithubPullRequest)
+        .filter((item): item is PullRequestInfo => item !== null),
+    );
+    if (payload.length < 100) break;
+  }
+
+  return pullRequests;
+}
+
+async function fetchGithubIssues(remoteUrl: string): Promise<GithubListResult<IssueInfo>> {
+  const context = getGithubApiContext(remoteUrl);
+  if (!context) return { items: [], hasMore: false };
+
+  const params = new URLSearchParams({
+    q: `repo:${context.owner}/${context.repo} is:issue is:open`,
+    sort: "updated",
+    order: "desc",
+    per_page: String(GITHUB_INITIAL_INSIGHT_LIMIT),
+  });
+
   const payload = await fetchJsonWithTimeout(
-    `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls?state=open&per_page=100`,
+    `${context.apiBase}/search/issues?${params.toString()}`,
+    githubHeaders(context.token),
+  );
+
+  if (!payload || typeof payload !== "object") return { items: [], hasMore: false };
+  const value = payload as Record<string, unknown>;
+  const rawItems = Array.isArray(value.items) ? value.items : [];
+  const totalCount = Number(value.total_count) || rawItems.length;
+  const items = rawItems
+    .map(mapGithubIssue)
+    .filter((item): item is IssueInfo => item !== null)
+    .slice(0, GITHUB_INITIAL_INSIGHT_LIMIT);
+
+  return {
+    items,
+    hasMore: totalCount > items.length,
+  };
+}
+
+async function fetchAllGithubIssues(remoteUrl: string): Promise<IssueInfo[]> {
+  const context = getGithubApiContext(remoteUrl);
+  if (!context) return [];
+
+  const issues: IssueInfo[] = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const params = new URLSearchParams({
+      q: `repo:${context.owner}/${context.repo} is:issue is:open`,
+      sort: "updated",
+      order: "desc",
+      per_page: "100",
+      page: String(page),
+    });
+    const payload = await fetchJsonWithTimeout(
+      `${context.apiBase}/search/issues?${params.toString()}`,
+      githubHeaders(context.token),
+    );
+
+    if (!payload || typeof payload !== "object") break;
+    const value = payload as Record<string, unknown>;
+    const rawItems = Array.isArray(value.items) ? value.items : [];
+    if (rawItems.length === 0) break;
+    issues.push(
+      ...rawItems
+        .map(mapGithubIssue)
+        .filter((item): item is IssueInfo => item !== null),
+    );
+    if (rawItems.length < 100) break;
+  }
+
+  return issues;
+}
+
+async function fetchGithubGists(remoteUrl: string): Promise<GistInfo[]> {
+  const context = getGithubApiContext(remoteUrl);
+  if (!context || !context.token) return [];
+
+  const payload = await fetchJsonWithTimeout(
+    `${context.apiBase}/gists?per_page=30`,
     githubHeaders(context.token),
   );
 
   if (!Array.isArray(payload)) return [];
   return payload
-    .map(mapGithubPullRequest)
-    .filter((item): item is PullRequestInfo => item !== null);
+    .map(mapGithubGist)
+    .filter((item): item is GistInfo => item !== null);
 }
 
-async function fetchGithubIssues(remoteUrl: string): Promise<IssueInfo[]> {
-  const context = getGithubApiContext(remoteUrl);
-  if (!context) return [];
+function mapGithubMilestoneOptions(payload: unknown): RemoteMilestoneInfo[] {
+  if (!Array.isArray(payload)) return [];
+  return payload
+    .map(mapGithubMilestone)
+    .filter((item): item is RemoteMilestoneInfo => item != null && typeof item.number === "number");
+}
 
-  const issues: IssueInfo[] = [];
-
-  for (let page = 1; page <= 5 && issues.length < 100; page += 1) {
-    const { mapped, rawCount } = await fetchGithubIssuesPage(context, page);
-    if (rawCount === 0) break;
-
-    issues.push(...mapped);
-    if (rawCount < 100) break;
+function mapGithubUserOptions(payload: unknown): RemoteUserInfo[] {
+  if (!Array.isArray(payload)) return [];
+  const seen = new Set<string>();
+  const users: RemoteUserInfo[] = [];
+  for (const item of payload) {
+    const user = mapGithubUserInfo(item);
+    if (!user || seen.has(user.login.toLowerCase())) continue;
+    seen.add(user.login.toLowerCase());
+    users.push(user);
   }
-
-  return issues.slice(0, 100);
+  return users;
 }
 
-async function fetchGithubIssuesPage(context: GithubApiContext, page: number): Promise<{ mapped: IssueInfo[]; rawCount: number }> {
-  const payload = await fetchJsonWithTimeout(
-    `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues?state=open&per_page=100&page=${page}`,
-    githubHeaders(context.token),
-  );
+async function fetchGithubCreateOptions(): Promise<RemoteCreateOptions> {
+  const context = getPrimaryGithubContext();
+  if (!context) return createEmptyRemoteCreateOptions();
 
-  if (!Array.isArray(payload)) {
-    return { mapped: [], rawCount: 0 };
+  const headers = githubHeaders(context.token);
+  const repoPath = `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}`;
+  const [labelsPayload, milestonesPayload, assigneesPayload, collaboratorsPayload] = await Promise.all([
+    fetchJsonWithTimeout(`${repoPath}/labels?per_page=100`, headers).catch(() => []),
+    fetchJsonWithTimeout(`${repoPath}/milestones?state=open&per_page=100`, headers).catch(() => []),
+    fetchJsonWithTimeout(`${repoPath}/assignees?per_page=100`, headers).catch(() => []),
+    fetchJsonWithTimeout(`${repoPath}/collaborators?affiliation=direct&per_page=100`, headers).catch(() => []),
+  ]);
+
+  const assignees = mapGithubUserOptions(assigneesPayload);
+  const collaboratorUsers = mapGithubUserOptions(collaboratorsPayload);
+  const reviewerMap = new Map<string, RemoteUserInfo>();
+  for (const user of [...collaboratorUsers, ...assignees]) {
+    reviewerMap.set(user.login.toLowerCase(), user);
   }
 
   return {
-    mapped: payload
-      .map(mapGithubIssue)
-      .filter((item): item is IssueInfo => item !== null),
-    rawCount: payload.length,
+    labels: mapGithubLabels(labelsPayload),
+    milestones: mapGithubMilestoneOptions(milestonesPayload),
+    assignees,
+    reviewers: Array.from(reviewerMap.values()),
+  };
+}
+
+function mapGithubTimelineReferences(payload: unknown): {
+  pullRequests: NonNullable<IssueInfo["linkedPullRequests"]>;
+  commits: NonNullable<IssueInfo["linkedCommits"]>;
+  issues: NonNullable<IssueInfo["linkedIssues"]>;
+} {
+  const pullRequests: NonNullable<IssueInfo["linkedPullRequests"]> = [];
+  const commits: NonNullable<IssueInfo["linkedCommits"]> = [];
+  const issues: NonNullable<IssueInfo["linkedIssues"]> = [];
+  if (!Array.isArray(payload)) {
+    return { pullRequests, commits, issues };
+  }
+
+  for (const item of payload) {
+    if (!item || typeof item !== "object") continue;
+    const value = item as Record<string, unknown>;
+    const createdAt = String(value.created_at || "");
+    const actor = githubUserLogin(value.actor);
+    const source = value.source && typeof value.source === "object" ? value.source as Record<string, unknown> : null;
+    const sourceIssue = source?.issue && typeof source.issue === "object" ? source.issue as Record<string, unknown> : null;
+
+    if (sourceIssue) {
+      const number = Number(sourceIssue.number);
+      const title = String(sourceIssue.title || "").trim();
+      const url = String(sourceIssue.html_url || "").trim();
+      if (Number.isFinite(number) && title && url) {
+        const entry = {
+          kind: sourceIssue.pull_request ? "pull_request" as const : "issue" as const,
+          number,
+          title,
+          state: String(sourceIssue.state || ""),
+          url,
+          author: githubUserLogin(sourceIssue.user) || actor,
+          occurredAt: createdAt,
+        };
+        if (entry.kind === "pull_request") {
+          pullRequests.push(entry);
+        } else {
+          issues.push(entry);
+        }
+      }
+    }
+
+    const commitSha = String(value.commit_id || "").trim();
+    const commitUrl = String(value.html_url || value.commit_url || "").trim();
+    if (commitSha && commitUrl) {
+      commits.push({
+        kind: "commit",
+        sha: commitSha,
+        title: commitSha.slice(0, 7),
+        url: commitUrl,
+        author: actor,
+        occurredAt: createdAt,
+      });
+    }
+  }
+
+  return {
+    pullRequests: uniqueGithubReferences(pullRequests),
+    commits: uniqueGithubReferences(commits),
+    issues: uniqueGithubReferences(issues),
+  };
+}
+
+function mapGithubPullRequestCommitReferences(payload: unknown): NonNullable<PullRequestInfo["linkedCommits"]> {
+  if (!Array.isArray(payload)) return [];
+  const commits: RemoteReferenceInfo[] = [];
+  for (const item of payload) {
+    if (!item || typeof item !== "object") continue;
+    const value = item as Record<string, unknown>;
+    const commit = value.commit && typeof value.commit === "object" ? value.commit as Record<string, unknown> : {};
+    const message = String(commit.message || "").split("\n")[0]?.trim() || String(value.sha || "").slice(0, 7);
+    const sha = String(value.sha || "").trim();
+    const url = String(value.html_url || "").trim();
+    if (!sha || !url) continue;
+    const author = commit.author && typeof commit.author === "object"
+      ? String((commit.author as Record<string, unknown>).name || "")
+      : githubUserLogin(value.author);
+    commits.push({
+      kind: "commit",
+      sha,
+      title: message,
+      url,
+      author,
+      occurredAt: commit.author && typeof commit.author === "object"
+        ? String((commit.author as Record<string, unknown>).date || "")
+        : "",
+    });
+  }
+
+  return uniqueGithubReferences(commits);
+}
+
+function mapGithubPullRequestFiles(payload: unknown): NonNullable<PullRequestInfo["files"]> {
+  if (!Array.isArray(payload)) return [];
+  return payload
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const value = item as Record<string, unknown>;
+      const filename = String(value.filename || "").trim();
+      if (!filename) return null;
+      return {
+        filename,
+        status: String(value.status || ""),
+        additions: Number(value.additions) || 0,
+        deletions: Number(value.deletions) || 0,
+        changes: Number(value.changes) || 0,
+        url: String(value.blob_url || value.raw_url || ""),
+      };
+    })
+    .filter((item): item is NonNullable<PullRequestInfo["files"]>[number] => item !== null)
+    .slice(0, GITHUB_DETAIL_REFERENCE_LIMIT);
+}
+
+async function fetchGithubIssueDetail(number: number): Promise<IssueInfo | null> {
+  const context = getPrimaryGithubContext();
+  if (!context) return null;
+
+  const headers = githubHeaders(context.token);
+  const [issuePayload, timelinePayload] = await Promise.all([
+    fetchJsonWithTimeout(
+      `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues/${number}`,
+      headers,
+    ),
+    fetchJsonWithTimeout(
+      `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues/${number}/timeline?per_page=100`,
+      headers,
+    ).catch(() => []),
+  ]);
+
+  const issue = mapGithubIssue(issuePayload);
+  if (!issue) return null;
+  const references = mapGithubTimelineReferences(timelinePayload);
+  return {
+    ...issue,
+    linkedPullRequests: references.pullRequests,
+    linkedCommits: references.commits,
+    linkedIssues: references.issues,
+  };
+}
+
+async function fetchGithubPullRequestDetail(number: number): Promise<PullRequestInfo | null> {
+  const context = getPrimaryGithubContext();
+  if (!context) return null;
+
+  const headers = githubHeaders(context.token);
+  const repoPath = `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}`;
+  const [pullPayload, issuePayload, commitsPayload, filesPayload, timelinePayload] = await Promise.all([
+    fetchJsonWithTimeout(`${repoPath}/pulls/${number}`, headers),
+    fetchJsonWithTimeout(`${repoPath}/issues/${number}`, headers).catch(() => null),
+    fetchJsonWithTimeout(`${repoPath}/pulls/${number}/commits?per_page=30`, headers).catch(() => []),
+    fetchJsonWithTimeout(`${repoPath}/pulls/${number}/files?per_page=30`, headers).catch(() => []),
+    fetchJsonWithTimeout(`${repoPath}/issues/${number}/timeline?per_page=100`, headers).catch(() => []),
+  ]);
+
+  const pullRequest = mapGithubPullRequest(pullPayload);
+  if (!pullRequest) return null;
+  const issueValue = issuePayload && typeof issuePayload === "object" ? issuePayload as Record<string, unknown> : {};
+  const references = mapGithubTimelineReferences(timelinePayload);
+  return {
+    ...pullRequest,
+    assignees: githubUserLogins(issueValue.assignees),
+    labels: mapGithubLabels(issueValue.labels),
+    milestone: mapGithubMilestone(issueValue.milestone),
+    comments: Number(issueValue.comments) || pullRequest.comments || 0,
+    linkedIssues: references.issues,
+    linkedCommits: mapGithubPullRequestCommitReferences(commitsPayload),
+    files: mapGithubPullRequestFiles(filesPayload),
   };
 }
 
@@ -932,6 +1534,10 @@ async function refreshOpenPullRequestBranches() {
     openPullRequestBranches.value = [];
     githubPullRequests.value = [];
     githubIssues.value = [];
+    githubGists.value = [];
+    githubPullRequestsHasMore.value = false;
+    githubIssuesHasMore.value = false;
+    clearRemoteInsightDetails();
     selectedPullRequestNumber.value = null;
     selectedIssueNumber.value = null;
     return;
@@ -941,18 +1547,24 @@ async function refreshOpenPullRequestBranches() {
 
   try {
     if (primaryRemote.provider === "github") {
-      const [pullRequests, issues] = await Promise.all([
+      const [pullRequestsResult, issuesResult, gists] = await Promise.all([
         fetchGithubPullRequests(primaryRemote.url),
         fetchGithubIssues(primaryRemote.url),
+        fetchGithubGists(primaryRemote.url),
       ]);
 
       if (sequence !== pullRequestFetchSequence) return;
 
-      githubPullRequests.value = pullRequests;
-      githubIssues.value = issues;
+      githubPullRequests.value = pullRequestsResult.items;
+      githubPullRequestsHasMore.value = pullRequestsResult.hasMore;
+      githubIssues.value = issuesResult.items;
+      githubIssuesHasMore.value = issuesResult.hasMore;
+      githubGists.value = gists;
+      clearRemoteInsightDetails();
       ensureRemoteInsightSelection();
+      loadRemoteInsightDetailForCurrentSelection();
       openPullRequestBranches.value = uniqueNormalizedBranches(
-        pullRequests.map((item) => item.sourceBranch),
+        pullRequestsResult.items.map((item) => item.sourceBranch),
       );
       return;
     }
@@ -962,6 +1574,10 @@ async function refreshOpenPullRequestBranches() {
     if (sequence !== pullRequestFetchSequence) return;
     githubPullRequests.value = [];
     githubIssues.value = [];
+    githubGists.value = [];
+    githubPullRequestsHasMore.value = false;
+    githubIssuesHasMore.value = false;
+    clearRemoteInsightDetails();
     selectedPullRequestNumber.value = null;
     selectedIssueNumber.value = null;
     openPullRequestBranches.value = uniqueNormalizedBranches(branches);
@@ -970,6 +1586,10 @@ async function refreshOpenPullRequestBranches() {
     openPullRequestBranches.value = [];
     githubPullRequests.value = [];
     githubIssues.value = [];
+    githubGists.value = [];
+    githubPullRequestsHasMore.value = false;
+    githubIssuesHasMore.value = false;
+    clearRemoteInsightDetails();
     selectedPullRequestNumber.value = null;
     selectedIssueNumber.value = null;
   }
@@ -1002,26 +1622,165 @@ function getPrimaryGithubContext(): { apiBase: string; owner: string; repo: stri
   return getGithubApiContext(primaryRemote.url);
 }
 
+function clearRemoteInsightDetails(): void {
+  remoteInsightDetailSequence += 1;
+  remoteInsightDetailLoading.value = false;
+  githubIssueDetail.value = null;
+  githubPullRequestDetail.value = null;
+}
+
+function clearRemoteCreateOptions(): void {
+  remoteCreateOptionsSequence += 1;
+  remoteCreateOptionsLoading.value = false;
+  remoteCreateOptions.value = createEmptyRemoteCreateOptions();
+}
+
+async function loadRemoteCreateOptions(): Promise<void> {
+  const sequence = ++remoteCreateOptionsSequence;
+  remoteCreateOptionsLoading.value = true;
+
+  try {
+    const options = await fetchGithubCreateOptions();
+    if (sequence !== remoteCreateOptionsSequence) return;
+    remoteCreateOptions.value = options;
+  } catch {
+    if (sequence === remoteCreateOptionsSequence) {
+      remoteCreateOptions.value = createEmptyRemoteCreateOptions();
+    }
+  } finally {
+    if (sequence === remoteCreateOptionsSequence) {
+      remoteCreateOptionsLoading.value = false;
+    }
+  }
+}
+
+async function loadSelectedIssueDetail(number: number): Promise<void> {
+  const sequence = ++remoteInsightDetailSequence;
+  remoteInsightDetailLoading.value = true;
+  githubIssueDetail.value = null;
+
+  try {
+    const detail = await fetchGithubIssueDetail(number);
+    if (sequence !== remoteInsightDetailSequence || selectedIssueNumber.value !== number) return;
+    githubIssueDetail.value = detail;
+  } catch {
+    if (sequence === remoteInsightDetailSequence) {
+      githubIssueDetail.value = null;
+    }
+  } finally {
+    if (sequence === remoteInsightDetailSequence) {
+      remoteInsightDetailLoading.value = false;
+    }
+  }
+}
+
+async function loadSelectedPullRequestDetail(number: number): Promise<void> {
+  const sequence = ++remoteInsightDetailSequence;
+  remoteInsightDetailLoading.value = true;
+  githubPullRequestDetail.value = null;
+
+  try {
+    const detail = await fetchGithubPullRequestDetail(number);
+    if (sequence !== remoteInsightDetailSequence || selectedPullRequestNumber.value !== number) return;
+    githubPullRequestDetail.value = detail;
+  } catch {
+    if (sequence === remoteInsightDetailSequence) {
+      githubPullRequestDetail.value = null;
+    }
+  } finally {
+    if (sequence === remoteInsightDetailSequence) {
+      remoteInsightDetailLoading.value = false;
+    }
+  }
+}
+
+function loadRemoteInsightDetailForCurrentSelection(): void {
+  if (historyViewMode.value !== "remote-insights") return;
+
+  if (remoteInsightsMode.value === "issue-detail" && selectedIssueNumber.value !== null) {
+    void loadSelectedIssueDetail(selectedIssueNumber.value);
+    return;
+  }
+
+  if (remoteInsightsMode.value === "pull-request-detail" && selectedPullRequestNumber.value !== null) {
+    void loadSelectedPullRequestDetail(selectedPullRequestNumber.value);
+    return;
+  }
+
+  clearRemoteInsightDetails();
+}
+
 function openIssueDetails(number: number) {
+  clearRemoteCreateOptions();
   selectedIssueNumber.value = number;
   remoteInsightsMode.value = "issue-detail";
   setHistoryViewMode("remote-insights");
 }
 
 function openPullRequestDetails(number: number) {
+  clearRemoteCreateOptions();
   selectedPullRequestNumber.value = number;
   remoteInsightsMode.value = "pull-request-detail";
   setHistoryViewMode("remote-insights");
 }
 
 function openCreateIssuePanel() {
+  clearRemoteInsightDetails();
   remoteInsightsMode.value = "issue-create";
   setHistoryViewMode("remote-insights");
+  void loadRemoteCreateOptions();
 }
 
 function openCreatePullRequestPanel() {
+  clearRemoteInsightDetails();
   remoteInsightsMode.value = "pull-request-create";
   setHistoryViewMode("remote-insights");
+  void loadRemoteCreateOptions();
+}
+
+async function loadAllGithubIssues(): Promise<void> {
+  const remotes = git.repoInfo.value?.remotes || [];
+  const primaryRemote = getPrimaryRemote(remotes);
+  if (!primaryRemote || primaryRemote.provider !== "github" || githubIssuesLoadingAll.value) return;
+
+  const sequence = ++pullRequestFetchSequence;
+  githubIssuesLoadingAll.value = true;
+  try {
+    const issues = await fetchAllGithubIssues(primaryRemote.url);
+    if (sequence !== pullRequestFetchSequence) return;
+    githubIssues.value = issues;
+    githubIssuesHasMore.value = false;
+  } catch (error) {
+    toast.error(`Could not load all issues: ${String(error)}`);
+  } finally {
+    if (sequence === pullRequestFetchSequence) {
+      githubIssuesLoadingAll.value = false;
+    }
+  }
+}
+
+async function loadAllGithubPullRequests(): Promise<void> {
+  const remotes = git.repoInfo.value?.remotes || [];
+  const primaryRemote = getPrimaryRemote(remotes);
+  if (!primaryRemote || primaryRemote.provider !== "github" || githubPullRequestsLoadingAll.value) return;
+
+  const sequence = ++pullRequestFetchSequence;
+  githubPullRequestsLoadingAll.value = true;
+  try {
+    const pullRequests = await fetchAllGithubPullRequests(primaryRemote.url);
+    if (sequence !== pullRequestFetchSequence) return;
+    githubPullRequests.value = pullRequests;
+    githubPullRequestsHasMore.value = false;
+    openPullRequestBranches.value = uniqueNormalizedBranches(
+      pullRequests.map((item) => item.sourceBranch),
+    );
+  } catch (error) {
+    toast.error(`Could not load all pull requests: ${String(error)}`);
+  } finally {
+    if (sequence === pullRequestFetchSequence) {
+      githubPullRequestsLoadingAll.value = false;
+    }
+  }
 }
 
 async function readGithubError(response: Response): Promise<string> {
@@ -1037,7 +1796,56 @@ async function readGithubError(response: Response): Promise<string> {
   return `HTTP ${response.status}`;
 }
 
-async function createRemoteIssue(payload: { title: string; description: string }) {
+function createIssueMetadataPayload(payload: RemoteIssueCreatePayload): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (payload.labels.length > 0) body.labels = payload.labels;
+  if (payload.assignees.length > 0) body.assignees = payload.assignees;
+  if (payload.milestone !== null) body.milestone = payload.milestone;
+  return body;
+}
+
+async function patchGithubIssueMetadata(context: GithubApiContext, number: number, payload: RemoteIssueCreatePayload): Promise<void> {
+  const metadata = createIssueMetadataPayload(payload);
+  if (Object.keys(metadata).length === 0) return;
+
+  const response = await fetch(
+    `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues/${number}`,
+    {
+      method: "PATCH",
+      headers: {
+        ...githubHeaders(context.token),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(metadata),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await readGithubError(response));
+  }
+}
+
+async function requestGithubPullRequestReviewers(context: GithubApiContext, number: number, reviewers: string[]): Promise<void> {
+  if (reviewers.length === 0) return;
+
+  const response = await fetch(
+    `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls/${number}/requested_reviewers`,
+    {
+      method: "POST",
+      headers: {
+        ...githubHeaders(context.token),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ reviewers }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await readGithubError(response));
+  }
+}
+
+async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
   const context = getPrimaryGithubContext();
   if (!context) {
     toast.warning("GitHub remote is required for issue creation.");
@@ -1062,6 +1870,7 @@ async function createRemoteIssue(payload: { title: string; description: string }
         body: JSON.stringify({
           title: payload.title,
           body: payload.description || undefined,
+          ...createIssueMetadataPayload(payload),
         }),
       },
     );
@@ -1078,10 +1887,13 @@ async function createRemoteIssue(payload: { title: string; description: string }
       throw new Error("Created issue payload could not be parsed.");
     }
 
-    githubIssues.value = [created, ...githubIssues.value.filter((item) => item.number !== created.number)];
+    const nextIssues = [created, ...githubIssues.value.filter((item) => item.number !== created.number)];
+    githubIssues.value = githubIssuesHasMore.value ? nextIssues.slice(0, GITHUB_INITIAL_INSIGHT_LIMIT) : nextIssues;
     selectedIssueNumber.value = created.number;
     remoteInsightsMode.value = "issue-detail";
     setHistoryViewMode("remote-insights");
+    githubIssueDetail.value = created;
+    clearRemoteCreateOptions();
     toast.success(`Issue #${created.number} created.`);
     scheduleOpenPullRequestRefresh();
   } catch (e) {
@@ -1089,7 +1901,7 @@ async function createRemoteIssue(payload: { title: string; description: string }
   }
 }
 
-async function createRemotePullRequest(payload: { title: string; description: string; sourceBranch: string; targetBranch: string }) {
+async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) {
   const context = getPrimaryGithubContext();
   if (!context) {
     toast.warning("GitHub remote is required for pull request creation.");
@@ -1132,17 +1944,41 @@ async function createRemotePullRequest(payload: { title: string; description: st
       throw new Error("Created pull request payload could not be parsed.");
     }
 
-    githubPullRequests.value = [
-      created,
-      ...githubPullRequests.value.filter((item) => item.number !== created.number),
+    const metadataWarnings: string[] = [];
+    try {
+      await patchGithubIssueMetadata(context, created.number, payload);
+    } catch (error) {
+      metadataWarnings.push(`metadata: ${String(error)}`);
+    }
+
+    try {
+      await requestGithubPullRequestReviewers(context, created.number, payload.reviewers);
+    } catch (error) {
+      metadataWarnings.push(`reviewers: ${String(error)}`);
+    }
+
+    const detailed = await fetchGithubPullRequestDetail(created.number).catch(() => null);
+    const nextCreated = detailed || created;
+    const nextPullRequests = [
+      nextCreated,
+      ...githubPullRequests.value.filter((item) => item.number !== nextCreated.number),
     ];
+    githubPullRequests.value = githubPullRequestsHasMore.value
+      ? nextPullRequests.slice(0, GITHUB_INITIAL_INSIGHT_LIMIT)
+      : nextPullRequests;
     openPullRequestBranches.value = uniqueNormalizedBranches(
       githubPullRequests.value.map((item) => item.sourceBranch),
     );
-    selectedPullRequestNumber.value = created.number;
+    selectedPullRequestNumber.value = nextCreated.number;
     remoteInsightsMode.value = "pull-request-detail";
     setHistoryViewMode("remote-insights");
-    toast.success(`Pull request #${created.number} created.`);
+    githubPullRequestDetail.value = nextCreated;
+    clearRemoteCreateOptions();
+    if (metadataWarnings.length > 0) {
+      toast.warning(`Pull request #${nextCreated.number} created, but some metadata was not applied.`);
+    } else {
+      toast.success(`Pull request #${nextCreated.number} created.`);
+    }
     scheduleOpenPullRequestRefresh();
   } catch (e) {
     toast.error("Create pull request failed: " + String(e));
@@ -1250,6 +2086,15 @@ function handleSmartGitignoreWizardChanged(event: Event): void {
   }
 
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
+}
+
+function handleBugAutopsyChanged(event: Event): void {
+  if (event instanceof CustomEvent) {
+    bugAutopsyEnabled.value = Boolean(event.detail);
+    return;
+  }
+
+  bugAutopsyEnabled.value = getStoredBugAutopsyEnabled();
 }
 
 function isAppHidden(): boolean {
@@ -1793,6 +2638,15 @@ async function createGistFromRepo() {
   }
 }
 
+async function openGistInBrowser(url: string) {
+  if (!url) return;
+  try {
+    await openUrl(url);
+  } catch (e) {
+    toast.error("Failed to open Gist: " + String(e));
+  }
+}
+
 async function refreshCurrentRepo() {
   if (!hasActiveRepositoryPath()) {
     return;
@@ -2047,12 +2901,12 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       run: () => setHistoryViewMode("galaxy"),
     },
     {
-      id: "view-burndown",
-      label: "Burndown Analytics",
+      id: "view-burnout",
+      label: "Burnout Analytics",
       description: "Show contributor focus, after-hours rhythm and ownership pressure.",
       shortcut: "Alt 6",
       disabled: !hasRepo,
-      run: () => setHistoryViewMode("burndown"),
+      run: () => setHistoryViewMode("burnout"),
     },
   ];
 });
@@ -2072,7 +2926,7 @@ function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
     "3": "productivity",
     "4": "time-machine",
     "5": "conflict-heatmap",
-    "6": "burndown",
+    "6": "burnout",
   };
 
   const nextMode = viewByKey[key];
@@ -2253,6 +3107,7 @@ onMounted(() => {
   globalThis.addEventListener("wheel", handleBackgroundUserActivity);
   globalThis.addEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   globalThis.addEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
+  globalThis.addEventListener(BUG_AUTOPSY_EVENT, handleBugAutopsyChanged);
   globalThis.addEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", handleVisibilityChanged);
@@ -2291,6 +3146,7 @@ onUnmounted(() => {
   globalThis.removeEventListener("wheel", handleBackgroundUserActivity);
   globalThis.removeEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   globalThis.removeEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
+  globalThis.removeEventListener(BUG_AUTOPSY_EVENT, handleBugAutopsyChanged);
   globalThis.removeEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
   if (typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", handleVisibilityChanged);
@@ -2303,6 +3159,11 @@ onUnmounted(() => {
   if (pullRequestFetchTimer) {
     clearTimeout(pullRequestFetchTimer);
     pullRequestFetchTimer = null;
+  }
+  gitRpgProfileSequence++;
+  if (gitRpgProfileTimer) {
+    clearTimeout(gitRpgProfileTimer);
+    gitRpgProfileTimer = null;
   }
 
 });
@@ -2319,6 +3180,16 @@ watch(activeTabId, () => {
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
 });
+
+watch(
+  () => [
+    git.repoPath.value,
+    git.commits.value[0]?.sha || "",
+    Math.min(git.commits.value.length, GIT_RPG_COMMIT_SCAN_LIMIT),
+  ],
+  () => scheduleGitRpgProfileRefresh(),
+  { immediate: true },
+);
 
 watch(() => git.error.value, (value) => {
   if (!value) return;
@@ -2397,11 +3268,32 @@ watch(() => git.selectedCommit.value, (commit) => {
 });
 
 const selectedIssue = computed(() =>
-  githubIssues.value.find((item) => item.number === selectedIssueNumber.value) || null,
+  githubIssueDetail.value?.number === selectedIssueNumber.value
+    ? githubIssueDetail.value
+    : githubIssues.value.find((item) => item.number === selectedIssueNumber.value) || null,
 );
 
 const selectedPullRequest = computed(() =>
-  githubPullRequests.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
+  githubPullRequestDetail.value?.number === selectedPullRequestNumber.value
+    ? githubPullRequestDetail.value
+    : githubPullRequests.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
+);
+
+watch(
+  [historyViewMode, remoteInsightsMode, selectedIssueNumber, selectedPullRequestNumber],
+  ([viewMode, mode]) => {
+    if (viewMode !== "remote-insights") {
+      clearRemoteInsightDetails();
+      clearRemoteCreateOptions();
+      return;
+    }
+
+    if (mode !== "issue-create" && mode !== "pull-request-create") {
+      clearRemoteCreateOptions();
+    }
+
+    loadRemoteInsightDetailForCurrentSelection();
+  },
 );
 
 async function openRepo(path: string) {
@@ -3396,6 +4288,8 @@ function submitCreateTag() {
         :active-action="activeRemoteAction"
         :ghost-active="git.ghostBranchState.value.active"
         :origin-conflict-risk="originConflictRisk"
+        :rpg-profile="gitRpgProfile"
+        :rpg-loading="gitRpgLoading"
         @pull="handlePull"
         @push="handlePush"
         @fetch="handleFetch"
@@ -3415,8 +4309,16 @@ function submitCreateTag() {
         :open-pull-request-branches="openPullRequestBranches"
         :issues="githubIssues"
         :pull-requests="githubPullRequests"
+        :gists="githubGists"
+        :issues-has-more="githubIssuesHasMore"
+        :pull-requests-has-more="githubPullRequestsHasMore"
+        :issues-loading-all="githubIssuesLoadingAll"
+        :pull-requests-loading-all="githubPullRequestsLoadingAll"
         :selected-issue="selectedIssue"
         :selected-pull-request="selectedPullRequest"
+        :remote-insight-detail-loading="remoteInsightDetailLoading"
+        :remote-create-options="remoteCreateOptions"
+        :remote-create-options-loading="remoteCreateOptionsLoading"
         :remote-insights-mode="remoteInsightsMode"
         :show-diff-viewer="showDiffViewer"
         :diff-file-path="diffFilePath"
@@ -3433,6 +4335,7 @@ function submitCreateTag() {
         :user-logs="userLogs"
         :error-logs="errorLogs"
         :smart-gitignore-wizard-enabled="smartGitignoreWizardEnabled"
+        :bug-autopsy-enabled="bugAutopsyEnabled"
         @set-history-view="setHistoryViewMode($event)"
         @update:show-terminal="showTerminal = $event"
         @update:terminal-allow-all="terminalAllowAll = $event"
@@ -3449,8 +4352,11 @@ function submitCreateTag() {
         @select-stash="onSelectStash($event)"
         @select-issue="openIssueDetails($event)"
         @select-pull-request="openPullRequestDetails($event)"
+        @load-all-issues="loadAllGithubIssues"
+        @load-all-pull-requests="loadAllGithubPullRequests"
         @open-create-issue="openCreateIssuePanel"
         @open-create-pull-request="openCreatePullRequestPanel"
+        @open-gist="openGistInBrowser($event)"
         @create-issue="createRemoteIssue($event)"
         @create-pull-request="createRemotePullRequest($event)"
         @request-merge="handleRequestMerge($event)"

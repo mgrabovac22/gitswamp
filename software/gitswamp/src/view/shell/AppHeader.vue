@@ -7,7 +7,6 @@ import {
   Settings,
   Loader2,
   Download,
-  CircleHelp,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -15,8 +14,10 @@ import BranchQuickActions from "@/view/shell/BranchQuickActions.vue";
 import headerIcon from "@/assets/logo_git_croc.gif";
 import headerTextLogoDark from "@/assets/logo_dark.png";
 import headerTextLogoLight from "@/assets/logo_light.png";
+import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
+import type { GitRpgProfile } from "@/features/repository/rpg/gitRpgProfiler";
 
-defineProps<{
+const props = defineProps<{
   loading: boolean;
   activeAction?: "pull" | "push" | "fetch" | null;
   ghostActive?: boolean;
@@ -24,6 +25,8 @@ defineProps<{
     level: "none" | "medium" | "high";
     label: string;
   };
+  rpgProfile?: GitRpgProfile | null;
+  rpgLoading?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -42,6 +45,14 @@ const emit = defineEmits<{
 
 const isLight = ref(document.documentElement.classList.contains("light"));
 const textLogo = computed(() => (isLight.value ? headerTextLogoLight : headerTextLogoDark));
+const rpgRole = computed(() => props.rpgProfile?.primaryRole || null);
+const rpgShieldTitle = computed(() => {
+  if (rpgRole.value) {
+    return `${rpgRole.value.title}, click me`;
+  }
+
+  return props.rpgLoading ? "Git RPG profile loading, click me" : "Git RPG profile, click me";
+});
 
 const themeObserver = new MutationObserver(() => {
   isLight.value = document.documentElement.classList.contains("light");
@@ -128,10 +139,10 @@ onUnmounted(() => {
         variant="ghost"
         size="sm"
         class="h-8 w-8 px-0 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] transition-all"
-        title="Explain Git state"
+        :title="rpgShieldTitle"
         @click="emit('explainGitState')"
       >
-        <CircleHelp class="w-3.5 h-3.5" />
+        <GitRpgShield :role="rpgRole" :loading="props.rpgLoading" size="header" />
       </AppButton>
       <BranchQuickActions
         :loading="loading"
@@ -180,4 +191,5 @@ onUnmounted(() => {
     opacity: 1;
   }
 }
+
 </style>

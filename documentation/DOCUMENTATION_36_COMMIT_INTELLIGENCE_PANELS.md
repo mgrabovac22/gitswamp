@@ -15,7 +15,7 @@ This document explains how each panel works, which backend commands it uses, how
 The current app also includes two adjacent history-intelligence modes in the same workspace:
 
 - **Galaxy View** - Alt+2, canvas-based commit/branch topology with galaxy and tree layouts
-- **Burndown Analytics** - Alt+6, team focus and after-hours analytics that complement Productivity Arena
+- **Burnout Analytics** - Alt+6, team focus and after-hours analytics that complement Productivity Arena
 
 ## 2. Shared Architecture
 
@@ -55,7 +55,7 @@ This ownership map describes where code should live. It is separate from Git aut
 | Productivity analytics UI | `CommitProductivityPanel.vue` | Owns rhythm, contribution balance, pressure, stability, and author-filtered metrics |
 | Time Machine UI | `CommitTimeMachinePanel.vue` | Owns timeline frames, autoplay, SHA search, snapshot explorer, and rollback command preview |
 | Conflict suspects UI | `CommitConflictHeatmapPanel.vue` | Owns hotspot rendering, pair rendering, tree heatmap roll-up, search, filters, and risk labels |
-| Burndown and code ownership UI | `CommitBurndownAnalyticsPanel.vue` | Owns after-hours analytics, hot-file ownership, contributor risk rows, and team pulse charts |
+| Burnout and code ownership UI | `CommitBurnoutAnalyticsPanel.vue` | Owns after-hours analytics, hot-file ownership, contributor risk rows, and team pulse charts |
 | Tauri command boundary | `src-tauri/src/commands/conflicts.rs`, `commits.rs`, `commit_files.rs`, `diff.rs` | Owns async command wrappers, thread offloading, and payload return boundaries |
 | Git analytics engine | `src-tauri/src/services/git_service.rs` | Owns canonical Git scans, conflict scoring, merge preflight scoring, deletion statistics, and tree reads |
 | Payload contracts | `src-tauri/src/models/conflict_hotspot.rs`, `src/types/models/conflictHotspot.ts`, `src/types/models/conflictAnalytics.ts` | Owns shared data shape between Rust and Vue |
@@ -186,7 +186,7 @@ The panel uses these practical formulas:
 | Recovery pressure | weighted mix of regression-message rate and conflict mention density |
 | Context-switch pressure | weighted mix of off-hours ratio and top-three-day load share |
 
-The ownership signal in Productivity Arena is repository-wide. A low balance score or high top contributor share means one person is carrying a large part of the commit stream. That is useful for planning reviews, pairing, and vacation risk, but it does not mean that person owns every file. File-level ownership is handled by Burndown Analytics.
+The ownership signal in Productivity Arena is repository-wide. A low balance score or high top contributor share means one person is carrying a large part of the commit stream. That is useful for planning reviews, pairing, and vacation risk, but it does not mean that person owns every file. File-level ownership is handled by Burnout Analytics.
 
 The score bands are intentionally coarse:
 
@@ -427,11 +427,11 @@ Preflight risk levels are:
 
 The conflict panel is a risk map, not a guarantee. It does not replay every historical textual conflict. It uses merge history, changed files, conflict mentions, and branch overlap to show where attention is most likely needed.
 
-## 6. Burndown Analytics and Code Ownership
+## 6. Burnout Analytics and Code Ownership
 
 ### 6.1 Purpose
 
-Burndown Analytics complements Productivity Arena. Productivity focuses on repository rhythm and balance, while Burndown focuses on team focus, after-hours load, and hot-file ownership.
+Burnout Analytics complements Productivity Arena. Productivity focuses on repository rhythm and balance, while Burnout focuses on team focus, after-hours load, and hot-file ownership.
 
 ### 6.2 Data loading strategy
 
@@ -444,7 +444,7 @@ The hot-file scan uses `git log --all --no-merges --name-only`, groups paths by 
 
 ### 6.3 Code ownership algorithm
 
-Code ownership in Burndown is file-level and touch-based:
+Code ownership in Burnout Analytics is file-level and touch-based:
 
 1. For every scanned non-merge commit, the parser stores current author and whether the subject looks fix-like.
 2. Each changed file receives one touch.
@@ -512,7 +512,7 @@ The panels are intentionally complementary:
 Two newer modes extend this layer:
 
 - Galaxy View answers “how do branches and commits visually relate?”
-- Burndown Analytics answers “where are team focus, after-hours work, and workload pressure changing?”
+- Burnout Analytics answers “where are team focus, after-hours work, and workload pressure changing?”
 
 Together they form the commit-intelligence layer of GitSwamp.
 
@@ -525,8 +525,8 @@ Use these combinations when diagnosing a repository:
 | Preparing a risky merge | Conflict hotspots, conflict pairs, merge preflight, then Time Machine for suspect files |
 | Planning a refactor | Conflict tree heatmap, hot-file ownership, top contributor share, and Time Machine snapshots |
 | Investigating a regression | Productivity stability risk, Time Machine frame search, then file-level snapshot preview |
-| Checking team sustainability | Burndown after-hours risk, Productivity bottleneck score, ownership concentration |
-| Finding knowledge silos | Productivity balance score, Burndown owner share, hot files owned |
+| Checking team sustainability | Burnout after-hours risk, Productivity bottleneck score, ownership concentration |
+| Finding knowledge silos | Productivity balance score, Burnout owner share, hot files owned |
 
 ## 8. Implementation Notes
 
@@ -534,7 +534,7 @@ Use these combinations when diagnosing a repository:
 
 Each panel keeps its own reactive state and uses run tokens to prevent stale async responses from replacing current data. This is important because users can switch repositories or filters while a load is still in flight.
 
-Galaxy View and Burndown Analytics follow the same repository workspace mode model. `RepositoryWorkspace.vue` lazy-loads their panel components, and `RepositoryTabs.vue` exposes their shortcuts from the View menu.
+Galaxy View and Burnout Analytics follow the same repository workspace mode model. `RepositoryWorkspace.vue` lazy-loads their panel components, and `RepositoryTabs.vue` exposes their shortcuts from the View menu.
 
 ### 8.2 Cache model
 
@@ -544,7 +544,7 @@ The panel caches are keyed by repository and the relevant scope:
 - Time Machine: repository + commit SHA (+ file path for file preview)
 - Conflict Suspects: repository + merge window
 - Galaxy View: loaded commit/branch state and canvas-local layout state
-- Burndown Analytics: repository + recent analytics window
+- Burnout Analytics: repository + recent analytics window
 
 This avoids repeating expensive scans when the user revisits the same data.
 
@@ -560,7 +560,7 @@ The panels are reachable through the View menu and the following shortcuts:
 - Alt+3 - Productivity Arena
 - Alt+4 - Time Machine
 - Alt+5 - Usual Conflict Suspects
-- Alt+6 - Burndown Analytics
+- Alt+6 - Burnout Analytics
 
 ## 9. Related Files
 
@@ -570,7 +570,7 @@ The panels are reachable through the View menu and the following shortcuts:
 - [CommitProductivityPanel.vue](../software/gitswamp/src/view/commit/CommitProductivityPanel.vue)
 - [CommitTimeMachinePanel.vue](../software/gitswamp/src/view/commit/CommitTimeMachinePanel.vue)
 - [CommitConflictHeatmapPanel.vue](../software/gitswamp/src/view/commit/CommitConflictHeatmapPanel.vue)
-- [CommitBurndownAnalyticsPanel.vue](../software/gitswamp/src/view/commit/CommitBurndownAnalyticsPanel.vue)
+- [CommitBurnoutAnalyticsPanel.vue](../software/gitswamp/src/view/commit/CommitBurnoutAnalyticsPanel.vue)
 - [GitService](../software/gitswamp/src-tauri/src/services/git_service.rs)
 - [Conflict commands](../software/gitswamp/src-tauri/src/commands/conflicts.rs)
 - [Commit commands](../software/gitswamp/src-tauri/src/commands/commits.rs)

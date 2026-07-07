@@ -123,7 +123,7 @@ Click the top-left hamburger icon to open the quick menu with 4 sections:
 - **Productivity Arena** (Alt+3) - View developer productivity metrics and activity
 - **Time Machine** (Alt+4) - Navigate through repository history frames
 - **Usual Conflict Suspects** (Alt+5) - View merge conflict hotspots (heatmap)
-- **Burndown Analytics** (Alt+6) - View team focus, after-hours, and repository pulse signals
+- **Burnout Analytics** (Alt+6) - View team focus, after-hours, and repository pulse signals
 - **Open Folder Explorer** (Alt+O) - Open repository folder in system explorer
 - **Open Settings** (Ctrl+,) - Open app settings dialog
 
@@ -215,7 +215,7 @@ See merge conflict hotspots and risky areas:
 - Search filtering and tree-scope filtering for focused investigation
 - Helps prevent conflicting changes
 
-#### Burndown Analytics (Alt+6)
+#### Burnout Analytics (Alt+6)
 Understand team focus and repository pulse:
 - Recent weekly repository activity
 - After-hours and weekend indicators
@@ -517,7 +517,7 @@ If conflicts occur during pull/merge:
 | `Alt+3` | Switch to Productivity Arena | View → Productivity Arena |
 | `Alt+4` | Switch to Time Machine | View → Time Machine |
 | `Alt+5` | Switch to Conflict Heatmap | View → Usual Conflict Suspects |
-| `Alt+6` | Switch to Burndown Analytics | View → Burndown Analytics |
+| `Alt+6` | Switch to Burnout Analytics | View → Burnout Analytics |
 | `Ctrl+R` | Focus commit search | (Global) |
 
 **Note:** `Ctrl+`` means Ctrl + Backtick (key below Esc on most layouts).

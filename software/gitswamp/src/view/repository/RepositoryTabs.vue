@@ -3,10 +3,12 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { Folder, Plus, X, Home, Menu, HelpCircle, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
+import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
+import { GIT_RPG_ROLES } from "@/features/repository/rpg/gitRpgProfiler";
 import type { RepoInfo } from "@/types";
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burndown";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout";
 
 interface MenuAction {
   id: string;
@@ -237,12 +239,12 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       run: () => emit("setHistoryView", "conflict-heatmap"),
     },
     {
-      id: "view-burndown",
-      label: "Burndown Analytics",
+      id: "view-burnout",
+      label: "Burnout Analytics",
       description: "Show contributor focus, after-hours rhythm and hot-file ownership pressure.",
       shortcut: "Alt+6",
       disabled: !hasActiveRepo.value,
-      run: () => emit("setHistoryView", "burndown"),
+      run: () => emit("setHistoryView", "burnout"),
     },
     {
       id: "open-explorer",
@@ -508,6 +510,26 @@ onUnmounted(() => {
           </section>
 
           <section>
+            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Git RPG Badges</h4>
+            <p class="mb-2 text-[11px] leading-5 text-[var(--muted-foreground)]">
+              The small shield near Branch is a lightweight style profile for the current repository. Hover it for the role name, click it to see the role explanation before the Git state summary.
+            </p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div
+                v-for="role in GIT_RPG_ROLES"
+                :key="role.id"
+                class="flex gap-2 rounded border border-[var(--border)] bg-[var(--secondary)]/35 px-2 py-2"
+              >
+                <GitRpgShield :role="role" size="help" class="flex-shrink-0" />
+                <div class="min-w-0">
+                  <div class="text-[11px] font-semibold text-[var(--foreground)]">{{ role.title }}</div>
+                  <div class="text-[10px] leading-4 text-[var(--muted-foreground)]">{{ role.signal }}</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section>
             <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Shortcuts</h4>
             <div class="space-y-1.5 text-[11px]">
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open help and shortcuts</span><span class="text-[var(--muted-foreground)] font-mono">F1</span></div>
@@ -524,7 +546,7 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in folder explorer</span><span class="text-[var(--muted-foreground)] font-mono">Alt+O</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Galaxy View</span><span class="text-[var(--muted-foreground)] font-mono">Alt+2</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+5</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Burndown Analytics</span><span class="text-[var(--muted-foreground)] font-mono">Alt+6</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Burnout Analytics</span><span class="text-[var(--muted-foreground)] font-mono">Alt+6</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open integrations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+I</span></div>
@@ -633,4 +655,5 @@ onUnmounted(() => {
 :global(html.dummy-mode .menu-action-desc) {
   display: block;
 }
+
 </style>
