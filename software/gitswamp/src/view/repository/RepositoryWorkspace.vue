@@ -16,6 +16,7 @@ import type {
   IssueInfo,
   PullRequestInfo,
   GistInfo,
+  LostCommitInfo,
   RemoteIssueCreatePayload,
   RemotePullRequestCreatePayload,
   RemoteLabelInfo,
@@ -23,7 +24,7 @@ import type {
   RemoteUserInfo,
 } from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 interface RemoteCreateOptions {
@@ -40,6 +41,7 @@ const CommitTimeMachinePanel = defineAsyncComponent(() => import("@/view/commit/
 const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/commit/CommitConflictHeatmapPanel.vue"));
 const CommitBurnoutAnalyticsPanel = defineAsyncComponent(() => import("@/view/commit/CommitBurnoutAnalyticsPanel.vue"));
 const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository/RemoteInsightsPanel.vue"));
+const LostFoundPanel = defineAsyncComponent(() => import("@/view/repository/LostFoundPanel.vue"));
 
 const props = defineProps<{
   git: any;
@@ -49,6 +51,9 @@ const props = defineProps<{
   issues?: IssueInfo[];
   pullRequests?: PullRequestInfo[];
   gists?: GistInfo[];
+  lostCommits?: LostCommitInfo[];
+  lostCommitsLoading?: boolean;
+  rescuingLostCommitSha?: string | null;
   issuesHasMore?: boolean;
   pullRequestsHasMore?: boolean;
   issuesLoadingAll?: boolean;
@@ -101,6 +106,8 @@ const emit = defineEmits<{
   openCreatePullRequest: [];
   createIssue: [payload: RemoteIssueCreatePayload];
   createPullRequest: [payload: RemotePullRequestCreatePayload];
+  refreshLostFound: [];
+  rescueLostCommit: [payload: { sha: string; branchName: string }];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   checkoutRemoteBranch: [name: string];
@@ -328,6 +335,7 @@ function handleRefreshState() {
         :issues="props.issues || []"
         :pull-requests="props.pullRequests || []"
         :gists="props.gists || []"
+        :lost-commits="props.lostCommits || []"
         :issues-has-more="props.issuesHasMore"
         :pull-requests-has-more="props.pullRequestsHasMore"
         :issues-loading-all="props.issuesLoadingAll"
@@ -349,6 +357,7 @@ function handleRefreshState() {
         @open-create-issue="emit('openCreateIssue')"
         @open-create-pull-request="emit('openCreatePullRequest')"
         @create-gist="emit('createGist')"
+        @open-lost-found="emit('setHistoryView', 'lost-found')"
       />
     </div>
 
@@ -480,6 +489,19 @@ function handleRefreshState() {
           :repo-path="props.git.repoPath.value"
           :commits="props.git.displayedCommits.value"
           @close="emit('setHistoryView', 'graph')"
+        />
+
+        <LostFoundPanel
+          v-else-if="props.historyViewMode === 'lost-found'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :lost-commits="props.lostCommits || []"
+          :loading="props.lostCommitsLoading"
+          :rescuing-sha="props.rescuingLostCommitSha"
+          @close="emit('setHistoryView', 'graph')"
+          @refresh="emit('refreshLostFound')"
+          @rescue="emit('rescueLostCommit', $event)"
+          @open-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: false })"
         />
 
         <RemoteInsightsPanel

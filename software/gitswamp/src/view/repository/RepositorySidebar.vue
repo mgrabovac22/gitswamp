@@ -14,9 +14,10 @@ import {
   GitPullRequest,
   CircleDot,
   FileCode2,
+  LifeBuoy,
 } from "lucide-vue-next";
 import RepositorySidebarSection from "./RepositorySidebarSection.vue";
-import type { BranchInfo, StashInfo, TagInfo, IssueInfo, PullRequestInfo, GistInfo } from "@/types";
+import type { BranchInfo, StashInfo, TagInfo, IssueInfo, PullRequestInfo, GistInfo, LostCommitInfo } from "@/types";
 
 const props = defineProps<{
   branches: BranchInfo[];
@@ -27,6 +28,7 @@ const props = defineProps<{
   issues?: IssueInfo[];
   pullRequests?: PullRequestInfo[];
   gists?: GistInfo[];
+  lostCommits?: LostCommitInfo[];
   issuesHasMore?: boolean;
   pullRequestsHasMore?: boolean;
   issuesLoadingAll?: boolean;
@@ -52,12 +54,14 @@ const emit = defineEmits<{
   openCreateIssue: [];
   openCreatePullRequest: [];
   createGist: [];
+  openLostFound: [];
 }>();
 
 interface RepositorySidebarSections {
   local: boolean;
   remote: boolean;
   stashes: boolean;
+  lostFound: boolean;
   tags: boolean;
   issues: boolean;
   pullRequests: boolean;
@@ -68,6 +72,7 @@ const expandedSections = reactive<RepositorySidebarSections>({
   local: true,
   remote: false,
   stashes: false,
+  lostFound: false,
   tags: false,
   issues: false,
   pullRequests: false,
@@ -413,6 +418,44 @@ function issueStateClass(issue: IssueInfo): string {
               class="text-[9px] text-[#ef4444] hover:text-[#f87171] px-1 py-0.5 rounded hover:bg-[#ef4444]/10"
             >Drop</button>
           </div>
+        </div>
+      </RepositorySidebarSection>
+
+      <RepositorySidebarSection
+        v-if="(props.lostCommits || []).length > 0"
+        label="LOST & FOUND"
+        short-label="LOST"
+        :count="(props.lostCommits || []).length"
+        :icon="LifeBuoy"
+        :expanded="expandedSections.lostFound"
+        @toggle="toggleSection('lostFound')"
+      >
+        <div class="px-4 pb-1">
+          <button
+            @click="emit('openLostFound')"
+            class="w-full flex items-center justify-start gap-1.5 px-2 py-1 text-left text-[10px] text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
+          >
+            <LifeBuoy class="w-3 h-3" />
+            Open recovery view
+          </button>
+        </div>
+        <button
+          v-for="commit in (props.lostCommits || []).slice(0, 5)"
+          :key="`lost-${commit.sha}`"
+          class="w-full text-left px-4 py-1.5 pl-8 text-[var(--muted-foreground)] transition-all hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+          :title="commit.message || commit.sha"
+          @click="emit('openLostFound')"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="min-w-0 truncate text-[10px]">{{ commit.message || "No commit message" }}</span>
+            <span class="flex-shrink-0 rounded border border-[#10b981]/25 bg-[#10b981]/10 px-1 py-0.5 font-mono text-[8px] text-[#34d399]">
+              {{ commit.short_sha }}
+            </span>
+          </div>
+          <div class="mt-0.5 text-[9px] text-[var(--muted-foreground)] truncate">{{ commit.author_name }} · {{ commit.time_ago }}</div>
+        </button>
+        <div v-if="(props.lostCommits || []).length > 5" class="px-4 pt-1 text-[9px] text-[var(--muted-foreground)]">
+          +{{ (props.lostCommits || []).length - 5 }} more in recovery view
         </div>
       </RepositorySidebarSection>
 

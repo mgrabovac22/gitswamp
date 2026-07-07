@@ -69,6 +69,7 @@ import type {
   IssueInfo,
   PullRequestInfo,
   GistInfo,
+  LostCommitInfo,
   RemoteReferenceInfo,
   RemoteLabelInfo,
   RemoteMilestoneInfo,
@@ -119,7 +120,7 @@ const {
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -154,6 +155,8 @@ const GIT_RPG_PROFILE_CACHE_LIMIT = 8;
 const GIT_RPG_COMMIT_SCAN_LIMIT = 160;
 const GIT_RPG_STAT_SCAN_LIMIT = 70;
 const GIT_RPG_ANALYZE_DELAY_MS = 850;
+const LOST_FOUND_SCAN_DELAY_MS = 1200;
+const LOST_FOUND_SCAN_LIMIT = 50;
 
 interface CloneProgressEventPayload {
   url: string;
@@ -239,6 +242,9 @@ const remoteCreateOptions = ref<RemoteCreateOptions>(createEmptyRemoteCreateOpti
 const remoteCreateOptionsLoading = ref(false);
 const gitRpgProfile = ref<GitRpgProfile | null>(null);
 const gitRpgLoading = ref(false);
+const lostCommits = ref<LostCommitInfo[]>([]);
+const lostCommitsLoading = ref(false);
+const rescuingLostCommitSha = ref<string | null>(null);
 const selectedIssueNumber = ref<number | null>(null);
 const selectedPullRequestNumber = ref<number | null>(null);
 const remoteInsightsMode = ref<RemoteInsightsViewMode>("pull-request-detail");
@@ -248,6 +254,8 @@ let remoteInsightDetailSequence = 0;
 let remoteCreateOptionsSequence = 0;
 let gitRpgProfileSequence = 0;
 let gitRpgProfileTimer: ReturnType<typeof setTimeout> | null = null;
+let lostFoundScanSequence = 0;
+let lostFoundScanTimer: ReturnType<typeof setTimeout> | null = null;
 
 const showAuthRequiredDialog = ref(false);
 const authProvider = ref<"github" | "gitlab" | "gitlab-self" | "bitbucket" | "azure">("github");
@@ -2659,6 +2667,116 @@ async function refreshCurrentRepo() {
   }
 
   toast.success("Repository refreshed");
+  scheduleLostFoundScan(0);
+}
+
+function scheduleLostFoundScan(delay = LOST_FOUND_SCAN_DELAY_MS): void {
+  if (lostFoundScanTimer) {
+    clearTimeout(lostFoundScanTimer);
+    lostFoundScanTimer = null;
+  }
+
+  const repoPath = git.repoPath.value;
+  if (!repoPath) {
+    lostFoundScanSequence++;
+    lostCommits.value = [];
+    lostCommitsLoading.value = false;
+    return;
+  }
+
+  lostFoundScanTimer = setTimeout(() => {
+    void refreshLostFound(false);
+  }, delay);
+}
+
+async function refreshLostFound(showToast = true): Promise<void> {
+  const repoPath = git.repoPath.value;
+  if (!repoPath) {
+    lostCommits.value = [];
+    return;
+  }
+
+  const sequence = ++lostFoundScanSequence;
+  lostCommitsLoading.value = true;
+
+  try {
+    const items = await invoke<LostCommitInfo[]>("get_lost_commits", {
+      path: repoPath,
+      maxCount: LOST_FOUND_SCAN_LIMIT,
+    });
+    if (sequence !== lostFoundScanSequence || git.repoPath.value !== repoPath) return;
+
+    lostCommits.value = items;
+    if (items.length === 0 && historyViewMode.value === "lost-found") {
+      setHistoryViewMode("graph");
+    }
+    if (showToast) {
+      toast.info(items.length > 0
+        ? `Found ${items.length} recoverable commit${items.length === 1 ? "" : "s"}.`
+        : "No lost commits found.");
+    }
+  } catch (error) {
+    if (sequence !== lostFoundScanSequence || git.repoPath.value !== repoPath) return;
+    lostCommits.value = [];
+    appendLog("error", `Lost & Found scan failed: ${String(error)}`);
+    if (showToast) {
+      toast.error(`Lost & Found scan failed: ${String(error)}`);
+    }
+  } finally {
+    if (sequence === lostFoundScanSequence && git.repoPath.value === repoPath) {
+      lostCommitsLoading.value = false;
+    }
+  }
+}
+
+function uniqueLostFoundBranchName(baseName: string): string {
+  const cleanBase = (baseName || "rescue/lost-commit")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    || "rescue/lost-commit";
+  const existing = new Set(git.localBranches.value.map((branch: BranchInfo) => branch.name.toLowerCase()));
+  if (!existing.has(cleanBase.toLowerCase())) {
+    return cleanBase;
+  }
+
+  for (let index = 2; index < 1000; index++) {
+    const candidate = `${cleanBase}-${index}`;
+    if (!existing.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  return `${cleanBase}-${Date.now()}`;
+}
+
+async function rescueLostCommit(payload: { sha: string; branchName: string }): Promise<void> {
+  if (!hasActiveRepositoryPath()) {
+    toast.warning("Open a repository first.");
+    return;
+  }
+
+  const branchName = uniqueLostFoundBranchName(payload.branchName);
+  rescuingLostCommitSha.value = payload.sha;
+
+  try {
+    await invoke("create_branch", {
+      path: git.repoPath.value,
+      name: branchName,
+      startPoint: payload.sha,
+    });
+    await Promise.all([
+      git.refreshBranches(),
+      git.refreshCommits(),
+    ]);
+    toast.success(`Recovered as ${branchName}`);
+    await refreshLostFound(false);
+  } catch (error) {
+    toast.error(`Recovery failed: ${String(error)}`);
+  } finally {
+    if (rescuingLostCommitSha.value === payload.sha) {
+      rescuingLostCommitSha.value = null;
+    }
+  }
 }
 
 function openCommandPalette() {
@@ -2908,6 +3026,14 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       disabled: !hasRepo,
       run: () => setHistoryViewMode("burnout"),
     },
+    ...(lostCommits.value.length > 0 ? [{
+      id: "view-lost-found",
+      label: "Lost & Found",
+      description: "Inspect and rescue dangling commits that are no longer attached to a branch.",
+      keywords: ["recover", "rescue", "dangling", "lost", "reset"],
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("lost-found"),
+    }] : []),
   ];
 });
 
@@ -3165,6 +3291,11 @@ onUnmounted(() => {
     clearTimeout(gitRpgProfileTimer);
     gitRpgProfileTimer = null;
   }
+  lostFoundScanSequence++;
+  if (lostFoundScanTimer) {
+    clearTimeout(lostFoundScanTimer);
+    lostFoundScanTimer = null;
+  }
 
 });
 
@@ -3191,6 +3322,20 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => [
+    git.repoPath.value,
+    git.repoInfo.value?.head_sha || "",
+    git.localBranches.value.map((branch: BranchInfo) => `${branch.name}:${branch.is_head}:${branch.upstream || ""}`).join("|"),
+    git.stashes.value.length,
+  ],
+  () => {
+    if (git.repoPath.value) {
+      scheduleLostFoundScan(LOST_FOUND_SCAN_DELAY_MS);
+    }
+  },
+);
+
 watch(() => git.error.value, (value) => {
   if (!value) return;
   appendLog("error", value);
@@ -3214,6 +3359,9 @@ watch(
     restartAutoFetchTimer();
     restartBackgroundMaintenanceTimer();
     if (repoPath !== previousRepoPath) {
+      lostCommits.value = [];
+      lostCommitsLoading.value = false;
+      scheduleLostFoundScan();
       clearCommitFilesCacheForOtherRepos(repoPath);
       clearDiffViewerCaches();
       backgroundCommitPreloadRunKey = "";
@@ -4310,6 +4458,9 @@ function submitCreateTag() {
         :issues="githubIssues"
         :pull-requests="githubPullRequests"
         :gists="githubGists"
+        :lost-commits="lostCommits"
+        :lost-commits-loading="lostCommitsLoading"
+        :rescuing-lost-commit-sha="rescuingLostCommitSha"
         :issues-has-more="githubIssuesHasMore"
         :pull-requests-has-more="githubPullRequestsHasMore"
         :issues-loading-all="githubIssuesLoadingAll"
@@ -4359,6 +4510,8 @@ function submitCreateTag() {
         @open-gist="openGistInBrowser($event)"
         @create-issue="createRemoteIssue($event)"
         @create-pull-request="createRemotePullRequest($event)"
+        @refresh-lost-found="refreshLostFound(true)"
+        @rescue-lost-commit="rescueLostCommit($event)"
         @request-merge="handleRequestMerge($event)"
         @request-rebase="handleRequestRebase($event)"
         @checkout-remote-branch="handleCheckoutRemoteBranch($event)"

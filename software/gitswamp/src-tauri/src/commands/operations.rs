@@ -1,6 +1,18 @@
 use crate::services::git_service::GitService;
 
 #[tauri::command]
+pub async fn get_lost_commits(
+    path: String,
+    max_count: Option<usize>,
+) -> Result<Vec<crate::models::LostCommitInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::lost_commits(&path, max_count.unwrap_or(50))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn pull(path: String, token: Option<String>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || GitService::pull(&path, token.as_deref()))
         .await

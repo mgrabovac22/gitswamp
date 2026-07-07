@@ -11,8 +11,8 @@ use crate::constants::{
 };
 use crate::models::{
     AzureRepo, BitbucketRepo, BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot,
-    ConflictPair, FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, MergeRiskPreflight,
-    RepoInfo, StagedDiffSummary, StashInfo, TagInfo,
+    ConflictPair, FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, LostCommitInfo,
+    MergeRiskPreflight, RepoInfo, StagedDiffSummary, StashInfo, TagInfo,
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
@@ -2137,6 +2137,107 @@ impl GitService {
             });
         }
         Ok(files)
+    }
+
+    fn remember_lost_commit(
+        commits: &mut Vec<LostCommitInfo>,
+        candidate: LostCommitInfo,
+        max_count: usize,
+    ) {
+        if commits.len() < max_count {
+            commits.push(candidate);
+            return;
+        }
+
+        let Some((oldest_index, oldest)) = commits.iter().enumerate().min_by(|(_, left), (_, right)| {
+            left.timestamp
+                .cmp(&right.timestamp)
+                .then_with(|| right.sha.cmp(&left.sha))
+        }) else {
+            return;
+        };
+
+        if candidate.timestamp > oldest.timestamp
+            || (candidate.timestamp == oldest.timestamp && candidate.sha < oldest.sha)
+        {
+            commits[oldest_index] = candidate;
+        }
+    }
+
+    pub fn lost_commits(path: &str, max_count: usize) -> Result<Vec<LostCommitInfo>, String> {
+        let repo = GitRepository::open(path)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let max_count = max_count.clamp(1, 200);
+        let mut reachable = HashSet::new();
+        let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
+        let _ = revwalk.set_sorting(Sort::NONE);
+
+        if let Ok(head) = repo.head() {
+            if let Ok(head_commit) = head.peel(git2::ObjectType::Commit) {
+                let _ = revwalk.push(head_commit.id());
+            }
+        }
+
+        if let Ok(references) = repo.references() {
+            for reference_result in references {
+                let Ok(reference) = reference_result else {
+                    continue;
+                };
+                let Ok(commit_object) = reference.peel(git2::ObjectType::Commit) else {
+                    continue;
+                };
+                let _ = revwalk.push(commit_object.id());
+            }
+        }
+
+        for oid_result in revwalk {
+            if let Ok(oid) = oid_result {
+                reachable.insert(oid);
+            }
+        }
+
+        let odb = repo.odb().map_err(|e| e.message().to_string())?;
+        let mut commits = Vec::with_capacity(max_count.min(32));
+        odb.foreach(|oid| {
+            if reachable.contains(oid) {
+                return true;
+            }
+
+            let Ok((_, git2::ObjectType::Commit)) = odb.read_header(*oid) else {
+                return true;
+            };
+            let Ok(commit) = repo.find_commit(*oid) else {
+                return true;
+            };
+
+            let sha = oid.to_string();
+            let short_sha = sha[..7.min(sha.len())].to_string();
+            let timestamp = commit.time().seconds();
+            let parent_shas: Vec<String> = commit.parent_ids().map(|id| id.to_string()).collect();
+            Self::remember_lost_commit(
+                &mut commits,
+                LostCommitInfo {
+                    sha,
+                    short_sha,
+                    message: commit.message().unwrap_or("").trim().to_string(),
+                    author_name: commit.author().name().unwrap_or("Unknown").to_string(),
+                    author_email: commit.author().email().unwrap_or("").to_string(),
+                    timestamp,
+                    time_ago: time_ago(now, timestamp),
+                    parent_shas,
+                    source: "unreachable".to_string(),
+                },
+                max_count,
+            );
+            true
+        })
+        .map_err(|e| e.message().to_string())?;
+
+        commits.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| a.sha.cmp(&b.sha)));
+        Ok(commits)
     }
 
     pub fn create_branch(path: &str, name: &str, start_point: Option<&str>) -> Result<(), String> {
