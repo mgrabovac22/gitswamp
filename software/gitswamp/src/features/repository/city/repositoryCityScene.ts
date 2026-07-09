@@ -16,6 +16,8 @@ const ROAD_WIDTH = 12;
 const BUILDING_GAP = 3;
 const DISTRICT_ROAD_CLEARANCE = 7;
 const CITY_EDGE_PADDING = ROAD_WIDTH + DISTRICT_ROAD_CLEARANCE + 16;
+const SIDEWALK_WIDTH = 2.2;
+const MIN_OPEN_SPACE_PARK_AREA = 260;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -28,6 +30,42 @@ function hashText(value: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function normalizeScopePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+function cityFolderName(path: string): string {
+  if (!path) return "Repository root";
+  const parts = path.split("/").filter(Boolean);
+  return parts[parts.length - 1] || "Repository root";
+}
+
+function cityFolderForFile(file: RepositoryCityFile, scopePath: string): {
+  key: string;
+  name: string;
+  path: string;
+  file: RepositoryCityFile;
+} | null {
+  const normalizedPath = normalizeScopePath(file.path);
+  const normalizedScope = normalizeScopePath(scopePath);
+  if (normalizedScope && !normalizedPath.startsWith(`${normalizedScope}/`)) return null;
+  const relativePath = normalizedScope ? normalizedPath.slice(normalizedScope.length + 1) : normalizedPath;
+  if (!relativePath) return null;
+  const slashIndex = relativePath.indexOf("/");
+  const childSegment = slashIndex >= 0 ? relativePath.slice(0, slashIndex) : "";
+  const folderPath = normalizedScope
+    ? (childSegment ? `${normalizedScope}/${childSegment}` : normalizedScope)
+    : childSegment;
+  const name = childSegment || (normalizedScope ? "Files" : "Repository root");
+  const key = folderPath || "__repository-root-files";
+  return {
+    key,
+    name,
+    path: folderPath,
+    file: { ...file, folder: name },
+  };
 }
 
 function createDistrictBuildings(
@@ -122,6 +160,7 @@ function addPerimeterRoads(roads: CityRoad[], district: CityDistrict) {
   const outerY = district.y - DISTRICT_ROAD_CLEARANCE - ROAD_WIDTH;
   const outerWidth = district.width + (DISTRICT_ROAD_CLEARANCE + ROAD_WIDTH) * 2;
   const outerDepth = district.depth + (DISTRICT_ROAD_CLEARANCE + ROAD_WIDTH) * 2;
+  const accessSize = Math.min(ROAD_WIDTH * 0.72, Math.max(5, Math.min(district.width, district.depth) * 0.2));
   addRoad(roads, `${district.id}-road-top`, outerX, outerY, outerWidth, ROAD_WIDTH, "district");
   addRoad(
     roads,
@@ -141,6 +180,42 @@ function addPerimeterRoads(roads: CityRoad[], district: CityDistrict) {
     ROAD_WIDTH,
     outerDepth,
     "district",
+  );
+  addRoad(
+    roads,
+    `${district.id}-access-top`,
+    district.x + district.width / 2 - accessSize / 2,
+    district.y - DISTRICT_ROAD_CLEARANCE,
+    accessSize,
+    DISTRICT_ROAD_CLEARANCE,
+    "avenue",
+  );
+  addRoad(
+    roads,
+    `${district.id}-access-bottom`,
+    district.x + district.width / 2 - accessSize / 2,
+    district.y + district.depth,
+    accessSize,
+    DISTRICT_ROAD_CLEARANCE,
+    "avenue",
+  );
+  addRoad(
+    roads,
+    `${district.id}-access-left`,
+    district.x - DISTRICT_ROAD_CLEARANCE,
+    district.y + district.depth / 2 - accessSize / 2,
+    DISTRICT_ROAD_CLEARANCE,
+    accessSize,
+    "avenue",
+  );
+  addRoad(
+    roads,
+    `${district.id}-access-right`,
+    district.x + district.width,
+    district.y + district.depth / 2 - accessSize / 2,
+    DISTRICT_ROAD_CLEARANCE,
+    accessSize,
+    "avenue",
   );
 }
 
@@ -255,60 +330,87 @@ function addOpenSpaceParks(
   worldWidth: number,
   worldDepth: number,
 ) {
-  const targetCount = clamp(Math.ceil(districts.length * 1.45), 8, 54);
-  const cellSize = clamp(Math.sqrt((worldWidth * worldDepth) / Math.max(8, targetCount)) * 0.72, 48, 96);
-  const occupied = [
+  const addStop = (stops: number[], value: number, max: number) => {
+    const next = clamp(value, CITY_EDGE_PADDING, max - CITY_EDGE_PADDING);
+    if (next <= CITY_EDGE_PADDING || next >= max - CITY_EDGE_PADDING) return;
+    if (!stops.some((stop) => Math.abs(stop - next) < 2.5)) stops.push(next);
+  };
+  const occupied: Array<Pick<CityRoad, "x" | "y" | "width" | "depth">> = [
     ...districts.map((district) => ({
-      x: district.x - 5,
-      y: district.y - 5,
-      width: district.width + 10,
-      depth: district.depth + 10,
+      x: district.x - 0.5,
+      y: district.y - 0.5,
+      width: district.width + 1,
+      depth: district.depth + 1,
     })),
     ...roads.map((road) => ({
-      x: road.x - 4,
-      y: road.y - 4,
-      width: road.width + 8,
-      depth: road.depth + 8,
+      x: road.x - SIDEWALK_WIDTH,
+      y: road.y - SIDEWALK_WIDTH,
+      width: road.width + SIDEWALK_WIDTH * 2,
+      depth: road.depth + SIDEWALK_WIDTH * 2,
     })),
   ];
-  let parkIndex = 0;
-  for (let y = CITY_EDGE_PADDING; y < worldDepth - CITY_EDGE_PADDING && parkIndex < targetCount; y += cellSize) {
-    for (let x = CITY_EDGE_PADDING; x < worldWidth - CITY_EDGE_PADDING && parkIndex < targetCount; x += cellSize) {
-      const seed = hashText(`city-open-park:${parkIndex}:${Math.round(x)}:${Math.round(y)}`);
-      if (seed % 5 === 0) continue;
-      const width = clamp(cellSize * (0.34 + ((seed >>> 8) % 28) / 100), 22, 58);
-      const depth = clamp(cellSize * (0.32 + ((seed >>> 16) % 30) / 100), 20, 56);
+  const xStops = [CITY_EDGE_PADDING, worldWidth - CITY_EDGE_PADDING];
+  const yStops = [CITY_EDGE_PADDING, worldDepth - CITY_EDGE_PADDING];
+  for (const block of occupied) {
+    addStop(xStops, block.x, worldWidth);
+    addStop(xStops, block.x + block.width, worldWidth);
+    addStop(yStops, block.y, worldDepth);
+    addStop(yStops, block.y + block.depth, worldDepth);
+  }
+  xStops.sort((a, b) => a - b);
+  yStops.sort((a, b) => a - b);
+
+  const maxOpenParks = clamp(districts.length * 5, 24, 220);
+  const candidates: CityPark[] = [];
+  let candidateIndex = 0;
+  for (let yIndex = 0; yIndex < yStops.length - 1; yIndex += 1) {
+    for (let xIndex = 0; xIndex < xStops.length - 1; xIndex += 1) {
+      const x = xStops[xIndex];
+      const y = yStops[yIndex];
+      const width = xStops[xIndex + 1] - x;
+      const depth = yStops[yIndex + 1] - y;
+      if (width < 10 || depth < 10 || width * depth < MIN_OPEN_SPACE_PARK_AREA) continue;
       const candidate = {
-        id: `city-open-park-${parkIndex}`,
-        x: clamp(x + ((seed >>> 22) % 18) - 9, CITY_EDGE_PADDING, Math.max(CITY_EDGE_PADDING, worldWidth - CITY_EDGE_PADDING - width)),
-        y: clamp(y + ((seed >>> 27) % 18) - 9, CITY_EDGE_PADDING, Math.max(CITY_EDGE_PADDING, worldDepth - CITY_EDGE_PADDING - depth)),
-        width,
-        depth,
-        treeCount: clamp(Math.ceil((width * depth) / 82), 8, 24),
+        id: `city-open-park-${candidateIndex}`,
+        x: x + 0.25,
+        y: y + 0.25,
+        width: Math.max(1, width - 0.5),
+        depth: Math.max(1, depth - 0.5),
+        treeCount: clamp(Math.ceil((width * depth) / 95), 8, 56),
       };
-      if (occupied.some((rect) => rectsOverlap(candidate, rect, 3))) continue;
-      parks.push(candidate);
-      occupied.push(candidate);
-      parkIndex += 1;
+      if (occupied.some((rect) => rectsOverlap(candidate, rect, 0.1))) continue;
+      candidates.push(candidate);
+      candidateIndex += 1;
     }
   }
+
+  candidates
+    .sort((a, b) => b.width * b.depth - a.width * a.depth)
+    .slice(0, maxOpenParks)
+    .forEach((candidate) => {
+      parks.push(candidate);
+      occupied.push(candidate);
+    });
 }
 
-export function buildRepositoryCityScene(files: RepositoryCityFile[]): CityScene {
-  const byFolder = new Map<string, RepositoryCityFile[]>();
+export function buildRepositoryCityScene(files: RepositoryCityFile[], scopePath = ""): CityScene {
+  const byFolder = new Map<string, { name: string; path: string; files: RepositoryCityFile[] }>();
   for (const file of files) {
-    const rows = byFolder.get(file.folder) ?? [];
-    rows.push(file);
-    byFolder.set(file.folder, rows);
+    const folder = cityFolderForFile(file, scopePath);
+    if (!folder) continue;
+    const rows = byFolder.get(folder.key) ?? { name: folder.name, path: folder.path, files: [] };
+    rows.files.push(folder.file);
+    byFolder.set(folder.key, rows);
   }
 
-  const groups = Array.from(byFolder.entries())
-    .sort((a, b) => hashText(a[0]) - hashText(b[0]));
-  const previews = groups.map(([name, districtFiles], index) => ({
-    name,
-    districtFiles,
+  const groups = Array.from(byFolder.values())
+    .sort((a, b) => hashText(a.path || a.name) - hashText(b.path || b.name));
+  const previews = groups.map((group, index) => ({
+    name: group.name || cityFolderName(group.path),
+    path: group.path,
+    districtFiles: group.files,
     id: `district-${index}`,
-    preview: createDistrictBuildings(districtFiles, `district-${index}`, 0, 0),
+    preview: createDistrictBuildings(group.files, `district-${index}`, 0, 0),
   }));
   const totalArea = previews.reduce(
     (sum, item) => sum + (item.preview.width + DISTRICT_GAP) * (item.preview.depth + DISTRICT_GAP),
@@ -358,6 +460,7 @@ export function buildRepositoryCityScene(files: RepositoryCityFile[]): CityScene
       districts.push({
         id: item.id,
         name: item.name,
+        path: item.path,
         x: cursorX,
         y: cursorY,
         width: placed.width,

@@ -6,6 +6,7 @@ import {
   ConeGeometry,
   CylinderGeometry,
   DirectionalLight,
+  DynamicDrawUsage,
   FogExp2,
   HemisphereLight,
   InstancedMesh,
@@ -30,6 +31,8 @@ import type { BufferGeometry, Light, Material } from "three";
 import type {
   CityBuilding,
   CityCameraMode,
+  CityDistrict,
+  CityPark,
   CityRadarMarker,
   CityRoad,
   CityScene,
@@ -37,15 +40,21 @@ import type {
 
 const CLEAR_COLOR = 0x0a1320;
 const MAX_PIXEL_RATIO = 1.25;
-const MAX_TREES = 640;
+const MAX_TREES = 960;
 const MAX_ROOF_MARKERS = 180;
 const MAX_ROOF_DETAILS = 620;
-const MAX_LANE_MARKS = 720;
+const MAX_LANE_MARKS = 1800;
 const MAX_TRAFFIC_LIGHTS = 96;
 const MAX_WAVE_LINES = 148;
-const MAX_GRASS_PATCHES = 760;
-const MAX_SIDEWALK_CORNERS = 560;
+const MAX_GRASS_PATCHES = 1100;
+const MAX_SHRUBS = 620;
+const MAX_SIDEWALK_CORNERS = 1200;
+const MAX_PARK_LAKES = 42;
 const VISUAL_ROAD_WIDTH = 12;
+const SIDEWALK_WIDTH = 2.2;
+const GROUND_COLOR = 0x123421;
+const ROAD_COLOR = 0x10171a;
+const SIDEWALK_COLOR = 0x535a63;
 const WALK_EYE_HEIGHT = 4.8;
 const WALK_STEP = 0.72;
 const WALK_BOB_AMOUNT = 0.12;
@@ -64,6 +73,22 @@ interface BuildingVisual {
   building: CityBuilding;
   index: number;
   baseColor: Color;
+}
+
+interface ParkLake {
+  x: number;
+  y: number;
+  radiusX: number;
+  radiusY: number;
+}
+
+interface WaveInstance {
+  x: number;
+  z: number;
+  rotation: number;
+  length: number;
+  depth: number;
+  phase: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -100,6 +125,41 @@ function roadIntersects(a: CityRoad, b: CityRoad): boolean {
     && a.x + a.width > b.x
     && a.y < b.y + b.depth
     && a.y + a.depth > b.y;
+}
+
+function pointNearRoad(x: number, y: number, roads: CityRoad[], padding: number): boolean {
+  return roads.some((road) =>
+    x >= road.x - padding
+    && x <= road.x + road.width + padding
+    && y >= road.y - padding
+    && y <= road.y + road.depth + padding,
+  );
+}
+
+function parkLakeFor(park: CityPark): ParkLake | null {
+  if (park.width < 34 || park.depth < 30) return null;
+  const seed = hashText(`city-lake:${park.id}`);
+  const largeParkBonus = park.width * park.depth > 2200 ? 1 : 0;
+  if ((seed + largeParkBonus) % 4 === 0) return null;
+  const radiusX = clamp(park.width * (0.13 + ((seed >>> 7) % 9) / 100), 5.5, Math.min(park.width * 0.34, 18));
+  const radiusY = clamp(park.depth * (0.12 + ((seed >>> 17) % 8) / 100), 4.8, Math.min(park.depth * 0.32, 15));
+  const usableWidth = Math.max(1, park.width - radiusX * 2 - 6);
+  const usableDepth = Math.max(1, park.depth - radiusY * 2 - 6);
+  return {
+    x: park.x + radiusX + 3 + ((seed >>> 3) % 1000) / 1000 * usableWidth,
+    y: park.y + radiusY + 3 + ((seed >>> 13) % 1000) / 1000 * usableDepth,
+    radiusX,
+    radiusY,
+  };
+}
+
+function pointInLake(x: number, y: number, lake: ParkLake | null, padding = 0): boolean {
+  if (!lake) return false;
+  const radiusX = lake.radiusX + padding;
+  const radiusY = lake.radiusY + padding;
+  const dx = (x - lake.x) / Math.max(0.1, radiusX);
+  const dy = (y - lake.y) / Math.max(0.1, radiusY);
+  return dx * dx + dy * dy <= 1;
 }
 
 function splitByBlocks(start: number, end: number, blocks: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> {
@@ -205,11 +265,22 @@ export class RepositoryCityThreeRenderer {
   private readonly walkPosition = new Vector3();
   private readonly buildingByPath = new Map<string, BuildingVisual>();
   private readonly buildingByIndex: CityBuilding[] = [];
+  private readonly districtByIndex: CityDistrict[] = [];
   private readonly disposableGeometries = new Set<BufferGeometry>();
   private readonly disposableMaterials = new Set<Material>();
   private roadMesh: InstancedMesh | null = null;
   private buildingMesh: InstancedMesh | null = null;
+  private districtMesh: InstancedMesh | null = null;
   private radarMesh: InstancedMesh | null = null;
+  private waveMesh: InstancedMesh | null = null;
+  private waveAnimationFrame: number | null = null;
+  private lastWaveAnimationAt = 0;
+  private readonly waveInstances: WaveInstance[] = [];
+  private readonly waveMatrix = new Matrix4();
+  private readonly wavePosition = new Vector3();
+  private readonly waveScale = new Vector3();
+  private readonly waveQuaternion = new Quaternion();
+  private readonly waveAxis = new Vector3(0, 1, 0);
   private sceneData: CityScene | null = null;
   private hoveredPath = "";
   private heatVisible = true;
@@ -261,7 +332,9 @@ export class RepositoryCityThreeRenderer {
     this.addGround(scene);
     this.addDistricts(scene);
     this.addParks(scene);
+    this.addParkLakes(scene);
     this.addGrassDetails(scene);
+    this.addShrubs(scene);
     this.addRoads(scene);
     this.addBuildings(scene);
     this.addTrees(scene);
@@ -305,36 +378,52 @@ export class RepositoryCityThreeRenderer {
     const scale = new Vector3();
     const quaternion = new Quaternion();
     let used = 0;
+    this.waveInstances.length = 0;
     for (let index = 0; index < MAX_WAVE_LINES; index += 1) {
       const seed = hashText(`city-wave:${index}:${scene.width}:${scene.depth}`);
-      const side = seed % 4;
+      const side = index % 4;
+      const row = Math.floor(index / 4) % 9;
       const progress = ((seed >>> 6) % 1000) / 1000;
-      const offset = 30 + ((seed >>> 16) % Math.max(48, Math.floor(margin - 72)));
+      const offset = 20 + row * 18 + ((seed >>> 16) % 16);
       const x = side < 2
         ? -scene.width / 2 + progress * scene.width
         : (side === 2 ? -scene.width / 2 - offset : scene.width / 2 + offset);
       const z = side >= 2
         ? -scene.depth / 2 + progress * scene.depth
         : (side === 0 ? -scene.depth / 2 - offset : scene.depth / 2 + offset);
-      quaternion.setFromAxisAngle(new Vector3(0, 1, 0), ((seed >>> 24) % 100) / 100 * Math.PI);
+      const coastAngle = side < 2 ? 0 : Math.PI / 2;
+      const rotation = coastAngle + (((seed >>> 24) % 24) - 12) / 100;
+      const length = 16 + ((seed >>> 12) % 48);
+      const depth = 0.22 + ((seed >>> 20) % 16) / 100;
+      quaternion.setFromAxisAngle(this.waveAxis, rotation);
       position.set(x, -1.55, z);
-      scale.set(14 + ((seed >>> 12) % 58), 0.035, 0.24 + ((seed >>> 20) % 18) / 100);
+      scale.set(length, 0.035, depth);
       matrix.compose(position, quaternion, scale);
       waves.setMatrixAt(used, matrix);
+      this.waveInstances.push({
+        x,
+        z,
+        rotation,
+        length,
+        depth,
+        phase: ((seed >>> 5) % 628) / 100,
+      });
       used += 1;
     }
     waves.count = used;
-    waves.instanceMatrix.setUsage(StaticDrawUsage);
+    waves.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.waveMesh = waves;
     this.threeScene.add(waves);
     this.disposableGeometries.add(waveGeometry);
     this.disposableMaterials.add(waveMaterial);
+    this.startWaveAnimation();
   }
 
   private addGround(scene: CityScene) {
     const margin = 220;
     const geometry = new PlaneGeometry(scene.width + margin, scene.depth + margin);
     const material = new MeshStandardMaterial({
-      color: 0x123421,
+      color: GROUND_COLOR,
       emissive: 0x07150f,
       emissiveIntensity: 0.18,
       roughness: 0.96,
@@ -390,6 +479,7 @@ export class RepositoryCityThreeRenderer {
     const position = new Vector3();
     const scale = new Vector3();
     const quaternion = new Quaternion();
+    this.districtByIndex.length = 0;
     scene.districts.forEach((district, index) => {
       position.set(
         district.x + district.width / 2 - scene.width / 2,
@@ -405,36 +495,42 @@ export class RepositoryCityThreeRenderer {
           ? new Color("#33402a")
           : new Color(index % 2 === 0 ? "#173822" : "#1b4026"),
       );
+      this.districtByIndex.push(district);
     });
     mesh.instanceMatrix.setUsage(StaticDrawUsage);
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    this.districtMesh = mesh;
     this.threeScene.add(mesh);
     this.disposableGeometries.add(geometry);
     this.disposableMaterials.add(material);
   }
 
   private addParks(scene: CityScene) {
-    if (scene.parks.length === 0) return;
-    const geometry = new BoxGeometry(1, 1, 1);
+    void scene;
+  }
+
+  private addParkLakes(scene: CityScene) {
+    const lakes = scene.parks
+      .map((park) => parkLakeFor(park))
+      .filter((lake): lake is ParkLake => lake !== null)
+      .slice(0, MAX_PARK_LAKES);
+    if (lakes.length === 0) return;
+    const geometry = new CylinderGeometry(1, 1, 0.08, 22);
     const material = new MeshStandardMaterial({
-      color: 0x256d3d,
-      emissive: 0x082515,
-      emissiveIntensity: 0.22,
-      roughness: 0.95,
+      color: 0x155b76,
+      emissive: 0x0a3148,
+      emissiveIntensity: 0.38,
+      roughness: 0.42,
       metalness: 0,
     });
-    const mesh = new InstancedMesh(geometry, material, scene.parks.length);
+    const mesh = new InstancedMesh(geometry, material, lakes.length);
     const matrix = new Matrix4();
     const quaternion = new Quaternion();
-    scene.parks.forEach((park, index) => {
+    lakes.forEach((lake, index) => {
       matrix.compose(
-        new Vector3(
-          park.x + park.width / 2 - scene.width / 2,
-          0.08,
-          park.y + park.depth / 2 - scene.depth / 2,
-        ),
+        new Vector3(lake.x - scene.width / 2, 0.035, lake.y - scene.depth / 2),
         quaternion,
-        new Vector3(park.width, 0.12, park.depth),
+        new Vector3(lake.radiusX, 0.5, lake.radiusY),
       );
       mesh.setMatrixAt(index, matrix);
     });
@@ -447,12 +543,16 @@ export class RepositoryCityThreeRenderer {
   private addGrassDetails(scene: CityScene) {
     const patches: Array<{ x: number; z: number; scale: number }> = [];
     for (const park of scene.parks) {
-      const count = clamp(Math.floor((park.width * park.depth) / 34), 4, 24);
+      const count = clamp(Math.floor((park.width * park.depth) / 28), 6, 36);
+      const lake = parkLakeFor(park);
       for (let index = 0; index < count && patches.length < MAX_GRASS_PATCHES; index += 1) {
         const seed = hashText(`${park.id}:grass:${index}`);
+        const x = park.x + ((seed >>> 6) % 1000) / 1000 * park.width;
+        const z = park.y + ((seed >>> 16) % 1000) / 1000 * park.depth;
+        if (pointInLake(x, z, lake, 1.6) || pointNearRoad(x, z, scene.roads, SIDEWALK_WIDTH + 0.5)) continue;
         patches.push({
-          x: park.x + ((seed >>> 6) % 1000) / 1000 * park.width - scene.width / 2,
-          z: park.y + ((seed >>> 16) % 1000) / 1000 * park.depth - scene.depth / 2,
+          x: x - scene.width / 2,
+          z: z - scene.depth / 2,
           scale: 0.65 + ((seed >>> 26) % 38) / 100,
         });
       }
@@ -473,7 +573,7 @@ export class RepositoryCityThreeRenderer {
       }
     }
     if (patches.length === 0) return;
-    const geometry = new ConeGeometry(0.32, 1.1, 3);
+    const geometry = new ConeGeometry(0.16, 0.56, 5);
     const material = new MeshStandardMaterial({
       color: 0x4d8f48,
       emissive: 0x102f18,
@@ -486,13 +586,58 @@ export class RepositoryCityThreeRenderer {
     patches.forEach((patch, index) => {
       quaternion.setFromAxisAngle(new Vector3(0, 1, 0), (hashText(`grass-rot:${index}`) % 628) / 100);
       matrix.compose(
-        new Vector3(patch.x, 0.52, patch.z),
+        new Vector3(patch.x, 0.28, patch.z),
         quaternion,
-        new Vector3(patch.scale, patch.scale, patch.scale),
+        new Vector3(patch.scale, patch.scale * 0.92, patch.scale),
       );
       mesh.setMatrixAt(index, matrix);
     });
     mesh.instanceMatrix.setUsage(StaticDrawUsage);
+    this.threeScene.add(mesh);
+    this.disposableGeometries.add(geometry);
+    this.disposableMaterials.add(material);
+  }
+
+  private addShrubs(scene: CityScene) {
+    const shrubs: Array<{ x: number; z: number; scale: number; color: Color }> = [];
+    for (const park of scene.parks) {
+      const lake = parkLakeFor(park);
+      const count = clamp(Math.floor((park.width * park.depth) / 125), 4, 30);
+      for (let index = 0; index < count && shrubs.length < MAX_SHRUBS; index += 1) {
+        const seed = hashText(`${park.id}:shrub:${index}`);
+        const x = park.x + 1.8 + ((seed >>> 6) % 1000) / 1000 * Math.max(1, park.width - 3.6);
+        const z = park.y + 1.8 + ((seed >>> 16) % 1000) / 1000 * Math.max(1, park.depth - 3.6);
+        if (pointInLake(x, z, lake, 1.6) || pointNearRoad(x, z, scene.roads, SIDEWALK_WIDTH + 0.7)) continue;
+        shrubs.push({
+          x: x - scene.width / 2,
+          z: z - scene.depth / 2,
+          scale: 0.55 + ((seed >>> 24) % 42) / 100,
+          color: new Color(seed % 3 === 0 ? "#3f8f55" : seed % 3 === 1 ? "#2f7d4a" : "#5a9b50"),
+        });
+      }
+    }
+    if (shrubs.length === 0) return;
+    const geometry = new SphereGeometry(0.72, 7, 5);
+    const material = new MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: 0.98,
+      metalness: 0,
+    });
+    const mesh = new InstancedMesh(geometry, material, shrubs.length);
+    const matrix = new Matrix4();
+    const quaternion = new Quaternion();
+    shrubs.forEach((shrub, index) => {
+      matrix.compose(
+        new Vector3(shrub.x, 0.32, shrub.z),
+        quaternion,
+        new Vector3(shrub.scale * 1.25, shrub.scale * 0.42, shrub.scale),
+      );
+      mesh.setMatrixAt(index, matrix);
+      mesh.setColorAt(index, shrub.color);
+    });
+    mesh.instanceMatrix.setUsage(StaticDrawUsage);
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     this.threeScene.add(mesh);
     this.disposableGeometries.add(geometry);
     this.disposableMaterials.add(material);
@@ -525,13 +670,7 @@ export class RepositoryCityThreeRenderer {
       mesh.setMatrixAt(index, matrix);
       mesh.setColorAt(
         index,
-        new Color(
-          road.kind === "connector"
-            ? "#2d3035"
-            : road.kind === "avenue"
-              ? "#32363b"
-              : "#292d32",
-        ),
+        new Color(ROAD_COLOR),
       );
     });
     mesh.instanceMatrix.setUsage(StaticDrawUsage);
@@ -573,8 +712,10 @@ export class RepositoryCityThreeRenderer {
     if (intersections.length === 0) return;
     const geometry = new BoxGeometry(1, 1, 1);
     const material = new MeshStandardMaterial({
-      color: 0x2f3338,
-      roughness: 0.88,
+      color: ROAD_COLOR,
+      emissive: 0x080b0f,
+      emissiveIntensity: 0.18,
+      roughness: 0.9,
       metalness: 0.02,
     });
     const mesh = new InstancedMesh(geometry, material, intersections.length);
@@ -584,11 +725,11 @@ export class RepositoryCityThreeRenderer {
       matrix.compose(
         new Vector3(
           intersection.x + intersection.width / 2 - scene.width / 2,
-          0.535,
+          0.532,
           intersection.y + intersection.depth / 2 - scene.depth / 2,
         ),
         quaternion,
-        new Vector3(intersection.width, 0.055, intersection.depth),
+        new Vector3(intersection.width, 0.006, intersection.depth),
       );
       mesh.setMatrixAt(index, matrix);
     });
@@ -600,15 +741,16 @@ export class RepositoryCityThreeRenderer {
 
   private addRoadSidewalks(scene: CityScene) {
     const sidewalks: Array<{ x: number; y: number; width: number; depth: number }> = [];
+    const roadSidewalks = scene.roads.filter((road) => road.kind !== "avenue");
     const horizontalRoads = scene.roads.filter((road) => roadOrientation(road) === "horizontal");
     const verticalRoads = scene.roads.filter((road) => roadOrientation(road) === "vertical");
-    const sidewalkWidth = 2.2;
-    for (const road of scene.roads) {
+    const sidewalkWidth = SIDEWALK_WIDTH;
+    for (const road of roadSidewalks) {
       const horizontal = roadOrientation(road) === "horizontal";
       if (horizontal) {
         const blocks = verticalRoads
           .filter((other) => roadIntersects(road, other))
-          .map((other) => ({ start: other.x - sidewalkWidth, end: other.x + other.width + sidewalkWidth }));
+          .map((other) => ({ start: other.x, end: other.x + other.width }));
         for (const segment of splitByBlocks(road.x, road.x + road.width, blocks)) {
           sidewalks.push(
             { x: segment.start, y: road.y - sidewalkWidth, width: segment.end - segment.start, depth: sidewalkWidth },
@@ -618,7 +760,7 @@ export class RepositoryCityThreeRenderer {
       } else {
         const blocks = horizontalRoads
           .filter((other) => roadIntersects(road, other))
-          .map((other) => ({ start: other.y - sidewalkWidth, end: other.y + other.depth + sidewalkWidth }));
+          .map((other) => ({ start: other.y, end: other.y + other.depth }));
         for (const segment of splitByBlocks(road.y, road.y + road.depth, blocks)) {
           sidewalks.push(
             { x: road.x - sidewalkWidth, y: segment.start, width: sidewalkWidth, depth: segment.end - segment.start },
@@ -630,7 +772,7 @@ export class RepositoryCityThreeRenderer {
     if (sidewalks.length === 0) return;
     const geometry = new BoxGeometry(1, 1, 1);
     const material = new MeshStandardMaterial({
-      color: 0x535a63,
+      color: SIDEWALK_COLOR,
       roughness: 0.92,
       metalness: 0,
     });
@@ -641,11 +783,11 @@ export class RepositoryCityThreeRenderer {
       matrix.compose(
         new Vector3(
           sidewalk.x + sidewalk.width / 2 - scene.width / 2,
-          0.42,
+          0.555,
           sidewalk.y + sidewalk.depth / 2 - scene.depth / 2,
         ),
         quaternion,
-        new Vector3(sidewalk.width, 0.08, sidewalk.depth),
+        new Vector3(sidewalk.width, 0.05, sidewalk.depth),
       );
       mesh.setMatrixAt(index, matrix);
     });
@@ -656,18 +798,19 @@ export class RepositoryCityThreeRenderer {
   }
 
   private addSidewalkCorners(scene: CityScene) {
-    const horizontal = scene.roads.filter((road) => roadOrientation(road) === "horizontal");
-    const vertical = scene.roads.filter((road) => roadOrientation(road) === "vertical");
-    const sidewalkWidth = 2.2;
-    const corners: Array<{ x: number; y: number; scaleX: number; scaleZ: number }> = [];
+    const sidewalkRoads = scene.roads.filter((road) => road.kind !== "avenue");
+    const horizontal = sidewalkRoads.filter((road) => roadOrientation(road) === "horizontal");
+    const vertical = sidewalkRoads.filter((road) => roadOrientation(road) === "vertical");
+    const sidewalkWidth = SIDEWALK_WIDTH;
+    const corners: Array<{ x: number; y: number; width: number; depth: number }> = [];
     const seen = new Set<string>();
 
-    const addCorner = (x: number, y: number, scaleX = sidewalkWidth * 1.15, scaleZ = sidewalkWidth * 1.15) => {
+    const addCorner = (x: number, y: number, width = sidewalkWidth * 1.15, depth = sidewalkWidth * 1.15) => {
       if (corners.length >= MAX_SIDEWALK_CORNERS) return;
-      const key = `${Math.round(x * 2)}:${Math.round(y * 2)}`;
+      const key = `${Math.round(x * 2)}:${Math.round(y * 2)}:${Math.round(width * 2)}:${Math.round(depth * 2)}`;
       if (seen.has(key)) return;
       seen.add(key);
-      corners.push({ x, y, scaleX, scaleZ });
+      corners.push({ x, y, width, depth });
     };
 
     for (const hRoad of horizontal) {
@@ -678,37 +821,35 @@ export class RepositoryCityThreeRenderer {
         const right = Math.min(hRoad.x + hRoad.width, vRoad.x + vRoad.width);
         const top = Math.max(hRoad.y, vRoad.y);
         const bottom = Math.min(hRoad.y + hRoad.depth, vRoad.y + vRoad.depth);
-        const centerX = (left + right) / 2;
-        const centerY = (top + bottom) / 2;
-        const offsetX = Math.max(VISUAL_ROAD_WIDTH / 2 + sidewalkWidth * 0.42, (right - left) / 2 + sidewalkWidth * 0.52);
-        const offsetY = Math.max(VISUAL_ROAD_WIDTH / 2 + sidewalkWidth * 0.42, (bottom - top) / 2 + sidewalkWidth * 0.52);
-        addCorner(centerX - offsetX, centerY - offsetY);
-        addCorner(centerX + offsetX, centerY - offsetY);
-        addCorner(centerX - offsetX, centerY + offsetY);
-        addCorner(centerX + offsetX, centerY + offsetY);
+        const width = right - left;
+        const depth = bottom - top;
+        addCorner(left - sidewalkWidth, top - sidewalkWidth, width + sidewalkWidth * 2, sidewalkWidth);
+        addCorner(left - sidewalkWidth, bottom, width + sidewalkWidth * 2, sidewalkWidth);
+        addCorner(left - sidewalkWidth, top - sidewalkWidth, sidewalkWidth, depth + sidewalkWidth * 2);
+        addCorner(right, top - sidewalkWidth, sidewalkWidth, depth + sidewalkWidth * 2);
       }
     }
 
-    for (const road of scene.roads) {
+    for (const road of sidewalkRoads) {
       if (corners.length >= MAX_SIDEWALK_CORNERS) break;
       const horizontalRoad = roadOrientation(road) === "horizontal";
       if (horizontalRoad) {
-        addCorner(road.x - sidewalkWidth * 0.5, road.y - sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
-        addCorner(road.x - sidewalkWidth * 0.5, road.y + road.depth + sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
-        addCorner(road.x + road.width + sidewalkWidth * 0.5, road.y - sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
-        addCorner(road.x + road.width + sidewalkWidth * 0.5, road.y + road.depth + sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x - sidewalkWidth, road.y - sidewalkWidth, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x - sidewalkWidth, road.y + road.depth, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x + road.width, road.y - sidewalkWidth, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x + road.width, road.y + road.depth, sidewalkWidth, sidewalkWidth);
       } else {
-        addCorner(road.x - sidewalkWidth * 0.5, road.y - sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
-        addCorner(road.x + road.width + sidewalkWidth * 0.5, road.y - sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
-        addCorner(road.x - sidewalkWidth * 0.5, road.y + road.depth + sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
-        addCorner(road.x + road.width + sidewalkWidth * 0.5, road.y + road.depth + sidewalkWidth * 0.5, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x - sidewalkWidth, road.y - sidewalkWidth, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x + road.width, road.y - sidewalkWidth, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x - sidewalkWidth, road.y + road.depth, sidewalkWidth, sidewalkWidth);
+        addCorner(road.x + road.width, road.y + road.depth, sidewalkWidth, sidewalkWidth);
       }
     }
 
     if (corners.length === 0) return;
-    const geometry = new CylinderGeometry(1, 1, 0.075, 14);
+    const geometry = new BoxGeometry(1, 1, 1);
     const material = new MeshStandardMaterial({
-      color: 0x535a63,
+      color: SIDEWALK_COLOR,
       roughness: 0.92,
       metalness: 0,
     });
@@ -717,9 +858,9 @@ export class RepositoryCityThreeRenderer {
     const quaternion = new Quaternion();
     corners.forEach((corner, index) => {
       matrix.compose(
-        new Vector3(corner.x - scene.width / 2, 0.423, corner.y - scene.depth / 2),
+        new Vector3(corner.x + corner.width / 2 - scene.width / 2, 0.555, corner.y + corner.depth / 2 - scene.depth / 2),
         quaternion,
-        new Vector3(corner.scaleX, 1, corner.scaleZ),
+        new Vector3(corner.width, 0.05, corner.depth),
       );
       mesh.setMatrixAt(index, matrix);
     });
@@ -733,10 +874,11 @@ export class RepositoryCityThreeRenderer {
     const marks: Array<{ x: number; y: number; width: number; depth: number }> = [];
     for (const road of scene.roads) {
       if (marks.length >= MAX_LANE_MARKS) break;
+      if (road.kind === "avenue") continue;
       const horizontal = roadOrientation(road) === "horizontal";
       const length = horizontal ? road.width : road.depth;
-      if (length < 34) continue;
-      const dashCount = Math.min(42, Math.floor(length / 18));
+      if (length < 24) continue;
+      const dashCount = Math.min(60, Math.max(1, Math.floor(length / 15)));
       for (let index = 0; index < dashCount && marks.length < MAX_LANE_MARKS; index += 1) {
         const progress = (index + 0.5) / dashCount;
         if (horizontal) {
@@ -787,20 +929,21 @@ export class RepositoryCityThreeRenderer {
   }
 
   private addTrafficLights(scene: CityScene) {
-    const horizontal = scene.roads.filter((road) => roadOrientation(road) === "horizontal");
-    const vertical = scene.roads.filter((road) => roadOrientation(road) === "vertical");
+    const signalRoads = scene.roads.filter((road) =>
+      road.kind !== "avenue" && Math.max(road.width, road.depth) >= 34,
+    );
+    const horizontal = signalRoads.filter((road) => roadOrientation(road) === "horizontal");
+    const vertical = signalRoads.filter((road) => roadOrientation(road) === "vertical");
     const intersections: Array<{ x: number; y: number }> = [];
     const seen = new Set<string>();
     for (const hRoad of horizontal) {
       for (const vRoad of vertical) {
         if (intersections.length >= MAX_TRAFFIC_LIGHTS) break;
         if (!roadIntersects(hRoad, vRoad)) continue;
-        const left = Math.max(hRoad.x, vRoad.x);
         const right = Math.min(hRoad.x + hRoad.width, vRoad.x + vRoad.width);
-        const top = Math.max(hRoad.y, vRoad.y);
         const bottom = Math.min(hRoad.y + hRoad.depth, vRoad.y + vRoad.depth);
-        const x = (left + right) / 2;
-        const y = (top + bottom) / 2;
+        const x = right + SIDEWALK_WIDTH * 0.55;
+        const y = bottom + SIDEWALK_WIDTH * 0.55;
         const key = `${Math.round(x / 8)}:${Math.round(y / 8)}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -831,8 +974,8 @@ export class RepositoryCityThreeRenderer {
     const quaternion = new Quaternion();
     const bulbColors = [new Color("#ef4444"), new Color("#f59e0b"), new Color("#22c55e")];
     intersections.forEach((intersection, index) => {
-      const lightX = intersection.x + 4.6 - scene.width / 2;
-      const lightZ = intersection.y + 4.6 - scene.depth / 2;
+      const lightX = intersection.x - scene.width / 2;
+      const lightZ = intersection.y - scene.depth / 2;
       matrix.compose(
         new Vector3(lightX, 2.25, lightZ),
         quaternion,
@@ -913,18 +1056,36 @@ export class RepositoryCityThreeRenderer {
 
   private addTrees(scene: CityScene) {
     const candidates: Array<{ x: number; z: number; scale: number; kind: "pine" | "round" }> = [];
+    const addTreeCandidate = (x: number, z: number, seed: number, scaleBoost = 0) => {
+      if (candidates.length >= MAX_TREES) return;
+      if (pointNearRoad(x, z, scene.roads, SIDEWALK_WIDTH + 0.7)) return;
+      candidates.push({
+        x: x - scene.width / 2,
+        z: z - scene.depth / 2,
+        scale: 0.68 + ((seed >>> 24) % 55) / 100 + scaleBoost,
+        kind: seed % 3 === 0 ? "round" : "pine",
+      });
+    };
     for (const park of scene.parks) {
-      const count = clamp(Math.ceil(park.treeCount * 1.65), 4, 38);
+      const lake = parkLakeFor(park);
+      const count = clamp(Math.ceil(park.treeCount * 1.75), 5, 52);
       for (let index = 0; index < count && candidates.length < MAX_TREES; index += 1) {
         const seed = hashText(`${park.id}:tree:${index}`);
-        const x = park.x + 2 + ((seed >>> 4) % 1000) / 1000 * Math.max(1, park.width - 4);
-        const z = park.y + 2 + ((seed >>> 14) % 1000) / 1000 * Math.max(1, park.depth - 4);
-        candidates.push({
-          x: x - scene.width / 2,
-          z: z - scene.depth / 2,
-          scale: 0.68 + ((seed >>> 24) % 55) / 100,
-          kind: seed % 3 === 0 ? "round" : "pine",
-        });
+        const x = park.x + 1.6 + ((seed >>> 4) % 1000) / 1000 * Math.max(1, park.width - 3.2);
+        const z = park.y + 1.6 + ((seed >>> 14) % 1000) / 1000 * Math.max(1, park.depth - 3.2);
+        if (pointInLake(x, z, lake, 2.2)) continue;
+        addTreeCandidate(x, z, seed);
+      }
+      if (lake) {
+        const rimCount = clamp(Math.floor((lake.radiusX + lake.radiusY) / 2.6), 6, 16);
+        for (let index = 0; index < rimCount && candidates.length < MAX_TREES; index += 1) {
+          const seed = hashText(`${park.id}:lake-rim:${index}`);
+          const angle = (index / rimCount) * Math.PI * 2 + ((seed >>> 6) % 40) / 100;
+          const x = lake.x + Math.cos(angle) * (lake.radiusX + 2.8 + (seed % 18) / 10);
+          const z = lake.y + Math.sin(angle) * (lake.radiusY + 2.2 + ((seed >>> 10) % 14) / 10);
+          if (x < park.x + 1 || x > park.x + park.width - 1 || z < park.y + 1 || z > park.y + park.depth - 1) continue;
+          addTreeCandidate(x, z, seed, 0.08);
+        }
       }
     }
     for (const district of scene.districts) {
@@ -939,6 +1100,7 @@ export class RepositoryCityThreeRenderer {
         const z = edge >= 2
           ? district.y + progress * district.depth
           : district.y + (edge === 0 ? 3 : district.depth - 3);
+        if (pointNearRoad(x, z, scene.roads, 0.6)) continue;
         candidates.push({
           x: x - scene.width / 2,
           z: z - scene.depth / 2,
@@ -1315,6 +1477,15 @@ export class RepositoryCityThreeRenderer {
     return this.buildingByIndex[intersection.instanceId] ?? null;
   }
 
+  pickDistrict(clientX: number, clientY: number): CityDistrict | null {
+    if (!this.districtMesh || this.width <= 0 || this.height <= 0) return null;
+    this.pointer.set((clientX / this.width) * 2 - 1, -(clientY / this.height) * 2 + 1);
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const intersection = this.raycaster.intersectObject(this.districtMesh, false)[0];
+    if (!intersection || intersection.instanceId === undefined) return null;
+    return this.districtByIndex[intersection.instanceId] ?? null;
+  }
+
   districtLabels(): CityScreenLabel[] {
     if (!this.sceneData) return [];
     const point = new Vector3();
@@ -1340,6 +1511,43 @@ export class RepositoryCityThreeRenderer {
   render() {
     if (this.disposed) return;
     this.renderer.render(this.threeScene, this.camera);
+  }
+
+  private startWaveAnimation() {
+    if (this.waveAnimationFrame !== null) {
+      cancelAnimationFrame(this.waveAnimationFrame);
+      this.waveAnimationFrame = null;
+    }
+    if (!this.waveMesh || this.waveInstances.length === 0) return;
+
+    const animate = (time: number) => {
+      if (this.disposed || !this.waveMesh) {
+        this.waveAnimationFrame = null;
+        return;
+      }
+      this.waveAnimationFrame = requestAnimationFrame(animate);
+      if (time - this.lastWaveAnimationAt < 96) return;
+      this.lastWaveAnimationAt = time;
+
+      const drift = time * 0.0011;
+      for (let index = 0; index < this.waveInstances.length; index += 1) {
+        const wave = this.waveInstances[index];
+        const pulse = Math.sin(drift + wave.phase);
+        this.waveQuaternion.setFromAxisAngle(this.waveAxis, wave.rotation);
+        this.wavePosition.set(wave.x, -1.55 + pulse * 0.035, wave.z);
+        this.waveScale.set(
+          wave.length * (1 + pulse * 0.055),
+          0.035,
+          wave.depth * (1 + Math.cos(drift * 0.8 + wave.phase) * 0.12),
+        );
+        this.waveMatrix.compose(this.wavePosition, this.waveQuaternion, this.waveScale);
+        this.waveMesh.setMatrixAt(index, this.waveMatrix);
+      }
+      this.waveMesh.instanceMatrix.needsUpdate = true;
+      this.render();
+    };
+
+    this.waveAnimationFrame = requestAnimationFrame(animate);
   }
 
   clear() {
@@ -1445,18 +1653,29 @@ export class RepositoryCityThreeRenderer {
   }
 
   private clearDynamicScene() {
+    if (this.waveAnimationFrame !== null) {
+      cancelAnimationFrame(this.waveAnimationFrame);
+      this.waveAnimationFrame = null;
+    }
     const keep = new Set(this.threeScene.children.filter((child) => (child as Light).isLight));
     for (const child of [...this.threeScene.children]) {
       if (!keep.has(child)) this.threeScene.remove(child);
     }
     this.buildingMesh?.dispose();
+    this.districtMesh?.dispose();
     this.roadMesh?.dispose();
     this.radarMesh?.dispose();
+    this.waveMesh?.dispose();
     this.roadMesh = null;
     this.buildingMesh = null;
+    this.districtMesh = null;
     this.radarMesh = null;
+    this.waveMesh = null;
     this.buildingByPath.clear();
     this.buildingByIndex.length = 0;
+    this.districtByIndex.length = 0;
+    this.waveInstances.length = 0;
+    this.lastWaveAnimationAt = 0;
     this.disposableGeometries.forEach((geometry) => geometry.dispose());
     this.disposableMaterials.forEach((material) => disposeMaterial(material));
     this.disposableGeometries.clear();

@@ -40,6 +40,7 @@ export interface RepositoryCitySnapshot {
 export interface CityDistrict {
   id: string;
   name: string;
+  path: string;
   x: number;
   y: number;
   width: number;

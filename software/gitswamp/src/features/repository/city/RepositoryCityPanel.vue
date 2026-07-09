@@ -40,6 +40,7 @@ import {
 } from "./repositoryCityThree";
 import type {
   CityCameraMode,
+  CityDistrict,
   CityZoomMode,
   CityRadarMarker,
   CityScene,
@@ -67,7 +68,9 @@ const loading = ref(false);
 const error = ref("");
 const searchQuery = ref("");
 const selectedPath = ref("");
+const scopePath = ref("");
 const hoveredPath = ref("");
+const hoveredDistrict = shallowRef<CityDistrict | null>(null);
 const tooltip = ref({ x: 0, y: 0 });
 const showHeat = ref(true);
 const showLabels = ref(true);
@@ -129,6 +132,13 @@ const miniMapDistricts = computed(() => {
     widthPercent: (district.width / scene.value!.width) * 100,
     depthPercent: (district.depth / scene.value!.depth) * 100,
   }));
+});
+
+const currentFolderLabel = computed(() => scopePath.value || "root");
+
+const hoveredChildFolder = computed(() => {
+  if (!hoveredFile.value) return "";
+  return childFolderForFile(hoveredFile.value.path);
 });
 
 const miniMapMarkers = computed(() => {
@@ -299,6 +309,77 @@ function focusBuilding(path: string) {
   requestDraw();
 }
 
+function hasNestedFolder(path: string): boolean {
+  if (!snapshot.value || !path || path === scopePath.value) return false;
+  const prefix = `${path}/`;
+  return snapshot.value.files.some((file) => file.path.startsWith(prefix));
+}
+
+function canOpenDistrict(district: CityDistrict | null): district is CityDistrict {
+  return !!district && hasNestedFolder(district.path);
+}
+
+function childFolderForFile(path: string): string {
+  if (!snapshot.value || !path) return "";
+  const normalizedScope = scopePath.value ? `${scopePath.value}/` : "";
+  if (normalizedScope && !path.startsWith(normalizedScope)) return "";
+  const relativePath = normalizedScope ? path.slice(normalizedScope.length) : path;
+  const slashIndex = relativePath.indexOf("/");
+  if (slashIndex < 0) return "";
+  const child = relativePath.slice(0, slashIndex);
+  return scopePath.value ? `${scopePath.value}/${child}` : child;
+}
+
+function parentFolder(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index > 0 ? path.slice(0, index) : "";
+}
+
+async function renderCurrentScene() {
+  if (!snapshot.value) return;
+  let nextScene = buildRepositoryCityScene(snapshot.value.files, scopePath.value);
+  if (scopePath.value && nextScene.buildings.length === 0) {
+    scopePath.value = "";
+    nextScene = buildRepositoryCityScene(snapshot.value.files);
+  }
+  scene.value = nextScene;
+  hoveredPath.value = "";
+  hoveredDistrict.value = null;
+  selectedPath.value = "";
+  await nextTick();
+  resizeCanvas();
+  const renderer = ensureThreeRenderer();
+  if (!renderer || !scene.value) throw new Error("3D renderer is unavailable.");
+  renderer.setScene(scene.value);
+  renderer.setHeatVisible(showHeat.value);
+  renderer.setWalkSpeed(walkSpeed.value);
+  renderer.setRadarMarkers(radarMarkers.value);
+  fitCity();
+}
+
+function openFolderPath(path: string): boolean {
+  if (!path || !hasNestedFolder(path)) return false;
+  scopePath.value = path;
+  void renderCurrentScene();
+  return true;
+}
+
+function openDistrict(district: CityDistrict | null) {
+  if (!canOpenDistrict(district)) return;
+  openFolderPath(district.path);
+}
+
+function openParentFolder() {
+  scopePath.value = parentFolder(scopePath.value);
+  void renderCurrentScene();
+}
+
+function resetFolderScope() {
+  if (!scopePath.value) return;
+  scopePath.value = "";
+  void renderCurrentScene();
+}
+
 function searchFile() {
   const query = searchQuery.value.trim().toLowerCase();
   if (!query || !snapshot.value) return;
@@ -351,22 +432,14 @@ async function loadCity(force = false) {
       ? { ...next, files: [...next.files, ...workingOnlyFiles] }
       : next;
     snapshot.value = displayedSnapshot;
-    scene.value = buildRepositoryCityScene(displayedSnapshot.files);
-    await nextTick();
-    resizeCanvas();
-    const renderer = ensureThreeRenderer();
-    if (!renderer || !scene.value) throw new Error("3D renderer is unavailable.");
-    renderer.setScene(scene.value);
-    renderer.setHeatVisible(showHeat.value);
-    renderer.setWalkSpeed(walkSpeed.value);
-    renderer.setRadarMarkers(radarMarkers.value);
-    fitCity();
+    await renderCurrentScene();
   } catch (loadError) {
     if (token === loadToken) {
       error.value = String(loadError);
       snapshot.value = null;
       scene.value = null;
       districtLabels.value = [];
+      hoveredDistrict.value = null;
       threeRenderer?.clear();
     }
   } finally {
@@ -409,17 +482,20 @@ function onPointerMove(event: PointerEvent) {
     previousPointerX = event.clientX;
     previousPointerY = event.clientY;
     hoveredPath.value = "";
+    hoveredDistrict.value = null;
     requestDraw();
     return;
   }
 
   const hit = threeRenderer?.pick(position.x, position.y) ?? null;
   const nextPath = hit?.file.path ?? "";
+  const districtHit = hit ? null : (threeRenderer?.pickDistrict(position.x, position.y) ?? null);
   if (hoveredPath.value !== nextPath) {
     hoveredPath.value = nextPath;
     threeRenderer?.setHoveredPath(nextPath);
     refreshDistrictLabels();
   }
+  hoveredDistrict.value = canOpenDistrict(districtHit) ? districtHit : null;
 }
 
 async function onPointerUp(event: PointerEvent) {
@@ -429,7 +505,13 @@ async function onPointerUp(event: PointerEvent) {
   if (dragged) return;
   const position = pointerPosition(event);
   const hit = threeRenderer?.pick(position.x, position.y) ?? null;
-  if (!hit || !snapshot.value) return;
+  if (!hit) {
+    openDistrict(threeRenderer?.pickDistrict(position.x, position.y) ?? null);
+    return;
+  }
+  const childFolder = childFolderForFile(hit.file.path);
+  if (openFolderPath(childFolder)) return;
+  if (!snapshot.value) return;
   selectedPath.value = hit.file.path;
   requestDraw();
   let sha = hit.file.lastCommitSha;
@@ -450,6 +532,7 @@ function onWheel(event: WheelEvent) {
 
 function onPointerLeave() {
   hoveredPath.value = "";
+  hoveredDistrict.value = null;
   threeRenderer?.setHoveredPath("");
 }
 
@@ -545,6 +628,7 @@ watch(
   () => {
     const repoChanged = props.repoPath !== lastRepoPath;
     lastRepoPath = props.repoPath;
+    if (repoChanged) scopePath.value = "";
     if (repoChanged || !selectedRef.value || !hasSelectedBranch(selectedRef.value)) {
       selectedRef.value = preferredBranchName();
     }
@@ -576,6 +660,7 @@ onUnmounted(() => {
   districtLabels.value = [];
   scene.value = null;
   snapshot.value = null;
+  hoveredDistrict.value = null;
 });
 </script>
 
@@ -741,7 +826,7 @@ onUnmounted(() => {
           tabindex="0"
           aria-label="Repository city map"
           class="block h-full w-full touch-none"
-          :class="cameraMode === 'walking' ? 'cursor-crosshair' : pointerDown ? 'cursor-grabbing' : hoveredPath ? 'cursor-pointer' : 'cursor-grab'"
+          :class="cameraMode === 'walking' ? 'cursor-crosshair' : pointerDown ? 'cursor-grabbing' : hoveredPath || hoveredDistrict ? 'cursor-pointer' : 'cursor-grab'"
           @pointerdown="onPointerDown"
           @pointermove="onPointerMove"
           @pointerup="onPointerUp"
@@ -795,10 +880,28 @@ onUnmounted(() => {
 
         <div
           v-if="showMiniMap && scene"
-          class="pointer-events-none absolute bottom-3 left-3 h-28 w-40 overflow-hidden rounded-md border border-teal-400/20 bg-slate-950/90 p-2 shadow-lg"
+          class="absolute bottom-3 left-3 h-32 w-44 overflow-hidden rounded-md border border-teal-400/20 bg-slate-950/90 p-2 shadow-lg"
         >
-          <div class="mb-1 text-[8px] font-semibold uppercase text-slate-500">Branch map</div>
-          <div class="relative h-[82px] w-full">
+          <div class="mb-1 flex items-center justify-between gap-2 text-[8px] font-semibold uppercase text-slate-500">
+            <button
+              type="button"
+              class="pointer-events-auto max-w-[7.5rem] truncate text-left text-teal-300 hover:text-teal-200"
+              :title="`Current folder: ${currentFolderLabel}`"
+              @click="resetFolderScope"
+            >
+              {{ currentFolderLabel }}
+            </button>
+            <button
+              v-if="scopePath"
+              type="button"
+              class="pointer-events-auto rounded border border-teal-400/20 px-1.5 py-0.5 text-[8px] text-slate-300 hover:bg-teal-400/10 hover:text-teal-200"
+              @click="openParentFolder"
+            >
+              Up
+            </button>
+            <span v-else>Branch map</span>
+          </div>
+          <div class="pointer-events-none relative h-[92px] w-full">
             <div
               v-for="district in miniMapDistricts"
               :key="district.id"
@@ -834,6 +937,18 @@ onUnmounted(() => {
           <p class="mt-2 truncate text-[10px] text-slate-400">
             {{ hoveredFile.lastAuthor ? `${hoveredFile.lastAuthor}, ${timeAgo(hoveredFile.lastChangedAt)}` : "Outside sampled history" }}
           </p>
+          <p v-if="hoveredChildFolder" class="mt-2 text-[10px] font-medium text-teal-300">
+            Click to open {{ hoveredChildFolder }}
+          </p>
+        </div>
+        <div
+          v-else-if="hoveredDistrict"
+          class="pointer-events-none absolute z-20 w-56 rounded-md border border-slate-700 bg-slate-950/95 p-3 shadow-xl"
+          :style="{ left: `${Math.max(8, Math.min(tooltip.x, canvasWidth - 240))}px`, top: `${Math.max(8, Math.min(tooltip.y, canvasHeight - 120))}px` }"
+        >
+          <p class="truncate text-xs font-semibold text-slate-100">{{ hoveredDistrict.name }}</p>
+          <p class="mt-1 truncate text-[10px] text-slate-400">{{ hoveredDistrict.path }}</p>
+          <p class="mt-2 text-[10px] font-medium text-teal-300">Click to open folder</p>
         </div>
 
         <div class="pointer-events-none absolute bottom-3 right-3 flex items-center gap-3 rounded-md bg-slate-950/75 px-3 py-2 text-[9px] text-slate-300">
