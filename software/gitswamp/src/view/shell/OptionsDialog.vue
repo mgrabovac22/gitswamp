@@ -28,6 +28,10 @@ import {
   storeBugAutopsyEnabled,
 } from "@/shared/config/bugAutopsyPreferences";
 import {
+  getStoredIdentityGuardEnabled,
+  storeIdentityGuardEnabled,
+} from "@/shared/config/identityGuardPreferences";
+import {
   BACKGROUND_MAINTENANCE_EVENT,
   DEFAULT_BACKGROUND_MAINTENANCE_SETTINGS,
   getStoredBackgroundMaintenanceSettings,
@@ -179,6 +183,7 @@ const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
 const smartGitignoreWizardEnabled = ref(true);
 const bugAutopsyEnabled = ref(false);
+const identityGuardEnabled = ref(false);
 const commitAnalyzerEnabled = ref(true);
 const disableGraphAnimations = ref(false);
 const smoothGraphScroll = ref(false);
@@ -1763,6 +1768,7 @@ onMounted(() => {
 
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
   bugAutopsyEnabled.value = getStoredBugAutopsyEnabled();
+  identityGuardEnabled.value = getStoredIdentityGuardEnabled();
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
   const backgroundMaintenanceSettings = getStoredBackgroundMaintenanceSettings();
   backgroundHealthRefreshEnabled.value = backgroundMaintenanceSettings.healthRefreshEnabled;
@@ -1871,6 +1877,13 @@ watch(bugAutopsyEnabled, (value) => {
     return;
   }
   storeBugAutopsyEnabled(value);
+});
+
+watch(identityGuardEnabled, (value) => {
+  if (isHydrating) {
+    return;
+  }
+  storeIdentityGuardEnabled(value);
 });
 
 watch([
@@ -2666,6 +2679,16 @@ watch(activePlatform, () => {
                   </div>
                   <button @click="bugAutopsyEnabled = !bugAutopsyEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="bugAutopsyEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="bugAutopsyEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Git Identity Guard</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warn once per session when a repository remote looks mismatched with the active Git email. Default off.</p>
+                  </div>
+                  <button @click="identityGuardEnabled = !identityGuardEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="identityGuardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="identityGuardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
                   </button>
                 </div>
 

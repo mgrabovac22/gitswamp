@@ -7,6 +7,8 @@ import {
   Settings,
   Loader2,
   Download,
+  ShieldAlert,
+  UserCircle2,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -27,6 +29,12 @@ const props = defineProps<{
   };
   rpgProfile?: GitRpgProfile | null;
   rpgLoading?: boolean;
+  identityGuard?: {
+    enabled: boolean;
+    mismatch: boolean;
+    label: string;
+    detail: string;
+  } | null;
 }>();
 
 const emit = defineEmits<{
@@ -38,6 +46,7 @@ const emit = defineEmits<{
   materializeGhostBranch: [];
   discardGhostBranch: [];
   explainGitState: [];
+  identityGuard: [];
   stash: [];
   terminal: [];
   settings: [];
@@ -135,6 +144,20 @@ onUnmounted(() => {
       >
         {{ originConflictRisk.level === 'high' ? 'Conflict Risk' : 'Merge Warning' }}
       </span>
+      <AppButton
+        v-if="identityGuard?.enabled"
+        variant="ghost"
+        size="sm"
+        class="h-8 w-8 px-0 transition-all"
+        :class="identityGuard.mismatch
+          ? 'text-[#f59e0b] hover:bg-[#f59e0b]/10 hover:text-[#fbbf24] ring-1 ring-[#f59e0b]/35 animate-pulse'
+          : 'text-[var(--muted-foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)]'"
+        :title="identityGuard.detail"
+        @click="emit('identityGuard')"
+      >
+        <ShieldAlert v-if="identityGuard.mismatch" class="w-4 h-4" />
+        <UserCircle2 v-else class="w-4 h-4" />
+      </AppButton>
       <AppButton
         variant="ghost"
         size="sm"

@@ -22,6 +22,8 @@ const props = defineProps<{
   filePath: string;
   commitSha?: string | null;
   staged?: boolean;
+  fallbackStatus?: string | null;
+  fallbackOldPath?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -168,6 +170,67 @@ function estimateDiffChars(value: FileDiff): number {
     }
   }
   return chars;
+}
+
+function splitContentForSyntheticDiff(content: string): string[] {
+  if (!content) return [];
+  const matches = content.match(/.*(?:\n|$)/g) || [];
+  return matches.filter((line, index) => line.length > 0 || index < matches.length - 1);
+}
+
+function buildSyntheticWholeFileDiff(content: string, status: "added" | "deleted", filePath: string): FileDiff {
+  const lines = splitContentForSyntheticDiff(content).map((line, index) => ({
+    line_type: status === "added" ? "addition" as const : "deletion" as const,
+    old_line_no: status === "deleted" ? index + 1 : null,
+    new_line_no: status === "added" ? index + 1 : null,
+    content: line,
+  }));
+
+  return {
+    path: filePath,
+    old_path: status === "deleted" ? filePath : null,
+    status,
+    is_binary: false,
+    hunks: lines.length
+      ? [{
+          old_start: status === "deleted" ? 1 : 0,
+          old_lines: status === "deleted" ? lines.length : 0,
+          new_start: status === "added" ? 1 : 0,
+          new_lines: status === "added" ? lines.length : 0,
+          header: status === "added"
+            ? `@@ -0,0 +1,${lines.length} @@`
+            : `@@ -1,${lines.length} +0,0 @@`,
+          lines,
+        }]
+      : [],
+  };
+}
+
+async function loadSyntheticPickaxeDiff(): Promise<FileDiff | null> {
+  const status = props.fallbackStatus === "added" || props.fallbackStatus === "deleted"
+    ? props.fallbackStatus
+    : null;
+  if (!props.commitSha || !status) {
+    return null;
+  }
+
+  const filePath = status === "deleted" ? (props.fallbackOldPath || props.filePath) : props.filePath;
+  const treeSpec = status === "deleted"
+    ? `${props.commitSha}^:${filePath}`
+    : `${props.commitSha}:${filePath}`;
+
+  try {
+    const content = await invoke<string>("run_git_command", {
+      path: props.repoPath,
+      args: ["-c", "core.quotePath=false", "show", treeSpec],
+    });
+    if (content.length > 1_200_000) {
+      throw new Error("File is too large for raw fallback view.");
+    }
+    return buildSyntheticWholeFileDiff(content, status, filePath);
+  } catch {
+    return null;
+  }
 }
 
 function maintainHighlightCache() {
@@ -686,7 +749,7 @@ function buildTokenInlineMarkup(base: string, compare: string, changedClass: str
 }
 
 watch(
-  () => [props.filePath, props.staged, props.commitSha],
+  () => [props.filePath, props.staged, props.commitSha, props.fallbackStatus, props.fallbackOldPath],
   () => {
     fileContentLoadSequence += 1;
     currentHunkIndex.value = 0;
@@ -795,7 +858,15 @@ async function reload() {
       void loadFileContentAsync();
     }
   } catch (e) {
-    error.value = String(e);
+    const fallbackDiff = await loadSyntheticPickaxeDiff();
+    if (fallbackDiff) {
+      diff.value = fallbackDiff;
+      lastFileHash = hashDiffStructure(fallbackDiff);
+      highlightedLineCache.value.clear();
+      error.value = null;
+    } else {
+      error.value = String(e);
+    }
   } finally {
     loading.value = false;
   }
@@ -1182,7 +1253,7 @@ watch(isUnstaged, (val) => {
 }, { immediate: true });
 
 watch(
-  () => [props.filePath, props.commitSha, props.staged],
+  () => [props.filePath, props.commitSha, props.staged, props.fallbackStatus, props.fallbackOldPath],
   () => {
     if (!isBlameByDefaultEnabled() || !blameSupportedView.value) {
       return;
@@ -2439,7 +2510,7 @@ watch(usePlainTextHighlighting, () => {
 });
 
 watch(
-  () => [props.filePath, props.commitSha, props.staged],
+  () => [props.filePath, props.commitSha, props.staged, props.fallbackStatus, props.fallbackOldPath],
   () => {
     fileJourneyOpen.value = false;
   },

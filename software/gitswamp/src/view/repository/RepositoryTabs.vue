@@ -8,7 +8,7 @@ import { GIT_RPG_ROLES } from "@/features/repository/rpg/gitRpgProfiler";
 import type { RepoInfo } from "@/types";
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout";
 
 interface MenuAction {
   id: string;
@@ -213,6 +213,14 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Alt+2",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "galaxy"),
+    },
+    {
+      id: "view-city",
+      label: "Repository City",
+      description: "Navigate folders, file hotspots and branch activity as a city.",
+      shortcut: "Alt+7",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "city"),
     },
     {
       id: "view-productivity",
@@ -503,6 +511,7 @@ onUnmounted(() => {
             <ul class="space-y-1 text-[11px] text-[var(--muted-foreground)]">
               <li>Graph panel: search, navigate matches, isolate branch history, drag and drop merge requests.</li>
               <li>Galaxy view: zoom and pan a canvas map of loaded commits, branches and ancestry links.</li>
+              <li>Repository City: inspect branch files as districts and buildings with hotspot and activity layers.</li>
               <li>Repository sidebar: local and remote branches, stashes, tags, plus Create a Gist action.</li>
               <li>Right-click menus on commits and branches expose checkout, merge, reset, and branch operations.</li>
               <li>Terminal panel supports git aliases, quick actions, history, reverse search and open-tool commands.</li>
@@ -534,6 +543,7 @@ onUnmounted(() => {
             <div class="space-y-1.5 text-[11px]">
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open help and shortcuts</span><span class="text-[var(--muted-foreground)] font-mono">F1</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open command palette</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+K</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Pickaxe Explorer</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+F</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">New tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+T</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Next tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Tab</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Previous tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+Tab</span></div>
@@ -547,6 +557,7 @@ onUnmounted(() => {
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Galaxy View</span><span class="text-[var(--muted-foreground)] font-mono">Alt+2</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+5</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Burnout Analytics</span><span class="text-[var(--muted-foreground)] font-mono">Alt+6</span></div>
+              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Repository City</span><span class="text-[var(--muted-foreground)] font-mono">Alt+7</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
               <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open integrations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+I</span></div>

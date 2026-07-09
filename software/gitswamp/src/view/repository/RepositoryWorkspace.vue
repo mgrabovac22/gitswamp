@@ -24,7 +24,7 @@ import type {
   RemoteUserInfo,
 } from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 interface RemoteCreateOptions {
@@ -36,6 +36,7 @@ interface RemoteCreateOptions {
 
 const FileDiffViewer = defineAsyncComponent(() => import("@/shared/ui/FileDiffViewer.vue"));
 const CommitGalaxyPanel = defineAsyncComponent(() => import("@/view/commit/CommitGalaxyPanel.vue"));
+const RepositoryCityPanel = defineAsyncComponent(() => import("@/features/repository/city/RepositoryCityPanel.vue"));
 const CommitProductivityPanel = defineAsyncComponent(() => import("@/view/commit/CommitProductivityPanel.vue"));
 const CommitTimeMachinePanel = defineAsyncComponent(() => import("@/view/commit/CommitTimeMachinePanel.vue"));
 const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/commit/CommitConflictHeatmapPanel.vue"));
@@ -68,6 +69,8 @@ const props = defineProps<{
   diffFilePath: string;
   diffCommitSha: string | null;
   diffStaged: boolean;
+  diffFallbackStatus?: string | null;
+  diffFallbackOldPath?: string | null;
   conflictResolverPath?: string;
   detailsPanelCollapsed: boolean;
   historyViewMode: HistoryViewMode;
@@ -91,7 +94,7 @@ const emit = defineEmits<{
   closeDiffViewer: [];
   closeConflictResolver: [];
   conflictResolved: [];
-  openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean }];
+  openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean; fallbackStatus?: string | null; fallbackOldPath?: string | null }];
   openConflictResolver: [filePath: string];
   selectCommit: [payload: CommitSelectionPayload];
   selectWorkingChanges: [];
@@ -135,6 +138,10 @@ const terminalUntrackedFileCount = computed(() =>
     return !file.staged && !file.conflicted && (status === "new" || status === "added" || status === "untracked" || status === "??");
   }).length,
 );
+const workingFilePaths = computed(() => Array.from(new Set([
+  ...props.git.stagedFiles.value.map((file: { path: string }) => file.path),
+  ...props.git.unstagedFiles.value.map((file: { path: string }) => file.path),
+])));
 
 const showDetailsPanel = computed(
   () => props.historyViewMode === "graph"
@@ -376,6 +383,8 @@ function handleRefreshState() {
           :file-path="props.diffFilePath"
           :commit-sha="props.diffCommitSha"
           :staged="props.diffStaged"
+          :fallback-status="props.diffFallbackStatus"
+          :fallback-old-path="props.diffFallbackOldPath"
           @close="emit('closeDiffViewer')"
           @refresh="props.git.refreshStatus()"
         />
@@ -459,6 +468,17 @@ function handleRefreshState() {
           @load-more="props.git.loadMoreCommits()"
           @load-all="props.git.loadAllCommits()"
           @select="emit('selectCommit', $event)"
+        />
+
+        <RepositoryCityPanel
+          v-else-if="props.historyViewMode === 'city'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :branches="props.git.branches.value"
+          :current-branch="props.git.currentBranch.value"
+          :working-file-paths="workingFilePaths"
+          @close="emit('setHistoryView', 'graph')"
+          @open-file="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: false })"
         />
 
         <CommitProductivityPanel

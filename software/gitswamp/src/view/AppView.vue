@@ -35,6 +35,10 @@ import {
   getStoredBugAutopsyEnabled,
 } from "@/shared/config/bugAutopsyPreferences";
 import {
+  IDENTITY_GUARD_EVENT,
+  getStoredIdentityGuardEnabled,
+} from "@/shared/config/identityGuardPreferences";
+import {
   BACKGROUND_MAINTENANCE_EVENT,
   getStoredBackgroundMaintenanceSettings,
   hasBackgroundMaintenanceEnabled,
@@ -58,8 +62,10 @@ import {
   type GitRpgCommitStats,
   type GitRpgProfile,
 } from "@/features/repository/rpg/gitRpgProfiler";
+import type { IdentityGuardMismatch } from "@/features/repository/identity/identityGuard";
+import type { PickaxeCommitHit } from "@/features/repository/pickaxe/pickaxeSearch";
 
-import { ref, watch, onMounted, onUnmounted, computed } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import type {
   BranchInfo,
   CommitFileInfo,
@@ -80,6 +86,7 @@ import type {
 
 const git = useGit();
 const toast = useToast();
+const PickaxeSearchPanel = defineAsyncComponent(() => import("@/features/repository/pickaxe/PickaxeSearchPanel.vue"));
 const { scheduleDestructiveAction } = useUndoableDestructiveAction();
 const {
   generalFontSize,
@@ -120,7 +127,7 @@ const {
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -197,6 +204,8 @@ const editMessageSha = ref("");
 const editMessageText = ref("");
 const smartGitignoreWizardEnabled = ref(getStoredSmartGitignoreWizardEnabled());
 const bugAutopsyEnabled = ref(getStoredBugAutopsyEnabled());
+const identityGuardEnabled = ref(getStoredIdentityGuardEnabled());
+const identityGuardMismatch = ref<IdentityGuardMismatch | null>(null);
 const showRenameDialog = ref(false);
 const renameBranchOld = ref("");
 const renameBranchNew = ref("");
@@ -212,11 +221,14 @@ const rebaseConflictBusy = ref(false);
 const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
 const showCommandPalette = ref(false);
+const showPickaxeSearch = ref(false);
 
 const showDiffViewer = ref(false);
 const diffFilePath = ref("");
 const diffCommitSha = ref<string | null>(null);
 const diffStaged = ref(false);
+const diffFallbackStatus = ref<string | null>(null);
+const diffFallbackOldPath = ref<string | null>(null);
 
 const conflictResolverPath = ref("");
 
@@ -256,6 +268,8 @@ let gitRpgProfileSequence = 0;
 let gitRpgProfileTimer: ReturnType<typeof setTimeout> | null = null;
 let lostFoundScanSequence = 0;
 let lostFoundScanTimer: ReturnType<typeof setTimeout> | null = null;
+let identityGuardCheckSequence = 0;
+const identityGuardPromptedKeys = new Set<string>();
 
 const showAuthRequiredDialog = ref(false);
 const authProvider = ref<"github" | "gitlab" | "gitlab-self" | "bitbucket" | "azure">("github");
@@ -320,15 +334,24 @@ function clearCommitFilesCacheForOtherRepos(repoPath: string) {
   }
 }
 
-function openDiffViewer(filePath: string, commitSha: string | null, staged: boolean) {
+function openDiffViewer(
+  filePath: string,
+  commitSha: string | null,
+  staged: boolean,
+  fallback?: { status?: string | null; oldPath?: string | null },
+) {
   diffFilePath.value = filePath;
   diffCommitSha.value = commitSha;
   diffStaged.value = staged;
+  diffFallbackStatus.value = fallback?.status || null;
+  diffFallbackOldPath.value = fallback?.oldPath || null;
   showDiffViewer.value = true;
 }
 
 function closeDiffViewer() {
   showDiffViewer.value = false;
+  diffFallbackStatus.value = null;
+  diffFallbackOldPath.value = null;
 }
 
 async function openConflictResolver(filePath: string) {
@@ -2105,6 +2128,174 @@ function handleBugAutopsyChanged(event: Event): void {
   bugAutopsyEnabled.value = getStoredBugAutopsyEnabled();
 }
 
+function handleIdentityGuardChanged(event: Event): void {
+  if (event instanceof CustomEvent) {
+    identityGuardEnabled.value = Boolean(event.detail);
+  } else {
+    identityGuardEnabled.value = getStoredIdentityGuardEnabled();
+  }
+
+  if (!identityGuardEnabled.value) {
+    identityGuardMismatch.value = null;
+    return;
+  }
+
+  if (identityGuardEnabled.value) {
+    void checkGitIdentityGuard("settings");
+  }
+}
+
+function getIdentityGuardRemoteUrl(): string {
+  const remotes = git.repoInfo.value?.remotes || [];
+  return getPrimaryRemote(remotes)?.url || "";
+}
+
+function shortenIdentityRemoteLabel(remoteUrl: string): string {
+  return remoteUrl.length > 96 ? `${remoteUrl.slice(0, 93)}...` : remoteUrl;
+}
+
+async function getGitIdentityConfigValue(args: string[]): Promise<string> {
+  const repoPath = git.repoPath.value;
+  if (!repoPath) {
+    return "";
+  }
+
+  try {
+    const value = await invoke<string>("run_git_command", {
+      path: repoPath,
+      args,
+    });
+    return value.trim();
+  } catch {
+    return "";
+  }
+}
+
+async function setRepositoryIdentityEmail(email: string): Promise<void> {
+  const repoPath = git.repoPath.value;
+  const { normalizeIdentityEmail } = await import("@/features/repository/identity/identityGuard");
+  const cleanEmail = normalizeIdentityEmail(email);
+  if (!repoPath || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    toast.warning("Enter a valid Git email address.");
+    return;
+  }
+
+  try {
+    await invoke<string>("run_git_command", {
+      path: repoPath,
+      args: ["config", "user.email", cleanEmail],
+    });
+    identityGuardPromptedKeys.clear();
+    toast.success(`Repository Git email set to ${cleanEmail}`);
+    void checkGitIdentityGuard("settings");
+  } catch (error) {
+    toast.error(`Failed to set repository Git email: ${String(error)}`);
+  }
+}
+
+function promptForRepositoryIdentityEmail(defaultEmail: string): void {
+  const nextEmail = globalThis.prompt("Git email for this repository", defaultEmail);
+  if (nextEmail === null) {
+    return;
+  }
+  void setRepositoryIdentityEmail(nextEmail);
+}
+
+async function checkGitIdentityGuard(reason: "repo" | "settings" = "repo", forcePrompt = false): Promise<boolean> {
+  if (!identityGuardEnabled.value || !git.repoPath.value || !git.repoInfo.value) {
+    identityGuardMismatch.value = null;
+    return false;
+  }
+
+  const repoPath = git.repoPath.value;
+  const remoteUrl = getIdentityGuardRemoteUrl();
+  if (!remoteUrl) {
+    identityGuardMismatch.value = null;
+    return false;
+  }
+
+  const runId = ++identityGuardCheckSequence;
+  const [currentEmail, globalEmail] = await Promise.all([
+    getGitIdentityConfigValue(["config", "user.email"]),
+    getGitIdentityConfigValue(["config", "--global", "user.email"]),
+  ]);
+
+  if (runId !== identityGuardCheckSequence || repoPath !== git.repoPath.value || !identityGuardEnabled.value) {
+    return false;
+  }
+
+  const { detectGitIdentityMismatch } = await import("@/features/repository/identity/identityGuard");
+  const mismatch = detectGitIdentityMismatch(currentEmail, globalEmail, remoteUrl);
+  if (!mismatch) {
+    identityGuardMismatch.value = null;
+    return false;
+  }
+  identityGuardMismatch.value = mismatch;
+
+  const promptKey = [
+    repoPath,
+    mismatch.remoteUrl,
+    mismatch.currentEmail,
+    mismatch.globalEmail,
+    mismatch.reason,
+  ].join("\u0000");
+  if (!forcePrompt && identityGuardPromptedKeys.has(promptKey)) {
+    return true;
+  }
+  identityGuardPromptedKeys.add(promptKey);
+
+  const fallbackEmail = mismatch.suggestedEmail || mismatch.globalEmail || mismatch.currentEmail;
+  const actions = [
+    ...(mismatch.suggestedEmail
+      ? [{
+          label: "Use suggested email",
+          style: "success" as const,
+          onClick: async () => setRepositoryIdentityEmail(mismatch.suggestedEmail || ""),
+        }]
+      : []),
+    {
+      label: "Set repo email",
+      style: "primary" as const,
+      onClick: async () => promptForRepositoryIdentityEmail(fallbackEmail),
+    },
+    {
+      label: "Ignore",
+      style: "neutral" as const,
+      onClick: async () => {},
+    },
+  ];
+
+  toast.action(
+    "warning",
+    reason === "settings" ? "Git Identity Guard is active." : "Git identity mismatch detected.",
+    actions,
+    22000,
+    [
+      `Current: ${mismatch.currentEmail || "not configured"}`,
+      mismatch.suggestedEmail ? `Suggested: ${mismatch.suggestedEmail}` : null,
+      `Remote: ${shortenIdentityRemoteLabel(mismatch.remoteUrl)}`,
+      mismatch.reason,
+    ].filter(Boolean).join("\n"),
+  );
+  return true;
+}
+
+async function explainIdentityGuardState(): Promise<void> {
+  if (!identityGuardEnabled.value) {
+    toast.info("Git Identity Guard is disabled.");
+    return;
+  }
+
+  const hasMismatch = await checkGitIdentityGuard("settings", true);
+  if (!hasMismatch) {
+    toast.info(
+      getIdentityGuardRemoteUrl()
+        ? "Git identity looks aligned for this repository."
+        : "Git Identity Guard is enabled, but this repository has no remote to compare.",
+    );
+  }
+}
+
 function isAppHidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
@@ -2787,6 +2978,59 @@ function closeCommandPalette() {
   showCommandPalette.value = false;
 }
 
+function openPickaxeSearch() {
+  if (!hasActiveRepositoryPath()) {
+    toast.warning("Open a repository before using Pickaxe Explorer.");
+    return;
+  }
+  showPickaxeSearch.value = true;
+}
+
+function closePickaxeSearch() {
+  showPickaxeSearch.value = false;
+}
+
+function pickaxeHitToCommit(hit: PickaxeCommitHit): CommitInfo {
+  return {
+    sha: hit.sha,
+    short_sha: hit.shortSha,
+    message: hit.subject,
+    author_name: hit.author,
+    author_email: "",
+    committer_name: "",
+    committer_email: "",
+    timestamp: hit.timestamp || 0,
+    time_ago: hit.date || "",
+    parent_shas: [],
+    refs: [],
+  };
+}
+
+async function openPickaxeResult(payload: {
+  sha: string;
+  filePath: string;
+  fileStatus: string;
+  oldPath?: string | null;
+  hit: PickaxeCommitHit;
+}) {
+  if (!hasActiveRepositoryPath()) {
+    return;
+  }
+
+  let commit = git.commits.value.find((item: CommitInfo) => item.sha === payload.sha) || null;
+  if (!commit) {
+    await git.ensureCommitLoaded(payload.sha);
+    commit = git.commits.value.find((item: CommitInfo) => item.sha === payload.sha) || null;
+  }
+
+  await onSelectCommit({ commit: commit || pickaxeHitToCommit(payload.hit), additive: false });
+  setHistoryViewMode("graph");
+  openDiffViewer(payload.filePath, payload.sha, false, {
+    status: payload.fileStatus,
+    oldPath: payload.oldPath || null,
+  });
+}
+
 function branchExists(name: string): boolean {
   return git.localBranches.value.some((branch) => branch.name === name || branch.name.endsWith(`/${name}`));
 }
@@ -2863,6 +3107,15 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       keywords: ["status", "files"],
       disabled: !hasRepo || !hasChanges,
       run: onSelectWorkingChanges,
+    },
+    {
+      id: "pickaxe-search",
+      label: "Open Pickaxe Explorer",
+      description: "Search exact strings across Git history with git log -S.",
+      shortcut: "Ctrl Shift F",
+      keywords: ["smart search", "history", "string", "pickaxe", "archaeology"],
+      disabled: !hasRepo,
+      run: openPickaxeSearch,
     },
     {
       id: "refresh",
@@ -3019,6 +3272,14 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       run: () => setHistoryViewMode("galaxy"),
     },
     {
+      id: "view-city",
+      label: "Repository City",
+      description: "Explore files, hotspots and contributor activity as an interactive city.",
+      shortcut: "Alt 7",
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("city"),
+    },
+    {
       id: "view-burnout",
       label: "Burnout Analytics",
       description: "Show contributor focus, after-hours rhythm and ownership pressure.",
@@ -3053,6 +3314,7 @@ function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
     "4": "time-machine",
     "5": "conflict-heatmap",
     "6": "burnout",
+    "7": "city",
   };
 
   const nextMode = viewByKey[key];
@@ -3199,6 +3461,12 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
     return;
   }
 
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && key === "f") {
+    event.preventDefault();
+    openPickaxeSearch();
+    return;
+  }
+
   if (handleRepositoryTabShortcut(event, {
     newTab,
     closeActiveTab,
@@ -3234,6 +3502,7 @@ onMounted(() => {
   globalThis.addEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   globalThis.addEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
   globalThis.addEventListener(BUG_AUTOPSY_EVENT, handleBugAutopsyChanged);
+  globalThis.addEventListener(IDENTITY_GUARD_EVENT, handleIdentityGuardChanged);
   globalThis.addEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", handleVisibilityChanged);
@@ -3273,6 +3542,7 @@ onUnmounted(() => {
   globalThis.removeEventListener(AUTO_FETCH_SETTINGS_EVENT, handleAutoFetchSettingsChanged as EventListener);
   globalThis.removeEventListener(SMART_GITIGNORE_WIZARD_EVENT, handleSmartGitignoreWizardChanged);
   globalThis.removeEventListener(BUG_AUTOPSY_EVENT, handleBugAutopsyChanged);
+  globalThis.removeEventListener(IDENTITY_GUARD_EVENT, handleIdentityGuardChanged);
   globalThis.removeEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
   if (typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", handleVisibilityChanged);
@@ -3310,6 +3580,8 @@ watch([tabs, activeTabId], () => {
 watch(activeTabId, () => {
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
+  diffFallbackStatus.value = null;
+  diffFallbackOldPath.value = null;
 });
 
 watch(
@@ -3359,6 +3631,7 @@ watch(
     restartAutoFetchTimer();
     restartBackgroundMaintenanceTimer();
     if (repoPath !== previousRepoPath) {
+      identityGuardMismatch.value = null;
       lostCommits.value = [];
       lostCommitsLoading.value = false;
       scheduleLostFoundScan();
@@ -3372,6 +3645,21 @@ watch(
       backgroundLargeChangeSignature = "";
       backgroundConflictSignature = "";
       void runBackgroundMaintenance("repo");
+    }
+  },
+);
+
+watch(
+  () => [
+    git.repoPath.value,
+    git.repoInfo.value?.path || "",
+    (git.repoInfo.value?.remotes || [])
+      .map((remote) => `${remote.name}:${remote.url}`)
+      .join("|"),
+  ],
+  () => {
+    if (identityGuardEnabled.value) {
+      void checkGitIdentityGuard("repo");
     }
   },
 );
@@ -3426,6 +3714,33 @@ const selectedPullRequest = computed(() =>
     ? githubPullRequestDetail.value
     : githubPullRequests.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
 );
+
+const identityGuardHeaderStatus = computed(() => {
+  if (!identityGuardEnabled.value || !git.repoPath.value) {
+    return null;
+  }
+
+  if (identityGuardMismatch.value) {
+    return {
+      enabled: true,
+      mismatch: true,
+      label: "Identity mismatch",
+      detail: [
+        "Git Identity Guard",
+        `Current: ${identityGuardMismatch.value.currentEmail || "not configured"}`,
+        identityGuardMismatch.value.suggestedEmail ? `Suggested: ${identityGuardMismatch.value.suggestedEmail}` : null,
+        `Remote: ${shortenIdentityRemoteLabel(identityGuardMismatch.value.remoteUrl)}`,
+      ].filter(Boolean).join("\n"),
+    };
+  }
+
+  return {
+    enabled: true,
+    mismatch: false,
+    label: "Identity OK",
+    detail: "Git Identity Guard is watching this repository.",
+  };
+});
 
 watch(
   [historyViewMode, remoteInsightsMode, selectedIssueNumber, selectedPullRequestNumber],
@@ -4400,6 +4715,14 @@ function submitCreateTag() {
       @close="closeCommandPalette"
     />
 
+    <PickaxeSearchPanel
+      v-if="showPickaxeSearch && git.repoPath.value"
+      :visible="showPickaxeSearch"
+      :repo-path="git.repoPath.value"
+      @close="closePickaxeSearch"
+      @open-result="openPickaxeResult"
+    />
+
     <template v-if="isLanding">
       <div class="flex-1 min-h-0 flex overflow-hidden">
         <LandingPage
@@ -4438,6 +4761,7 @@ function submitCreateTag() {
         :origin-conflict-risk="originConflictRisk"
         :rpg-profile="gitRpgProfile"
         :rpg-loading="gitRpgLoading"
+        :identity-guard="identityGuardHeaderStatus"
         @pull="handlePull"
         @push="handlePush"
         @fetch="handleFetch"
@@ -4446,6 +4770,7 @@ function submitCreateTag() {
         @materialize-ghost-branch="handleOpenGhostMaterializeDialog"
         @discard-ghost-branch="handleDiscardGhostBranch"
         @explain-git-state="explainGitState"
+        @identity-guard="explainIdentityGuardState"
         @stash="handleStash"
         @terminal="toggleTerminalPanel"
         @settings="openOptions('preferences')"
@@ -4475,6 +4800,8 @@ function submitCreateTag() {
         :diff-file-path="diffFilePath"
         :diff-commit-sha="diffCommitSha"
         :diff-staged="diffStaged"
+        :diff-fallback-status="diffFallbackStatus"
+        :diff-fallback-old-path="diffFallbackOldPath"
         :conflict-resolver-path="conflictResolverPath"
         :details-panel-collapsed="detailsPanelCollapsed"
         :history-view-mode="historyViewMode"
