@@ -96,11 +96,13 @@ const pointerDown = ref(false);
 let dragged = false;
 let panGesture = false;
 let boatAimGesture = false;
+let boatAimLocked = false;
 let pointerStartX = 0;
 let pointerStartY = 0;
 let previousPointerX = 0;
 let previousPointerY = 0;
 let keyboardFrame: number | null = null;
+let lastKeyboardNavigationAt = 0;
 const pressedKeys = new Set<string>();
 let lastRepoPath = "";
 
@@ -291,6 +293,7 @@ function fitCity() {
   if (cameraMode.value === "boat") {
     cameraMode.value = "bird";
     activeBoat.value = null;
+    boatAimLocked = false;
     threeRenderer?.setBoatAiming(false);
     threeRenderer?.setMode("bird");
     requestDraw();
@@ -303,7 +306,10 @@ function fitCity() {
 function setCameraMode(mode: CityCameraMode) {
   cameraMode.value = mode;
   if (mode !== "boat") activeBoat.value = null;
-  if (mode !== "boat") threeRenderer?.setBoatAiming(false);
+  if (mode !== "boat") {
+    boatAimLocked = false;
+    threeRenderer?.setBoatAiming(false);
+  }
   threeRenderer?.setMode(mode);
   canvasRef.value?.focus({ preventScroll: true });
   requestDraw();
@@ -498,7 +504,7 @@ function onPointerMove(event: PointerEvent) {
     const dx = event.clientX - previousPointerX;
     const dy = event.clientY - previousPointerY;
     if (Math.hypot(event.clientX - pointerStartX, event.clientY - pointerStartY) > 3) dragged = true;
-    if (cameraMode.value === "boat" && (boatAimGesture || pressedKeys.has("control") || event.ctrlKey)) {
+    if (cameraMode.value === "boat" && (boatAimLocked || boatAimGesture || pressedKeys.has("control") || event.ctrlKey)) {
       threeRenderer?.adjustBoatAim(dy);
     } else if (panGesture || event.shiftKey) {
       threeRenderer?.pan(dx, dy);
@@ -533,9 +539,9 @@ async function onPointerUp(event: PointerEvent) {
   canvasRef.value?.releasePointerCapture(event.pointerId);
   const wasBoatAimGesture = boatAimGesture;
   boatAimGesture = false;
-  if (cameraMode.value === "boat" && (wasBoatAimGesture || pressedKeys.has("control") || event.ctrlKey)) {
+  if (cameraMode.value === "boat" && (boatAimLocked || wasBoatAimGesture || pressedKeys.has("control") || event.ctrlKey)) {
     threeRenderer?.fireBoatCannon();
-    if (!pressedKeys.has("control") && !event.ctrlKey) threeRenderer?.setBoatAiming(false);
+    if (!boatAimLocked && !pressedKeys.has("control") && !event.ctrlKey) threeRenderer?.setBoatAiming(false);
     requestDraw();
     return;
   }
@@ -546,6 +552,7 @@ async function onPointerUp(event: PointerEvent) {
     activeBoat.value = threeRenderer?.enterBoat(boatHit.id) ?? boatHit;
     hoveredBoat.value = null;
     cameraMode.value = "boat";
+    boatAimLocked = false;
     canvasRef.value?.focus({ preventScroll: true });
     requestDraw();
     return;
@@ -604,13 +611,19 @@ function keyboardDirection() {
 
 function requestKeyboardNavigation() {
   if (keyboardFrame !== null) return;
-  keyboardFrame = requestAnimationFrame(() => {
+  keyboardFrame = requestAnimationFrame((time) => {
     keyboardFrame = null;
     const { forward, right } = keyboardDirection();
     if (forward !== 0 || right !== 0) {
-      threeRenderer?.moveByKeyboard(forward, right, pressedKeys.has("shift"));
+      const deltaSeconds = lastKeyboardNavigationAt > 0
+        ? Math.min(0.05, Math.max(0.001, (time - lastKeyboardNavigationAt) / 1000))
+        : 1 / 60;
+      lastKeyboardNavigationAt = time;
+      threeRenderer?.moveByKeyboard(forward, right, pressedKeys.has("shift"), deltaSeconds);
       requestDraw();
       requestKeyboardNavigation();
+    } else {
+      lastKeyboardNavigationAt = 0;
     }
   });
 }
@@ -618,9 +631,14 @@ function requestKeyboardNavigation() {
 function onKeyDown(event: KeyboardEvent) {
   if (isEditableKeyTarget(event)) return;
   const key = event.key.toLowerCase();
-  if (!["w", "a", "s", "d", "shift", "control"].includes(key)) return;
+  if (!["w", "a", "s", "d", "shift", "control", "m", "n"].includes(key)) return;
   event.preventDefault();
   pressedKeys.add(key);
+  if (cameraMode.value === "boat" && (key === "m" || key === "n")) {
+    boatAimLocked = true;
+    threeRenderer?.setBoatCannonSide(key === "m" ? "right" : "left");
+    return;
+  }
   if (key === "control") {
     if (cameraMode.value === "boat") threeRenderer?.setBoatAiming(true);
     return;
@@ -630,14 +648,16 @@ function onKeyDown(event: KeyboardEvent) {
 
 function onKeyUp(event: KeyboardEvent) {
   const key = event.key.toLowerCase();
-  if (!["w", "a", "s", "d", "shift", "control"].includes(key)) return;
+  if (!["w", "a", "s", "d", "shift", "control", "m", "n"].includes(key)) return;
   pressedKeys.delete(key);
   if (key === "control" && !boatAimGesture) threeRenderer?.setBoatAiming(false);
 }
 
 function clearPressedKeys() {
   boatAimGesture = false;
+  boatAimLocked = false;
   pressedKeys.clear();
+  lastKeyboardNavigationAt = 0;
   threeRenderer?.setBoatAiming(false);
 }
 
@@ -1017,7 +1037,7 @@ onUnmounted(() => {
             {{ hoveredBoat.name }}
           </p>
           <p class="mt-1 text-[10px] capitalize text-slate-400">{{ hoveredBoat.kind }}</p>
-          <p class="mt-2 text-[10px] font-medium text-cyan-300">Click to pilot, Ctrl to aim cannons</p>
+          <p class="mt-2 text-[10px] font-medium text-cyan-300">Click to pilot, M right cannon, N left cannon</p>
         </div>
 
         <div class="pointer-events-none absolute bottom-3 right-3 flex items-center gap-3 rounded-md bg-slate-950/75 px-3 py-2 text-[9px] text-slate-300">
@@ -1084,7 +1104,7 @@ onUnmounted(() => {
     <footer class="flex h-7 shrink-0 items-center justify-between border-t border-[var(--border)] px-3 text-[9px] text-[var(--muted-foreground)]">
       <span>{{ selectedRef }} · {{ snapshot?.headSha.slice(0, 8) || "loading" }}</span>
       <span v-if="cameraMode === 'boat'">
-        Piloting {{ activeBoat?.name || "boat" }} · WASD to drive · Ctrl hold to aim right cannons · mouse up/down to aim · release/click to fire
+        Piloting {{ activeBoat?.name || "boat" }} · M right, N left · mouse up/down aims · click/release fires · Ctrl temporary aim
       </span>
       <span v-else>
         {{ snapshot?.omittedFiles ? `${snapshot.omittedFiles.toLocaleString()} quiet files aggregated for performance` : "Complete branch snapshot" }}
