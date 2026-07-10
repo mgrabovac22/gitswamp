@@ -1,4 +1,4 @@
-export type CityCameraMode = "bird" | "landscape" | "walking";
+export type CityCameraMode = "bird" | "landscape" | "walking" | "boat";
 export type CityZoomMode = "center" | "cursor";
 
 export interface RepositoryCityFile {

@@ -21,6 +21,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Ship,
   Tags,
   Users,
 } from "lucide-vue-next";
@@ -36,6 +37,7 @@ import {
 } from "./repositoryCityScene";
 import {
   RepositoryCityThreeRenderer,
+  type CityBoatInfo,
   type CityScreenLabel,
 } from "./repositoryCityThree";
 import type {
@@ -71,6 +73,8 @@ const selectedPath = ref("");
 const scopePath = ref("");
 const hoveredPath = ref("");
 const hoveredDistrict = shallowRef<CityDistrict | null>(null);
+const hoveredBoat = shallowRef<CityBoatInfo | null>(null);
+const activeBoat = shallowRef<CityBoatInfo | null>(null);
 const tooltip = ref({ x: 0, y: 0 });
 const showHeat = ref(true);
 const showLabels = ref(true);
@@ -91,6 +95,7 @@ let loadToken = 0;
 const pointerDown = ref(false);
 let dragged = false;
 let panGesture = false;
+let boatAimGesture = false;
 let pointerStartX = 0;
 let pointerStartY = 0;
 let previousPointerX = 0;
@@ -283,12 +288,22 @@ function resizeCanvas() {
 }
 
 function fitCity() {
+  if (cameraMode.value === "boat") {
+    cameraMode.value = "bird";
+    activeBoat.value = null;
+    threeRenderer?.setBoatAiming(false);
+    threeRenderer?.setMode("bird");
+    requestDraw();
+    return;
+  }
   threeRenderer?.fit(cameraMode.value);
   requestDraw();
 }
 
 function setCameraMode(mode: CityCameraMode) {
   cameraMode.value = mode;
+  if (mode !== "boat") activeBoat.value = null;
+  if (mode !== "boat") threeRenderer?.setBoatAiming(false);
   threeRenderer?.setMode(mode);
   canvasRef.value?.focus({ preventScroll: true });
   requestDraw();
@@ -345,6 +360,8 @@ async function renderCurrentScene() {
   scene.value = nextScene;
   hoveredPath.value = "";
   hoveredDistrict.value = null;
+  hoveredBoat.value = null;
+  activeBoat.value = null;
   selectedPath.value = "";
   await nextTick();
   resizeCanvas();
@@ -440,6 +457,8 @@ async function loadCity(force = false) {
       scene.value = null;
       districtLabels.value = [];
       hoveredDistrict.value = null;
+      hoveredBoat.value = null;
+      activeBoat.value = null;
       threeRenderer?.clear();
     }
   } finally {
@@ -457,6 +476,11 @@ function pointerPosition(event: PointerEvent | WheelEvent): { x: number; y: numb
 
 function onPointerDown(event: PointerEvent) {
   canvasRef.value?.focus({ preventScroll: true });
+  boatAimGesture = cameraMode.value === "boat" && event.ctrlKey;
+  if (boatAimGesture) {
+    pressedKeys.add("control");
+    threeRenderer?.setBoatAiming(true);
+  }
   pointerDown.value = true;
   dragged = false;
   panGesture = event.shiftKey || event.button !== 0;
@@ -474,7 +498,9 @@ function onPointerMove(event: PointerEvent) {
     const dx = event.clientX - previousPointerX;
     const dy = event.clientY - previousPointerY;
     if (Math.hypot(event.clientX - pointerStartX, event.clientY - pointerStartY) > 3) dragged = true;
-    if (panGesture || event.shiftKey) {
+    if (cameraMode.value === "boat" && (boatAimGesture || pressedKeys.has("control") || event.ctrlKey)) {
+      threeRenderer?.adjustBoatAim(dy);
+    } else if (panGesture || event.shiftKey) {
       threeRenderer?.pan(dx, dy);
     } else {
       threeRenderer?.orbit(dx, dy);
@@ -483,18 +509,21 @@ function onPointerMove(event: PointerEvent) {
     previousPointerY = event.clientY;
     hoveredPath.value = "";
     hoveredDistrict.value = null;
+    hoveredBoat.value = null;
     requestDraw();
     return;
   }
 
   const hit = threeRenderer?.pick(position.x, position.y) ?? null;
   const nextPath = hit?.file.path ?? "";
-  const districtHit = hit ? null : (threeRenderer?.pickDistrict(position.x, position.y) ?? null);
+  const boatHit = hit ? null : (threeRenderer?.pickBoat(position.x, position.y) ?? null);
+  const districtHit = hit || boatHit ? null : (threeRenderer?.pickDistrict(position.x, position.y) ?? null);
   if (hoveredPath.value !== nextPath) {
     hoveredPath.value = nextPath;
     threeRenderer?.setHoveredPath(nextPath);
     refreshDistrictLabels();
   }
+  hoveredBoat.value = boatHit;
   hoveredDistrict.value = canOpenDistrict(districtHit) ? districtHit : null;
 }
 
@@ -502,8 +531,25 @@ async function onPointerUp(event: PointerEvent) {
   if (!pointerDown.value) return;
   pointerDown.value = false;
   canvasRef.value?.releasePointerCapture(event.pointerId);
+  const wasBoatAimGesture = boatAimGesture;
+  boatAimGesture = false;
+  if (cameraMode.value === "boat" && (wasBoatAimGesture || pressedKeys.has("control") || event.ctrlKey)) {
+    threeRenderer?.fireBoatCannon();
+    if (!pressedKeys.has("control") && !event.ctrlKey) threeRenderer?.setBoatAiming(false);
+    requestDraw();
+    return;
+  }
   if (dragged) return;
   const position = pointerPosition(event);
+  const boatHit = threeRenderer?.pickBoat(position.x, position.y) ?? null;
+  if (boatHit) {
+    activeBoat.value = threeRenderer?.enterBoat(boatHit.id) ?? boatHit;
+    hoveredBoat.value = null;
+    cameraMode.value = "boat";
+    canvasRef.value?.focus({ preventScroll: true });
+    requestDraw();
+    return;
+  }
   const hit = threeRenderer?.pick(position.x, position.y) ?? null;
   if (!hit) {
     openDistrict(threeRenderer?.pickDistrict(position.x, position.y) ?? null);
@@ -533,12 +579,14 @@ function onWheel(event: WheelEvent) {
 function onPointerLeave() {
   hoveredPath.value = "";
   hoveredDistrict.value = null;
+  hoveredBoat.value = null;
   threeRenderer?.setHoveredPath("");
 }
 
 function onPointerCancel() {
   pointerDown.value = false;
   dragged = false;
+  boatAimGesture = false;
 }
 
 function isEditableKeyTarget(event: KeyboardEvent): boolean {
@@ -570,20 +618,27 @@ function requestKeyboardNavigation() {
 function onKeyDown(event: KeyboardEvent) {
   if (isEditableKeyTarget(event)) return;
   const key = event.key.toLowerCase();
-  if (!["w", "a", "s", "d", "shift"].includes(key)) return;
+  if (!["w", "a", "s", "d", "shift", "control"].includes(key)) return;
   event.preventDefault();
   pressedKeys.add(key);
+  if (key === "control") {
+    if (cameraMode.value === "boat") threeRenderer?.setBoatAiming(true);
+    return;
+  }
   requestKeyboardNavigation();
 }
 
 function onKeyUp(event: KeyboardEvent) {
   const key = event.key.toLowerCase();
-  if (!["w", "a", "s", "d", "shift"].includes(key)) return;
+  if (!["w", "a", "s", "d", "shift", "control"].includes(key)) return;
   pressedKeys.delete(key);
+  if (key === "control" && !boatAimGesture) threeRenderer?.setBoatAiming(false);
 }
 
 function clearPressedKeys() {
+  boatAimGesture = false;
   pressedKeys.clear();
+  threeRenderer?.setBoatAiming(false);
 }
 
 watch(
@@ -661,6 +716,8 @@ onUnmounted(() => {
   scene.value = null;
   snapshot.value = null;
   hoveredDistrict.value = null;
+  hoveredBoat.value = null;
+  activeBoat.value = null;
 });
 </script>
 
@@ -826,7 +883,7 @@ onUnmounted(() => {
           tabindex="0"
           aria-label="Repository city map"
           class="block h-full w-full touch-none"
-          :class="cameraMode === 'walking' ? 'cursor-crosshair' : pointerDown ? 'cursor-grabbing' : hoveredPath || hoveredDistrict ? 'cursor-pointer' : 'cursor-grab'"
+          :class="cameraMode === 'walking' || cameraMode === 'boat' ? 'cursor-crosshair' : pointerDown ? 'cursor-grabbing' : hoveredPath || hoveredDistrict || hoveredBoat ? 'cursor-pointer' : 'cursor-grab'"
           @pointerdown="onPointerDown"
           @pointermove="onPointerMove"
           @pointerup="onPointerUp"
@@ -950,6 +1007,18 @@ onUnmounted(() => {
           <p class="mt-1 truncate text-[10px] text-slate-400">{{ hoveredDistrict.path }}</p>
           <p class="mt-2 text-[10px] font-medium text-teal-300">Click to open folder</p>
         </div>
+        <div
+          v-else-if="hoveredBoat"
+          class="pointer-events-none absolute z-20 w-56 rounded-md border border-cyan-400/25 bg-slate-950/95 p-3 shadow-xl"
+          :style="{ left: `${Math.max(8, Math.min(tooltip.x, canvasWidth - 240))}px`, top: `${Math.max(8, Math.min(tooltip.y, canvasHeight - 120))}px` }"
+        >
+          <p class="flex items-center gap-2 truncate text-xs font-semibold text-slate-100">
+            <Ship class="h-3.5 w-3.5 text-cyan-300" />
+            {{ hoveredBoat.name }}
+          </p>
+          <p class="mt-1 text-[10px] capitalize text-slate-400">{{ hoveredBoat.kind }}</p>
+          <p class="mt-2 text-[10px] font-medium text-cyan-300">Click to pilot, Ctrl to aim cannons</p>
+        </div>
 
         <div class="pointer-events-none absolute bottom-3 right-3 flex items-center gap-3 rounded-md bg-slate-950/75 px-3 py-2 text-[9px] text-slate-300">
           <span class="flex items-center gap-1"><i class="h-2 w-2 rounded-sm bg-emerald-400" /> Calm</span>
@@ -1014,7 +1083,10 @@ onUnmounted(() => {
 
     <footer class="flex h-7 shrink-0 items-center justify-between border-t border-[var(--border)] px-3 text-[9px] text-[var(--muted-foreground)]">
       <span>{{ selectedRef }} · {{ snapshot?.headSha.slice(0, 8) || "loading" }}</span>
-      <span>
+      <span v-if="cameraMode === 'boat'">
+        Piloting {{ activeBoat?.name || "boat" }} · WASD to drive · Ctrl hold to aim right cannons · mouse up/down to aim · release/click to fire
+      </span>
+      <span v-else>
         {{ snapshot?.omittedFiles ? `${snapshot.omittedFiles.toLocaleString()} quiet files aggregated for performance` : "Complete branch snapshot" }}
         · WASD to move · drag to look · Shift for faster walking
       </span>

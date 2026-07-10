@@ -8,6 +8,7 @@ import {
   DirectionalLight,
   DynamicDrawUsage,
   FogExp2,
+  Group,
   HemisphereLight,
   InstancedMesh,
   MathUtils,
@@ -46,12 +47,16 @@ const MAX_ROOF_DETAILS = 620;
 const MAX_LANE_MARKS = 1800;
 const MAX_TRAFFIC_LIGHTS = 96;
 const MAX_WAVE_LINES = 148;
-const MAX_GRASS_PATCHES = 1100;
-const MAX_SHRUBS = 620;
+const MAX_GRASS_PATCHES = 1600;
+const MAX_MEADOW_DETAILS = 1500;
+const MAX_COASTAL_DETAILS = 520;
+const MAX_SHRUBS = 820;
 const MAX_SIDEWALK_CORNERS = 1200;
 const MAX_PARK_LAKES = 42;
+const MAX_CANNONBALLS = 32;
 const VISUAL_ROAD_WIDTH = 12;
 const SIDEWALK_WIDTH = 2.2;
+const SHORE_BELT_WIDTH = 18;
 const GROUND_COLOR = 0x123421;
 const ROAD_COLOR = 0x10171a;
 const SIDEWALK_COLOR = 0x535a63;
@@ -59,6 +64,9 @@ const WALK_EYE_HEIGHT = 4.8;
 const WALK_STEP = 0.72;
 const WALK_BOB_AMOUNT = 0.12;
 const WALK_ROAD_PADDING = 5;
+const BOAT_STEP = 1.32;
+const BOAT_TURN_STEP = 0.048;
+const CANNON_GRAVITY = 19.5;
 
 export interface CityScreenLabel {
   id: string;
@@ -67,6 +75,12 @@ export interface CityScreenLabel {
   x: number;
   y: number;
   visible: boolean;
+}
+
+export interface CityBoatInfo {
+  id: string;
+  name: string;
+  kind: string;
 }
 
 interface BuildingVisual {
@@ -89,6 +103,32 @@ interface WaveInstance {
   length: number;
   depth: number;
   phase: number;
+}
+
+interface DockLayout {
+  id: string;
+  name: string;
+  x: number;
+  z: number;
+  length: number;
+  width: number;
+  outward: -1 | 1;
+}
+
+interface BoatVisual extends CityBoatInfo {
+  group: Group;
+  yaw: number;
+}
+
+interface CannonBall {
+  active: boolean;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  age: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -281,6 +321,25 @@ export class RepositoryCityThreeRenderer {
   private readonly waveScale = new Vector3();
   private readonly waveQuaternion = new Quaternion();
   private readonly waveAxis = new Vector3(0, 1, 0);
+  private readonly boatById = new Map<string, BoatVisual>();
+  private readonly boatPickTargets: Mesh[] = [];
+  private readonly boatByMesh = new Map<Mesh, BoatVisual>();
+  private activeBoat: BoatVisual | null = null;
+  private boatCameraYawOffset = Math.PI;
+  private boatCameraPitch = 0.34;
+  private boatAiming = false;
+  private boatAimPitch = 0.22;
+  private cannonBallMesh: InstancedMesh | null = null;
+  private cannonAnimationFrame: number | null = null;
+  private lastCannonAnimationAt = 0;
+  private readonly cannonBalls: CannonBall[] = [];
+  private aimReticle: Group | null = null;
+  private readonly cannonMatrix = new Matrix4();
+  private readonly cannonPosition = new Vector3();
+  private readonly cannonScale = new Vector3();
+  private readonly cannonQuaternion = new Quaternion();
+  private readonly boatLookTarget = new Vector3();
+  private readonly boatMove = new Vector3();
   private sceneData: CityScene | null = null;
   private hoveredPath = "";
   private heatVisible = true;
@@ -330,10 +389,14 @@ export class RepositoryCityThreeRenderer {
     this.camera.updateProjectionMatrix();
     this.addOcean(scene);
     this.addGround(scene);
+    this.addCoastalDetails(scene);
+    this.addHarbors(scene);
+    this.addCannonSystem();
     this.addDistricts(scene);
     this.addParks(scene);
     this.addParkLakes(scene);
     this.addGrassDetails(scene);
+    this.addMeadowDetails(scene);
     this.addShrubs(scene);
     this.addRoads(scene);
     this.addBuildings(scene);
@@ -420,7 +483,7 @@ export class RepositoryCityThreeRenderer {
   }
 
   private addGround(scene: CityScene) {
-    const margin = 220;
+    const margin = SHORE_BELT_WIDTH * 2;
     const geometry = new PlaneGeometry(scene.width + margin, scene.depth + margin);
     const material = new MeshStandardMaterial({
       color: GROUND_COLOR,
@@ -446,10 +509,10 @@ export class RepositoryCityThreeRenderer {
     const matrix = new Matrix4();
     const quaternion = new Quaternion();
     const strips = [
-      { x: 0, z: -scene.depth / 2 - 4, width: scene.width + margin, depth: 8 },
-      { x: 0, z: scene.depth / 2 + 4, width: scene.width + margin, depth: 8 },
-      { x: -scene.width / 2 - 4, z: 0, width: 8, depth: scene.depth + margin },
-      { x: scene.width / 2 + 4, z: 0, width: 8, depth: scene.depth + margin },
+      { x: 0, z: -scene.depth / 2 - SHORE_BELT_WIDTH / 2, width: scene.width + margin, depth: SHORE_BELT_WIDTH },
+      { x: 0, z: scene.depth / 2 + SHORE_BELT_WIDTH / 2, width: scene.width + margin, depth: SHORE_BELT_WIDTH },
+      { x: -scene.width / 2 - SHORE_BELT_WIDTH / 2, z: 0, width: SHORE_BELT_WIDTH, depth: scene.depth + margin },
+      { x: scene.width / 2 + SHORE_BELT_WIDTH / 2, z: 0, width: SHORE_BELT_WIDTH, depth: scene.depth + margin },
     ];
     strips.forEach((strip, index) => {
       matrix.compose(
@@ -463,6 +526,511 @@ export class RepositoryCityThreeRenderer {
     this.threeScene.add(shore);
     this.disposableGeometries.add(shoreGeometry);
     this.disposableMaterials.add(shoreMaterial);
+  }
+
+  private trackMesh(mesh: Mesh) {
+    this.disposableGeometries.add(mesh.geometry);
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    materials.forEach((material) => this.disposableMaterials.add(material));
+  }
+
+  private addCoastalDetails(scene: CityScene) {
+    const details: Array<{ x: number; z: number; scale: number; kind: "tree" | "shrub" | "grass"; color: Color }> = [];
+    const halfWidth = scene.width / 2;
+    const halfDepth = scene.depth / 2;
+    const perimeter = (scene.width + scene.depth) * 2;
+    const count = clamp(Math.floor(perimeter / 3.4), 160, MAX_COASTAL_DETAILS);
+    for (let index = 0; index < count; index += 1) {
+      const seed = hashText(`coast:${scene.width}:${scene.depth}:${index}`);
+      const side = seed % 4;
+      const progress = ((seed >>> 5) % 1000) / 1000;
+      const belt = 2.4 + ((seed >>> 15) % 1000) / 1000 * (SHORE_BELT_WIDTH - 5);
+      const x = side < 2
+        ? -halfWidth + progress * scene.width
+        : (side === 2 ? -halfWidth - belt : halfWidth + belt);
+      const z = side >= 2
+        ? -halfDepth + progress * scene.depth
+        : (side === 0 ? -halfDepth - belt : halfDepth + belt);
+      const innerX = x + scene.width / 2;
+      const innerZ = z + scene.depth / 2;
+      if (pointNearRoad(innerX, innerZ, scene.roads, SIDEWALK_WIDTH + 0.6)) continue;
+      const roll = (seed >>> 22) % 10;
+      details.push({
+        x,
+        z,
+        scale: 0.48 + ((seed >>> 24) % 60) / 100,
+        kind: roll < 3 ? "tree" : roll < 7 ? "shrub" : "grass",
+        color: new Color(roll < 3 ? "#3b9a66" : roll < 7 ? "#4f9f58" : "#7fca68"),
+      });
+    }
+    if (details.length === 0) return;
+
+    const trunkGeometry = new CylinderGeometry(0.28, 0.34, 2.4, 5);
+    const canopyGeometry = new ConeGeometry(1.55, 3.4, 6);
+    const shrubGeometry = new SphereGeometry(0.78, 7, 5);
+    const grassGeometry = new ConeGeometry(0.22, 0.78, 5);
+    const trunkMaterial = new MeshStandardMaterial({ color: 0x6b4936, roughness: 1 });
+    const canopyMaterial = new MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.94 });
+    const shrubMaterial = new MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.98 });
+    const grassMaterial = new MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.98 });
+    const trunks = new InstancedMesh(trunkGeometry, trunkMaterial, details.length);
+    const canopies = new InstancedMesh(canopyGeometry, canopyMaterial, details.length);
+    const shrubs = new InstancedMesh(shrubGeometry, shrubMaterial, details.length);
+    const grasses = new InstancedMesh(grassGeometry, grassMaterial, details.length);
+    const matrix = new Matrix4();
+    const quaternion = new Quaternion();
+    let treeCount = 0;
+    let shrubCount = 0;
+    let grassCount = 0;
+    details.forEach((detail, index) => {
+      if (detail.kind === "tree") {
+        matrix.compose(
+          new Vector3(detail.x, -0.02, detail.z),
+          quaternion,
+          new Vector3(detail.scale, detail.scale, detail.scale),
+        );
+        trunks.setMatrixAt(treeCount, matrix);
+        matrix.compose(
+          new Vector3(detail.x, 2.25 * detail.scale, detail.z),
+          quaternion,
+          new Vector3(detail.scale, detail.scale, detail.scale),
+        );
+        canopies.setMatrixAt(treeCount, matrix);
+        canopies.setColorAt(treeCount, detail.color);
+        treeCount += 1;
+      } else if (detail.kind === "shrub") {
+        matrix.compose(
+          new Vector3(detail.x, -0.92, detail.z),
+          quaternion,
+          new Vector3(detail.scale * 1.3, detail.scale * 0.46, detail.scale),
+        );
+        shrubs.setMatrixAt(shrubCount, matrix);
+        shrubs.setColorAt(shrubCount, detail.color);
+        shrubCount += 1;
+      } else {
+        quaternion.setFromAxisAngle(this.waveAxis, (hashText(`coast-grass:${index}`) % 628) / 100);
+        matrix.compose(
+          new Vector3(detail.x, -0.88, detail.z),
+          quaternion,
+          new Vector3(detail.scale, detail.scale, detail.scale),
+        );
+        grasses.setMatrixAt(grassCount, matrix);
+        grasses.setColorAt(grassCount, detail.color);
+        grassCount += 1;
+      }
+    });
+    trunks.count = treeCount;
+    canopies.count = treeCount;
+    shrubs.count = shrubCount;
+    grasses.count = grassCount;
+    trunks.instanceMatrix.setUsage(StaticDrawUsage);
+    canopies.instanceMatrix.setUsage(StaticDrawUsage);
+    shrubs.instanceMatrix.setUsage(StaticDrawUsage);
+    grasses.instanceMatrix.setUsage(StaticDrawUsage);
+    if (canopies.instanceColor) canopies.instanceColor.needsUpdate = true;
+    if (shrubs.instanceColor) shrubs.instanceColor.needsUpdate = true;
+    if (grasses.instanceColor) grasses.instanceColor.needsUpdate = true;
+    this.threeScene.add(trunks, canopies, shrubs, grasses);
+    this.disposableGeometries.add(trunkGeometry);
+    this.disposableGeometries.add(canopyGeometry);
+    this.disposableGeometries.add(shrubGeometry);
+    this.disposableGeometries.add(grassGeometry);
+    this.disposableMaterials.add(trunkMaterial);
+    this.disposableMaterials.add(canopyMaterial);
+    this.disposableMaterials.add(shrubMaterial);
+    this.disposableMaterials.add(grassMaterial);
+  }
+
+  private harborLayouts(scene: CityScene): DockLayout[] {
+    const halfWidth = scene.width / 2;
+    const halfDepth = scene.depth / 2;
+    const length = clamp(Math.max(118, Math.min(scene.depth * 0.34, 168)), 118, 168);
+    const width = 15;
+    const xOffset = Math.min(Math.max(70, scene.width * 0.28), halfWidth * 0.72);
+    return [
+      {
+        id: "north-harbor",
+        name: "North Harbor",
+        x: -xOffset,
+        z: -halfDepth - length / 2 + SHORE_BELT_WIDTH * 0.42,
+        length,
+        width,
+        outward: -1,
+      },
+      {
+        id: "south-harbor",
+        name: "South Harbor",
+        x: xOffset,
+        z: halfDepth + length / 2 - SHORE_BELT_WIDTH * 0.42,
+        length,
+        width,
+        outward: 1,
+      },
+    ];
+  }
+
+  private addHarbors(scene: CityScene) {
+    const docks = this.harborLayouts(scene);
+    this.addDocks(docks);
+    docks.forEach((dock, index) => {
+      const boatZ = dock.z + dock.outward * (dock.length / 2 + 22);
+      const yaw = dock.outward === 1 ? 0 : Math.PI;
+      if (index === 0) {
+        this.addSpeedBoat({
+          id: "harbor-runner",
+          name: "Harbor Runner",
+          kind: "speed boat",
+          x: dock.x,
+          z: boatZ,
+          yaw,
+        });
+      } else {
+        this.addTugBoat({
+          id: "code-tug",
+          name: "Code Tug",
+          kind: "tug boat",
+          x: dock.x,
+          z: boatZ,
+          yaw,
+        });
+      }
+    });
+  }
+
+  private addDocks(docks: DockLayout[]) {
+    const planks: Array<{ x: number; z: number; width: number; depth: number; color: Color }> = [];
+    const beams: Array<{ x: number; z: number; width: number; depth: number }> = [];
+    const posts: Array<{ x: number; z: number; height: number }> = [];
+    const lamps: Array<{ x: number; z: number }> = [];
+
+    for (const dock of docks) {
+      const plankCount = Math.max(18, Math.floor(dock.length / 3.2));
+      for (let index = 0; index < plankCount; index += 1) {
+        const progress = (index + 0.5) / plankCount - 0.5;
+        const seed = hashText(`${dock.id}:plank:${index}`);
+        planks.push({
+          x: dock.x + (((seed >>> 8) % 100) / 100 - 0.5) * 0.34,
+          z: dock.z + progress * dock.length * dock.outward,
+          width: dock.width + (((seed >>> 16) % 100) / 100 - 0.5) * 0.45,
+          depth: 2.3,
+          color: new Color(seed % 2 === 0 ? "#7a5434" : "#8a6240"),
+        });
+      }
+
+      beams.push(
+        { x: dock.x - dock.width / 2 + 1.1, z: dock.z, width: 0.72, depth: dock.length + 6 },
+        { x: dock.x + dock.width / 2 - 1.1, z: dock.z, width: 0.72, depth: dock.length + 6 },
+        { x: dock.x, z: dock.z - dock.outward * (dock.length / 2 - 3), width: dock.width + 2.2, depth: 0.78 },
+        { x: dock.x, z: dock.z + dock.outward * (dock.length / 2 - 3), width: dock.width + 2.2, depth: 0.78 },
+      );
+
+      const postCount = Math.max(6, Math.floor(dock.length / 13));
+      for (let index = 0; index < postCount; index += 1) {
+        const progress = index / Math.max(1, postCount - 1) - 0.5;
+        const z = dock.z + progress * dock.length * dock.outward;
+        posts.push(
+          { x: dock.x - dock.width / 2 - 0.35, z, height: index % 2 === 0 ? 2.7 : 2.25 },
+          { x: dock.x + dock.width / 2 + 0.35, z, height: index % 2 === 0 ? 2.7 : 2.25 },
+        );
+        if (index % 2 === 0) {
+          lamps.push({ x: dock.x - dock.width / 2 - 1.3, z });
+          lamps.push({ x: dock.x + dock.width / 2 + 1.3, z });
+        }
+      }
+    }
+
+    const plankGeometry = new BoxGeometry(1, 1, 1);
+    const plankMaterial = new MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: 0.9,
+      metalness: 0.02,
+    });
+    const plankMesh = new InstancedMesh(plankGeometry, plankMaterial, planks.length);
+    const matrix = new Matrix4();
+    const quaternion = new Quaternion();
+    planks.forEach((plank, index) => {
+      matrix.compose(
+        new Vector3(plank.x, -0.72, plank.z),
+        quaternion,
+        new Vector3(plank.width, 0.28, plank.depth),
+      );
+      plankMesh.setMatrixAt(index, matrix);
+      plankMesh.setColorAt(index, plank.color);
+    });
+    plankMesh.instanceMatrix.setUsage(StaticDrawUsage);
+    if (plankMesh.instanceColor) plankMesh.instanceColor.needsUpdate = true;
+    this.threeScene.add(plankMesh);
+    this.disposableGeometries.add(plankGeometry);
+    this.disposableMaterials.add(plankMaterial);
+
+    const beamGeometry = new BoxGeometry(1, 1, 1);
+    const beamMaterial = new MeshStandardMaterial({ color: 0x4b3222, roughness: 0.94, metalness: 0.01 });
+    const beamMesh = new InstancedMesh(beamGeometry, beamMaterial, beams.length);
+    beams.forEach((beam, index) => {
+      matrix.compose(
+        new Vector3(beam.x, -0.96, beam.z),
+        quaternion,
+        new Vector3(beam.width, 0.55, beam.depth),
+      );
+      beamMesh.setMatrixAt(index, matrix);
+    });
+    beamMesh.instanceMatrix.setUsage(StaticDrawUsage);
+    this.threeScene.add(beamMesh);
+    this.disposableGeometries.add(beamGeometry);
+    this.disposableMaterials.add(beamMaterial);
+
+    const postGeometry = new CylinderGeometry(0.28, 0.34, 1, 6);
+    const postMaterial = new MeshStandardMaterial({ color: 0x5a3b27, roughness: 0.96, metalness: 0.02 });
+    const postMesh = new InstancedMesh(postGeometry, postMaterial, posts.length);
+    posts.forEach((post, index) => {
+      matrix.compose(
+        new Vector3(post.x, -1.08 + post.height / 2, post.z),
+        quaternion,
+        new Vector3(1, post.height, 1),
+      );
+      postMesh.setMatrixAt(index, matrix);
+    });
+    postMesh.instanceMatrix.setUsage(StaticDrawUsage);
+    this.threeScene.add(postMesh);
+    this.disposableGeometries.add(postGeometry);
+    this.disposableMaterials.add(postMaterial);
+
+    const lampGeometry = new SphereGeometry(0.42, 8, 6);
+    const lampMaterial = new MeshStandardMaterial({
+      color: 0xf9e7a4,
+      emissive: 0xfbbf24,
+      emissiveIntensity: 0.72,
+      roughness: 0.42,
+    });
+    const lampMesh = new InstancedMesh(lampGeometry, lampMaterial, lamps.length);
+    lamps.forEach((lamp, index) => {
+      matrix.compose(
+        new Vector3(lamp.x, 1.72, lamp.z),
+        quaternion,
+        new Vector3(1, 1, 1),
+      );
+      lampMesh.setMatrixAt(index, matrix);
+    });
+    lampMesh.instanceMatrix.setUsage(StaticDrawUsage);
+    this.threeScene.add(lampMesh);
+    this.disposableGeometries.add(lampGeometry);
+    this.disposableMaterials.add(lampMaterial);
+  }
+
+  private addBoatPart(
+    boat: BoatVisual,
+    geometry: BufferGeometry,
+    material: Material,
+    position: Vector3,
+    scale: Vector3,
+    rotation?: Vector3,
+    pickable = true,
+  ): Mesh {
+    const mesh = new Mesh(geometry, material);
+    mesh.position.copy(position);
+    mesh.scale.copy(scale);
+    if (rotation) mesh.rotation.set(rotation.x, rotation.y, rotation.z);
+    boat.group.add(mesh);
+    this.trackMesh(mesh);
+    if (pickable) {
+      this.boatPickTargets.push(mesh);
+      this.boatByMesh.set(mesh, boat);
+    }
+    return mesh;
+  }
+
+  private registerBoat(boat: BoatVisual, x: number, z: number, yaw: number) {
+    boat.group.position.set(x, -1.02, z);
+    boat.group.rotation.y = yaw;
+    boat.yaw = yaw;
+    this.boatById.set(boat.id, boat);
+    this.threeScene.add(boat.group);
+  }
+
+  private addSpeedBoat(options: CityBoatInfo & { x: number; z: number; yaw: number }) {
+    const boat: BoatVisual = {
+      id: options.id,
+      name: options.name,
+      kind: options.kind,
+      group: new Group(),
+      yaw: options.yaw,
+    };
+    const box = new BoxGeometry(1, 1, 1);
+    const cone = new ConeGeometry(1, 1, 4);
+    const cylinder = new CylinderGeometry(1, 1, 1, 10);
+    const hull = new MeshStandardMaterial({ color: 0x1f6f8b, roughness: 0.58, metalness: 0.08 });
+    const trim = new MeshStandardMaterial({ color: 0x8ef2ff, emissive: 0x0a5268, emissiveIntensity: 0.22, roughness: 0.48 });
+    const cabin = new MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.46, metalness: 0.04 });
+    const glass = new MeshStandardMaterial({ color: 0x67e8f9, emissive: 0x155e75, emissiveIntensity: 0.36, roughness: 0.18, metalness: 0.16 });
+    const dark = new MeshStandardMaterial({ color: 0x18222d, roughness: 0.68, metalness: 0.12 });
+    const brass = new MeshStandardMaterial({ color: 0xc7923a, emissive: 0x3a2608, emissiveIntensity: 0.12, roughness: 0.48, metalness: 0.22 });
+    const seat = new MeshStandardMaterial({ color: 0x0f172a, roughness: 0.7, metalness: 0.04 });
+    const wake = new MeshStandardMaterial({ color: 0xa5f3fc, transparent: true, opacity: 0.28, roughness: 0.34 });
+
+    this.addBoatPart(boat, box, hull, new Vector3(0, 0.15, -0.8), new Vector3(5.4, 1.08, 13.8));
+    this.addBoatPart(boat, cone, hull, new Vector3(0, 0.25, 7.45), new Vector3(2.85, 4.6, 2.85), new Vector3(Math.PI / 2, Math.PI / 4, 0));
+    this.addBoatPart(boat, box, trim, new Vector3(0, 0.9, 1.3), new Vector3(5.75, 0.24, 8.2));
+    this.addBoatPart(boat, box, cabin, new Vector3(0, 1.72, -1.8), new Vector3(3.45, 2.05, 4.4));
+    this.addBoatPart(boat, box, glass, new Vector3(0, 2.55, 0.58), new Vector3(3.65, 0.76, 0.24));
+    this.addBoatPart(boat, box, glass, new Vector3(-1.84, 2.12, -1.5), new Vector3(0.18, 0.86, 2.3));
+    this.addBoatPart(boat, box, glass, new Vector3(1.84, 2.12, -1.5), new Vector3(0.18, 0.86, 2.3));
+    this.addBoatPart(boat, box, dark, new Vector3(-3.05, 1.12, 1.4), new Vector3(0.22, 0.24, 7.2));
+    this.addBoatPart(boat, box, dark, new Vector3(3.05, 1.12, 1.4), new Vector3(0.22, 0.24, 7.2));
+    this.addBoatPart(boat, cylinder, dark, new Vector3(-1.25, 0.36, -8.1), new Vector3(0.48, 1.2, 0.48), new Vector3(Math.PI / 2, 0, 0));
+    this.addBoatPart(boat, cylinder, dark, new Vector3(1.25, 0.36, -8.1), new Vector3(0.48, 1.2, 0.48), new Vector3(Math.PI / 2, 0, 0));
+    for (let index = 0; index < 12; index += 1) {
+      const z = -5.4 + index * 0.9;
+      this.addBoatPart(boat, box, brass, new Vector3(-3.12, 1.58, z), new Vector3(0.18, 0.9, 0.18), undefined, false);
+      this.addBoatPart(boat, box, brass, new Vector3(3.12, 1.58, z), new Vector3(0.18, 0.9, 0.18), undefined, false);
+    }
+    this.addBoatPart(boat, box, brass, new Vector3(-3.12, 2.05, 0), new Vector3(0.2, 0.16, 10.8), undefined, false);
+    this.addBoatPart(boat, box, brass, new Vector3(3.12, 2.05, 0), new Vector3(0.2, 0.16, 10.8), undefined, false);
+    for (let row = 0; row < 2; row += 1) {
+      for (let column = 0; column < 2; column += 1) {
+        this.addBoatPart(
+          boat,
+          box,
+          seat,
+          new Vector3(-0.9 + column * 1.8, 1.38, -4.45 + row * 1.25),
+          new Vector3(0.82, 0.55, 0.76),
+          undefined,
+          false,
+        );
+        this.addBoatPart(
+          boat,
+          box,
+          seat,
+          new Vector3(-0.9 + column * 1.8, 1.76, -4.18 + row * 1.25),
+          new Vector3(0.82, 0.68, 0.14),
+          undefined,
+          false,
+        );
+      }
+    }
+    for (let index = 0; index < 7; index += 1) {
+      this.addBoatPart(boat, box, trim, new Vector3(-2.92, 0.95, -4.8 + index * 1.35), new Vector3(0.18, 0.24, 0.58), undefined, false);
+      this.addBoatPart(boat, box, trim, new Vector3(2.92, 0.95, -4.8 + index * 1.35), new Vector3(0.18, 0.24, 0.58), undefined, false);
+    }
+    this.addBoatPart(boat, box, dark, new Vector3(3.5, 1.74, 0.95), new Vector3(1.15, 0.62, 0.9), undefined, false);
+    this.addBoatPart(boat, cylinder, dark, new Vector3(4.25, 1.82, 0.95), new Vector3(0.24, 2.25, 0.24), new Vector3(0, 0, Math.PI / 2), false);
+    this.addBoatPart(boat, box, brass, new Vector3(0, 3.35, -3.25), new Vector3(0.18, 2.2, 0.18), undefined, false);
+    this.addBoatPart(boat, box, brass, new Vector3(0, 4.48, -3.25), new Vector3(1.4, 0.12, 0.12), undefined, false);
+    this.addBoatPart(boat, box, glass, new Vector3(-0.78, 4.48, -3.25), new Vector3(0.22, 0.22, 0.22), undefined, false);
+    this.addBoatPart(boat, box, glass, new Vector3(0.78, 4.48, -3.25), new Vector3(0.22, 0.22, 0.22), undefined, false);
+    this.addBoatPart(boat, box, wake, new Vector3(-1.8, -0.18, -10.6), new Vector3(0.28, 0.04, 8.5), new Vector3(0, -0.14, 0), false);
+    this.addBoatPart(boat, box, wake, new Vector3(1.8, -0.18, -10.6), new Vector3(0.28, 0.04, 8.5), new Vector3(0, 0.14, 0), false);
+    this.registerBoat(boat, options.x, options.z, options.yaw);
+  }
+
+  private addTugBoat(options: CityBoatInfo & { x: number; z: number; yaw: number }) {
+    const boat: BoatVisual = {
+      id: options.id,
+      name: options.name,
+      kind: options.kind,
+      group: new Group(),
+      yaw: options.yaw,
+    };
+    const box = new BoxGeometry(1, 1, 1);
+    const cylinder = new CylinderGeometry(1, 1, 1, 10);
+    const sphere = new SphereGeometry(1, 8, 6);
+    const hull = new MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.64, metalness: 0.07 });
+    const deck = new MeshStandardMaterial({ color: 0x334155, roughness: 0.75, metalness: 0.06 });
+    const cabin = new MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.5, metalness: 0.04 });
+    const glass = new MeshStandardMaterial({ color: 0x7dd3fc, emissive: 0x0c4a6e, emissiveIntensity: 0.34, roughness: 0.2 });
+    const stack = new MeshStandardMaterial({ color: 0x111827, roughness: 0.7, metalness: 0.14 });
+    const rope = new MeshStandardMaterial({ color: 0xd6b47a, roughness: 0.92 });
+    const rail = new MeshStandardMaterial({ color: 0xd8e3ec, roughness: 0.58, metalness: 0.14 });
+    const crate = new MeshStandardMaterial({ color: 0x7c4a2d, roughness: 0.86, metalness: 0.02 });
+    const brass = new MeshStandardMaterial({ color: 0xc8943a, emissive: 0x3b2608, emissiveIntensity: 0.12, roughness: 0.48, metalness: 0.22 });
+    const wake = new MeshStandardMaterial({ color: 0xbae6fd, transparent: true, opacity: 0.22, roughness: 0.34 });
+
+    this.addBoatPart(boat, box, hull, new Vector3(0, 0.1, 0), new Vector3(6.2, 1.25, 12.2));
+    this.addBoatPart(boat, box, deck, new Vector3(0, 0.92, 1.3), new Vector3(5.4, 0.34, 8.8));
+    this.addBoatPart(boat, box, cabin, new Vector3(0, 2.1, -1.5), new Vector3(3.7, 2.65, 4.15));
+    this.addBoatPart(boat, box, cabin, new Vector3(0, 3.7, -1.9), new Vector3(2.7, 1.25, 2.8));
+    this.addBoatPart(boat, box, glass, new Vector3(0, 2.75, 0.65), new Vector3(3.92, 0.62, 0.22));
+    this.addBoatPart(boat, box, glass, new Vector3(-2.02, 2.32, -1.55), new Vector3(0.2, 0.72, 2.2));
+    this.addBoatPart(boat, box, glass, new Vector3(2.02, 2.32, -1.55), new Vector3(0.2, 0.72, 2.2));
+    this.addBoatPart(boat, cylinder, stack, new Vector3(0, 4.65, -3.55), new Vector3(0.45, 1.75, 0.45));
+    this.addBoatPart(boat, cylinder, rope, new Vector3(-2.45, 1.45, 3.65), new Vector3(0.58, 0.28, 0.58), new Vector3(Math.PI / 2, 0, 0));
+    this.addBoatPart(boat, cylinder, rope, new Vector3(2.45, 1.45, 3.65), new Vector3(0.58, 0.28, 0.58), new Vector3(Math.PI / 2, 0, 0));
+    this.addBoatPart(boat, sphere, rope, new Vector3(-3.4, 0.7, -2.2), new Vector3(0.42, 0.42, 0.18));
+    this.addBoatPart(boat, sphere, rope, new Vector3(3.4, 0.7, -2.2), new Vector3(0.42, 0.42, 0.18));
+    for (let index = 0; index < 11; index += 1) {
+      const z = -4.7 + index * 0.95;
+      this.addBoatPart(boat, box, rail, new Vector3(-3.18, 1.72, z), new Vector3(0.16, 0.92, 0.16), undefined, false);
+      this.addBoatPart(boat, box, rail, new Vector3(3.18, 1.72, z), new Vector3(0.16, 0.92, 0.16), undefined, false);
+    }
+    this.addBoatPart(boat, box, rail, new Vector3(-3.18, 2.22, 0.2), new Vector3(0.18, 0.14, 10.4), undefined, false);
+    this.addBoatPart(boat, box, rail, new Vector3(3.18, 2.22, 0.2), new Vector3(0.18, 0.14, 10.4), undefined, false);
+    for (let index = 0; index < 6; index += 1) {
+      this.addBoatPart(boat, box, glass, new Vector3(-1.35 + index * 0.54, 4.02, -0.45), new Vector3(0.28, 0.34, 0.16), undefined, false);
+    }
+    for (let index = 0; index < 5; index += 1) {
+      this.addBoatPart(boat, box, crate, new Vector3(-1.9 + index * 0.92, 1.36, 3.9), new Vector3(0.62, 0.58, 0.62), undefined, false);
+    }
+    for (let index = 0; index < 4; index += 1) {
+      this.addBoatPart(boat, sphere, stack, new Vector3(-3.55, 0.8, -4.6 + index * 2.1), new Vector3(0.36, 0.36, 0.16), undefined, false);
+      this.addBoatPart(boat, sphere, stack, new Vector3(3.55, 0.8, -4.6 + index * 2.1), new Vector3(0.36, 0.36, 0.16), undefined, false);
+    }
+    this.addBoatPart(boat, box, stack, new Vector3(3.7, 1.86, 1.4), new Vector3(1.28, 0.72, 1.02), undefined, false);
+    this.addBoatPart(boat, cylinder, stack, new Vector3(4.55, 1.96, 1.4), new Vector3(0.28, 2.45, 0.28), new Vector3(0, 0, Math.PI / 2), false);
+    this.addBoatPart(boat, box, brass, new Vector3(0, 5.35, -1.9), new Vector3(0.22, 2.1, 0.22), undefined, false);
+    this.addBoatPart(boat, box, brass, new Vector3(0, 6.45, -1.9), new Vector3(1.55, 0.14, 0.14), undefined, false);
+    this.addBoatPart(boat, box, glass, new Vector3(-0.88, 6.45, -1.9), new Vector3(0.24, 0.24, 0.24), undefined, false);
+    this.addBoatPart(boat, box, glass, new Vector3(0.88, 6.45, -1.9), new Vector3(0.24, 0.24, 0.24), undefined, false);
+    this.addBoatPart(boat, box, wake, new Vector3(0, -0.2, -9.8), new Vector3(4.2, 0.04, 7.8), undefined, false);
+    this.registerBoat(boat, options.x, options.z, options.yaw);
+  }
+
+  private addCannonSystem() {
+    this.cannonBalls.length = 0;
+    for (let index = 0; index < MAX_CANNONBALLS; index += 1) {
+      this.cannonBalls.push({ active: false, x: 0, y: -100, z: 0, vx: 0, vy: 0, vz: 0, age: 0 });
+    }
+    const ballGeometry = new SphereGeometry(0.78, 10, 8);
+    const ballMaterial = new MeshStandardMaterial({
+      color: 0x16181c,
+      roughness: 0.52,
+      metalness: 0.28,
+    });
+    const balls = new InstancedMesh(ballGeometry, ballMaterial, MAX_CANNONBALLS);
+    for (let index = 0; index < MAX_CANNONBALLS; index += 1) {
+      this.cannonMatrix.compose(
+        new Vector3(0, -100, 0),
+        this.cannonQuaternion,
+        new Vector3(0.001, 0.001, 0.001),
+      );
+      balls.setMatrixAt(index, this.cannonMatrix);
+    }
+    balls.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.cannonBallMesh = balls;
+    this.threeScene.add(balls);
+    this.disposableGeometries.add(ballGeometry);
+    this.disposableMaterials.add(ballMaterial);
+
+    const reticle = new Group();
+    const reticleMaterial = new MeshStandardMaterial({
+      color: 0x67e8f9,
+      emissive: 0x0891b2,
+      emissiveIntensity: 0.72,
+      roughness: 0.36,
+      metalness: 0,
+    });
+    const barGeometry = new BoxGeometry(1, 1, 1);
+    const horizontal = new Mesh(barGeometry, reticleMaterial);
+    horizontal.scale.set(4.4, 0.08, 0.08);
+    const vertical = new Mesh(barGeometry, reticleMaterial);
+    vertical.scale.set(0.08, 2.5, 0.08);
+    const center = new Mesh(new SphereGeometry(0.24, 8, 6), reticleMaterial);
+    reticle.add(horizontal, vertical, center);
+    reticle.visible = false;
+    this.aimReticle = reticle;
+    this.threeScene.add(reticle);
+    this.trackMesh(horizontal);
+    this.trackMesh(vertical);
+    this.trackMesh(center);
   }
 
   private addDistricts(scene: CityScene) {
@@ -593,6 +1161,52 @@ export class RepositoryCityThreeRenderer {
       mesh.setMatrixAt(index, matrix);
     });
     mesh.instanceMatrix.setUsage(StaticDrawUsage);
+    this.threeScene.add(mesh);
+    this.disposableGeometries.add(geometry);
+    this.disposableMaterials.add(material);
+  }
+
+  private addMeadowDetails(scene: CityScene) {
+    const details: Array<{ x: number; z: number; scale: number; color: Color }> = [];
+    const colors = ["#7ddf75", "#8fd46b", "#d9f99d", "#facc15", "#f0abfc", "#67e8f9"];
+    for (const park of scene.parks) {
+      const lake = parkLakeFor(park);
+      const count = clamp(Math.floor((park.width * park.depth) / 55), 8, 44);
+      for (let index = 0; index < count && details.length < MAX_MEADOW_DETAILS; index += 1) {
+        const seed = hashText(`${park.id}:meadow:${index}`);
+        const x = park.x + 1.1 + ((seed >>> 5) % 1000) / 1000 * Math.max(1, park.width - 2.2);
+        const z = park.y + 1.1 + ((seed >>> 15) % 1000) / 1000 * Math.max(1, park.depth - 2.2);
+        if (pointInLake(x, z, lake, 1.2) || pointNearRoad(x, z, scene.roads, SIDEWALK_WIDTH + 0.45)) continue;
+        details.push({
+          x: x - scene.width / 2,
+          z: z - scene.depth / 2,
+          scale: 0.28 + ((seed >>> 24) % 34) / 100,
+          color: new Color(colors[seed % colors.length]),
+        });
+      }
+    }
+    if (details.length === 0) return;
+    const geometry = new SphereGeometry(0.32, 6, 4);
+    const material = new MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: 0.95,
+      metalness: 0,
+    });
+    const mesh = new InstancedMesh(geometry, material, details.length);
+    const matrix = new Matrix4();
+    const quaternion = new Quaternion();
+    details.forEach((detail, index) => {
+      matrix.compose(
+        new Vector3(detail.x, 0.18, detail.z),
+        quaternion,
+        new Vector3(detail.scale * 1.15, detail.scale * 0.42, detail.scale),
+      );
+      mesh.setMatrixAt(index, matrix);
+      mesh.setColorAt(index, detail.color);
+    });
+    mesh.instanceMatrix.setUsage(StaticDrawUsage);
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     this.threeScene.add(mesh);
     this.disposableGeometries.add(geometry);
     this.disposableMaterials.add(material);
@@ -1364,6 +1978,14 @@ export class RepositoryCityThreeRenderer {
   fit(mode: CityCameraMode) {
     if (!this.sceneData) return;
     this.mode = mode;
+    if (mode === "boat") {
+      if (this.activeBoat) this.updateBoatCamera();
+      else this.fit("bird");
+      return;
+    }
+    this.activeBoat = null;
+    this.boatAiming = false;
+    this.updateAimReticle();
     if (mode === "walking") {
       this.walkPosition.copy(this.nearestRoadPoint(this.target.x, this.target.z));
       this.updateWalkingCamera();
@@ -1380,6 +2002,15 @@ export class RepositoryCityThreeRenderer {
 
   setMode(mode: CityCameraMode) {
     this.mode = mode;
+    if (mode !== "boat") {
+      this.activeBoat = null;
+      this.boatAiming = false;
+      this.updateAimReticle();
+    }
+    if (mode === "boat") {
+      if (this.activeBoat) this.updateBoatCamera();
+      return;
+    }
     if (mode === "walking") {
       this.walkPosition.copy(this.nearestRoadPoint(this.target.x, this.target.z));
       this.updateWalkingCamera();
@@ -1389,6 +2020,12 @@ export class RepositoryCityThreeRenderer {
   }
 
   orbit(deltaX: number, deltaY: number) {
+    if (this.activeBoat) {
+      this.boatCameraYawOffset -= deltaX * 0.006;
+      this.boatCameraPitch = clamp(this.boatCameraPitch + deltaY * 0.003, 0.12, 0.72);
+      this.updateBoatCamera();
+      return;
+    }
     if (this.mode === "walking") {
       this.walkYaw -= deltaX * 0.006;
       this.walkPitch = clamp(this.walkPitch + deltaY * 0.003, -0.42, 0.28);
@@ -1401,6 +2038,10 @@ export class RepositoryCityThreeRenderer {
   }
 
   pan(deltaX: number, deltaY: number) {
+    if (this.activeBoat) {
+      this.orbit(deltaX, deltaY);
+      return;
+    }
     if (this.mode === "walking") {
       this.walkBy(-deltaY * 0.018, -deltaX * 0.018);
       return;
@@ -1420,7 +2061,7 @@ export class RepositoryCityThreeRenderer {
   }
 
   zoomAt(factor: number, anchor?: { x: number; y: number }) {
-    if (this.mode === "walking") return;
+    if (this.mode === "walking" || this.activeBoat) return;
     const before = anchor ? this.groundPointFromScreen(anchor.x, anchor.y) : null;
     this.distance = clamp(this.distance * factor, 24, Math.max(5000, (this.sceneData?.width ?? 500) * 6));
     this.updateCamera();
@@ -1433,6 +2074,10 @@ export class RepositoryCityThreeRenderer {
 
   moveByKeyboard(forward: number, right: number, fast = false) {
     if (forward === 0 && right === 0) return;
+    if (this.activeBoat) {
+      this.pilotBoat(forward, right, fast);
+      return;
+    }
     if (this.mode === "walking") {
       this.walkBy(forward * (fast ? 1.65 : 1), right * (fast ? 1.65 : 1));
       return;
@@ -1450,6 +2095,9 @@ export class RepositoryCityThreeRenderer {
   focus(path: string) {
     const visual = this.buildingByPath.get(path);
     if (!visual || !this.sceneData) return;
+    this.activeBoat = null;
+    this.boatAiming = false;
+    this.updateAimReticle();
     const building = visual.building;
     const targetX = building.x + building.width / 2 - this.sceneData.width / 2;
     const targetZ = building.y + building.depth / 2 - this.sceneData.depth / 2;
@@ -1484,6 +2132,181 @@ export class RepositoryCityThreeRenderer {
     const intersection = this.raycaster.intersectObject(this.districtMesh, false)[0];
     if (!intersection || intersection.instanceId === undefined) return null;
     return this.districtByIndex[intersection.instanceId] ?? null;
+  }
+
+  pickBoat(clientX: number, clientY: number): CityBoatInfo | null {
+    if (this.boatPickTargets.length === 0 || this.width <= 0 || this.height <= 0) return null;
+    this.pointer.set((clientX / this.width) * 2 - 1, -(clientY / this.height) * 2 + 1);
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const intersection = this.raycaster.intersectObjects(this.boatPickTargets, false)[0];
+    if (!intersection?.object) return null;
+    const boat = this.boatByMesh.get(intersection.object as Mesh);
+    return boat ? { id: boat.id, name: boat.name, kind: boat.kind } : null;
+  }
+
+  enterBoat(id: string): CityBoatInfo | null {
+    const boat = this.boatById.get(id);
+    if (!boat) return null;
+    this.activeBoat = boat;
+    this.mode = "boat";
+    this.boatCameraYawOffset = Math.PI;
+    this.boatCameraPitch = 0.34;
+    this.updateBoatCamera();
+    return { id: boat.id, name: boat.name, kind: boat.kind };
+  }
+
+  setBoatAiming(aiming: boolean) {
+    this.boatAiming = aiming && !!this.activeBoat;
+    this.updateAimReticle();
+    this.render();
+  }
+
+  adjustBoatAim(deltaY: number) {
+    if (!this.activeBoat) return;
+    this.boatAiming = true;
+    this.boatAimPitch = clamp(this.boatAimPitch - deltaY * 0.0045, 0.04, 0.68);
+    this.updateAimReticle();
+    this.render();
+  }
+
+  fireBoatCannon(): boolean {
+    if (!this.activeBoat) return false;
+    const slot = this.cannonBalls.find((ball) => !ball.active);
+    if (!slot) return false;
+    const boat = this.activeBoat;
+    const rightX = Math.cos(boat.yaw);
+    const rightZ = -Math.sin(boat.yaw);
+    const forwardX = Math.sin(boat.yaw);
+    const forwardZ = Math.cos(boat.yaw);
+    const pitch = this.boatAimPitch;
+    const speed = 58;
+    const horizontal = Math.cos(pitch) * speed;
+    slot.active = true;
+    slot.x = boat.group.position.x + rightX * 4.65 + forwardX * 1.1;
+    slot.y = boat.group.position.y + 2.2;
+    slot.z = boat.group.position.z + rightZ * 4.65 + forwardZ * 1.1;
+    slot.vx = rightX * horizontal + forwardX * 5.5;
+    slot.vy = Math.sin(pitch) * speed + 2.2;
+    slot.vz = rightZ * horizontal + forwardZ * 5.5;
+    slot.age = 0;
+    this.startCannonAnimation();
+    return true;
+  }
+
+  private pilotBoat(forward: number, right: number, fast = false) {
+    if (!this.sceneData || !this.activeBoat) return;
+    const boat = this.activeBoat;
+    if (right !== 0) {
+      boat.yaw -= right * BOAT_TURN_STEP * (fast ? 1.35 : 1);
+      boat.group.rotation.y = boat.yaw;
+    }
+    if (forward !== 0) {
+      const amount = forward * BOAT_STEP * (fast ? 1.65 : 1);
+      this.boatMove.set(Math.sin(boat.yaw) * amount, 0, Math.cos(boat.yaw) * amount);
+      const nextX = boat.group.position.x + this.boatMove.x;
+      const nextZ = boat.group.position.z + this.boatMove.z;
+      if (this.isBoatOnWater(nextX, nextZ)) {
+        boat.group.position.x = nextX;
+        boat.group.position.z = nextZ;
+      }
+    }
+    this.updateBoatCamera();
+  }
+
+  private updateAimReticle() {
+    if (!this.aimReticle) return;
+    if (!this.activeBoat || !this.boatAiming) {
+      this.aimReticle.visible = false;
+      return;
+    }
+    const boat = this.activeBoat;
+    const rightX = Math.cos(boat.yaw);
+    const rightZ = -Math.sin(boat.yaw);
+    const forwardX = Math.sin(boat.yaw);
+    const forwardZ = Math.cos(boat.yaw);
+    const distance = 48;
+    this.aimReticle.visible = true;
+    this.aimReticle.position.set(
+      boat.group.position.x + rightX * distance + forwardX * 7,
+      boat.group.position.y + 2.2 + Math.tan(this.boatAimPitch) * distance,
+      boat.group.position.z + rightZ * distance + forwardZ * 7,
+    );
+    this.aimReticle.lookAt(this.camera.position);
+  }
+
+  private startCannonAnimation() {
+    if (this.cannonAnimationFrame !== null) return;
+    this.lastCannonAnimationAt = performance.now();
+    const animate = (time: number) => {
+      if (this.disposed || !this.cannonBallMesh) {
+        this.cannonAnimationFrame = null;
+        return;
+      }
+      const dt = clamp((time - this.lastCannonAnimationAt) / 1000, 0.008, 0.045);
+      this.lastCannonAnimationAt = time;
+      let hasActive = false;
+      for (let index = 0; index < this.cannonBalls.length; index += 1) {
+        const ball = this.cannonBalls[index];
+        if (ball.active) {
+          ball.vy -= CANNON_GRAVITY * dt;
+          ball.x += ball.vx * dt;
+          ball.y += ball.vy * dt;
+          ball.z += ball.vz * dt;
+          ball.age += dt;
+          if (ball.y < -2.4 || ball.age > 5.2 || !this.isCannonInWorld(ball.x, ball.z)) {
+            ball.active = false;
+          }
+        }
+        this.cannonPosition.set(ball.active ? ball.x : 0, ball.active ? ball.y : -100, ball.active ? ball.z : 0);
+        const scale = ball.active ? 1 : 0.001;
+        this.cannonScale.set(scale, scale, scale);
+        this.cannonMatrix.compose(this.cannonPosition, this.cannonQuaternion, this.cannonScale);
+        this.cannonBallMesh.setMatrixAt(index, this.cannonMatrix);
+        hasActive = hasActive || ball.active;
+      }
+      this.cannonBallMesh.instanceMatrix.needsUpdate = true;
+      this.render();
+      if (hasActive) this.cannonAnimationFrame = requestAnimationFrame(animate);
+      else this.cannonAnimationFrame = null;
+    };
+    this.cannonAnimationFrame = requestAnimationFrame(animate);
+  }
+
+  private isCannonInWorld(centeredX: number, centeredZ: number): boolean {
+    if (!this.sceneData) return false;
+    const oceanMargin = Math.max(720, Math.max(this.sceneData.width, this.sceneData.depth) * 0.92);
+    return Math.abs(centeredX) < this.sceneData.width / 2 + oceanMargin - 36
+      && Math.abs(centeredZ) < this.sceneData.depth / 2 + oceanMargin - 36;
+  }
+
+  private isBoatOnWater(centeredX: number, centeredZ: number): boolean {
+    if (!this.sceneData) return false;
+    const halfWidth = this.sceneData.width / 2;
+    const halfDepth = this.sceneData.depth / 2;
+    const oceanMargin = Math.max(720, Math.max(this.sceneData.width, this.sceneData.depth) * 0.92);
+    const outsideLand = Math.abs(centeredX) > halfWidth + SHORE_BELT_WIDTH + 8
+      || Math.abs(centeredZ) > halfDepth + SHORE_BELT_WIDTH + 8;
+    const insideOcean = Math.abs(centeredX) < halfWidth + oceanMargin - 48
+      && Math.abs(centeredZ) < halfDepth + oceanMargin - 48;
+    return outsideLand && insideOcean;
+  }
+
+  private updateBoatCamera() {
+    if (!this.activeBoat) return;
+    const boat = this.activeBoat;
+    const yaw = boat.yaw + this.boatCameraYawOffset;
+    const distance = 32;
+    const height = 8 + Math.sin(this.boatCameraPitch) * 15;
+    this.camera.position.set(
+      boat.group.position.x + Math.sin(yaw) * distance,
+      boat.group.position.y + height,
+      boat.group.position.z + Math.cos(yaw) * distance,
+    );
+    this.boatLookTarget.set(boat.group.position.x, boat.group.position.y + 2.4, boat.group.position.z);
+    this.camera.lookAt(this.boatLookTarget);
+    this.camera.updateMatrixWorld();
+    this.updateAimReticle();
+    this.render();
   }
 
   districtLabels(): CityScreenLabel[] {
@@ -1657,6 +2480,10 @@ export class RepositoryCityThreeRenderer {
       cancelAnimationFrame(this.waveAnimationFrame);
       this.waveAnimationFrame = null;
     }
+    if (this.cannonAnimationFrame !== null) {
+      cancelAnimationFrame(this.cannonAnimationFrame);
+      this.cannonAnimationFrame = null;
+    }
     const keep = new Set(this.threeScene.children.filter((child) => (child as Light).isLight));
     for (const child of [...this.threeScene.children]) {
       if (!keep.has(child)) this.threeScene.remove(child);
@@ -1666,14 +2493,24 @@ export class RepositoryCityThreeRenderer {
     this.roadMesh?.dispose();
     this.radarMesh?.dispose();
     this.waveMesh?.dispose();
+    this.cannonBallMesh?.dispose();
     this.roadMesh = null;
     this.buildingMesh = null;
     this.districtMesh = null;
     this.radarMesh = null;
     this.waveMesh = null;
+    this.cannonBallMesh = null;
+    this.aimReticle = null;
     this.buildingByPath.clear();
     this.buildingByIndex.length = 0;
     this.districtByIndex.length = 0;
+    this.boatById.clear();
+    this.boatPickTargets.length = 0;
+    this.boatByMesh.clear();
+    this.activeBoat = null;
+    this.boatAiming = false;
+    this.cannonBalls.length = 0;
+    this.lastCannonAnimationAt = 0;
     this.waveInstances.length = 0;
     this.lastWaveAnimationAt = 0;
     this.disposableGeometries.forEach((geometry) => geometry.dispose());
