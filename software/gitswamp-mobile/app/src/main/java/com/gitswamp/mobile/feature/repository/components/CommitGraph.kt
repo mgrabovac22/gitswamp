@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -65,6 +66,7 @@ import java.time.Instant
 import kotlin.math.max
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun CommitGraph(
     snapshot: RepositorySnapshot,
     selectedSha: String?,
