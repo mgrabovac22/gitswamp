@@ -24,6 +24,7 @@ This comprehensive documentation package contains the active GitSwamp documentat
 ### Start Here
 - **[INDEX](./documentation/DOCUMENTATION_00_INDEX.md)** - Complete navigation and documentation structure
 - **[Project Overview](./documentation/DOCUMENTATION_00_PROJECT_OVERVIEW.md)** - Project vision, scope, and goals
+- **[GitSwamp Mobile](./software/gitswamp-mobile/README.md)** - Native, local-only Android companion and installation guide
 
 ### Architecture & Design
 - **[System Architecture](./documentation/DOCUMENTATION_01_SYSTEM_ARCHITECTURE.md)** - Complete system design and interactions
