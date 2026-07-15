@@ -14,6 +14,7 @@ import {
   Key,
 } from "lucide-vue-next";
 import type { AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo } from "@/types";
+import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -72,8 +73,11 @@ const tokenInstructions: Record<string, string> = {
   "azure": "Go to Azure DevOps → User settings → Personal access tokens → New Token with 'Code: Read' scope. Host example: dev.azure.com/myorg",
 };
 
+const DEFAULT_CLONE_PATH = String.raw`C:\Repozitoriji`;
+const CLONE_PATH_STORAGE_KEY = "gitswamp-clone-path";
+
 const activeSource = ref<string | null>(null);
-const clonePath = ref(String.raw`C:\Repozitoriji`);
+const clonePath = ref(DEFAULT_CLONE_PATH);
 const cloneFolderName = ref("");
 const cloneUrl = ref("");
 const shallowClone = ref(false);
@@ -218,12 +222,14 @@ function isLinuxRuntime(): boolean {
 }
 
 async function setDefaultClonePath() {
-  if (clonePath.value && clonePath.value !== String.raw`C:\Repozitoriji`) {
+  const storedPath = safeStorageGet(CLONE_PATH_STORAGE_KEY)?.trim();
+  if (storedPath) {
+    clonePath.value = storedPath;
     return;
   }
 
   if (isWindowsRuntime()) {
-    clonePath.value = String.raw`C:\Repozitoriji`;
+    clonePath.value = DEFAULT_CLONE_PATH;
     return;
   }
 
@@ -659,6 +665,13 @@ watch([activeSource, () => props.visible], ([src, visible]) => {
 watch([githubSearch, browseAllPublicRepos], () => {
   if (activeSource.value === "github" && isProviderConnected("github")) {
     onGithubSearch();
+  }
+});
+
+watch(clonePath, (value) => {
+  const trimmed = value.trim();
+  if (trimmed) {
+    safeStorageSet(CLONE_PATH_STORAGE_KEY, trimmed);
   }
 });
 
