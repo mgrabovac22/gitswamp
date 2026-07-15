@@ -21,8 +21,11 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -62,6 +65,7 @@ fun WorkingChanges(
     modifier: Modifier = Modifier,
 ) {
     var commitMessage by rememberSaveable { mutableStateOf("") }
+    var showCommitMenu by remember { mutableStateOf(false) }
     Column(modifier.fillMaxSize()) {
         if (status.isClean) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -158,15 +162,44 @@ fun WorkingChanges(
                     shape = RoundedCornerShape(6.dp),
                 )
                 Spacer(Modifier.height(8.dp))
-                SwampPrimaryButton(
-                    text = "Commit staged changes",
-                    onClick = {
-                        onCommit(commitMessage)
-                        commitMessage = ""
-                    },
-                    enabled = status.staged.isNotEmpty() && commitMessage.isNotBlank() && !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    SwampPrimaryButton(
+                        text = "Commit staged changes",
+                        onClick = {
+                            onCommit(commitMessage)
+                            commitMessage = ""
+                        },
+                        enabled = status.staged.isNotEmpty() && commitMessage.isNotBlank() && !busy,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(Modifier.padding(start = 8.dp)) {
+                        IconButton(onClick = { showCommitMenu = true }, enabled = !busy) {
+                            Icon(Icons.Outlined.MoreVert, contentDescription = "Commit actions")
+                        }
+                        DropdownMenu(
+                            expanded = showCommitMenu,
+                            onDismissRequest = { showCommitMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Commit staged changes") },
+                                enabled = status.staged.isNotEmpty() && commitMessage.isNotBlank() && !busy,
+                                onClick = {
+                                    showCommitMenu = false
+                                    onCommit(commitMessage)
+                                    commitMessage = ""
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Clear message") },
+                                enabled = commitMessage.isNotBlank() && !busy,
+                                onClick = {
+                                    showCommitMenu = false
+                                    commitMessage = ""
+                                },
+                            )
+                        }
+                    }
+                }
             }
         }
     }

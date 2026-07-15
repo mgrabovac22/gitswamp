@@ -1,6 +1,7 @@
 package com.gitswamp.mobile.feature.repository.components
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +34,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,6 +54,8 @@ fun Branches(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var showCreate by remember { mutableStateOf(false) }
+    var branchMenu by remember { mutableStateOf<BranchInfo?>(null) }
+    val clipboard = LocalClipboardManager.current
     val filtered = remember(branches, query) {
         val normalized = query.trim().lowercase()
         if (normalized.isBlank()) branches else branches.filter { it.name.lowercase().contains(normalized) }
@@ -77,12 +83,12 @@ fun Branches(
         LazyColumn(Modifier.fillMaxSize()) {
             item { BranchSectionHeader("LOCAL", local.size, Icons.AutoMirrored.Outlined.CallSplit) }
             items(local, key = { "local:${it.name}" }) { branch ->
-                BranchRow(branch, busy, onCheckout)
+                BranchRow(branch, busy, onCheckout, onLongPress = { branchMenu = branch })
             }
             if (remote.isNotEmpty()) {
                 item { BranchSectionHeader("REMOTE", remote.size, Icons.Outlined.Cloud) }
                 items(remote, key = { "remote:${it.name}" }) { branch ->
-                    BranchRow(branch, busy, onCheckout)
+                    BranchRow(branch, busy, onCheckout, onLongPress = { branchMenu = branch })
                 }
             }
         }
@@ -96,6 +102,44 @@ fun Branches(
                 onCreate(it)
             },
         )
+    }
+
+    branchMenu?.let { branch ->
+        ModalBottomSheet(
+            onDismissRequest = { branchMenu = null },
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(branch.name, style = MaterialTheme.typography.titleSmall)
+                branch.upstream?.let {
+                    Text(
+                        text = it,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        onCheckout(branch.name)
+                        branchMenu = null
+                    },
+                    enabled = !busy && !branch.isCurrent,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (branch.isCurrent) "Already checked out" else "Checkout branch")
+                }
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(branch.name))
+                        branchMenu = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Copy branch name")
+                }
+            }
+        }
     }
 }
 
@@ -115,10 +159,24 @@ private fun BranchSectionHeader(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BranchRow(branch: BranchInfo, busy: Boolean, onCheckout: (String) -> Unit) {
+private fun BranchRow(
+    branch: BranchInfo,
+    busy: Boolean,
+    onCheckout: (String) -> Unit,
+    onLongPress: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().clickable(enabled = !busy && !branch.isCurrent) { onCheckout(branch.name) }.padding(horizontal = 18.dp, vertical = 11.dp),
+        Modifier.fillMaxWidth()
+            .combinedClickable(
+                enabled = !busy,
+                onClick = {
+                    if (!branch.isCurrent) onCheckout(branch.name)
+                },
+                onLongClick = onLongPress,
+            )
+            .padding(horizontal = 18.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp), contentAlignment = Alignment.Center) {

@@ -1,6 +1,7 @@
 package com.gitswamp.mobile.feature.repository
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -57,9 +58,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gitswamp.mobile.R
 import com.gitswamp.mobile.core.designsystem.GitSwampBrand
 import com.gitswamp.mobile.core.designsystem.LoadingState
 import com.gitswamp.mobile.core.designsystem.SwampColors
@@ -214,7 +217,11 @@ private fun RepositoryTopBar(
     Column {
         TopAppBar(
             navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back to repositories") }
+                Image(
+                    painter = painterResource(id = R.drawable.ic_gitswamp_desktop_logo),
+                    contentDescription = "GitSwamp",
+                    modifier = Modifier.padding(start = 12.dp).size(28.dp),
+                )
             },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -228,6 +235,9 @@ private fun RepositoryTopBar(
                 }
             },
             actions = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back to repositories")
+                }
                 RemoteIconButton(RemoteAction.Fetch, state.activeRemoteAction, snapshot?.remoteUrl != null, actions::runRemoteAction)
                 Box {
                     IconButton(onClick = { showRemoteMenu = true }) {

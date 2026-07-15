@@ -1,7 +1,9 @@
 package com.gitswamp.mobile.feature.repository.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -45,10 +48,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalClipboardManager
 import com.gitswamp.mobile.core.designsystem.StatusPill
 import com.gitswamp.mobile.core.designsystem.SwampColors
 import com.gitswamp.mobile.core.git.CommitGraphLayoutEngine
@@ -70,6 +75,8 @@ fun CommitGraph(
     modifier: Modifier = Modifier,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    var commitMenu by remember { mutableStateOf<CommitInfo?>(null) }
+    val clipboard = LocalClipboardManager.current
     val filtered = remember(snapshot.commits, query) {
         val normalized = query.trim().lowercase()
         if (normalized.isEmpty()) snapshot.commits else snapshot.commits.filter { commit ->
@@ -124,6 +131,7 @@ fun CommitGraph(
                                 selected = row.commit.sha == selectedSha,
                                 wide = wide,
                                 onClick = { onSelectCommit(row.commit) },
+                                onLongPress = { commitMenu = row.commit },
                             )
                         }
                         if (snapshot.hasMoreCommits && query.isBlank()) {
@@ -134,6 +142,47 @@ fun CommitGraph(
                                 ) { Text("Load more commits") }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        commitMenu?.let { commit ->
+            ModalBottomSheet(
+                onDismissRequest = { commitMenu = null },
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text(
+                        text = commit.shortSha,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        text = commit.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                    )
+                    TextButton(
+                        onClick = {
+                            onSelectCommit(commit)
+                            commitMenu = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Open commit details")
+                    }
+                    TextButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(commit.sha))
+                            commitMenu = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Copy SHA")
                     }
                 }
             }
@@ -186,6 +235,7 @@ private fun WorkingChangesGraphRow(snapshot: RepositorySnapshot, onClick: () -> 
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CommitRow(
     row: CommitGraphRow,
@@ -193,6 +243,7 @@ private fun CommitRow(
     selected: Boolean,
     wide: Boolean,
     onClick: () -> Unit,
+    onLongPress: () -> Unit,
 ) {
     val background = when {
         selected -> MaterialTheme.colorScheme.surfaceVariant
@@ -203,7 +254,7 @@ private fun CommitRow(
         modifier = Modifier.fillMaxWidth()
             .height(68.dp)
             .background(background)
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
