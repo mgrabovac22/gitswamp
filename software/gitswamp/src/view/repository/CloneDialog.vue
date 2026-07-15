@@ -26,7 +26,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  clone: [url: string, path: string, shallow: boolean, done?: (ok: boolean, error?: string) => void];
+  clone: [url: string, path: string, shallow: boolean, folderName?: string | null, done?: (ok: boolean, error?: string) => void];
   searchGithub: [query: string];
   saveProviderToken: [provider: string, token: string];
 }>();
@@ -74,6 +74,7 @@ const tokenInstructions: Record<string, string> = {
 
 const activeSource = ref<string | null>(null);
 const clonePath = ref(String.raw`C:\Repozitoriji`);
+const cloneFolderName = ref("");
 const cloneUrl = ref("");
 const shallowClone = ref(false);
 const browseAllPublicRepos = ref(false);
@@ -405,11 +406,13 @@ async function onClone() {
   if (!cloneUrl.value.trim() || !clonePath.value.trim()) return;
   cloning.value = true;
   cloneError.value = null;
+  const customFolderName = cloneFolderName.value.trim() || null;
   emit(
     "clone",
     cloneUrl.value.trim(),
     clonePath.value.trim(),
     shallowClone.value,
+    customFolderName,
     (ok: boolean, error?: string) => {
       cloning.value = false;
       if (!ok) {
@@ -743,6 +746,15 @@ onMounted(() => {
                 Browse
               </button>
             </div>
+          </div>
+
+          <div class="flex items-center gap-3 flex-shrink-0">
+              <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Folder</div>
+            <input
+              v-model="cloneFolderName"
+              placeholder="Optional (defaults to repository name)"
+              class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+            />
           </div>
 
           <div v-if="isUrlMode" class="flex items-center gap-3 flex-shrink-0">

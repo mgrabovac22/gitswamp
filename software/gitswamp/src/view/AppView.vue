@@ -3806,7 +3806,13 @@ function formatCloneProgressDetail(payload: CloneProgressEventPayload): string {
   return payload.message || "Preparing clone...";
 }
 
-async function handleClone(url: string, path: string, shallow: boolean, done?: (ok: boolean, error?: string) => void) {
+async function handleClone(
+  url: string,
+  path: string,
+  shallow: boolean,
+  folderName?: string | null,
+  done?: (ok: boolean, error?: string) => void,
+) {
   const progressToastId = toast.progress("Cloning repository...", 0, "Preparing clone...");
   const normalizedUrl = url.trim().toLowerCase();
   let unlistenCloneProgress: UnlistenFn | null = null;
@@ -3825,7 +3831,7 @@ async function handleClone(url: string, path: string, shallow: boolean, done?: (
       });
     });
 
-    const clonedPath = await git.cloneRepo(url, path, shallow);
+    const clonedPath = await git.cloneRepo(url, path, shallow, undefined, folderName);
     if (!clonedPath) {
       toast.remove(progressToastId);
       done?.(false, git.error.value || "Clone failed.");

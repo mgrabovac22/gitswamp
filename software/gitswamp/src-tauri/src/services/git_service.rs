@@ -1815,6 +1815,7 @@ impl GitService {
         url: &str,
         path: &str,
         shallow: bool,
+        folder_name: Option<&str>,
         token: Option<&str>,
         mut progress: F,
     ) -> Result<String, String>
@@ -1826,7 +1827,20 @@ impl GitService {
             .last()
             .unwrap_or("repo")
             .trim_end_matches(".git");
-        let dest = Path::new(path).join(repo_name);
+
+        let selected_name = folder_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(repo_name);
+
+        if selected_name.contains('/') || selected_name.contains('\\') {
+            return Err("Folder name cannot contain path separators.".to_string());
+        }
+        if selected_name == "." || selected_name == ".." {
+            return Err("Folder name is invalid.".to_string());
+        }
+
+        let dest = Path::new(path).join(selected_name);
 
         let clone_url = url.to_string();
         let destination = dest.to_string_lossy().to_string();

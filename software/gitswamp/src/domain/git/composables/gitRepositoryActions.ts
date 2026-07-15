@@ -215,12 +215,24 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     await refreshPromise;
   }
 
-  async function cloneRepo(url: string, path: string, shallow = false, token?: string | null): Promise<string | null> {
+  async function cloneRepo(
+    url: string,
+    path: string,
+    shallow = false,
+    token?: string | null,
+    folderName?: string | null,
+  ): Promise<string | null> {
     try {
       state.loading.value = true;
       state.error.value = null;
       const t = token || getTokenForUrl(state, url);
-      return await callTauri<string>("clone_repo", { url, path, shallow, token: t });
+      return await callTauri<string>("clone_repo", {
+        url,
+        path,
+        shallow,
+        token: t,
+        folderName: folderName?.trim() || null,
+      });
     } catch (e) {
       state.error.value = String(e);
       return null;
