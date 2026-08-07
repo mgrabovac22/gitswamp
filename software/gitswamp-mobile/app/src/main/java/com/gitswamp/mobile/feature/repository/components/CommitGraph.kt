@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -74,10 +75,15 @@ fun CommitGraph(
     onSelectCommit: (CommitInfo) -> Unit,
     onOpenChanges: () -> Unit,
     onLoadMore: () -> Unit,
+    onCheckoutCommit: (String) -> Unit,
+    onCreateBranchAtCommit: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var commitMenu by remember { mutableStateOf<CommitInfo?>(null) }
+    var showCreateBranch by remember { mutableStateOf(false) }
+    var branchName by rememberSaveable { mutableStateOf("") }
+    var branchSourceSha by remember { mutableStateOf<String?>(null) }
     val clipboard = LocalClipboardManager.current
     val filtered = remember(snapshot.commits, query) {
         val normalized = query.trim().lowercase()
@@ -179,6 +185,26 @@ fun CommitGraph(
                     }
                     TextButton(
                         onClick = {
+                            onCheckoutCommit(commit.sha)
+                            commitMenu = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Checkout commit")
+                    }
+                    TextButton(
+                        onClick = {
+                            branchSourceSha = commit.sha
+                            branchName = commit.shortSha
+                            showCreateBranch = true
+                            commitMenu = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Create branch here")
+                    }
+                    TextButton(
+                        onClick = {
                             clipboard.setText(AnnotatedString(commit.sha))
                             commitMenu = null
                         },
@@ -188,6 +214,43 @@ fun CommitGraph(
                     }
                 }
             }
+        }
+
+        if (showCreateBranch) {
+            AlertDialog(
+                onDismissRequest = {
+                    showCreateBranch = false
+                    branchSourceSha = null
+                },
+                title = { Text("Create branch") },
+                text = {
+                    OutlinedTextField(
+                        value = branchName,
+                        onValueChange = { branchName = it },
+                        label = { Text("Branch name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            branchSourceSha?.let { onCreateBranchAtCommit(it, branchName.trim()) }
+                            branchName = ""
+                            branchSourceSha = null
+                            showCreateBranch = false
+                        },
+                        enabled = branchName.isNotBlank(),
+                    ) { Text("Create") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        branchName = ""
+                        branchSourceSha = null
+                        showCreateBranch = false
+                    }) { Text("Cancel") }
+                },
+            )
         }
     }
 }

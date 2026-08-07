@@ -32,6 +32,10 @@ import {
   storeIdentityGuardEnabled,
 } from "@/shared/config/identityGuardPreferences";
 import {
+  getStoredDestructiveUndoEnabled,
+  storeDestructiveUndoEnabled,
+} from "@/shared/config/undoPreferences";
+import {
   BACKGROUND_MAINTENANCE_EVENT,
   DEFAULT_BACKGROUND_MAINTENANCE_SETTINGS,
   getStoredBackgroundMaintenanceSettings,
@@ -184,6 +188,7 @@ const notifyGitkeep = ref(true);
 const smartGitignoreWizardEnabled = ref(true);
 const bugAutopsyEnabled = ref(false);
 const identityGuardEnabled = ref(false);
+const destructiveUndoEnabled = ref(true);
 const commitAnalyzerEnabled = ref(true);
 const disableGraphAnimations = ref(false);
 const smoothGraphScroll = ref(false);
@@ -1769,6 +1774,7 @@ onMounted(() => {
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
   bugAutopsyEnabled.value = getStoredBugAutopsyEnabled();
   identityGuardEnabled.value = getStoredIdentityGuardEnabled();
+  destructiveUndoEnabled.value = getStoredDestructiveUndoEnabled();
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
   const backgroundMaintenanceSettings = getStoredBackgroundMaintenanceSettings();
   backgroundHealthRefreshEnabled.value = backgroundMaintenanceSettings.healthRefreshEnabled;
@@ -1870,6 +1876,13 @@ watch(smartGitignoreWizardEnabled, (value) => {
     return;
   }
   storeSmartGitignoreWizardEnabled(value);
+});
+
+watch(destructiveUndoEnabled, (value) => {
+  if (isHydrating) {
+    return;
+  }
+  storeDestructiveUndoEnabled(value);
 });
 
 watch(bugAutopsyEnabled, (value) => {
@@ -2669,6 +2682,16 @@ watch(activePlatform, () => {
                   </div>
                   <button @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="smartGitignoreWizardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="smartGitignoreWizardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Undo Destructive Actions</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Delay UI discard, delete, reset and similar actions for 5 seconds. Turn off to run them immediately. Default on.</p>
+                  </div>
+                  <button @click="destructiveUndoEnabled = !destructiveUndoEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="destructiveUndoEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="destructiveUndoEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
                   </button>
                 </div>
 

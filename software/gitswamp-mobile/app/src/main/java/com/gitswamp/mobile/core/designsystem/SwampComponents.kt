@@ -1,9 +1,8 @@
 package com.gitswamp.mobile.core.designsystem
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,14 +20,26 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gitswamp.mobile.R
+
+@Composable
+fun GitSwampLogo(
+    modifier: Modifier = Modifier,
+    contentDescription: String? = "GitSwamp crocodile",
+) {
+    Image(
+        painter = painterResource(R.drawable.ic_gitswamp_desktop_logo),
+        contentDescription = contentDescription,
+        modifier = modifier,
+        contentScale = ContentScale.Fit,
+    )
+}
 
 @Composable
 fun GitSwampBrand(
@@ -36,34 +47,13 @@ fun GitSwampBrand(
     compact: Boolean = false,
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        Canvas(Modifier.size(if (compact) 26.dp else 34.dp)) {
-            val stroke = size.minDimension * 0.14f
-            val path = Path().apply {
-                moveTo(size.width * 0.18f, size.height * 0.56f)
-                cubicTo(
-                    size.width * 0.2f,
-                    size.height * 0.28f,
-                    size.width * 0.48f,
-                    size.height * 0.18f,
-                    size.width * 0.72f,
-                    size.height * 0.35f,
-                )
-                lineTo(size.width * 0.88f, size.height * 0.31f)
-                lineTo(size.width * 0.78f, size.height * 0.5f)
-                cubicTo(
-                    size.width * 0.67f,
-                    size.height * 0.76f,
-                    size.width * 0.3f,
-                    size.height * 0.82f,
-                    size.width * 0.18f,
-                    size.height * 0.56f,
-                )
-            }
-            drawPath(path, SwampColors.Primary, style = Stroke(width = stroke, cap = StrokeCap.Round))
-            drawCircle(SwampColors.Green, size.minDimension * 0.065f, Offset(size.width * 0.7f, size.height * 0.38f))
-        }
+        GitSwampLogo(
+            modifier = Modifier.size(if (compact) 28.dp else 36.dp),
+            contentDescription = null,
+        )
         Text(
             text = "GitSwamp",
+            modifier = Modifier.padding(start = 7.dp),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
         )

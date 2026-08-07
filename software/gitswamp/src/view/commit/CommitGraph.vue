@@ -31,6 +31,7 @@ const props = defineProps<{
   hasWorkingChanges: boolean;
   hasConflicts?: boolean;
   currentBranch: string;
+  headSha?: string | null;
   hasMore?: boolean;
   stashes?: StashInfo[];
   tags?: TagInfo[];
@@ -82,6 +83,7 @@ const emit = defineEmits<{
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
+  focusHead: [];
 }>();
 
 const searchInput = ref("");
@@ -90,6 +92,8 @@ const scrollTop = ref(0);
 const viewportHeight = ref(600);
 const hoveredRefRow = ref<number | null>(null);
 const hoveredStashRow = ref<number | null>(null);
+const graphLaneWidth = ref(20);
+const graphBranchWidth = ref(BRANCH_COL);
 
 const ctxVisible = ref(false);
 const ctxX = ref(0);
@@ -100,6 +104,7 @@ const refCtxVisible = ref(false);
 const refCtxX = ref(0);
 const refCtxY = ref(0);
 const refCtxRef = ref<DisplayRef | null>(null);
+const refCtxCommitSha = ref<string | null>(null);
 const stashCtxVisible = ref(false);
 const stashCtxX = ref(0);
 const stashCtxY = ref(0);
@@ -116,23 +121,27 @@ const searchInputEl = ref<HTMLInputElement | null>(null);
 const compactWorkingLabel = ref(globalThis.innerWidth < 1120);
 const loadingToEnd = ref(false);
 
-type GraphOptionalColumn = "author" | "authorEmail" | "sha" | "timeAgo" | "date" | "parents" | "refs";
+type GraphOptionalColumn = "graph" | "message" | "author" | "authorEmail" | "sha" | "timeAgo" | "date" | "parents" | "refs";
 
 const GRAPH_COLUMN_STORAGE_KEY = "gitswamp-graph-columns";
 const GRAPH_ISOLATE_STORAGE_KEY = "gitswamp-graph-isolate-current";
 const GRAPH_ISOLATE_BRANCH_STORAGE_KEY = "gitswamp-graph-isolate-branch";
 const GRAPH_SCROLL_POSITION_PREFIX = "gitswamp-graph-scroll::";
+const GRAPH_LANE_WIDTH_STORAGE_KEY = "gitswamp-graph-lane-width";
+const GRAPH_BRANCH_WIDTH_STORAGE_KEY = "gitswamp-graph-branch-width";
 const TIME_AGO_COL = 88;
 const DATE_COL = 136;
 const EMAIL_COL = 180;
 const PARENTS_COL = 72;
 const REFS_COL = 64;
-const fixedGraphColumns = ["Branch / Tag", "Graph", "Commit Message"] as const;
+const fixedGraphColumns = ["Branch / Tag"] as const;
 const optionalGraphColumns: readonly {
   key: GraphOptionalColumn;
   label: string;
   description: string;
 }[] = [
+  { key: "graph", label: "Graph", description: "Commit nodes, lanes and parent connections" },
+  { key: "message", label: "Commit Message", description: "Commit subject line" },
   { key: "author", label: "Author", description: "Author name with avatar marker" },
   { key: "authorEmail", label: "Author Email", description: "Commit author email" },
   { key: "sha", label: "SHA", description: "Short commit hash" },
@@ -142,6 +151,8 @@ const optionalGraphColumns: readonly {
   { key: "refs", label: "Refs", description: "Branch/tag refs count" },
 ];
 const defaultGraphColumnVisibility: Record<GraphOptionalColumn, boolean> = {
+  graph: true,
+  message: true,
   author: true,
   authorEmail: false,
   sha: true,
@@ -152,6 +163,8 @@ const defaultGraphColumnVisibility: Record<GraphOptionalColumn, boolean> = {
 };
 const graphColumnVisibility = ref<Record<GraphOptionalColumn, boolean>>({ ...defaultGraphColumnVisibility });
 
+const showGraphColumn = computed(() => graphColumnVisibility.value.graph);
+const showMessageColumn = computed(() => graphColumnVisibility.value.message);
 const showAuthorColumn = computed(() => graphColumnVisibility.value.author);
 const showAuthorEmailColumn = computed(() => graphColumnVisibility.value.authorEmail);
 const showShaColumn = computed(() => graphColumnVisibility.value.sha);
@@ -424,6 +437,8 @@ function resetGraphSettings() {
   graphColumnVisibility.value = { ...defaultGraphColumnVisibility };
   isolateCurrentBranch.value = false;
   isolatedBranchName.value = "";
+  graphLaneWidth.value = 20;
+  graphBranchWidth.value = BRANCH_COL;
 }
 
 function isolateSpecificBranch(branchName: string) {
@@ -453,6 +468,18 @@ function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "auto"): bool
   const top = Math.max(0, idx * rowHeight.value + wcOffset.value - rowHeight.value * 2);
   scrollContainer.value.scrollTo({ top, behavior: resolveGraphScrollBehavior(behavior) });
   return true;
+}
+
+async function onFocusHeadCommit(event: Event) {
+  const detail = (event as CustomEvent<{ repoPath?: string; sha?: string }>).detail;
+  if (!detail?.sha || detail.repoPath !== props.repoPath) return;
+
+  if (isolateCurrentBranch.value && !activeCommits.value.some((commit) => commit.sha === detail.sha)) {
+    isolatedBranchName.value = normalizeBranchName(props.currentBranch);
+  }
+
+  await nextTick();
+  scrollToCommitSha(detail.sha, "smooth");
 }
 
 function selectSearchCommit(sha: string, behavior: ScrollBehavior = "auto"): boolean {
@@ -584,7 +611,7 @@ const {
   displayRefs,
   topDisplayRef,
   extraDisplayRefCount,
-} = useCommitGraphLayout(layoutProps, rowHeight, scrollTop, viewportHeight);
+} = useCommitGraphLayout(layoutProps, rowHeight, scrollTop, viewportHeight, graphLaneWidth);
 
 let st: ReturnType<typeof setTimeout> | null = null;
 function onSearch() {
@@ -623,10 +650,11 @@ function onRefDblClick(ref: DisplayRef, commit: CommitInfo) {
   }
 }
 
-function onRefContextMenu(event: MouseEvent, ref: DisplayRef) {
+function onRefContextMenu(event: MouseEvent, ref: DisplayRef, commit: CommitInfo) {
   event.preventDefault();
   event.stopPropagation();
   refCtxRef.value = ref;
+  refCtxCommitSha.value = commit.sha;
   const menuWidth = 200;
   const menuHeight = 160;
   let x = event.clientX;
@@ -726,6 +754,7 @@ function stashAction(action: "pop" | "apply" | "drop" | "view", item?: StashInfo
 function closeRefCtx() {
   refCtxVisible.value = false;
   refCtxRef.value = null;
+  refCtxCommitSha.value = null;
 }
 
 function checkoutAndIsolateRef(ref: DisplayRef) {
@@ -744,6 +773,7 @@ function checkoutAndIsolateRef(ref: DisplayRef) {
 function refAction(action: string) {
   if (!refCtxRef.value) return;
   const r = refCtxRef.value;
+  const commitSha = refCtxCommitSha.value;
   closeRefCtx();
   switch (action) {
     case "checkout-local":
@@ -775,6 +805,9 @@ function refAction(action: string) {
       break;
     case "delete-tag":
       emit("deleteTag", r.name);
+      break;
+    case "checkout-tag":
+      if (commitSha) emit("checkout", commitSha);
       break;
   }
 }
@@ -1244,6 +1277,18 @@ watch(graphColumnVisibility, (value) => {
   } catch {}
 }, { deep: true });
 
+watch(graphLaneWidth, (value) => {
+  try {
+    localStorage.setItem(GRAPH_LANE_WIDTH_STORAGE_KEY, String(value));
+  } catch {}
+});
+
+watch(graphBranchWidth, (value) => {
+  try {
+    localStorage.setItem(GRAPH_BRANCH_WIDTH_STORAGE_KEY, String(value));
+  } catch {}
+});
+
 watch(isolateCurrentBranch, (value) => {
   localStorage.setItem(GRAPH_ISOLATE_STORAGE_KEY, String(value));
 });
@@ -1259,6 +1304,8 @@ onMounted(() => {
     if (savedColumns) {
       const parsed = JSON.parse(savedColumns) as Partial<Record<GraphOptionalColumn, boolean>>;
       graphColumnVisibility.value = {
+        graph: parsed.graph ?? defaultGraphColumnVisibility.graph,
+        message: parsed.message ?? defaultGraphColumnVisibility.message,
         author: parsed.author ?? defaultGraphColumnVisibility.author,
         authorEmail: parsed.authorEmail ?? defaultGraphColumnVisibility.authorEmail,
         sha: parsed.sha ?? defaultGraphColumnVisibility.sha,
@@ -1269,6 +1316,16 @@ onMounted(() => {
       };
     }
   } catch {}
+
+  const savedLaneWidth = Number(localStorage.getItem(GRAPH_LANE_WIDTH_STORAGE_KEY));
+  if (Number.isFinite(savedLaneWidth) && savedLaneWidth >= 14) {
+    graphLaneWidth.value = Math.min(36, Math.round(savedLaneWidth));
+  }
+
+  const savedBranchWidth = Number(localStorage.getItem(GRAPH_BRANCH_WIDTH_STORAGE_KEY));
+  if (Number.isFinite(savedBranchWidth) && savedBranchWidth >= 100) {
+    graphBranchWidth.value = Math.min(240, Math.round(savedBranchWidth));
+  }
 
   const savedIsolate = localStorage.getItem(GRAPH_ISOLATE_STORAGE_KEY);
   if (savedIsolate !== null) {
@@ -1284,6 +1341,7 @@ onMounted(() => {
   document.addEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.addEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
   globalThis.addEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
+  globalThis.addEventListener("gitswamp-focus-head-commit", onFocusHeadCommit as EventListener);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
   updateCompactWorkingLabel();
   if (scrollContainer.value) {
@@ -1301,6 +1359,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.removeEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
   globalThis.removeEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
+  globalThis.removeEventListener("gitswamp-focus-head-commit", onFocusHeadCommit as EventListener);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
 });
 </script>
@@ -1327,6 +1386,15 @@ onUnmounted(() => {
         <button
           v-if="!isSearchActive"
           class="ml-1 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          :disabled="!headSha"
+          title="Jump to current HEAD commit"
+          @click="emit('focusHead')"
+        >
+          Head
+        </button>
+        <button
+          v-if="!isSearchActive"
+          class="px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
           title="Jump to top (Home)"
           @click="scrollGraphToTop('auto')"
         >
@@ -1374,6 +1442,15 @@ onUnmounted(() => {
         <button
           v-if="isSearchActive"
           class="ml-2 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          :disabled="!headSha"
+          title="Jump to current HEAD commit"
+          @click="emit('focusHead')"
+        >
+          Head
+        </button>
+        <button
+          v-if="isSearchActive"
+          class="px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
           title="Jump to top (Home)"
           @click="scrollGraphToTop('auto')"
         >
@@ -1399,9 +1476,9 @@ onUnmounted(() => {
         </button>
       </div>
       <div class="flex items-center py-0.5 text-[9px] text-[var(--muted-foreground)] uppercase tracking-wider font-medium border-t border-[var(--border)]">
-        <div class="flex-shrink-0 px-2 text-right" :style="{ width: BRANCH_COL + 'px' }">Branch / Tag</div>
-        <div class="flex-shrink-0 text-center" :style="{ width: graphWidth + 'px' }">Graph</div>
-        <div class="flex-1 px-3">Commit Message</div>
+        <div class="flex-shrink-0 px-2 text-right" :style="{ width: graphBranchWidth + 'px' }">Branch / Tag</div>
+        <div v-if="showGraphColumn" class="flex-shrink-0 text-center" :style="{ width: graphWidth + 'px' }">Graph</div>
+        <div v-if="showMessageColumn" class="flex-1 px-3">Commit Message</div>
         <div v-if="showAuthorColumn" class="flex-shrink-0 px-1" :style="{ width: AUTHOR_COL + 'px' }">Author</div>
         <div v-if="showAuthorEmailColumn" class="flex-shrink-0 px-1" :style="{ width: EMAIL_COL + 'px' }">Email</div>
         <div v-if="showShaColumn" class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">SHA</div>
@@ -1422,9 +1499,10 @@ onUnmounted(() => {
     <div v-else ref="scrollContainer" class="commit-scroll flex-1 overflow-y-auto min-h-0" @scroll="onScroll">
       <div class="relative" :style="{ height: totalH + 'px' }">
         <svg
+          v-if="showGraphColumn"
           class="absolute top-0"
           style="pointer-events: none;"
-          :style="{ left: BRANCH_COL + 'px', width: graphWidth + 'px', height: totalH + 'px' }"
+          :style="{ left: graphBranchWidth + 'px', width: graphWidth + 'px', height: totalH + 'px' }"
         >
           <path
             v-if="hasWorkingChanges && graph.nodes.length > 0"
@@ -1488,9 +1566,11 @@ onUnmounted(() => {
           :style="{ top: '0px', height: rowHeight + 'px' }"
           @click="emit('selectWorkingChanges')"
         >
-          <div class="flex-shrink-0" :style="{ width: BRANCH_COL + 'px' }" />
-          <div class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
-          <div class="flex-1 flex items-center px-3 min-w-0">
+          <div class="flex-shrink-0 min-w-0 px-2" :style="{ width: graphBranchWidth + 'px' }">
+            <span v-if="!showMessageColumn" class="block truncate text-[9px] font-semibold text-[var(--primary)]">{{ workingChangesBadgeLabel }}</span>
+          </div>
+          <div v-if="showGraphColumn" class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
+          <div v-if="showMessageColumn" class="flex-1 flex items-center px-3 min-w-0">
             <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[var(--primary)]/20 text-[var(--primary)] border border-[var(--primary)]/30 whitespace-nowrap">
               {{ workingChangesBadgeLabel }}
             </span>
@@ -1511,9 +1591,11 @@ onUnmounted(() => {
           :style="{ top: ((hasWorkingChanges ? 1 : 0) * rowHeight) + 'px', height: rowHeight + 'px' }"
           @click="emit('selectConflicts')"
         >
-          <div class="flex-shrink-0" :style="{ width: BRANCH_COL + 'px' }" />
-          <div class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
-          <div class="flex-1 flex items-center px-3 min-w-0">
+          <div class="flex-shrink-0 min-w-0 px-2" :style="{ width: graphBranchWidth + 'px' }">
+            <span v-if="!showMessageColumn" class="block truncate text-[9px] font-semibold text-[#ef4444]">● Conflicts</span>
+          </div>
+          <div v-if="showGraphColumn" class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
+          <div v-if="showMessageColumn" class="flex-1 flex items-center px-3 min-w-0">
             <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[#ef4444]/15 text-[#ef4444] border border-[#ef4444]/35">
               ● Conflicts
             </span>
@@ -1550,7 +1632,7 @@ onUnmounted(() => {
               'branch-drop-zone': !!dragBranch && !!preferredDropTarget(item.node.commit),
               'branch-drop-target': dropTargetBranch === preferredDropTarget(item.node.commit)?.name,
             }"
-            :style="{ width: BRANCH_COL + 'px' }"
+            :style="{ width: graphBranchWidth + 'px' }"
             @mouseenter="hoveredRefRow = item.idx"
             @mouseleave="hoveredRefRow = null; hoveredStashRow = null"
             @dragover.stop.prevent="onBranchColumnDragOver($event, item.node.commit)"
@@ -1575,7 +1657,7 @@ onUnmounted(() => {
                 @dragend.stop="onBranchDragEnd"
                 @dragover.stop.prevent="onBranchDragOver($event, topDisplayRef(item.node.commit)!)"
                 @drop.stop.prevent="onBranchDrop($event, topDisplayRef(item.node.commit)!)"
-                @contextmenu.stop.prevent="onRefContextMenu($event, topDisplayRef(item.node.commit)!)"
+                @contextmenu.stop.prevent="onRefContextMenu($event, topDisplayRef(item.node.commit)!, item.node.commit)"
               >
                 <svg v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5" /><rect x="4" y="12" width="8" height="1.5" rx="0.5" opacity="0.6"/><rect x="6" y="13.5" width="4" height="1" rx="0.5" opacity="0.4"/></svg>
                 <span v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.remote" v-html="providerIconMarkup" />
@@ -1652,7 +1734,7 @@ onUnmounted(() => {
                 @dragend.stop="onBranchDragEnd"
                 @dragover.stop.prevent="onBranchDragOver($event, mr)"
                 @drop.stop.prevent="onBranchDrop($event, mr)"
-                @contextmenu.stop.prevent="onRefContextMenu($event, mr)"
+                @contextmenu.stop.prevent="onRefContextMenu($event, mr, item.node.commit)"
               >
                 <svg v-if="mr.kind === 'branch' && mr.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5"/></svg>
                 <span v-if="mr.kind === 'branch' && mr.remote" v-html="providerIconMarkup" />
@@ -1683,7 +1765,7 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div class="flex-shrink-0 relative h-full overflow-visible" :style="{ width: graphWidth + 'px' }">
+          <div v-if="showGraphColumn" class="flex-shrink-0 relative h-full overflow-visible" :style="{ width: graphWidth + 'px' }">
             <div
               class="absolute top-0 bottom-0 pointer-events-none"
               :style="{
@@ -1696,7 +1778,7 @@ onUnmounted(() => {
             />
           </div>
 
-          <div class="flex-1 flex items-center px-3 min-w-0">
+          <div v-if="showMessageColumn" class="flex-1 flex items-center px-3 min-w-[320px] relative z-10" :class="showGraphColumn ? '-ml-6 pl-8' : ''">
             <span
               class="text-[11px] text-[var(--foreground)] truncate"
               :style="{ opacity: 'var(--graph-message-opacity, 0.85)' }"
@@ -1753,7 +1835,7 @@ onUnmounted(() => {
           <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
             <div>
               <h3 class="text-xs font-semibold text-[var(--foreground)]">Graph Columns</h3>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Default columns stay fixed, optional columns can be toggled.</p>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Branch / Tag stays fixed. Every other column can be toggled.</p>
             </div>
             <button
               class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
@@ -1765,7 +1847,41 @@ onUnmounted(() => {
 
           <div class="p-4 space-y-4">
             <div>
-              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Fixed</div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Layout</div>
+              <div class="space-y-3">
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between text-[10px] text-[var(--muted-foreground)]">
+                    <span>Graph zoom</span>
+                    <span>{{ graphLaneWidth }} px per lane</span>
+                  </div>
+                  <input
+                    v-model.number="graphLaneWidth"
+                    type="range"
+                    min="14"
+                    max="36"
+                    step="1"
+                    class="w-full accent-[var(--primary)]"
+                  />
+                </div>
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between text-[10px] text-[var(--muted-foreground)]">
+                    <span>Branch column</span>
+                    <span>{{ graphBranchWidth }} px</span>
+                  </div>
+                  <input
+                    v-model.number="graphBranchWidth"
+                    type="range"
+                    min="100"
+                    max="240"
+                    step="5"
+                    class="w-full accent-[var(--primary)]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Fixed column</div>
               <div class="flex flex-wrap gap-1.5">
                 <span
                   v-for="label in fixedGraphColumns"
@@ -1867,6 +1983,7 @@ onUnmounted(() => {
         </template>
         <template v-else>
           <div class="space-y-1">
+            <button class="ctx-item" @click="refAction('checkout-tag')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout tagged commit</span><span class="ctx-sub">Switch to {{ refCtxRef.name }} in detached HEAD</span></button>
             <button class="ctx-item" @click="refAction('delete-tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Delete tag</span><span class="ctx-sub">Delete tag {{ refCtxRef.name }}</span></button>
             <button class="ctx-item" @click="refAction('copy-name')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy tag name</span><span class="ctx-sub">Copy name to clipboard</span></button>
           </div>

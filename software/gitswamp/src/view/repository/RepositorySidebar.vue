@@ -41,6 +41,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   checkout: [branchName: string];
+  checkoutRemote: [branchName: string];
+  checkoutTag: [sha: string];
   createBranch: [name: string];
   deleteBranch: [name: string];
   stashPop: [index: number];
@@ -372,7 +374,7 @@ function issueStateClass(issue: IssueInfo): string {
         <button
           v-for="branch in filteredBranches(remoteBranches)"
           :key="branch.name"
-          @click="emit('checkout', branch.name)"
+          @click="emit('checkoutRemote', branch.name)"
           class="w-full flex items-center justify-start gap-2 px-4 py-1 pl-10 text-left text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
         >
           <span class="truncate flex-1 text-left">{{ branch.name }}</span>
@@ -469,13 +471,16 @@ function issueStateClass(issue: IssueInfo): string {
         <div v-if="tags.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
           No tags
         </div>
-        <div
+        <button
           v-for="tag in tags"
           :key="tag.name"
-          class="px-4 py-1 pl-8 text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
+          class="w-full px-4 py-1 pl-8 flex items-center text-left text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
+          :title="`Checkout ${tag.name} (${tag.sha.slice(0, 7)})`"
+          @click="emit('checkoutTag', tag.sha)"
         >
-          <span class="truncate">{{ tag.name }}</span>
-        </div>
+          <span class="min-w-0 flex-1 truncate">{{ tag.name }}</span>
+          <span class="ml-2 flex-shrink-0 font-mono text-[8px] opacity-60">{{ tag.sha.slice(0, 7) }}</span>
+        </button>
       </RepositorySidebarSection>
 
       <RepositorySidebarSection

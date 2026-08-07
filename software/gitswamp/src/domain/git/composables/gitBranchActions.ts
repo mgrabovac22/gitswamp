@@ -74,11 +74,11 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function checkoutBranch(branchName: string) {
-    if (!state.repoPath.value) return;
+  async function checkoutBranch(branchName: string): Promise<boolean> {
+    if (!state.repoPath.value) return false;
     if (state.hasConflicts.value) {
       toast.error("Cannot checkout branch while conflicts exist. Resolve conflicts first.");
-      return;
+      return false;
     }
     let loadingToastId: number | null = null;
     try {
@@ -88,9 +88,11 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
       toast.success(`Checked out branch "${branchName}"`);
+      return true;
     } catch (e) {
       state.error.value = String(e);
       toast.error("Checkout branch failed: " + String(e));
+      return false;
     } finally {
       state.loading.value = false;
       if (loadingToastId !== null) {

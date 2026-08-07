@@ -309,6 +309,17 @@ class JGitRepository : GitRepository {
         }
     }
 
+    override suspend fun checkoutCommit(path: File, sha: String): Unit = io {
+        val requested = sha.trim()
+        require(requested.isNotEmpty()) { "Commit SHA is required." }
+        openRepository(path).use { repository ->
+            Git(repository).use { git ->
+                git.checkout().setName(requested).call()
+            }
+        }
+        Unit
+    }
+
     override suspend fun checkoutBranch(path: File, branchName: String): Unit = io {
         val requested = branchName.trim().removePrefix("refs/heads/")
         require(requested.isNotEmpty()) { "Branch name is required." }
@@ -341,6 +352,23 @@ class JGitRepository : GitRepository {
         openRepository(path).use { repository ->
             Git(repository).use { git ->
                 git.checkout().setCreateBranch(true).setName(name).call()
+            }
+        }
+        Unit
+    }
+
+    override suspend fun createBranchAt(path: File, branchName: String, startPoint: String): Unit = io {
+        val name = branchName.trim()
+        val requested = startPoint.trim()
+        require(name.isNotEmpty()) { "Branch name is required." }
+        require(requested.isNotEmpty()) { "Start point is required." }
+        openRepository(path).use { repository ->
+            Git(repository).use { git ->
+                git.checkout()
+                    .setCreateBranch(true)
+                    .setName(name)
+                    .setStartPoint(requested)
+                    .call()
             }
         }
         Unit

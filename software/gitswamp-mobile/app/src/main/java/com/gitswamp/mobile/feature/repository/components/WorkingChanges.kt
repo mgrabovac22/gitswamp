@@ -61,11 +61,24 @@ fun WorkingChanges(
     onStage: (List<String>) -> Unit,
     onUnstage: (List<String>) -> Unit,
     onDiscard: (List<String>) -> Unit,
-    onCommit: (String) -> Unit,
+    onCommit: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var commitMessage by rememberSaveable { mutableStateOf("") }
+    var commitSubject by rememberSaveable { mutableStateOf("") }
+    var commitDescription by rememberSaveable { mutableStateOf("") }
     var showCommitMenu by remember { mutableStateOf(false) }
+
+    fun submitCommit() {
+        onCommit(commitSubject, commitDescription)
+        commitSubject = ""
+        commitDescription = ""
+    }
+
+    fun clearCommitInput() {
+        commitSubject = ""
+        commitDescription = ""
+    }
+
     Column(modifier.fillMaxSize()) {
         if (status.isClean) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -146,17 +159,28 @@ fun WorkingChanges(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Commit", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "${commitMessage.length}/72",
-                        color = if (commitMessage.length > 72) SwampColors.Amber else MaterialTheme.colorScheme.onSurfaceVariant,
+                        "${commitSubject.length}/72",
+                        color = if (commitSubject.length > 72) SwampColors.Amber else MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
                 Spacer(Modifier.height(7.dp))
                 OutlinedTextField(
-                    value = commitMessage,
-                    onValueChange = { commitMessage = it },
+                    value = commitSubject,
+                    onValueChange = { commitSubject = it },
                     modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Subject") },
                     placeholder = { Text("Commit message") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(6.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = commitDescription,
+                    onValueChange = { commitDescription = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Description (optional)") },
+                    placeholder = { Text("Explain what changed and why") },
                     minLines = 2,
                     maxLines = 4,
                     shape = RoundedCornerShape(6.dp),
@@ -165,11 +189,8 @@ fun WorkingChanges(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     SwampPrimaryButton(
                         text = "Commit staged changes",
-                        onClick = {
-                            onCommit(commitMessage)
-                            commitMessage = ""
-                        },
-                        enabled = status.staged.isNotEmpty() && commitMessage.isNotBlank() && !busy,
+                        onClick = ::submitCommit,
+                        enabled = status.staged.isNotEmpty() && commitSubject.isNotBlank() && !busy,
                         modifier = Modifier.weight(1f),
                     )
                     Box(Modifier.padding(start = 8.dp)) {
@@ -182,19 +203,18 @@ fun WorkingChanges(
                         ) {
                             DropdownMenuItem(
                                 text = { Text("Commit staged changes") },
-                                enabled = status.staged.isNotEmpty() && commitMessage.isNotBlank() && !busy,
+                                enabled = status.staged.isNotEmpty() && commitSubject.isNotBlank() && !busy,
                                 onClick = {
                                     showCommitMenu = false
-                                    onCommit(commitMessage)
-                                    commitMessage = ""
+                                    submitCommit()
                                 },
                             )
                             DropdownMenuItem(
                                 text = { Text("Clear message") },
-                                enabled = commitMessage.isNotBlank() && !busy,
+                                enabled = (commitSubject.isNotBlank() || commitDescription.isNotBlank()) && !busy,
                                 onClick = {
                                     showCommitMenu = false
-                                    commitMessage = ""
+                                    clearCommitInput()
                                 },
                             )
                         }

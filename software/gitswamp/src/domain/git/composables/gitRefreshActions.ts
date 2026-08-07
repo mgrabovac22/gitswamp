@@ -13,6 +13,7 @@ const INITIAL_COMMIT_REVEAL_COUNT = 36;
 const COMMIT_REVEAL_FRAME_MS = 16;
 const INITIAL_REVEAL_FRAME_COUNT = 5;
 const COMPLETION_REVEAL_FRAME_COUNT = 8;
+const MAX_COMMIT_COUNT = 50000;
 
 export function createRefreshActions(state: GitState) {
   let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -214,7 +215,7 @@ export function createRefreshActions(state: GitState) {
     }, 50);
   }
 
-  async function loadAllCommits(maxCount = 50000) {
+  async function loadAllCommits(maxCount = MAX_COMMIT_COUNT) {
     if (!state.repoPath.value || state.loadingMore.value) return;
     await loadCommitsToCount(maxCount);
     if (state.commits.value.length >= maxCount) {
@@ -240,7 +241,11 @@ export function createRefreshActions(state: GitState) {
 
     while (state.hasMoreCommits.value && !state.loadingMore.value) {
       const currentCount = state.commits.value.length;
-      const changed = await loadCommitsToCount(currentCount + PAGE_SIZE * 3);
+      if (currentCount >= MAX_COMMIT_COUNT) {
+        break;
+      }
+      const growth = Math.max(PAGE_SIZE * 3, currentCount);
+      const changed = await loadCommitsToCount(Math.min(MAX_COMMIT_COUNT, currentCount + growth));
       if (!changed) {
         break;
       }

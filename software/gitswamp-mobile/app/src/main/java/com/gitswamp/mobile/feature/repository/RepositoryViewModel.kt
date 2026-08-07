@@ -244,9 +244,14 @@ class RepositoryViewModel(
         _state.value = _state.value.copy(pendingDiscard = null, message = "Discard cancelled.")
     }
 
-    fun commit(message: String) {
+    fun commit(subject: String, description: String) {
         if (_state.value.snapshot?.status?.staged.isNullOrEmpty()) {
             _state.value = _state.value.copy(message = "Stage at least one file before committing.")
+            return
+        }
+        val message = buildCommitMessage(subject, description)
+        if (message.isBlank()) {
+            _state.value = _state.value.copy(message = "Commit subject is required.")
             return
         }
         if (_state.value.snapshot?.identity == null) {
@@ -254,6 +259,12 @@ class RepositoryViewModel(
             return
         }
         createCommit(message)
+    }
+
+    private fun buildCommitMessage(subject: String, description: String): String {
+        val normalizedSubject = subject.trim()
+        val normalizedDescription = description.trim()
+        return if (normalizedDescription.isEmpty()) normalizedSubject else "$normalizedSubject\n\n$normalizedDescription"
     }
 
     fun requestIdentity() {
@@ -318,6 +329,36 @@ class RepositoryViewModel(
         launchSession {
             setOperation("Creating branch")
             runCatching { git.createBranch(path, name) }
+                .onSuccess {
+                    _state.value = _state.value.copy(operationLabel = null, message = "Created and checked out $name.")
+                    refreshSnapshot(showSpinner = false)
+                }
+                .onFailure(::operationFailed)
+        }
+    }
+
+    fun checkoutCommit(sha: String) {
+        val status = _state.value.snapshot?.status ?: return
+        if (!status.isClean) {
+            _state.value = _state.value.copy(message = "Commit, stash, or discard working changes before checking out a commit.")
+            return
+        }
+        launchSession {
+            setOperation("Checking out commit")
+            runCatching { git.checkoutCommit(path, sha) }
+                .onSuccess {
+                    _state.value = _state.value.copy(operationLabel = null, message = "Checked out ${sha.take(7)} in detached HEAD.")
+                    refreshSnapshot(showSpinner = false)
+                    loadDirectory("")
+                }
+                .onFailure(::operationFailed)
+        }
+    }
+
+    fun createBranchAt(sha: String, name: String) {
+        launchSession {
+            setOperation("Creating branch")
+            runCatching { git.createBranchAt(path, name, sha) }
                 .onSuccess {
                     _state.value = _state.value.copy(operationLabel = null, message = "Created and checked out $name.")
                     refreshSnapshot(showSpinner = false)

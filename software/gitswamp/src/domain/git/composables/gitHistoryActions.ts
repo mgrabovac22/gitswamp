@@ -87,11 +87,11 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
     }
   }
 
-  async function checkoutCommit(sha: string) {
-    if (!state.repoPath.value) return;
+  async function checkoutCommit(sha: string): Promise<boolean> {
+    if (!state.repoPath.value) return false;
     if (state.hasConflicts.value) {
       toast.error("Cannot checkout commit while conflicts exist. Resolve conflicts first.");
-      return;
+      return false;
     }
     let loadingToastId: number | null = null;
     try {
@@ -102,10 +102,12 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
       toast.success(`Checked out ${sha.substring(0, 7)}`);
+      return true;
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git checkout\nError: " + e);
       toast.error("Checkout failed: " + String(e));
+      return false;
     } finally {
       state.loading.value = false;
       if (loadingToastId !== null) {

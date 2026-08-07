@@ -1,7 +1,6 @@
 package com.gitswamp.mobile.feature.repository
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -58,12 +57,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.gitswamp.mobile.R
-import com.gitswamp.mobile.core.designsystem.GitSwampBrand
+import com.gitswamp.mobile.core.designsystem.GitSwampLogo
 import com.gitswamp.mobile.core.designsystem.LoadingState
 import com.gitswamp.mobile.core.designsystem.SwampColors
 import com.gitswamp.mobile.core.model.RemoteAction
@@ -216,16 +213,9 @@ private fun RepositoryTopBar(
     var showRemoteMenu by remember { mutableStateOf(false) }
     Column {
         TopAppBar(
-            navigationIcon = {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_gitswamp_desktop_logo),
-                    contentDescription = "GitSwamp",
-                    modifier = Modifier.padding(start = 12.dp).size(28.dp),
-                )
-            },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    GitSwampBrand(compact = true)
+                    GitSwampLogo(Modifier.size(32.dp))
                     Column(Modifier.padding(start = 10.dp).weight(1f, fill = false)) {
                         Text(snapshot?.name ?: "Repository", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                         snapshot?.currentBranch?.let {
@@ -334,6 +324,8 @@ private fun RepositoryBody(state: RepositoryUiState, actions: RepositoryViewMode
             onSelectCommit = actions::selectCommit,
             onOpenChanges = { actions.setSection(RepositorySection.Changes) },
             onLoadMore = actions::loadMoreCommits,
+            onCheckoutCommit = actions::checkoutCommit,
+            onCreateBranchAtCommit = actions::createBranchAt,
             modifier = modifier,
         )
         state.section == RepositorySection.Changes -> WorkingChanges(

@@ -176,6 +176,27 @@ async function confirmAndExitGhostMode(actionLabel: string): Promise<boolean> {
   return true;
 }
 
+async function focusHeadCommit(notifyIfMissing = true): Promise<boolean> {
+  const repoPath = state.repoPath.value;
+  const sha = state.repoInfo.value?.head_sha || "";
+  if (!repoPath || !sha) {
+    if (notifyIfMissing) toast.warning("This repository does not have a HEAD commit yet.");
+    return false;
+  }
+
+  const loaded = await refresh.ensureCommitLoaded(sha);
+  if (repoPath !== state.repoPath.value) return false;
+  if (!loaded) {
+    if (notifyIfMissing) toast.warning("HEAD could not be located in the first 50,000 commits.");
+    return false;
+  }
+
+  globalThis.dispatchEvent(new CustomEvent("gitswamp-focus-head-commit", {
+    detail: { repoPath, sha },
+  }));
+  return true;
+}
+
 async function checkoutBranchWithGhostGuard(branchName: string) {
   if (shouldOfferGhostExitForTarget(branchName)) {
     const proceed = await confirmAndExitGhostMode(`checking out "${branchName}"`);
@@ -184,7 +205,10 @@ async function checkoutBranchWithGhostGuard(branchName: string) {
     }
   }
 
-  await branches.checkoutBranch(branchName);
+  const checkedOut = await branches.checkoutBranch(branchName);
+  if (checkedOut) {
+    await focusHeadCommit();
+  }
 }
 
 async function checkoutCommitWithGhostGuard(sha: string) {
@@ -195,7 +219,10 @@ async function checkoutCommitWithGhostGuard(sha: string) {
     }
   }
 
-  await history.checkoutCommit(sha);
+  const checkedOut = await history.checkoutCommit(sha);
+  if (checkedOut) {
+    await focusHeadCommit();
+  }
 }
 
 async function deleteBranchWithGhostGuard(name: string) {
@@ -264,6 +291,7 @@ export function useGit() {
     loadMoreCommits: refresh.loadMoreCommits,
     loadAllCommits: refresh.loadAllCommits,
     ensureCommitLoaded: refresh.ensureCommitLoaded,
+    focusHeadCommit,
     getCommitFiles: refresh.getCommitFiles,
 
     stageFile: status.stageFile,

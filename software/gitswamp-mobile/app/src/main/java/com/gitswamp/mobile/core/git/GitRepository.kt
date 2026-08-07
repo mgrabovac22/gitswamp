@@ -36,8 +36,10 @@ interface GitRepository {
     suspend fun discardUnstaged(path: File, filePaths: List<String>)
     suspend fun commit(path: File, message: String): String
     suspend fun saveIdentity(path: File, identity: AuthorIdentity)
+    suspend fun checkoutCommit(path: File, sha: String)
     suspend fun checkoutBranch(path: File, branchName: String)
     suspend fun createBranch(path: File, branchName: String)
+    suspend fun createBranchAt(path: File, branchName: String, startPoint: String)
     suspend fun runRemoteAction(
         path: File,
         action: RemoteAction,

@@ -1,4 +1,5 @@
 import { onUnmounted } from "vue";
+import { getStoredDestructiveUndoEnabled } from "@/shared/config/undoPreferences";
 import { useToast } from "@/shared/notifications/useToast";
 
 export const UNDOABLE_DESTRUCTIVE_DELAY_MS = 5000;
@@ -15,6 +16,13 @@ export function useUndoableDestructiveAction() {
   const timers = new Set<ReturnType<typeof setTimeout>>();
 
   function scheduleDestructiveAction(options: UndoableDestructiveActionOptions) {
+    if (!getStoredDestructiveUndoEnabled()) {
+      Promise.resolve(options.run()).catch((error) => {
+        toast.error(error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
+
     let cancelled = false;
     const timer = setTimeout(() => {
       timers.delete(timer);
