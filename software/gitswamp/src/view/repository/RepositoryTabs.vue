@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Folder, Plus, X, Home, Menu, HelpCircle, Info } from "lucide-vue-next";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
+import { Folder, Plus, X, Home, Menu, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
-import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
-import { GIT_RPG_ROLES } from "@/features/repository/rpg/gitRpgProfiler";
+import type { AppHelpSection } from "@/features/shell/keyboardShortcuts";
 import type { RepoInfo } from "@/types";
+
+const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDialog.vue"));
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
 type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout";
@@ -50,6 +51,7 @@ const menuButton = ref<HTMLElement | null>(null);
 const menuPanel = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 const showHelpPanel = ref(false);
+const helpPanelSection = ref<AppHelpSection>("shortcuts");
 const showAboutPanel = ref(false);
 const activeSection = ref<MenuSection>("file");
 const menuPanelStyle = ref<Record<string, string>>({});
@@ -100,7 +102,8 @@ function updateMenuPosition() {
   };
 }
 
-function openHelpPanel() {
+function openHelpPanel(section: AppHelpSection = "shortcuts") {
+  helpPanelSection.value = section;
   showHelpPanel.value = true;
   closeMenu();
 }
@@ -301,11 +304,23 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
   ],
   help: [
     {
-      id: "help-overview",
-      label: "Help and Shortcuts",
-      description: "Open help panel with shortcuts and key features.",
+      id: "help-shortcuts",
+      label: "Keyboard Shortcuts",
+      description: "Browse and filter every available keyboard shortcut.",
       shortcut: "F1",
-      run: openHelpPanel,
+      run: () => openHelpPanel("shortcuts"),
+    },
+    {
+      id: "help-overview",
+      label: "Feature Guide",
+      description: "Open a concise guide to the main GitSwamp workflows.",
+      run: () => openHelpPanel("overview"),
+    },
+    {
+      id: "help-rpg-roles",
+      label: "Git RPG Roles",
+      description: "Browse role shields and the commit patterns behind them.",
+      run: () => openHelpPanel("roles"),
     },
     {
       id: "help-about",
@@ -338,9 +353,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
 function executeAction(action: MenuAction) {
   if (action.disabled) return;
   action.run();
-  if (action.id !== "help-overview") {
-    closeMenu();
-  }
+  closeMenu();
 }
 
 function onDocumentPointerDown(event: MouseEvent) {
@@ -361,7 +374,7 @@ function onWindowReposition() {
 function onGlobalKeyDown(event: KeyboardEvent) {
   if (event.key === "F1" && !isEditableTarget(event.target)) {
     event.preventDefault();
-    openHelpPanel();
+    openHelpPanel("shortcuts");
     return;
   }
 
@@ -485,93 +498,11 @@ onUnmounted(() => {
     </div>
   </Teleport>
 
-  <Teleport to="body">
-    <div
-      v-if="showHelpPanel"
-      class="fixed inset-0 z-[7100] flex items-center justify-center bg-black/55 backdrop-blur-sm"
-      @click.self="showHelpPanel = false"
-    >
-      <div class="w-[700px] max-w-[95vw] max-h-[88vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl">
-        <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <HelpCircle class="w-4 h-4 text-[var(--primary)]" />
-            <h3 class="text-sm font-semibold text-[var(--foreground)]">Help and Keyboard Shortcuts</h3>
-          </div>
-          <button
-            class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            @click="showHelpPanel = false"
-          >
-            <X class="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div class="px-4 py-4 space-y-4">
-          <section>
-            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Core Features</h4>
-            <ul class="space-y-1 text-[11px] text-[var(--muted-foreground)]">
-              <li>Graph panel: search, navigate matches, isolate branch history, drag and drop merge requests.</li>
-              <li>Galaxy view: zoom and pan a canvas map of loaded commits, branches and ancestry links.</li>
-              <li>Repository City: inspect branch files as districts and buildings with hotspot and activity layers.</li>
-              <li>Repository sidebar: local and remote branches, stashes, tags, plus Create a Gist action.</li>
-              <li>Right-click menus on commits and branches expose checkout, merge, reset, and branch operations.</li>
-              <li>Terminal panel supports git aliases, quick actions, history, reverse search and open-tool commands.</li>
-            </ul>
-          </section>
-
-          <section>
-            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Git RPG Badges</h4>
-            <p class="mb-2 text-[11px] leading-5 text-[var(--muted-foreground)]">
-              The small shield near Branch is a lightweight style profile for the current repository. Hover it for the role name, click it to see the role explanation before the Git state summary.
-            </p>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <div
-                v-for="role in GIT_RPG_ROLES"
-                :key="role.id"
-                class="flex gap-2 rounded border border-[var(--border)] bg-[var(--secondary)]/35 px-2 py-2"
-              >
-                <GitRpgShield :role="role" size="help" class="flex-shrink-0" />
-                <div class="min-w-0">
-                  <div class="text-[11px] font-semibold text-[var(--foreground)]">{{ role.title }}</div>
-                  <div class="text-[10px] leading-4 text-[var(--muted-foreground)]">{{ role.signal }}</div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section>
-            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Shortcuts</h4>
-            <div class="space-y-1.5 text-[11px]">
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open help and shortcuts</span><span class="text-[var(--muted-foreground)] font-mono">F1</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open command palette</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+K</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Pickaxe Explorer</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+F</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">New tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+T</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Next tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Tab</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Previous tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+Tab</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+O</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Close active tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+W</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Reopen closed tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+T</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Toggle terminal panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+`</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Refresh repository data</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+R</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in VS Code</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+O</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in folder explorer</span><span class="text-[var(--muted-foreground)] font-mono">Alt+O</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Galaxy View</span><span class="text-[var(--muted-foreground)] font-mono">Alt+2</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+5</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Burnout Analytics</span><span class="text-[var(--muted-foreground)] font-mono">Alt+6</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Repository City</span><span class="text-[var(--muted-foreground)] font-mono">Alt+7</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open integrations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+I</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Git integration</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+K</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open advanced options</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+A</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open organisations</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+Y</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open options</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Toggle logs panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+L</span></div>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <AppHelpDialog
+    :open="showHelpPanel"
+    :initial-section="helpPanelSection"
+    @close="showHelpPanel = false"
+  />
 
   <Teleport to="body">
     <div

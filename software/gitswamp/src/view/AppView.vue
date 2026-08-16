@@ -65,7 +65,7 @@ import {
 import type { IdentityGuardMismatch } from "@/features/repository/identity/identityGuard";
 import type { PickaxeCommitHit } from "@/features/repository/pickaxe/pickaxeSearch";
 
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type {
   BranchInfo,
   CommitFileInfo,
@@ -2785,6 +2785,61 @@ function dispatchFocusCommitSearch() {
   globalThis.dispatchEvent(new Event("gitswamp-focus-commit-search"));
 }
 
+function dispatchFocusSelectedCommit() {
+  globalThis.dispatchEvent(new Event("gitswamp-focus-selected-commit"));
+}
+
+async function focusHeadInGraph() {
+  if (!hasActiveRepositoryPath()) return;
+  if (historyViewMode.value !== "graph") {
+    setHistoryViewMode("graph");
+    await nextTick();
+  }
+  await git.focusHeadCommit();
+}
+
+async function focusSelectedCommitInGraph() {
+  if (!hasActiveRepositoryPath()) return;
+  if (!git.selectedCommit.value) {
+    toast.info("Select a commit first.");
+    return;
+  }
+  if (historyViewMode.value !== "graph") {
+    setHistoryViewMode("graph");
+    await nextTick();
+  }
+  dispatchFocusSelectedCommit();
+}
+
+async function copyActiveRepositoryPath() {
+  const path = git.repoPath.value;
+  if (!path) return;
+  try {
+    await navigator.clipboard.writeText(path);
+    toast.success("Repository path copied.");
+  } catch {
+    toast.error("Repository path could not be copied.");
+  }
+}
+
+async function stageAllFromShortcut() {
+  if (!hasActiveRepositoryPath()) return;
+  if (git.unstagedFiles.value.length === 0) {
+    toast.info("No unstaged files to stage.");
+    return;
+  }
+  await git.stageAll();
+}
+
+async function unstageAllFromShortcut() {
+  if (!hasActiveRepositoryPath()) return;
+  if (git.stagedFiles.value.length === 0) {
+    toast.info("No staged files to unstage.");
+    return;
+  }
+  await git.unstageAll();
+}
+
 function hasActiveRepositoryPath(): boolean {
   return !!git.repoPath.value;
 }
@@ -3077,6 +3132,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "stage-all",
       label: "Stage all",
       description: `${git.unstagedFiles.value.length} unstaged file${git.unstagedFiles.value.length === 1 ? "" : "s"}`,
+      shortcut: "Ctrl Shift S",
       keywords: ["add", "git add", "changes"],
       disabled: !hasRepo || !hasUnstaged,
       tone: "success",
@@ -3086,6 +3142,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "unstage-all",
       label: "Unstage all",
       description: `${git.stagedFiles.value.length} staged file${git.stagedFiles.value.length === 1 ? "" : "s"}`,
+      shortcut: "Ctrl Shift U",
       keywords: ["restore staged", "reset", "changes"],
       disabled: !hasRepo || !hasStaged,
       tone: "warning",
@@ -3104,9 +3161,28 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "working-changes",
       label: "Show working changes",
       description: "Open the changes panel for current staged and unstaged files.",
+      shortcut: "Ctrl Shift W",
       keywords: ["status", "files"],
       disabled: !hasRepo || !hasChanges,
       run: onSelectWorkingChanges,
+    },
+    {
+      id: "jump-head",
+      label: "Jump to HEAD",
+      description: "Load enough history and center the current HEAD commit in the graph.",
+      shortcut: "Ctrl Shift H",
+      keywords: ["head", "current branch", "scroll", "commit"],
+      disabled: !hasRepo,
+      run: focusHeadInGraph,
+    },
+    {
+      id: "jump-selected-commit",
+      label: "Jump to selected commit",
+      description: "Return to the graph and center the currently selected commit.",
+      shortcut: "Ctrl Shift J",
+      keywords: ["selected", "scroll", "focus", "commit"],
+      disabled: !hasRepo || !git.selectedCommit.value,
+      run: focusSelectedCommitInGraph,
     },
     {
       id: "pickaxe-search",
@@ -3130,6 +3206,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "fetch",
       label: "Fetch all remotes",
       description: "Update remote refs without changing local branches.",
+      shortcut: "Ctrl Alt F",
       keywords: ["remote", "origin"],
       disabled: !hasRepo,
       run: handleFetch,
@@ -3138,6 +3215,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "pull",
       label: "Pull current branch",
       description: "Pull latest changes for the current branch.",
+      shortcut: "Ctrl Alt L",
       keywords: ["remote", "origin"],
       disabled: !hasRepo,
       run: handlePull,
@@ -3146,6 +3224,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "push",
       label: "Push current branch",
       description: "Push local commits or set up a remote.",
+      shortcut: "Ctrl Alt P",
       keywords: ["remote", "origin"],
       disabled: !hasRepo,
       run: handlePush,
@@ -3178,6 +3257,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "create-branch",
       label: "Create branch",
       description: "Open branch creation dialog.",
+      shortcut: "Ctrl Shift B",
       keywords: ["new branch"],
       disabled: !hasRepo,
       run: handleCreateBranch,
@@ -3205,6 +3285,15 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       shortcut: "Ctrl O",
       keywords: ["folder"],
       run: browseAndOpen,
+    },
+    {
+      id: "copy-repository-path",
+      label: "Copy repository path",
+      description: "Copy the full active repository path to the clipboard.",
+      shortcut: "Ctrl Shift C",
+      keywords: ["path", "clipboard", "folder"],
+      disabled: !hasRepo,
+      run: copyActiveRepositoryPath,
     },
     {
       id: "open-vscode",
@@ -3435,7 +3524,69 @@ function handleRepositoryNavigationShortcut(event: KeyboardEvent, key: string): 
   return false;
 }
 
+function beginRepositoryWorkflowShortcut(event: KeyboardEvent): boolean {
+  event.preventDefault();
+  if (hasActiveRepositoryPath()) return true;
+  toast.info("Open a repository to use this shortcut.");
+  return false;
+}
+
+function handleRepositoryWorkflowShortcut(event: KeyboardEvent, key: string): boolean {
+  const primaryKey = event.ctrlKey || event.metaKey;
+  if (!primaryKey) return false;
+
+  if (event.shiftKey && !event.altKey) {
+    switch (key) {
+      case "h":
+        if (beginRepositoryWorkflowShortcut(event)) void focusHeadInGraph();
+        return true;
+      case "j":
+        if (beginRepositoryWorkflowShortcut(event)) void focusSelectedCommitInGraph();
+        return true;
+      case "w":
+        if (beginRepositoryWorkflowShortcut(event)) onSelectWorkingChanges();
+        return true;
+      case "b":
+        if (beginRepositoryWorkflowShortcut(event)) handleCreateBranch();
+        return true;
+      case "s":
+        if (beginRepositoryWorkflowShortcut(event)) void stageAllFromShortcut();
+        return true;
+      case "u":
+        if (beginRepositoryWorkflowShortcut(event)) void unstageAllFromShortcut();
+        return true;
+      case "c":
+        if (beginRepositoryWorkflowShortcut(event)) void copyActiveRepositoryPath();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  if (event.altKey && !event.shiftKey) {
+    switch (key) {
+      case "f":
+        if (beginRepositoryWorkflowShortcut(event)) void handleFetch();
+        return true;
+      case "l":
+        if (beginRepositoryWorkflowShortcut(event)) void handlePull();
+        return true;
+      case "p":
+        if (beginRepositoryWorkflowShortcut(event)) void handlePush();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  return false;
+}
+
 function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
+  if (handleRepositoryWorkflowShortcut(event, key)) {
+    return true;
+  }
+
   if (handleRepositoryZoomShortcut(event, key)) {
     return true;
   }
