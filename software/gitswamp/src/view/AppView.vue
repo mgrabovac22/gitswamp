@@ -363,7 +363,7 @@ async function openConflictResolver(filePath: string) {
       [
         {
           label: "Resolve Manually",
-          style: "warning",
+          style: "primary",
           onClick: async () => {
             conflictResolverPath.value = filePath;
             setHistoryViewMode("conflict-resolve");
@@ -371,14 +371,14 @@ async function openConflictResolver(filePath: string) {
         },
         {
           label: "Keep Modified",
-          style: "success",
+          style: "neutral",
           onClick: async () => {
             await resolveConflict(filePath, "keep-modified");
           },
         },
         {
           label: "Keep Base",
-          style: "primary",
+          style: "neutral",
           onClick: async () => {
             await resolveConflict(filePath, "keep-base");
           },
@@ -2780,7 +2780,48 @@ async function handlePull(autoStash = false) {
   appendLog("user", "Pull triggered.");
   activeRemoteAction.value = "pull";
   try {
-    await git.pull(autoStash);
+    const outcome = await git.pull(autoStash);
+    if (outcome === "operation-stash-retained") {
+      if (git.repositoryOperation.value?.kind === "merge") {
+        onSelectConflicts();
+        detailsPanelCollapsed.value = false;
+        const pullRepoPath = git.repoPath.value;
+        toast.action(
+          "warning",
+          "Pull paused at merge conflicts. Your previous local changes are safe in a GitSwamp safety stash.",
+          [
+            { label: "Review Conflicts", style: "primary", onClick: onSelectConflicts },
+            {
+              label: "Abort Pull",
+              style: "neutral",
+              onClick: async () => {
+                if (git.repoPath.value !== pullRepoPath) {
+                  toast.info("Repository changed. Pull recovery was cancelled.");
+                  return;
+                }
+                const aborted = await git.abortMerge(true);
+                if (aborted) onSelectWorkingChanges();
+              },
+            },
+          ],
+          30000,
+          "Complete the merge to keep the remote changes, or abort it to return to the pre-pull branch state and restore the protected staged and unstaged changes.",
+        );
+      } else {
+        toast.error("Pull stopped. Local changes remain safe in the GitSwamp safety stash.", 14000);
+      }
+    } else if (outcome === "stash-restore-failed") {
+      toast.action(
+        "warning",
+        "Pull completed, but the protected local changes still need to be restored.",
+        [
+          { label: "Restore Changes", style: "primary", onClick: () => void git.restorePullSafetyStash() },
+          { label: "Keep in Stash", style: "neutral", onClick: () => {} },
+        ],
+        24000,
+        "The safety stash was kept, so no local work was discarded.",
+      );
+    }
     if (git.error.value) {
       appendLog("error", `Pull failed: ${git.error.value}`);
     } else {
@@ -4557,6 +4598,21 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
         onClick: async () => {
           const beforeTargetSha = await getGitRefSha(payload.target);
           const merged = await git.mergeBranchIntoCurrent(payload.source, payload.sourceRemote, payload.target);
+          if (!merged && git.repositoryOperation.value?.kind === "merge") {
+            onSelectConflicts();
+            detailsPanelCollapsed.value = false;
+            toast.action(
+              "warning",
+              "Merge is waiting for conflict resolution.",
+              [
+                { label: "Review Conflicts", style: "primary", onClick: onSelectConflicts },
+                { label: "Abort Merge", style: "neutral", onClick: () => void git.abortMerge(true) },
+              ],
+              24000,
+              "After every conflict is resolved and staged, the prepared merge message can be edited before completing the merge.",
+            );
+            return;
+          }
           const afterTargetSha = merged ? await getGitRefSha("HEAD") : null;
           if (merged && beforeTargetSha && afterTargetSha && beforeTargetSha !== afterTargetSha) {
             offerMergeReleaseNotes({ ...payload, beforeTargetSha, afterTargetSha });

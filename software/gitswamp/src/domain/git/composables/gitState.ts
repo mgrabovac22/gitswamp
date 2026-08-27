@@ -59,6 +59,7 @@ export function createGitState() {
   });
   const hasConflicts = computed(() => conflictFiles.value.length > 0);
   const currentBranch = computed(() => repoInfo.value?.current_branch ?? "");
+  const repositoryOperation = computed(() => repoInfo.value?.operation ?? null);
   const displayedCommits = computed(() => commits.value);
 
   return {
@@ -95,6 +96,7 @@ export function createGitState() {
     conflictFiles,
     hasConflicts,
     currentBranch,
+    repositoryOperation,
     displayedCommits,
   };
 }

@@ -20,6 +20,7 @@ export function createRefreshActions(state: GitState) {
   let loadMoreRequestId = 0;
   let commitRefreshRequestId = 0;
   let statusRequestId = 0;
+  let repoInfoRequestId = 0;
   const coordinator = new RepositoryRefreshCoordinator();
 
   function scheduleCommitWaveFrame(callback: () => void) {
@@ -270,6 +271,20 @@ export function createRefreshActions(state: GitState) {
     }
   }
 
+  async function refreshRepoInfo() {
+    const repoPath = state.repoPath.value;
+    if (!repoPath) return;
+    const requestId = ++repoInfoRequestId;
+    try {
+      const result = await callTauri<RepoInfo>("get_repo_info", { path: repoPath });
+      if (requestId !== repoInfoRequestId || repoPath !== state.repoPath.value) return;
+      state.repoInfo.value = result;
+    } catch (e) {
+      if (requestId !== repoInfoRequestId || repoPath !== state.repoPath.value) return;
+      state.error.value = String(e);
+    }
+  }
+
   async function refreshStatus() {
     if (!state.repoPath.value) return;
     const requestId = ++statusRequestId;
@@ -428,6 +443,7 @@ export function createRefreshActions(state: GitState) {
     loadMoreCommits,
     loadAllCommits,
     refreshBranches,
+    refreshRepoInfo,
     refreshStatus,
     refreshStashes,
     refreshTags,

@@ -44,7 +44,15 @@ import {
   getStoredCommitAnalyzerSettings,
 } from "@/shared/config/commitAnalyzerPreferences";
 import type { ManualBisectDetailsState } from "@/features/repository/manual-bisect/useManualBisect";
-import type { AmendCommitOptions, CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo, StagedDiffSummary } from "@/types";
+import type {
+  AmendCommitOptions,
+  CommitInfo,
+  FileStatusInfo,
+  CommitFileInfo,
+  RepositoryOperationInfo,
+  StashInfo,
+  StagedDiffSummary,
+} from "@/types";
 
 const props = defineProps<{
   commit: CommitInfo | null;
@@ -53,6 +61,7 @@ const props = defineProps<{
   headCommit?: CommitInfo | null;
   headCommitPublished?: boolean;
   operationBusy?: boolean;
+  repositoryOperation?: RepositoryOperationInfo | null;
   amendModeRequested?: boolean;
   stagedFiles: FileStatusInfo[];
   unstagedFiles: FileStatusInfo[];
@@ -75,6 +84,7 @@ const emit = defineEmits<{
   stageAll: [];
   unstageAll: [];
   commit: [message: string];
+  abortMerge: [];
   amendCommit: [options: AmendCommitOptions];
   "update:amendModeRequested": [value: boolean];
   discard: [path: string];
@@ -134,6 +144,9 @@ const commitAnalyzerPanelRef = ref<HTMLElement | null>(null);
 const commitAnalyzerTooltipVisible = ref(false);
 const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "360px", zIndex: 2147483600 });
 const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
+const mergeInProgress = computed(() => props.repositoryOperation?.kind === "merge");
+const isDiscardingEntireMerge = computed(() => mergeInProgress.value && discardPath.value === null);
+let appliedOperationMessageKey = "";
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
   closeFileContextMenu();
@@ -159,6 +172,12 @@ function confirmDiscard(path: string | null) {
 }
 
 function handleDiscardConfirm() {
+  if (isDiscardingEntireMerge.value) {
+    emit("abortMerge");
+    showDiscardConfirm.value = false;
+    discardPath.value = null;
+    return;
+  }
   if (discardPath.value === null) {
     emit("discardAll");
   } else {
@@ -405,8 +424,23 @@ watch(() => props.repoPath, () => {
   regularCommitDraft.value = { subject: "", description: "" };
   commitSummary.value = "";
   commitDescription.value = "";
+  appliedOperationMessageKey = "";
   emit("update:amendModeRequested", false);
 });
+
+watch(
+  () => [props.repoPath, props.repositoryOperation?.kind || "", props.repositoryOperation?.message || ""] as const,
+  ([repoPath, operationKind, operationMessage]) => {
+    if (operationKind !== "merge" || !operationMessage.trim() || amendPreviousCommit.value) return;
+    const key = `${repoPath}\u0000${operationKind}\u0000${operationMessage}`;
+    if (key === appliedOperationMessageKey) return;
+    appliedOperationMessageKey = key;
+    if (commitSummary.value.trim() || commitDescription.value.trim()) return;
+    commitSummary.value = commitSubject(operationMessage);
+    commitDescription.value = commitBody(operationMessage);
+  },
+  { immediate: true },
+);
 
 const expandedStaged = ref(true);
 const expandedUnstaged = ref(true);
@@ -1975,6 +2009,27 @@ onUnmounted(() => {
 
     <div v-show="activeTab === 'changes' && isWorkingChanges" class="flex-1 flex flex-col overflow-hidden">
       <div ref="commitFilesScrollContainer" class="flex-1 overflow-y-auto">
+        <div
+          v-if="mergeInProgress"
+          class="flex items-start gap-2 border-b border-[var(--primary)]/25 bg-[var(--primary)]/6 px-3 py-2"
+        >
+          <GitBranch class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--primary)]" />
+          <div class="min-w-0 flex-1">
+            <div class="text-[11px] font-semibold text-[var(--foreground)]">Merge in progress</div>
+            <div class="mt-0.5 line-clamp-2 text-[10px] leading-relaxed text-[var(--muted-foreground)]">
+              Resolve and stage every conflict, then complete the merge below. Abort restores the pre-merge branch state and any GitSwamp pull safety stash.
+            </div>
+          </div>
+          <button
+            type="button"
+            class="shrink-0 rounded border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-[10px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--destructive)]/45 hover:text-[var(--destructive)]"
+            :disabled="operationBusy"
+            @click="confirmDiscard(null)"
+          >
+            Abort Merge
+          </button>
+        </div>
+
         <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0 || (conflictFiles?.length || 0) > 0" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent">
           <div class="flex items-center justify-between gap-2 mb-1">
             <div class="flex items-center gap-2 min-w-0">
@@ -2465,6 +2520,8 @@ onUnmounted(() => {
           rows="3"
           class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-2 overflow-y-auto"
           @input="onDescriptionInput"
+          @keydown.enter.ctrl.prevent="onCommit"
+          @keydown.enter.meta.prevent="onCommit"
         />
 
         <div
@@ -2521,7 +2578,7 @@ onUnmounted(() => {
           @click="onCommit"
         >
           <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
-          {{ amendPreviousCommit ? 'Amend Last Commit' : 'Commit Changes' }}
+          {{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : 'Commit Changes') }}
         </AppButton>
       </div>
     </div>
@@ -3410,21 +3467,27 @@ onUnmounted(() => {
     <!-- Discard Confirmation Toast -->
     <Teleport to="body" v-if="showDiscardConfirm">
       <div class="fixed bottom-4 right-4 z-[200] w-80 pointer-events-auto">
-        <div class="flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl backdrop-blur-md bg-[#2a1316]/96 border-[#ef4444]/75">
-          <Trash2 class="w-5 h-5 flex-shrink-0 mt-0.5" style="color: #f87171" />
+        <div class="flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl backdrop-blur-md bg-[var(--card)] border-[var(--destructive)]/55 text-[var(--card-foreground)]">
+          <Trash2 class="w-5 h-5 flex-shrink-0 mt-0.5 text-[var(--destructive)]" />
           <div class="flex-1 min-w-0">
-            <p class="text-sm text-[var(--foreground)] font-semibold">Discard changes?</p>
-            <p class="text-xs text-[#f87171] mt-1">This action cannot be undone.</p>
+            <p class="text-sm text-[var(--card-foreground)] font-semibold">
+              {{ isDiscardingEntireMerge ? 'Abort merge?' : 'Discard changes?' }}
+            </p>
+            <p class="text-xs text-[var(--muted-foreground)] mt-1">
+              {{ isDiscardingEntireMerge
+                ? 'The branch returns to its pre-merge state. Protected pre-pull changes are restored when available.'
+                : 'This action cannot be undone.' }}
+            </p>
             <div class="mt-3 flex gap-2 justify-start">
               <button
                 @click="handleDiscardConfirm"
-                class="px-3 py-1.5 text-xs font-medium rounded bg-[#ef4444] text-white hover:bg-[#dc2626] transition-colors"
+                class="px-3 py-1.5 text-xs font-medium rounded bg-[var(--destructive)] text-[var(--destructive-foreground)] hover:brightness-95 transition-colors"
               >
-                Yes, Discard
+                {{ isDiscardingEntireMerge ? 'Abort Merge' : 'Yes, Discard' }}
               </button>
               <button
                 @click="cancelDiscard"
-                class="px-3 py-1.5 text-xs font-medium rounded bg-[#374151] text-white hover:bg-[#4b5563] transition-colors"
+                class="px-3 py-1.5 text-xs font-medium rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:brightness-95 transition-colors"
               >
                 No
               </button>

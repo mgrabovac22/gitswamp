@@ -39,9 +39,9 @@ use commands::operations::{
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
 use commands::status::{
-    add_gitkeep, amend_commit, create_commit, discard_file, discard_files, get_empty_directories,
-    get_status, resolve_all_conflicts, resolve_conflict_file, stage_file, stage_files,
-    unstage_file, unstage_files,
+    abort_merge, add_gitkeep, amend_commit, create_commit, discard_file, discard_files,
+    get_empty_directories, get_status, resolve_all_conflicts, resolve_conflict_file,
+    restore_pull_safety_stash, stage_file, stage_files, unstage_file, unstage_files,
 };
 use commands::tags::get_tags;
 use tauri::Manager;
@@ -77,6 +77,8 @@ pub fn run() {
             unstage_file,
             unstage_files,
             create_commit,
+            abort_merge,
+            restore_pull_safety_stash,
             amend_commit,
             pull,
             push,

@@ -31,7 +31,7 @@ pub use github::GithubRepo;
 pub use github_ssh_key::GithubSshKey;
 pub use gitlab::GitlabRepo;
 pub use lost_commit::LostCommitInfo;
-pub use repository::{RemoteInfo, RepoInfo};
+pub use repository::{RemoteInfo, RepoInfo, RepositoryOperationInfo};
 pub use staged_diff_summary::StagedDiffSummary;
 pub use stash::StashInfo;
 pub use tag::TagInfo;

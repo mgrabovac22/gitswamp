@@ -61,6 +61,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
       is_clean: repoInfo?.is_clean ?? true,
       head_sha: repoInfo?.head_sha ?? null,
       remotes: repoInfo?.remotes ? repoInfo.remotes.map((remote) => ({ ...remote })) : [],
+      operation: repoInfo?.operation ? { ...repoInfo.operation } : null,
     };
   }
 

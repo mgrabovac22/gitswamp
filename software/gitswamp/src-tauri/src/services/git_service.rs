@@ -12,7 +12,7 @@ use crate::constants::{
 use crate::models::{
     AzureRepo, BitbucketRepo, BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot,
     ConflictPair, FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, LostCommitInfo,
-    MergeRiskPreflight, RepoInfo, StagedDiffSummary, StashInfo, TagInfo,
+    MergeRiskPreflight, RepoInfo, RepositoryOperationInfo, StagedDiffSummary, StashInfo, TagInfo,
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
@@ -21,7 +21,7 @@ use crate::services::helpers::{
 };
 use crate::services::integration_service::IntegrationService;
 use crate::services::remote_service::RemoteService;
-use crate::services::stash_service::StashService;
+use crate::services::stash_service::{StashService, PULL_SAFETY_STASH_PREFIX};
 
 pub struct GitService;
 
@@ -565,6 +565,56 @@ impl GitService {
         ))
     }
 
+    fn repository_operation(
+        repo: &Repository,
+        current_branch: &str,
+    ) -> Option<RepositoryOperationInfo> {
+        let (kind, fallback_message, message_paths): (&str, String, &[&str]) = match repo.state() {
+            git2::RepositoryState::Clean => return None,
+            git2::RepositoryState::Merge => (
+                "merge",
+                format!("Merge into {}", current_branch),
+                &["MERGE_MSG"],
+            ),
+            git2::RepositoryState::Rebase
+            | git2::RepositoryState::RebaseInteractive
+            | git2::RepositoryState::RebaseMerge => (
+                "rebase",
+                "Continue rebase".to_string(),
+                &["rebase-merge/message", "rebase-apply/message"],
+            ),
+            git2::RepositoryState::CherryPick | git2::RepositoryState::CherryPickSequence => (
+                "cherry-pick",
+                "Continue cherry-pick".to_string(),
+                &["MERGE_MSG"],
+            ),
+            git2::RepositoryState::Revert | git2::RepositoryState::RevertSequence => {
+                ("revert", "Continue revert".to_string(), &["MERGE_MSG"])
+            }
+            git2::RepositoryState::Bisect => ("bisect", "Bisect in progress".to_string(), &[]),
+            git2::RepositoryState::ApplyMailbox | git2::RepositoryState::ApplyMailboxOrRebase => (
+                "apply-mailbox",
+                "Apply mailbox in progress".to_string(),
+                &["rebase-apply/message"],
+            ),
+        };
+
+        let message = message_paths
+            .iter()
+            .find_map(|relative_path| {
+                std::fs::read_to_string(repo.path().join(relative_path))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or(fallback_message);
+
+        Some(RepositoryOperationInfo {
+            kind: kind.to_string(),
+            message,
+        })
+    }
+
     pub fn repo_info(path: &str) -> Result<RepoInfo, String> {
         let repo = GitRepository::open(path)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
@@ -582,6 +632,7 @@ impl GitService {
             .unwrap_or_else(|| path.to_string());
 
         let remotes = build_remotes(&repo);
+        let operation = Self::repository_operation(&repo, &branch_name);
 
         Ok(RepoInfo {
             path: path.to_string(),
@@ -590,6 +641,7 @@ impl GitService {
             is_clean: statuses.is_empty(),
             head_sha,
             remotes,
+            operation,
         })
     }
 
@@ -605,8 +657,18 @@ impl GitService {
         let repo = GitRepository::open(path)?;
         let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
 
+        let mut quick_tip_oids = Vec::new();
         if quick {
             let _ = revwalk.push_head();
+            for branch_type in [BranchType::Local, BranchType::Remote] {
+                if let Ok(branches) = repo.branches(Some(branch_type)) {
+                    for item in branches.flatten() {
+                        if let Some(oid) = item.0.get().target() {
+                            quick_tip_oids.push(oid);
+                        }
+                    }
+                }
+            }
         } else {
             if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
                 for item in branches.flatten() {
@@ -628,19 +690,11 @@ impl GitService {
             .set_sorting(Sort::TIME | Sort::TOPOLOGICAL)
             .map_err(|e| e.message().to_string())?;
 
-        let mut ref_map = if quick {
-            HashMap::new()
-        } else {
-            build_ref_map(&repo)
-        };
+        let mut ref_map = build_ref_map(&repo);
         if let Ok(head) = repo.head() {
             if let Some(head_target) = head.target() {
                 let refs = ref_map.entry(head_target.to_string()).or_default();
-                if quick {
-                    if let Some(name) = head.shorthand() {
-                        refs.push(name.to_string());
-                    }
-                } else if !head.is_branch() && !refs.iter().any(|value| value == "HEAD") {
+                if !head.is_branch() && !refs.iter().any(|value| value == "HEAD") {
                     refs.push("HEAD".to_string());
                 }
             }
@@ -654,7 +708,12 @@ impl GitService {
         let mut result = Vec::new();
         let mut seen = HashSet::new();
 
-        for oid in revwalk.flatten().take(max_count) {
+        let mut candidate_oids: Vec<git2::Oid> = revwalk.flatten().take(max_count).collect();
+        if quick {
+            candidate_oids.extend(quick_tip_oids);
+        }
+
+        for oid in candidate_oids {
             if !seen.insert(oid) {
                 continue;
             }
@@ -682,6 +741,10 @@ impl GitService {
                 parent_shas,
                 refs,
             });
+        }
+
+        if quick {
+            result.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
         }
 
         Ok(result)
@@ -1546,20 +1609,111 @@ impl GitService {
 
     pub fn create_commit(path: &str, message: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        let is_merge = repo.state() == git2::RepositoryState::Merge;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Err("Resolve all conflicts before committing.".to_string());
+        }
         let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
         let tree = repo
             .find_tree(tree_oid)
             .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
-        let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let head_parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let mut parent_ids = HashSet::new();
+        parent_ids.insert(head_parent.id());
+        let mut parents = vec![head_parent];
+
+        if is_merge {
+            let merge_head = std::fs::read_to_string(repo.path().join("MERGE_HEAD"))
+                .map_err(|error| format!("Merge metadata could not be read: {}", error))?;
+            for raw_oid in merge_head
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                let oid = git2::Oid::from_str(raw_oid)
+                    .map_err(|error| format!("Invalid MERGE_HEAD '{}': {}", raw_oid, error))?;
+                if parent_ids.insert(oid) {
+                    parents.push(repo.find_commit(oid).map_err(|error| {
+                        format!("Merge parent {} could not be loaded: {}", oid, error)
+                    })?);
+                }
+            }
+
+            if parents.len() < 2 {
+                return Err(
+                    "Merge cannot be completed because its second parent is missing.".to_string(),
+                );
+            }
+        }
+
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
 
         let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
             .map_err(|e| e.message().to_string())?;
 
+        if is_merge {
+            repo.cleanup_state().map_err(|e| e.message().to_string())?;
+        }
+
         Ok(oid.to_string())
+    }
+
+    fn restore_latest_pull_safety_stash(path: &str) -> Result<Option<String>, String> {
+        let Some(stash_oid) =
+            StashService::latest_stash_oid_with_message_prefix(path, PULL_SAFETY_STASH_PREFIX)?
+        else {
+            return Ok(None);
+        };
+
+        StashService::restore_stash_with_index(path, stash_oid).map(Some)
+    }
+
+    pub fn restore_pull_safety_stash(path: &str) -> Result<String, String> {
+        Ok(Self::restore_latest_pull_safety_stash(path)?
+            .unwrap_or_else(|| "No GitSwamp pull safety stash was found.".to_string()))
+    }
+
+    pub fn abort_merge(path: &str, restore_pull_safety_stash: bool) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        if repo.state() != git2::RepositoryState::Merge {
+            return Err("No merge is currently in progress.".to_string());
+        }
+        let pre_merge_head = repo.head().ok().and_then(|head| head.target());
+        let matching_safety_stash = if restore_pull_safety_stash {
+            StashService::latest_stash_oid_with_message_prefix(path, PULL_SAFETY_STASH_PREFIX)?
+                .filter(|stash_oid| {
+                    let Some(head_oid) = pre_merge_head else {
+                        return false;
+                    };
+                    repo.find_commit(*stash_oid)
+                        .ok()
+                        .and_then(|commit| commit.parent_id(0).ok())
+                        == Some(head_oid)
+                })
+        } else {
+            None
+        };
+        drop(repo);
+
+        let abort_result = RemoteService::run_git_command(path, &["merge", "--abort"])?;
+        let restored = matching_safety_stash
+            .map(|stash_oid| StashService::restore_stash_with_index(path, stash_oid))
+            .transpose()?;
+
+        let mut result = if abort_result.trim().is_empty() {
+            "Merge aborted.".to_string()
+        } else {
+            abort_result
+        };
+        if let Some(restored_message) = restored {
+            result.push(' ');
+            result.push_str(&restored_message);
+        }
+        Ok(result)
     }
 
     pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(), String> {
@@ -2181,11 +2335,13 @@ impl GitService {
             return;
         }
 
-        let Some((oldest_index, oldest)) = commits.iter().enumerate().min_by(|(_, left), (_, right)| {
-            left.timestamp
-                .cmp(&right.timestamp)
-                .then_with(|| right.sha.cmp(&left.sha))
-        }) else {
+        let Some((oldest_index, oldest)) =
+            commits.iter().enumerate().min_by(|(_, left), (_, right)| {
+                left.timestamp
+                    .cmp(&right.timestamp)
+                    .then_with(|| right.sha.cmp(&left.sha))
+            })
+        else {
             return;
         };
 
@@ -2268,7 +2424,11 @@ impl GitService {
         })
         .map_err(|e| e.message().to_string())?;
 
-        commits.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| a.sha.cmp(&b.sha)));
+        commits.sort_by(|a, b| {
+            b.timestamp
+                .cmp(&a.timestamp)
+                .then_with(|| a.sha.cmp(&b.sha))
+        });
         Ok(commits)
     }
 

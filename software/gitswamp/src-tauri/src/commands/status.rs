@@ -44,6 +44,25 @@ pub async fn create_commit(path: String, message: String) -> Result<String, Stri
 }
 
 #[tauri::command]
+pub async fn abort_merge(
+    path: String,
+    restore_pull_safety_stash: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::abort_merge(&path, restore_pull_safety_stash.unwrap_or(true))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn restore_pull_safety_stash(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::restore_pull_safety_stash(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn amend_commit(
     path: String,
     message: String,

@@ -132,6 +132,7 @@ const hasWorkingChanges = computed(
 );
 
 const hasConflicts = computed(() => props.git.hasConflicts.value);
+const repositoryOperation = computed(() => props.git.repositoryOperation.value);
 const selectedCommitCount = computed(() => props.git.selectedCommits.value.length);
 const amendModeRequested = ref(false);
 const headCommit = computed<CommitInfo | null>(() => {
@@ -158,7 +159,11 @@ const workingFilePaths = computed(() => Array.from(new Set([
 
 const showDetailsPanel = computed(
   () => props.historyViewMode === "graph"
-    && (props.viewingWorkingChanges || props.viewingStash || selectedCommitCount.value > 0 || props.git.selectedCommit.value !== null),
+    && (props.viewingWorkingChanges
+      || props.viewingStash
+      || selectedCommitCount.value > 0
+      || props.git.selectedCommit.value !== null
+      || repositoryOperation.value !== null),
 );
 
 const canAmendSelectedCommit = computed(() => {
@@ -172,6 +177,16 @@ const canAmendSelectedCommit = computed(() => {
 watch(() => props.git.repoPath.value, () => {
   amendModeRequested.value = false;
 });
+
+watch(
+  () => repositoryOperation.value?.kind || "",
+  (kind) => {
+    if (kind !== "merge") return;
+    emit("selectWorkingChanges");
+    emit("update:detailsPanelCollapsed", false);
+  },
+  { immediate: true },
+);
 
 const {
   sidebarWidth,
@@ -304,6 +319,10 @@ function scheduleDiscardAll() {
   });
 }
 
+async function abortCurrentMerge() {
+  await props.git.abortMerge(true);
+}
+
 async function handleJumpToSearchResult(sha: string) {
   const loaded = await props.git.ensureCommitLoaded(sha);
   if (!loaded) return;
@@ -349,6 +368,8 @@ function handleRefreshState() {
     props.git.refreshStatus(),
     props.git.refreshCommits(),
     props.git.refreshBranches(),
+    props.git.refreshStashes(),
+    props.git.refreshRepoInfo(),
   ]).catch(() => {});
 }
 </script>
@@ -611,12 +632,13 @@ function handleRefreshState() {
             :head-commit="headCommit"
             :head-commit-published="headCommitPublished"
             :operation-busy="props.git.loading.value"
+            :repository-operation="repositoryOperation"
             :staged-files="props.git.stagedFiles.value"
             :unstaged-files="props.git.unstagedFiles.value"
             :conflict-files="props.git.conflictFiles.value"
             :has-conflicts="props.git.hasConflicts.value"
             :commit-files="props.git.selectedCommitFiles.value"
-            :is-working-changes="props.viewingWorkingChanges"
+            :is-working-changes="props.viewingWorkingChanges || repositoryOperation !== null"
             :is-stash="props.viewingStash"
             :selected-stash="props.git.selectedStash.value"
             :stash-files="props.git.selectedStashFiles.value"
@@ -629,6 +651,7 @@ function handleRefreshState() {
             @stage-all="props.git.stageAll()"
             @unstage-all="props.git.unstageAll()"
             @commit="props.git.commitChanges($event)"
+            @abort-merge="abortCurrentMerge"
             @amend-commit="handleAmendCommit($event)"
             @discard="scheduleDiscardFile($event)"
             @discard-all="scheduleDiscardAll"

@@ -10,6 +10,8 @@ type RefreshDeps = {
   requestStatusValidation: () => void;
   refreshCommits: () => Promise<void>;
   refreshBranches: () => Promise<void>;
+  refreshStashes: () => Promise<void>;
+  refreshRepoInfo: () => Promise<void>;
 };
 
 export function createStatusActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
@@ -64,11 +66,51 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
 
   async function commitChanges(message: string) {
     if (!state.repoPath.value) return;
+    const wasMerge = state.repositoryOperation.value?.kind === "merge";
     try {
       await callTauri("create_commit", { path: state.repoPath.value, message });
-      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      await Promise.all([
+        refresh.refreshCommits(),
+        refresh.refreshStatus(),
+        refresh.refreshBranches(),
+        refresh.refreshStashes(),
+        refresh.refreshRepoInfo(),
+      ]);
+      if (wasMerge && state.stashes.value.some((stash) => stash.message.includes("GitSwamp pull safety"))) {
+        toast.action(
+          "info",
+          "Merge completed. Restore the local changes protected before pull?",
+          [
+            { label: "Restore Changes", style: "primary", onClick: () => void restorePullSafetyStash() },
+            { label: "Keep in Stash", style: "neutral", onClick: () => {} },
+          ],
+          20000,
+          "The safety stash preserves both staged and unstaged tracked changes. It stays available until restoration succeeds.",
+        );
+      }
     } catch (e) {
       state.error.value = String(e);
+      toast.error("Commit failed: " + String(e));
+    }
+  }
+
+  async function restorePullSafetyStash(): Promise<boolean> {
+    if (!state.repoPath.value) return false;
+    const loadingToast = toast.loading("Restoring pre-pull local changes...");
+    try {
+      const result = await callTauri<string>("restore_pull_safety_stash", { path: state.repoPath.value });
+      state.terminalOutput.value.push("$ git stash pop --index <GitSwamp pull safety>\n" + result);
+      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes(), refresh.refreshRepoInfo()]);
+      toast.success("Pre-pull local changes restored.");
+      return true;
+    } catch (e) {
+      state.error.value = String(e);
+      state.terminalOutput.value.push("$ git stash pop --index <GitSwamp pull safety>\nError: " + e);
+      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes(), refresh.refreshRepoInfo()]);
+      toast.error("Local changes could not be restored automatically. The safety stash was kept.", 12000);
+      return false;
+    } finally {
+      toast.remove(loadingToast);
     }
   }
 
@@ -187,6 +229,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     stageAll,
     unstageAll,
     commitChanges,
+    restorePullSafetyStash,
     amendLastCommit,
     discardFile,
     discardAll,

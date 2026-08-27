@@ -8,7 +8,7 @@ use crate::constants::{
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::helpers::urlencoded;
-use crate::services::stash_service::StashService;
+use crate::services::stash_service::{StashService, PULL_SAFETY_STASH_PREFIX};
 
 pub struct RemoteService;
 
@@ -328,6 +328,10 @@ impl RemoteService {
             }
             PullPlan::Merge { branch, remote_oid } => {
                 let repo = GitRepository::open(path)?;
+                let msg = format!(
+                    "Merge remote-tracking branch 'origin/{}' into {}",
+                    branch, branch
+                );
                 let remote_commit = repo
                     .find_annotated_commit(remote_oid)
                     .map_err(|e| e.message().to_string())?;
@@ -335,7 +339,16 @@ impl RemoteService {
                     .map_err(|e| e.message().to_string())?;
                 let index = repo.index().map_err(|e| e.message().to_string())?;
                 if index.has_conflicts() {
-                    return Err("Merge conflicts detected. Resolve them manually.".to_string());
+                    std::fs::write(repo.path().join("MERGE_MSG"), &msg).map_err(|e| {
+                        format!(
+                            "Merge conflicts detected, but MERGE_MSG could not be written: {}",
+                            e
+                        )
+                    })?;
+                    return Err(
+                        "Merge conflicts detected. Resolve them or abort the pull merge."
+                            .to_string(),
+                    );
                 }
                 let mut index = repo.index().map_err(|e| e.message().to_string())?;
                 let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
@@ -351,7 +364,6 @@ impl RemoteService {
                     .find_commit(remote_oid)
                     .map_err(|e| e.message().to_string())?;
                 let sig = repo.signature().map_err(|e| e.message().to_string())?;
-                let msg = format!("Merge branch '{}' of origin into {}", branch, branch);
                 repo.commit(
                     Some("HEAD"),
                     &sig,
@@ -372,7 +384,7 @@ impl RemoteService {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())
             .unwrap_or_default();
-        format!("GitSwamp pull safety {}", timestamp)
+        format!("{}{}", PULL_SAFETY_STASH_PREFIX, timestamp)
     }
 
     pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
@@ -1066,6 +1078,240 @@ mod tests {
             .map(|entry| entry.status())
             .expect("message-only file should remain staged");
         assert!(staged_file.contains(git2::Status::INDEX_NEW));
+    }
+
+    #[test]
+    fn merge_commit_uses_both_parents_cleans_state_and_keeps_branch_tips_visible() {
+        let workspace = TestWorkspace::new("merge-commit");
+        let repo_path = workspace.child("repo");
+        let repo = Repository::init(&repo_path).expect("repository should initialize");
+        configure_identity(&repo, "Merge User", "merge@example.com");
+        let signature =
+            Signature::now("Merge User", "merge@example.com").expect("signature should be valid");
+
+        write_file(&repo_path, "base.txt", "base\n");
+        let base_oid = commit_all(&repo, "Initial commit", &signature);
+        let main_branch = repo
+            .head()
+            .expect("HEAD should exist")
+            .shorthand()
+            .expect("HEAD should name the initial branch")
+            .to_string();
+        let base_commit = repo
+            .find_commit(base_oid)
+            .expect("base commit should exist");
+        repo.branch("feature", &base_commit, false)
+            .expect("feature branch should be created");
+        drop(base_commit);
+        drop(repo);
+
+        GitService::checkout_branch(repo_path.to_str().expect("path should be UTF-8"), "feature")
+            .expect("feature should checkout");
+        let repo = Repository::open(&repo_path).expect("repository should reopen");
+        write_file(&repo_path, "feature.txt", "feature\n");
+        let feature_oid = commit_all(&repo, "Feature work", &signature);
+        drop(repo);
+
+        GitService::checkout_branch(
+            repo_path.to_str().expect("path should be UTF-8"),
+            &main_branch,
+        )
+        .expect("main branch should checkout");
+        let repo = Repository::open(&repo_path).expect("repository should reopen");
+        write_file(&repo_path, "main.txt", "main\n");
+        let main_oid = commit_all(&repo, "Main work", &signature);
+        let annotated = repo
+            .find_annotated_commit(feature_oid)
+            .expect("feature commit should be annotated");
+        repo.merge(&[&annotated], None, None)
+            .expect("merge should prepare the index");
+        assert_eq!(repo.state(), git2::RepositoryState::Merge);
+        fs::write(
+            repo.path().join("MERGE_MSG"),
+            format!("Merge branch 'feature' into {}\n", main_branch),
+        )
+        .expect("merge message should be written");
+        drop(annotated);
+        drop(repo);
+
+        let repo_path_string = repo_path.to_str().expect("path should be UTF-8");
+        let operation = GitService::repo_info(repo_path_string)
+            .expect("repo info should load")
+            .operation
+            .expect("merge operation should be visible");
+        assert_eq!(operation.kind, "merge");
+        assert!(operation.message.contains("feature"));
+
+        GitService::create_commit(repo_path_string, &operation.message)
+            .expect("merge commit should succeed");
+        let repo = Repository::open(&repo_path).expect("repository should reopen");
+        let merge_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("merge commit should be HEAD");
+        assert_eq!(merge_commit.parent_count(), 2);
+        let parents: Vec<git2::Oid> = merge_commit.parent_ids().collect();
+        assert!(parents.contains(&main_oid));
+        assert!(parents.contains(&feature_oid));
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+        drop(merge_commit);
+        drop(repo);
+
+        let quick_commits = GitService::commits_with_options(repo_path_string, 1, true)
+            .expect("quick commits should load");
+        assert!(quick_commits
+            .iter()
+            .any(|commit| commit.refs.iter().any(|reference| reference == "feature")));
+        assert!(quick_commits.iter().any(|commit| {
+            commit
+                .refs
+                .iter()
+                .any(|reference| reference == &main_branch)
+        }));
+    }
+
+    #[test]
+    fn conflicted_protected_pull_can_abort_and_restore_every_local_change_layer() {
+        let workspace = TestWorkspace::new("pull-conflict-recovery");
+        let remote_path = workspace.child("remote.git");
+        let seed_path = workspace.child("seed");
+        let local_path = workspace.child("local");
+        let peer_path = workspace.child("peer");
+        let remote = Repository::init_bare(&remote_path).expect("bare remote should initialize");
+        let seed = Repository::init(&seed_path).expect("seed should initialize");
+        configure_identity(&seed, "Seed User", "seed@example.com");
+        let seed_signature =
+            Signature::now("Seed User", "seed@example.com").expect("signature should be valid");
+
+        write_file(&seed_path, "shared.txt", "base\n");
+        write_file(&seed_path, "local-work.txt", "clean\n");
+        commit_all(&seed, "Initial commit", &seed_signature);
+        seed.remote(
+            "origin",
+            remote_path.to_str().expect("remote path should be UTF-8"),
+        )
+        .expect("origin should be created");
+        let branch_ref = seed
+            .head()
+            .expect("seed HEAD should exist")
+            .name()
+            .expect("seed HEAD should be named")
+            .to_string();
+        remote
+            .set_head(&branch_ref)
+            .expect("bare HEAD should target seed branch");
+        push_head(&seed);
+        drop(remote);
+        drop(seed);
+
+        let local = Repository::clone(
+            remote_path.to_str().expect("remote path should be UTF-8"),
+            &local_path,
+        )
+        .expect("local clone should succeed");
+        configure_identity(&local, "Local User", "local@example.com");
+        let local_signature =
+            Signature::now("Local User", "local@example.com").expect("signature should be valid");
+        write_file(&local_path, "shared.txt", "local commit\n");
+        let local_head = commit_all(&local, "Local branch work", &local_signature);
+
+        let peer = Repository::clone(
+            remote_path.to_str().expect("remote path should be UTF-8"),
+            &peer_path,
+        )
+        .expect("peer clone should succeed");
+        configure_identity(&peer, "Peer User", "peer@example.com");
+        let peer_signature =
+            Signature::now("Peer User", "peer@example.com").expect("signature should be valid");
+        write_file(&peer_path, "shared.txt", "remote commit\n");
+        commit_all(&peer, "Remote branch work", &peer_signature);
+        push_head(&peer);
+        drop(peer);
+
+        write_file(&local_path, "local-work.txt", "unstaged local edit\n");
+        write_file(&local_path, "staged.txt", "staged local edit\n");
+        write_file(&local_path, "untracked.txt", "untracked local edit\n");
+        let mut index = local.index().expect("local index should open");
+        index
+            .add_path(Path::new("staged.txt"))
+            .expect("staged file should be added");
+        index.write().expect("local index should write");
+        drop(index);
+        drop(local);
+
+        let local_path_string = local_path.to_str().expect("local path should be UTF-8");
+        let pull_error = RemoteService::pull(local_path_string, None, true)
+            .expect_err("diverged pull should stop at a conflict");
+        assert!(pull_error.starts_with("PULL_FAILED_STASH_RETAINED:"));
+        let repo = Repository::open(&local_path).expect("local repository should reopen");
+        assert_eq!(repo.state(), git2::RepositoryState::Merge);
+        assert_eq!(
+            repo.head().expect("HEAD should exist").target(),
+            Some(local_head)
+        );
+        assert!(local_path.join("untracked.txt").exists());
+        drop(repo);
+
+        let operation = GitService::repo_info(local_path_string)
+            .expect("repo info should load")
+            .operation
+            .expect("pull merge should be visible");
+        assert_eq!(operation.kind, "merge");
+        assert!(operation.message.contains("origin"));
+
+        GitService::abort_merge(local_path_string, true)
+            .expect("abort should restore the pull safety stash");
+        let mut repo = Repository::open(&local_path).expect("local repository should reopen");
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+        assert_eq!(
+            repo.head().expect("HEAD should exist").target(),
+            Some(local_head)
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("shared.txt"))
+                .expect("local committed file should remain")
+                .replace("\r\n", "\n"),
+            "local commit\n"
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("local-work.txt"))
+                .expect("unstaged edit should return")
+                .replace("\r\n", "\n"),
+            "unstaged local edit\n"
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("untracked.txt"))
+                .expect("untracked edit should remain")
+                .replace("\r\n", "\n"),
+            "untracked local edit\n"
+        );
+
+        let mut status_options = StatusOptions::new();
+        status_options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true);
+        let statuses = repo
+            .statuses(Some(&mut status_options))
+            .expect("statuses should load");
+        let status_for = |path: &str| {
+            statuses
+                .iter()
+                .find(|entry| entry.path() == Some(path))
+                .map(|entry| entry.status())
+                .expect("expected status should exist")
+        };
+        assert!(status_for("local-work.txt").is_wt_modified());
+        assert!(status_for("staged.txt").is_index_new());
+        assert!(status_for("untracked.txt").is_wt_new());
+        drop(statuses);
+
+        let mut stash_count = 0usize;
+        repo.stash_foreach(|_, _, _| {
+            stash_count += 1;
+            true
+        })
+        .expect("stash list should load");
+        assert_eq!(stash_count, 0, "restored safety stash should be removed");
     }
 
     #[test]

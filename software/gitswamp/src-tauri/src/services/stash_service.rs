@@ -3,6 +3,8 @@ use crate::repositories::git_repository::GitRepository;
 
 pub struct StashService;
 
+pub const PULL_SAFETY_STASH_PREFIX: &str = "GitSwamp pull safety ";
+
 impl StashService {
     pub fn stash_list(path: &str) -> Result<Vec<StashInfo>, String> {
         let mut repo = GitRepository::open(path)?;
@@ -103,6 +105,24 @@ impl StashService {
         .map_err(|e| e.message().to_string())?;
 
         found.ok_or_else(|| format!("Safety stash {} was not found", oid))
+    }
+
+    pub fn latest_stash_oid_with_message_prefix(
+        path: &str,
+        message_prefix: &str,
+    ) -> Result<Option<git2::Oid>, String> {
+        let mut repo = GitRepository::open(path)?;
+        let mut found = None;
+        repo.stash_foreach(|_, name, oid| {
+            if name.contains(message_prefix) {
+                found = Some(*oid);
+                false
+            } else {
+                true
+            }
+        })
+        .map_err(|e| e.message().to_string())?;
+        Ok(found)
     }
 
     pub fn restore_stash_with_index(path: &str, oid: git2::Oid) -> Result<String, String> {

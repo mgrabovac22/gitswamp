@@ -8,6 +8,8 @@ type RefreshDeps = {
   refreshCommits: () => Promise<void>;
   refreshBranches: () => Promise<void>;
   refreshStatus: () => Promise<void>;
+  refreshStashes: () => Promise<void>;
+  refreshRepoInfo: () => Promise<void>;
 };
 
 type RebaseExecutionState = "ok" | "conflict" | "error";
@@ -76,6 +78,10 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
   async function checkoutBranch(branchName: string): Promise<boolean> {
     if (!state.repoPath.value) return false;
+    if (state.repositoryOperation.value) {
+      toast.error(`Cannot checkout a branch while ${state.repositoryOperation.value.kind} is in progress. Complete or abort it first.`);
+      return false;
+    }
     if (state.hasConflicts.value) {
       toast.error("Cannot checkout branch while conflicts exist. Resolve conflicts first.");
       return false;
@@ -149,6 +155,10 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
   async function mergeBranchIntoCurrent(sourceBranch: string, sourceRemote = false, targetBranch?: string): Promise<boolean> {
     if (!state.repoPath.value) return false;
+    if (state.repositoryOperation.value) {
+      toast.error(`Cannot start a merge while ${state.repositoryOperation.value.kind} is already in progress.`);
+      return false;
+    }
     const current = state.repoInfo.value?.current_branch || "";
     const target = (targetBranch || current).trim();
     if (!target) {
@@ -196,7 +206,61 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push(`$ git checkout ${target}\n$ git merge ${sourceRef}\nError: ${e}`);
-      toast.error("Merge failed: " + String(e));
+      await Promise.all([
+        refresh.refreshCommits(),
+        refresh.refreshStatus(),
+        refresh.refreshBranches(),
+        refresh.refreshRepoInfo(),
+      ]);
+      if (state.repoInfo.value?.operation?.kind !== "merge") {
+        toast.error("Merge failed: " + String(e));
+      }
+      return false;
+    } finally {
+      state.loading.value = false;
+      if (loadingToastId !== null) {
+        toast.remove(loadingToastId);
+      }
+    }
+  }
+
+  async function abortMerge(restorePullSafetyStash = true): Promise<boolean> {
+    if (!state.repoPath.value) return false;
+    if (state.repositoryOperation.value?.kind !== "merge") {
+      toast.info("No merge is currently in progress.");
+      return false;
+    }
+
+    const repoPath = state.repoPath.value;
+    let loadingToastId: number | null = null;
+    try {
+      loadingToastId = toast.loading("Aborting merge...");
+      state.loading.value = true;
+      const result = await callTauri<string>("abort_merge", {
+        path: repoPath,
+        restorePullSafetyStash,
+      });
+      state.terminalOutput.value.push("$ git merge --abort\n" + (result || "(done)"));
+      await Promise.all([
+        refresh.refreshCommits(),
+        refresh.refreshStatus(),
+        refresh.refreshBranches(),
+        refresh.refreshStashes(),
+        refresh.refreshRepoInfo(),
+      ]);
+      toast.success(restorePullSafetyStash
+        ? "Merge aborted. Pre-pull local changes were restored when available."
+        : "Merge aborted.");
+      return true;
+    } catch (e) {
+      state.error.value = String(e);
+      state.terminalOutput.value.push("$ git merge --abort\nError: " + e);
+      await Promise.all([
+        refresh.refreshStatus(),
+        refresh.refreshStashes(),
+        refresh.refreshRepoInfo(),
+      ]);
+      toast.error("Abort merge failed: " + String(e));
       return false;
     } finally {
       state.loading.value = false;
@@ -328,6 +392,7 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     deleteBranch,
     renameBranch,
     mergeBranchIntoCurrent,
+    abortMerge,
     rebaseBranchOnto,
     rebaseContinue,
     rebaseSkip,

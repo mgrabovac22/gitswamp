@@ -13,6 +13,8 @@ type RefreshDeps = {
   refreshStashes: () => Promise<void>;
 };
 
+export type PullOutcome = "success" | "worktree-dirty" | "operation-stash-retained" | "stash-restore-failed" | "error";
+
 export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
   async function refreshRemoteRefs(repoPath: string, includeStatus = false, includeRepoInfo = false) {
     if (state.repoPath.value !== repoPath) return;
@@ -76,8 +78,8 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function pull(autoStash = false) {
-    if (!state.repoPath.value) return;
+  async function pull(autoStash = false): Promise<PullOutcome> {
+    if (!state.repoPath.value) return "error";
     const repoPath = state.repoPath.value;
     let loadingToastId: number | null = null;
     try {
@@ -92,6 +94,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       await refreshRemoteRefs(repoPath, true, true);
       toast.success(autoStash ? "Pull completed and local changes are safe" : "Pull completed successfully");
       state.error.value = null;
+      return "success";
     } catch (e) {
       const errorMsg = String(e);
       state.error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
@@ -103,12 +106,14 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       }
       if (errorMsg.startsWith("WORKTREE_DIRTY:")) {
         toast.warning("Pull stopped because local working changes were detected.");
+        return "worktree-dirty";
       } else if (errorMsg.startsWith("PULL_SUCCEEDED_STASH_RESTORE_FAILED:")) {
-        toast.error("Remote changes were pulled, but local changes need to be restored from the safety stash.", 14000);
+        return "stash-restore-failed";
       } else if (errorMsg.startsWith("PULL_FAILED_STASH_RETAINED:")) {
-        toast.error("Pull failed. Local changes are safe in the retained stash.", 14000);
+        return "operation-stash-retained";
       } else {
         toast.error("Pull failed: " + String(e));
+        return "error";
       }
     } finally {
       state.loading.value = false;
