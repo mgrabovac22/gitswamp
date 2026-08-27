@@ -73,6 +73,7 @@ const remote = createRemoteActions(
     refreshStatus: refresh.refreshStatus,
     refreshBranches: refresh.refreshBranches,
     refreshTags: refresh.refreshTags,
+    refreshStashes: refresh.refreshStashes,
   },
   toast,
 );
@@ -299,6 +300,7 @@ export function useGit() {
     stageAll: status.stageAll,
     unstageAll: status.unstageAll,
     commitChanges: status.commitChanges,
+    amendLastCommit: status.amendLastCommit,
     discardFile: status.discardFile,
     discardAll: status.discardAll,
     resolveAllConflicts: status.resolveAllConflicts,

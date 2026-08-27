@@ -1,3 +1,4 @@
+export * from "./amendCommitOptions"
 export * from "./branchInfo"
 export * from "./commitFileInfo"
 export * from "./commitInfo"

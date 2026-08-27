@@ -13,10 +13,16 @@ pub async fn get_lost_commits(
 }
 
 #[tauri::command]
-pub async fn pull(path: String, token: Option<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || GitService::pull(&path, token.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn pull(
+    path: String,
+    token: Option<String>,
+    auto_stash: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::pull(&path, token.as_deref(), auto_stash.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

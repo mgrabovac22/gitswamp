@@ -25,6 +25,7 @@ import {
   Hammer,
   Map as MapIcon,
   Bug,
+  RotateCcw,
 } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -43,12 +44,16 @@ import {
   getStoredCommitAnalyzerSettings,
 } from "@/shared/config/commitAnalyzerPreferences";
 import type { ManualBisectDetailsState } from "@/features/repository/manual-bisect/useManualBisect";
-import type { CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo, StagedDiffSummary } from "@/types";
+import type { AmendCommitOptions, CommitInfo, FileStatusInfo, CommitFileInfo, StashInfo, StagedDiffSummary } from "@/types";
 
 const props = defineProps<{
   commit: CommitInfo | null;
   selectedCommits?: CommitInfo[];
   canAmendSelectedCommit?: boolean;
+  headCommit?: CommitInfo | null;
+  headCommitPublished?: boolean;
+  operationBusy?: boolean;
+  amendModeRequested?: boolean;
   stagedFiles: FileStatusInfo[];
   unstagedFiles: FileStatusInfo[];
   conflictFiles?: FileStatusInfo[];
@@ -70,6 +75,8 @@ const emit = defineEmits<{
   stageAll: [];
   unstageAll: [];
   commit: [message: string];
+  amendCommit: [options: AmendCommitOptions];
+  "update:amendModeRequested": [value: boolean];
   discard: [path: string];
   discardAll: [];
   resolveAllConflicts: [];
@@ -88,6 +95,10 @@ const emit = defineEmits<{
 
 const commitSummary = ref("");
 const commitDescription = ref("");
+const amendPreviousCommit = ref(false);
+const amendResetAuthor = ref(false);
+const amendSignoff = ref(false);
+const regularCommitDraft = ref({ subject: "", description: "" });
 const showCommitBuilder = ref(false);
 const commitBuilderType = ref("Fix");
 const commitBuilderScope = ref("");
@@ -376,9 +387,35 @@ watch(() => props.isWorkingChanges, (val) => {
   }
 });
 
+watch(() => props.headCommit?.sha || "", (nextSha, previousSha) => {
+  if (!amendPreviousCommit.value || !previousSha || nextSha === previousSha) return;
+  amendPreviousCommit.value = false;
+  amendResetAuthor.value = false;
+  amendSignoff.value = false;
+  regularCommitDraft.value = { subject: "", description: "" };
+  commitSummary.value = "";
+  commitDescription.value = "";
+  emit("update:amendModeRequested", false);
+});
+
+watch(() => props.repoPath, () => {
+  amendPreviousCommit.value = false;
+  amendResetAuthor.value = false;
+  amendSignoff.value = false;
+  regularCommitDraft.value = { subject: "", description: "" };
+  commitSummary.value = "";
+  commitDescription.value = "";
+  emit("update:amendModeRequested", false);
+});
+
 const expandedStaged = ref(true);
 const expandedUnstaged = ref(true);
 const toast = useToast();
+
+watch(() => props.amendModeRequested, (enabled) => {
+  if (enabled) enterAmendMode();
+  else leaveAmendMode();
+}, { immediate: true });
 
 type ExternalEditorId = "notepad" | "vscode" | "visualstudio" | "androidstudio" | "intellij";
 
@@ -442,6 +479,23 @@ const stagedFingerprint = computed(() => props.stagedFiles
   .join("|"));
 
 const hasTypedCommitMessage = computed(() => commitSummary.value.trim().length > 0);
+const composedCommitMessage = computed(() => commitDescription.value.trim()
+  ? `${commitSummary.value.trim()}\n\n${commitDescription.value.trim()}`
+  : commitSummary.value.trim());
+const amendHasChanges = computed(() => {
+  if (!amendPreviousCommit.value || !props.headCommit) return false;
+  return props.stagedFiles.length > 0
+    || composedCommitMessage.value.trimEnd() !== props.headCommit.message.trimEnd()
+    || amendResetAuthor.value
+    || amendSignoff.value;
+});
+const canSubmitCommit = computed(() => {
+  if (!commitSummary.value.trim() || props.hasConflicts || props.operationBusy) return false;
+  if (amendPreviousCommit.value) {
+    return !!props.headCommit && amendHasChanges.value;
+  }
+  return props.stagedFiles.length > 0;
+});
 
 const commitLintIndicator = computed<"none" | "warning" | "error">(() => {
   if (!hasTypedCommitMessage.value || !commitLintResult.value) {
@@ -1580,12 +1634,51 @@ function openTreeFile(path: string) {
   openDiff(normalized, targetSha, false);
 }
 
+function enterAmendMode() {
+  if (amendPreviousCommit.value) return;
+  if (!props.headCommit) {
+    toast.warning("The current HEAD commit is not available yet.");
+    emit("update:amendModeRequested", false);
+    return;
+  }
+
+  regularCommitDraft.value = {
+    subject: commitSummary.value,
+    description: commitDescription.value,
+  };
+  commitSummary.value = commitSubject(props.headCommit.message);
+  commitDescription.value = commitBody(props.headCommit.message);
+  amendPreviousCommit.value = true;
+}
+
+function leaveAmendMode() {
+  if (!amendPreviousCommit.value) return;
+  amendPreviousCommit.value = false;
+  amendResetAuthor.value = false;
+  amendSignoff.value = false;
+  commitSummary.value = regularCommitDraft.value.subject;
+  commitDescription.value = regularCommitDraft.value.description;
+}
+
+function closeAmendMode() {
+  leaveAmendMode();
+  emit("update:amendModeRequested", false);
+}
+
 function onCommit() {
-  if (!commitSummary.value.trim()) return;
-  const msg = commitDescription.value.trim()
-    ? `${commitSummary.value.trim()}\n\n${commitDescription.value.trim()}`
-    : commitSummary.value.trim();
-  emit("commit", msg);
+  if (!canSubmitCommit.value) return;
+  const message = composedCommitMessage.value;
+
+  if (amendPreviousCommit.value) {
+    emit("amendCommit", {
+      message,
+      resetAuthor: amendResetAuthor.value,
+      signoff: amendSignoff.value,
+    });
+    return;
+  }
+
+  emit("commit", message);
   commitSummary.value = "";
   commitDescription.value = "";
 }
@@ -2374,12 +2467,61 @@ onUnmounted(() => {
           @input="onDescriptionInput"
         />
 
+        <div
+          v-if="amendPreviousCommit"
+          class="mb-2 rounded border border-[var(--primary)]/30 bg-[var(--primary)]/5 p-2"
+        >
+          <div class="flex min-w-0 items-center gap-2">
+            <RotateCcw class="h-3.5 w-3.5 shrink-0 text-[var(--primary)]" />
+            <span class="truncate text-[11px] font-medium text-[var(--foreground)]">Amending last commit</span>
+            <code v-if="headCommit" class="text-[9px] text-[var(--muted-foreground)]">
+              {{ headCommit.short_sha }}
+            </code>
+            <CloseIconButton
+              class="ml-auto"
+              size="sm"
+              subtle
+              title="Exit amend mode"
+              @click="closeAmendMode"
+            />
+          </div>
+
+          <p class="mt-1 text-[9px] leading-relaxed text-[var(--muted-foreground)]">
+            {{ stagedFiles.length > 0
+              ? `${stagedFiles.length} staged ${stagedFiles.length === 1 ? 'file' : 'files'} will be included.`
+              : 'No staged files; only the message or selected metadata will change.' }}
+          </p>
+
+          <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-[var(--muted-foreground)]">
+              <input
+                v-model="amendResetAuthor"
+                type="checkbox"
+                class="h-3 w-3 rounded border-[var(--border)] bg-[var(--input-background)] accent-[var(--primary)]"
+              />
+              Reset author to current identity
+            </label>
+            <label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-[var(--muted-foreground)]">
+              <input
+                v-model="amendSignoff"
+                type="checkbox"
+                class="h-3 w-3 rounded border-[var(--border)] bg-[var(--input-background)] accent-[var(--primary)]"
+              />
+              Add Signed-off-by
+            </label>
+          </div>
+          <p v-if="headCommitPublished" class="mt-1.5 text-[9px] leading-relaxed text-[#f59e0b]">
+            This commit is on a remote ref. The next push may require force-with-lease.
+          </p>
+        </div>
+
         <AppButton
-          class="w-full bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium h-8"
-          :disabled="!commitSummary.trim() || stagedFiles.length === 0"
+          class="w-full bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium h-8 flex items-center justify-center gap-1.5"
+          :disabled="!canSubmitCommit"
           @click="onCommit"
         >
-          Commit Changes
+          <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
+          {{ amendPreviousCommit ? 'Amend Last Commit' : 'Commit Changes' }}
         </AppButton>
       </div>
     </div>

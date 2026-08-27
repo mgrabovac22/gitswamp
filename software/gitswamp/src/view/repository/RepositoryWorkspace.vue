@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent } from "vue";
+import { computed, defineAsyncComponent, ref, watch } from "vue";
 import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
 import CommitDetails from "@/view/commit/CommitDetails.vue";
@@ -11,6 +11,7 @@ import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoable
 import ManualBisectOverlay from "@/features/repository/manual-bisect/ManualBisectOverlay.vue";
 import { useManualBisect } from "@/features/repository/manual-bisect/useManualBisect";
 import type {
+  AmendCommitOptions,
   CommitInfo,
   StashInfo,
   IssueInfo,
@@ -132,6 +133,18 @@ const hasWorkingChanges = computed(
 
 const hasConflicts = computed(() => props.git.hasConflicts.value);
 const selectedCommitCount = computed(() => props.git.selectedCommits.value.length);
+const amendModeRequested = ref(false);
+const headCommit = computed<CommitInfo | null>(() => {
+  const headSha = props.git.repoInfo.value?.head_sha || "";
+  if (!headSha) return null;
+  return props.git.commits.value.find((commit: CommitInfo) => commit.sha === headSha) ?? null;
+});
+const headCommitPublished = computed(() => {
+  const head = headCommit.value;
+  if (!head) return false;
+  const remoteNames = new Set(props.git.remoteBranches.value.map((branch: { name: string }) => branch.name));
+  return head.refs.some((ref: string) => remoteNames.has(ref));
+});
 const terminalUntrackedFileCount = computed(() =>
   props.git.unstagedFiles.value.filter((file: { status?: string; staged?: boolean; conflicted?: boolean }) => {
     const status = (file.status || "").toLowerCase();
@@ -152,12 +165,12 @@ const canAmendSelectedCommit = computed(() => {
   if (selectedCommitCount.value !== 1) return false;
 
   const selected = props.git.selectedCommit.value;
-  const branch = props.git.currentBranch.value;
-  if (!selected || !branch) return false;
+  const headSha = props.git.repoInfo.value?.head_sha || "";
+  return !!selected && !!headSha && selected.sha === headSha;
+});
 
-  const remoteBranch = `origin/${branch}`;
-  const headRef = `HEAD -> ${branch}`;
-  return selected.refs.some((ref: string) => ref === branch || ref === remoteBranch || ref.includes(headRef));
+watch(() => props.git.repoPath.value, () => {
+  amendModeRequested.value = false;
 });
 
 const {
@@ -320,6 +333,17 @@ async function handleAmendCommitMessage(newMessage: string) {
   }
 }
 
+async function handleAmendCommit(options: AmendCommitOptions) {
+  await props.git.amendLastCommit(options);
+}
+
+function setAmendModeFromGraph(enabled: boolean) {
+  amendModeRequested.value = enabled;
+  if (!enabled) return;
+  emit("selectWorkingChanges");
+  emit("update:detailsPanelCollapsed", false);
+}
+
 function handleRefreshState() {
   Promise.all([
     props.git.refreshStatus(),
@@ -414,6 +438,7 @@ function handleRefreshState() {
           :has-conflicts="hasConflicts"
           :current-branch="props.git.currentBranch.value"
           :head-sha="props.git.repoInfo.value?.head_sha || null"
+          :amend-mode-active="amendModeRequested"
           :has-more="props.git.hasMoreCommits.value"
           :commit-wave-loading="props.git.commitWaveLoading.value"
           :stashes="props.git.stashes.value"
@@ -427,6 +452,7 @@ function handleRefreshState() {
           @select-conflicts="emit('selectConflicts')"
           @load-more="props.git.loadMoreCommits()"
           @focus-head="props.git.focusHeadCommit()"
+          @set-amend-mode="setAmendModeFromGraph($event)"
           @checkout="props.git.checkoutCommit($event)"
           @create-branch-at="emit('createBranchAt', $event)"
           @cherry-pick="props.git.cherryPick($event)"
@@ -576,11 +602,15 @@ function handleRefreshState() {
           </button>
 
           <CommitDetails
+            v-model:amend-mode-requested="amendModeRequested"
             v-show="!props.detailsPanelCollapsed"
             class="h-full"
             :commit="props.git.selectedCommit.value"
             :selected-commits="props.git.selectedCommits.value"
             :can-amend-selected-commit="canAmendSelectedCommit"
+            :head-commit="headCommit"
+            :head-commit-published="headCommitPublished"
+            :operation-busy="props.git.loading.value"
             :staged-files="props.git.stagedFiles.value"
             :unstaged-files="props.git.unstagedFiles.value"
             :conflict-files="props.git.conflictFiles.value"
@@ -599,6 +629,7 @@ function handleRefreshState() {
             @stage-all="props.git.stageAll()"
             @unstage-all="props.git.unstageAll()"
             @commit="props.git.commitChanges($event)"
+            @amend-commit="handleAmendCommit($event)"
             @discard="scheduleDiscardFile($event)"
             @discard-all="scheduleDiscardAll"
             @resolve-all-conflicts="props.git.resolveAllConflicts()"

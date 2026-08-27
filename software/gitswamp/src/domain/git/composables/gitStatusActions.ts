@@ -1,3 +1,4 @@
+import type { AmendCommitOptions, RepoInfo } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
 
 import { callTauri } from "./gitCall";
@@ -68,6 +69,50 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
     } catch (e) {
       state.error.value = String(e);
+    }
+  }
+
+  async function amendLastCommit(options: AmendCommitOptions): Promise<boolean> {
+    if (!state.repoPath.value) return false;
+    if (state.hasConflicts.value) {
+      toast.error("Cannot amend while conflicts exist. Resolve conflicts first.");
+      return false;
+    }
+
+    const repoPath = state.repoPath.value;
+    const loadingToast = toast.loading("Amending the last commit...");
+    state.error.value = null;
+    state.loading.value = true;
+
+    try {
+      const result = await callTauri<string>("amend_commit", {
+        path: repoPath,
+        message: options.message,
+        resetAuthor: options.resetAuthor,
+        signoff: options.signoff,
+      });
+      state.terminalOutput.value.push("$ git commit --amend\n" + result);
+
+      const [repoInfo] = await Promise.all([
+        callTauri<RepoInfo>("get_repo_info", { path: repoPath }),
+        refresh.refreshCommits(),
+        refresh.refreshStatus(),
+        refresh.refreshBranches(),
+      ]);
+      if (state.repoPath.value === repoPath) {
+        state.repoInfo.value = repoInfo;
+      }
+
+      toast.success("Last commit amended.", 3000);
+      return true;
+    } catch (error) {
+      state.error.value = String(error);
+      state.terminalOutput.value.push("$ git commit --amend\nError: " + error);
+      toast.error("Amend failed: " + String(error));
+      return false;
+    } finally {
+      state.loading.value = false;
+      toast.remove(loadingToast);
     }
   }
 
@@ -142,6 +187,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     stageAll,
     unstageAll,
     commitChanges,
+    amendLastCommit,
     discardFile,
     discardAll,
     resolveAllConflicts,

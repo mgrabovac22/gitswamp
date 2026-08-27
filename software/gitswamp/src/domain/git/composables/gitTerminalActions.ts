@@ -437,6 +437,7 @@ export function createTerminalActions(state: GitState, refresh?: TerminalRefresh
       const result = await callTauri<string>("stash_push", {
         path: state.repoPath.value,
         message,
+        includeUntracked: true,
       });
       appendOutput(result || "Safety stash created.");
       await Promise.all([

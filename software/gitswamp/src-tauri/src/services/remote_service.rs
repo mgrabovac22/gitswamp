@@ -8,8 +8,21 @@ use crate::constants::{
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::helpers::urlencoded;
+use crate::services::stash_service::StashService;
 
 pub struct RemoteService;
+
+enum PullPlan {
+    UpToDate,
+    FastForward {
+        branch: String,
+        remote_oid: git2::Oid,
+    },
+    Merge {
+        branch: String,
+        remote_oid: git2::Oid,
+    },
+}
 
 impl RemoteService {
     pub fn get_git_path() -> String {
@@ -242,8 +255,7 @@ impl RemoteService {
         ))
     }
 
-    pub fn pull(path: &str, token: Option<&str>) -> Result<String, String> {
-        Self::fetch_all(path, token)?;
+    fn pull_plan(path: &str) -> Result<PullPlan, String> {
         let repo = GitRepository::open(path)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let branch_name = head.shorthand().unwrap_or("main").to_string();
@@ -258,59 +270,178 @@ impl RemoteService {
             .merge_analysis(&[&remote_commit])
             .map_err(|e| e.message().to_string())?;
         if analysis.is_up_to_date() {
-            return Ok("Already up to date.".to_string());
+            return Ok(PullPlan::UpToDate);
         }
         if analysis.is_fast_forward() {
-            let mut reference = repo
-                .find_reference(&format!("refs/heads/{}", branch_name))
-                .map_err(|e| e.message().to_string())?;
-            reference
-                .set_target(remote_oid, "pull: fast-forward")
-                .map_err(|e| e.message().to_string())?;
-            repo.set_head(&format!("refs/heads/{}", branch_name))
-                .map_err(|e| e.message().to_string())?;
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
-                .map_err(|e| e.message().to_string())?;
-            return Ok("Fast-forward merge complete.".to_string());
+            return Ok(PullPlan::FastForward {
+                branch: branch_name,
+                remote_oid,
+            });
         }
         if analysis.is_normal() {
-            repo.merge(&[&remote_commit], None, None)
-                .map_err(|e| e.message().to_string())?;
-            let index = repo.index().map_err(|e| e.message().to_string())?;
-            if index.has_conflicts() {
-                return Err("Merge conflicts detected. Resolve them manually.".to_string());
-            }
-            let mut index = repo.index().map_err(|e| e.message().to_string())?;
-            let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-            let tree = repo
-                .find_tree(tree_oid)
-                .map_err(|e| e.message().to_string())?;
-            let head_commit = repo
-                .head()
-                .map_err(|e| e.message().to_string())?
-                .peel_to_commit()
-                .map_err(|e| e.message().to_string())?;
-            let remote_commit_obj = repo
-                .find_commit(remote_oid)
-                .map_err(|e| e.message().to_string())?;
-            let sig = repo.signature().map_err(|e| e.message().to_string())?;
-            let msg = format!(
-                "Merge branch '{}' of origin into {}",
-                branch_name, branch_name
-            );
-            repo.commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                &msg,
-                &tree,
-                &[&head_commit, &remote_commit_obj],
-            )
-            .map_err(|e| e.message().to_string())?;
-            repo.cleanup_state().map_err(|e| e.message().to_string())?;
-            return Ok("Merge complete.".to_string());
+            return Ok(PullPlan::Merge {
+                branch: branch_name,
+                remote_oid,
+            });
         }
         Err("Pull failed: unexpected merge state.".to_string())
+    }
+
+    fn worktree_change_summary(path: &str) -> Result<(bool, bool), String> {
+        let repo = GitRepository::open(path)?;
+        let mut options = git2::StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(false)
+            .include_ignored(false);
+        let statuses = repo
+            .statuses(Some(&mut options))
+            .map_err(|e| e.message().to_string())?;
+        let has_changes = !statuses.is_empty();
+        let has_tracked = statuses
+            .iter()
+            .any(|entry| entry.status() != git2::Status::WT_NEW);
+        Ok((has_changes, has_tracked))
+    }
+
+    fn execute_pull_plan(path: &str, plan: PullPlan) -> Result<String, String> {
+        match plan {
+            PullPlan::UpToDate => Ok("Already up to date.".to_string()),
+            PullPlan::FastForward { branch, remote_oid } => {
+                let repo = GitRepository::open(path)?;
+                let target = repo
+                    .find_object(remote_oid, None)
+                    .map_err(|e| e.message().to_string())?;
+                let mut checkout = git2::build::CheckoutBuilder::new();
+                checkout.safe();
+                repo.checkout_tree(&target, Some(&mut checkout))
+                    .map_err(|e| e.message().to_string())?;
+                let mut reference = repo
+                    .find_reference(&format!("refs/heads/{}", branch))
+                    .map_err(|e| e.message().to_string())?;
+                reference
+                    .set_target(remote_oid, "pull: fast-forward")
+                    .map_err(|e| e.message().to_string())?;
+                repo.set_head(&format!("refs/heads/{}", branch))
+                    .map_err(|e| e.message().to_string())?;
+                Ok("Fast-forward merge complete.".to_string())
+            }
+            PullPlan::Merge { branch, remote_oid } => {
+                let repo = GitRepository::open(path)?;
+                let remote_commit = repo
+                    .find_annotated_commit(remote_oid)
+                    .map_err(|e| e.message().to_string())?;
+                repo.merge(&[&remote_commit], None, None)
+                    .map_err(|e| e.message().to_string())?;
+                let index = repo.index().map_err(|e| e.message().to_string())?;
+                if index.has_conflicts() {
+                    return Err("Merge conflicts detected. Resolve them manually.".to_string());
+                }
+                let mut index = repo.index().map_err(|e| e.message().to_string())?;
+                let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
+                let tree = repo
+                    .find_tree(tree_oid)
+                    .map_err(|e| e.message().to_string())?;
+                let head_commit = repo
+                    .head()
+                    .map_err(|e| e.message().to_string())?
+                    .peel_to_commit()
+                    .map_err(|e| e.message().to_string())?;
+                let remote_commit_obj = repo
+                    .find_commit(remote_oid)
+                    .map_err(|e| e.message().to_string())?;
+                let sig = repo.signature().map_err(|e| e.message().to_string())?;
+                let msg = format!("Merge branch '{}' of origin into {}", branch, branch);
+                repo.commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    &msg,
+                    &tree,
+                    &[&head_commit, &remote_commit_obj],
+                )
+                .map_err(|e| e.message().to_string())?;
+                repo.cleanup_state().map_err(|e| e.message().to_string())?;
+                Ok("Merge complete.".to_string())
+            }
+        }
+    }
+
+    fn safety_stash_message() -> String {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        format!("GitSwamp pull safety {}", timestamp)
+    }
+
+    pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
+        Self::fetch_all(path, token)?;
+        let plan = Self::pull_plan(path)?;
+        if matches!(&plan, PullPlan::UpToDate) {
+            return Ok("Already up to date. Local changes were left untouched.".to_string());
+        }
+
+        let (has_local_changes, has_tracked_changes) = Self::worktree_change_summary(path)?;
+        if has_local_changes && !auto_stash {
+            return Err(
+                "WORKTREE_DIRTY: Pull stopped because local working changes are present."
+                    .to_string(),
+            );
+        }
+
+        // Leave untracked files in place. Safe checkout refuses to overwrite them,
+        // avoiding an expensive stash of generated directories such as node_modules.
+        let safety_stash = if has_tracked_changes {
+            Some(StashService::stash_push_oid(
+                path,
+                Some(&Self::safety_stash_message()),
+                false,
+            )?)
+        } else {
+            None
+        };
+
+        let pull_result = Self::execute_pull_plan(path, plan);
+        match (pull_result, safety_stash) {
+            (Ok(result), None) if has_local_changes => {
+                Ok(format!("{} Untracked files were left untouched.", result))
+            }
+            (Ok(result), None) => Ok(result),
+            (Ok(result), Some(stash_oid)) => {
+                StashService::restore_stash_with_index(path, stash_oid).map_err(|restore_error| {
+                    format!(
+                        "PULL_SUCCEEDED_STASH_RESTORE_FAILED: {} Local changes remain safe in stash {}. {}",
+                        result, stash_oid, restore_error
+                    )
+                })?;
+                Ok(format!("{} Local changes were restored.", result))
+            }
+            (Err(pull_error), None) => Err(pull_error),
+            (Err(pull_error), Some(stash_oid)) => {
+                let repo_state_is_clean = GitRepository::open(path)
+                    .map(|repo| repo.state() == git2::RepositoryState::Clean)
+                    .unwrap_or(false);
+
+                if repo_state_is_clean {
+                    match StashService::restore_stash_with_index(path, stash_oid) {
+                        Ok(_) => Err(format!(
+                            "Pull failed, and local changes were restored: {}",
+                            pull_error
+                        )),
+                        Err(restore_error) => Err(format!(
+                            "PULL_FAILED_STASH_RETAINED: Pull failed: {} Local changes remain safe in stash {}. {}",
+                            pull_error, stash_oid, restore_error
+                        )),
+                    }
+                } else {
+                    Err(format!(
+                        "PULL_FAILED_STASH_RETAINED: Pull stopped in a Git operation state: {} Local changes remain safe in stash {}.",
+                        pull_error, stash_oid
+                    ))
+                }
+            }
+        }
     }
 
     pub fn push(path: &str, token: Option<&str>) -> Result<String, String> {
@@ -732,5 +863,420 @@ impl RemoteService {
         let repo = GitRepository::open(path)?;
         let has_origin = repo.find_remote("origin").is_ok();
         Ok(has_origin)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use git2::{IndexAddOption, Repository, Signature, StatusOptions};
+
+    use super::RemoteService;
+    use crate::services::git_service::GitService;
+
+    struct TestWorkspace {
+        path: PathBuf,
+    }
+
+    impl TestWorkspace {
+        fn new(label: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after Unix epoch")
+                .as_nanos();
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("gitswamp-tests")
+                .join(format!("{}-{}-{}", label, std::process::id(), nonce));
+            fs::create_dir_all(&path).expect("test workspace should be created");
+            Self { path }
+        }
+
+        fn child(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+    }
+
+    impl Drop for TestWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn configure_identity(repo: &Repository, name: &str, email: &str) {
+        let mut config = repo.config().expect("repository config should open");
+        config
+            .set_str("user.name", name)
+            .expect("name should be set");
+        config
+            .set_str("user.email", email)
+            .expect("email should be set");
+    }
+
+    fn write_file(root: &Path, relative: &str, content: &str) {
+        let target = root.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).expect("parent directory should be created");
+        }
+        fs::write(target, content).expect("test file should be written");
+    }
+
+    fn commit_all(repo: &Repository, message: &str, signature: &Signature<'_>) -> git2::Oid {
+        let mut index = repo.index().expect("index should open");
+        index
+            .add_all(["*"], IndexAddOption::DEFAULT, None)
+            .expect("files should stage");
+        index.write().expect("index should write");
+        let tree_oid = index.write_tree().expect("tree should write");
+        let tree = repo.find_tree(tree_oid).expect("tree should exist");
+
+        if let Ok(parent) = repo.head().and_then(|head| head.peel_to_commit()) {
+            repo.commit(
+                Some("HEAD"),
+                signature,
+                signature,
+                message,
+                &tree,
+                &[&parent],
+            )
+            .expect("commit should be created")
+        } else {
+            repo.commit(Some("HEAD"), signature, signature, message, &tree, &[])
+                .expect("root commit should be created")
+        }
+    }
+
+    fn push_head(repo: &Repository) {
+        let head_ref = repo
+            .head()
+            .expect("HEAD should exist")
+            .name()
+            .expect("HEAD should have a ref name")
+            .to_string();
+        let refspec = format!("{}:{}", head_ref, head_ref);
+        repo.find_remote("origin")
+            .expect("origin should exist")
+            .push(&[&refspec], None)
+            .expect("HEAD should push");
+    }
+
+    #[test]
+    fn amend_uses_staged_snapshot_and_preserves_unstaged_work() {
+        let workspace = TestWorkspace::new("amend");
+        let repo_path = workspace.child("repo");
+        let repo = Repository::init(&repo_path).expect("repository should initialize");
+        configure_identity(&repo, "Original Author", "original@example.com");
+        let original = Signature::now("Original Author", "original@example.com")
+            .expect("signature should be valid");
+
+        write_file(&repo_path, "base.txt", "base\n");
+        let original_oid = commit_all(&repo, "Initial commit", &original);
+        configure_identity(&repo, "Current User", "current@example.com");
+
+        write_file(&repo_path, "staged.txt", "included\n");
+        write_file(&repo_path, "unstaged.txt", "keep me local\n");
+        let mut index = repo.index().expect("index should open");
+        index
+            .add_path(Path::new("staged.txt"))
+            .expect("staged file should be added");
+        index.write().expect("index should write");
+        drop(index);
+        drop(repo);
+
+        let amended_oid = GitService::amend_commit(
+            repo_path.to_str().expect("path should be UTF-8"),
+            "Updated subject\n\nDetailed body",
+            false,
+            true,
+        )
+        .expect("amend should succeed");
+        assert_ne!(amended_oid, original_oid.to_string());
+
+        let repo = Repository::open(&repo_path).expect("repository should reopen");
+        let head = repo
+            .head()
+            .and_then(|value| value.peel_to_commit())
+            .expect("amended HEAD should exist");
+        assert_eq!(head.parent_count(), 0);
+        assert_eq!(head.author().name(), Some("Original Author"));
+        assert_eq!(head.committer().name(), Some("Current User"));
+        assert!(head
+            .message()
+            .unwrap_or_default()
+            .contains("Signed-off-by: Current User <current@example.com>"));
+        assert!(head
+            .tree()
+            .expect("HEAD tree should exist")
+            .get_path(Path::new("staged.txt"))
+            .is_ok());
+        assert!(repo
+            .head()
+            .and_then(|value| value.peel_to_tree())
+            .expect("HEAD tree should exist")
+            .get_path(Path::new("unstaged.txt"))
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(repo_path.join("unstaged.txt"))
+                .expect("unstaged file should remain"),
+            "keep me local\n"
+        );
+
+        let amended_sha = head.id().to_string();
+        drop(head);
+        drop(repo);
+
+        write_file(&repo_path, "message-only.txt", "keep staged\n");
+        let repo = Repository::open(&repo_path).expect("repository should reopen");
+        let mut index = repo.index().expect("index should open");
+        index
+            .add_path(Path::new("message-only.txt"))
+            .expect("message-only file should stage");
+        index.write().expect("index should write");
+        drop(index);
+        drop(repo);
+
+        GitService::edit_commit_message(
+            repo_path.to_str().expect("path should be UTF-8"),
+            &amended_sha,
+            "Message-only edit",
+        )
+        .expect("message-only edit should succeed");
+
+        let repo = Repository::open(&repo_path).expect("repository should reopen");
+        let head = repo
+            .head()
+            .and_then(|value| value.peel_to_commit())
+            .expect("message-only HEAD should exist");
+        assert_eq!(head.message(), Some("Message-only edit"));
+        assert!(head
+            .tree()
+            .expect("HEAD tree should exist")
+            .get_path(Path::new("message-only.txt"))
+            .is_err());
+        let mut options = StatusOptions::new();
+        options.include_untracked(true);
+        let staged_file = repo
+            .statuses(Some(&mut options))
+            .expect("statuses should load")
+            .iter()
+            .find(|entry| entry.path() == Some("message-only.txt"))
+            .map(|entry| entry.status())
+            .expect("message-only file should remain staged");
+        assert!(staged_file.contains(git2::Status::INDEX_NEW));
+    }
+
+    #[test]
+    fn protected_pull_restores_staged_unstaged_and_untracked_changes() {
+        let workspace = TestWorkspace::new("pull");
+        let remote_path = workspace.child("remote.git");
+        let seed_path = workspace.child("seed");
+        let local_path = workspace.child("local");
+        let peer_path = workspace.child("peer");
+        let remote = Repository::init_bare(&remote_path).expect("bare remote should initialize");
+        let seed = Repository::init(&seed_path).expect("seed should initialize");
+        configure_identity(&seed, "Test User", "test@example.com");
+        let signature =
+            Signature::now("Test User", "test@example.com").expect("signature should be valid");
+
+        write_file(&seed_path, "base.txt", "base\n");
+        write_file(&seed_path, "partial.txt", "original\n");
+        commit_all(&seed, "Initial commit", &signature);
+        seed.remote(
+            "origin",
+            remote_path.to_str().expect("remote path should be UTF-8"),
+        )
+        .expect("origin should be created");
+        let branch_ref = seed
+            .head()
+            .expect("seed HEAD should exist")
+            .name()
+            .expect("seed HEAD should be named")
+            .to_string();
+        remote
+            .set_head(&branch_ref)
+            .expect("bare HEAD should target seed branch");
+        push_head(&seed);
+        drop(remote);
+        drop(seed);
+
+        let local = Repository::clone(
+            remote_path.to_str().expect("remote path should be UTF-8"),
+            &local_path,
+        )
+        .expect("local clone should succeed");
+        configure_identity(&local, "Local User", "local@example.com");
+        let initial_local_head = local
+            .head()
+            .expect("local HEAD should exist")
+            .target()
+            .expect("local HEAD should have an oid");
+
+        let peer = Repository::clone(
+            remote_path.to_str().expect("remote path should be UTF-8"),
+            &peer_path,
+        )
+        .expect("peer clone should succeed");
+        configure_identity(&peer, "Peer User", "peer@example.com");
+        let peer_signature =
+            Signature::now("Peer User", "peer@example.com").expect("signature should be valid");
+        write_file(&peer_path, "remote.txt", "from remote\n");
+        let remote_head = commit_all(&peer, "Remote update", &peer_signature);
+        push_head(&peer);
+        drop(peer);
+
+        write_file(&local_path, "base.txt", "local unstaged edit\n");
+        write_file(&local_path, "staged.txt", "local staged edit\n");
+        write_file(&local_path, "untracked.txt", "local untracked edit\n");
+        write_file(&local_path, "partial.txt", "staged layer\n");
+        let mut index = local.index().expect("local index should open");
+        index
+            .add_path(Path::new("staged.txt"))
+            .expect("local file should stage");
+        index
+            .add_path(Path::new("partial.txt"))
+            .expect("partial file should stage");
+        index.write().expect("local index should write");
+        drop(index);
+        write_file(&local_path, "partial.txt", "unstaged layer\n");
+        drop(local);
+
+        let local_path_string = local_path.to_str().expect("local path should be UTF-8");
+        let refused = RemoteService::pull(local_path_string, None, false)
+            .expect_err("unprotected pull should be rejected");
+        assert!(refused.starts_with("WORKTREE_DIRTY:"));
+        let repo = Repository::open(&local_path).expect("local repository should reopen");
+        assert_eq!(
+            repo.head().expect("HEAD should exist").target(),
+            Some(initial_local_head)
+        );
+        drop(repo);
+
+        let result = RemoteService::pull(local_path_string, None, true)
+            .expect("protected pull should succeed");
+        assert!(result.contains("Local changes were restored"));
+
+        let mut repo = Repository::open(&local_path).expect("local repository should reopen");
+        assert_eq!(
+            repo.head().expect("HEAD should exist").target(),
+            Some(remote_head)
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("base.txt"))
+                .expect("tracked edit should remain")
+                .replace("\r\n", "\n"),
+            "local unstaged edit\n"
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("untracked.txt"))
+                .expect("untracked edit should remain")
+                .replace("\r\n", "\n"),
+            "local untracked edit\n"
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("partial.txt"))
+                .expect("partial worktree edit should remain")
+                .replace("\r\n", "\n"),
+            "unstaged layer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("remote.txt"))
+                .expect("remote file should arrive")
+                .replace("\r\n", "\n"),
+            "from remote\n"
+        );
+
+        let mut status_options = StatusOptions::new();
+        status_options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true);
+        let statuses = repo
+            .statuses(Some(&mut status_options))
+            .expect("statuses should load");
+        let status_for = |path: &str| {
+            statuses
+                .iter()
+                .find(|entry| entry.path() == Some(path))
+                .map(|entry| entry.status())
+                .expect("expected status should exist")
+        };
+        assert!(status_for("staged.txt").is_index_new());
+        assert!(status_for("base.txt").is_wt_modified());
+        assert!(status_for("untracked.txt").is_wt_new());
+        assert!(status_for("partial.txt").is_index_modified());
+        assert!(status_for("partial.txt").is_wt_modified());
+        drop(statuses);
+
+        let index = repo.index().expect("restored index should open");
+        let partial_entry = index
+            .get_path(Path::new("partial.txt"), 0)
+            .expect("partial file should remain staged");
+        let partial_blob = repo
+            .find_blob(partial_entry.id)
+            .expect("staged partial blob should exist");
+        assert_eq!(partial_blob.content(), b"staged layer\n");
+        drop(partial_blob);
+        drop(index);
+
+        let mut stash_count = 0usize;
+        repo.stash_foreach(|_, _, _| {
+            stash_count += 1;
+            true
+        })
+        .expect("stash list should load");
+        assert_eq!(stash_count, 0, "successful safety stash should be removed");
+
+        let head_object = repo
+            .head()
+            .and_then(|head| head.peel(git2::ObjectType::Commit))
+            .expect("HEAD object should exist");
+        repo.reset(&head_object, git2::ResetType::Hard, None)
+            .expect("local test changes should reset");
+        drop(head_object);
+        drop(repo);
+        for file in ["staged.txt", "untracked.txt"] {
+            let _ = fs::remove_file(local_path.join(file));
+        }
+
+        let collision_peer_path = workspace.child("collision-peer");
+        let collision_peer = Repository::clone(
+            remote_path.to_str().expect("remote path should be UTF-8"),
+            &collision_peer_path,
+        )
+        .expect("collision peer clone should succeed");
+        configure_identity(&collision_peer, "Peer User", "peer@example.com");
+        write_file(&collision_peer_path, "collision.txt", "remote content\n");
+        commit_all(&collision_peer, "Add collision file", &peer_signature);
+        push_head(&collision_peer);
+        drop(collision_peer);
+
+        write_file(&local_path, "collision.txt", "local untracked content\n");
+        RemoteService::pull(local_path_string, None, true)
+            .expect_err("safe pull should refuse to overwrite an untracked file");
+
+        let mut repo = Repository::open(&local_path).expect("local repository should reopen");
+        assert_eq!(
+            repo.head().expect("HEAD should exist").target(),
+            Some(remote_head),
+            "failed checkout must not move the local branch"
+        );
+        assert_eq!(
+            fs::read_to_string(local_path.join("collision.txt"))
+                .expect("local collision file should remain")
+                .replace("\r\n", "\n"),
+            "local untracked content\n"
+        );
+        let mut stash_count = 0usize;
+        repo.stash_foreach(|_, _, _| {
+            stash_count += 1;
+            true
+        })
+        .expect("stash list should load");
+        assert_eq!(
+            stash_count, 0,
+            "untracked-only pull should not create a stash"
+        );
     }
 }

@@ -7,6 +7,9 @@ const props = defineProps<{
   existingBranchNames?: string[];
   showStashDialog: boolean;
   stashMessage: string;
+  stashIncludeUntracked: boolean;
+  stashUntrackedFileCount: number;
+  stashTrackedChangeCount: number;
   showTagDialog: boolean;
   tagName: string;
   showAnnotatedTagDialog: boolean;
@@ -26,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:newBranchName": [value: string];
   "update:stashMessage": [value: string];
+  "update:stashIncludeUntracked": [value: boolean];
   "update:tagName": [value: string];
   "update:annotatedTagName": [value: string];
   "update:annotatedTagMessage": [value: string];
@@ -58,12 +62,21 @@ const branchNameExists = computed(() => {
   return (props.existingBranchNames || []).some((branchName) => branchName.trim().toLowerCase() === candidate);
 });
 
+const canSubmitStash = computed(() => props.stashTrackedChangeCount > 0
+  || (props.stashIncludeUntracked && props.stashUntrackedFileCount > 0));
+
 function submitBranch() {
   if (!props.newBranchName.trim() || branchNameExists.value) {
     return;
   }
 
   emit("submit:branch");
+}
+
+function submitStash() {
+  if (canSubmitStash.value) {
+    emit("submit:stash");
+  }
 }
 </script>
 
@@ -96,13 +109,40 @@ function submitBranch() {
         :value="props.stashMessage"
         @input="emit('update:stashMessage', ($event.target as HTMLInputElement).value)"
         placeholder="Stash message (optional)..."
-        class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
-        @keyup.enter="emit('submit:stash')"
+        class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-3"
+        @keyup.enter="submitStash"
         autofocus
       />
+      <label class="mb-1 flex cursor-pointer items-center gap-2 text-xs text-[var(--foreground)]">
+        <input
+          type="checkbox"
+          :checked="props.stashIncludeUntracked"
+          class="h-3.5 w-3.5 rounded border-[var(--border)] bg-[var(--input-background)] accent-[var(--primary)]"
+          @change="emit('update:stashIncludeUntracked', ($event.target as HTMLInputElement).checked)"
+        />
+        <span>Include untracked files</span>
+        <span v-if="props.stashUntrackedFileCount > 0" class="text-[10px] text-[var(--muted-foreground)]">
+          {{ props.stashUntrackedFileCount }}
+        </span>
+      </label>
+      <p class="mb-4 text-[10px] leading-relaxed text-[var(--muted-foreground)]">
+        Tracked-only stash is faster. Include untracked files only when they must be stored too.
+      </p>
+      <p
+        v-if="props.stashTrackedChangeCount === 0 && props.stashUntrackedFileCount > 0 && !props.stashIncludeUntracked"
+        class="mb-3 text-[10px] text-[#f59e0b]"
+      >
+        Select untracked files to create this stash.
+      </p>
       <div class="flex justify-end gap-2">
         <button @click="emit('close:stash')" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
-        <button @click="emit('submit:stash')" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded transition-colors">Stash</button>
+        <button
+          @click="submitStash"
+          :disabled="!canSubmitStash"
+          class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Stash
+        </button>
       </div>
     </div>
   </div>

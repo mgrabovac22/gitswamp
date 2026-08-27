@@ -11,7 +11,7 @@ type RefreshDeps = {
 export function createStashActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
   let stashOperationInProgress = false;
 
-  async function stashPush(message?: string) {
+  async function stashPush(message?: string, includeUntracked = false) {
     if (!state.repoPath.value) return;
     if (state.hasConflicts.value) {
       toast.error("Cannot stash while conflicts exist. Resolve conflicts first.");
@@ -31,14 +31,21 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
       const result = await callTauri<string>("stash_push", {
         path: state.repoPath.value,
         message: message || null,
+        includeUntracked,
       });
-      state.terminalOutput.value.push("$ git stash push" + (message ? ' -m "' + message + '"' : "") + "\n" + result);
+      state.terminalOutput.value.push(
+        "$ git stash push"
+          + (includeUntracked ? " --include-untracked" : "")
+          + (message ? ' -m "' + message + '"' : "")
+          + "\n"
+          + result,
+      );
       await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
-      toast.success("Stash created.", 2500);
+      toast.success(includeUntracked ? "Stash created with untracked files." : "Tracked changes stashed.", 2500);
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git stash push\nError: " + e);
-      toast.error("Failed to create stash.");
+      toast.error("Failed to create stash: " + String(e));
     } finally {
       toast.remove(loadingToast);
       stashOperationInProgress = false;

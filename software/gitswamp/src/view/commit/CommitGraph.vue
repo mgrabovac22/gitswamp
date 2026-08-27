@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
+import { Check, RotateCcw } from "lucide-vue-next";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -38,6 +39,7 @@ const props = defineProps<{
   openPullRequestBranches?: string[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
   commitWaveLoading?: boolean;
+  amendModeActive?: boolean;
 }>();
 
 type CommitSelectPayload = {
@@ -84,6 +86,7 @@ const emit = defineEmits<{
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
   focusHead: [];
+  setAmendMode: [enabled: boolean];
 }>();
 
 const searchInput = ref("");
@@ -100,6 +103,7 @@ const ctxX = ref(0);
 const ctxY = ref(0);
 const ctxCommit = ref<CommitInfo | null>(null);
 const ctxResetSub = ref(false);
+const ctxWorkingChanges = ref(false);
 const refCtxVisible = ref(false);
 const refCtxX = ref(0);
 const refCtxY = ref(0);
@@ -963,14 +967,34 @@ function ctxBranchRef(): MergedRef | null {
 
 function ctxIsHeadCommit(): boolean {
   if (!ctxCommit.value) return false;
+  if (props.headSha) return ctxCommit.value.sha === props.headSha;
   const refs = mergedRefs(ctxCommit.value);
   return refs.some(r => r.name === props.currentBranch);
+}
+
+function onWorkingChangesContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const menuWidth = 300;
+  const menuHeight = 76;
+  let x = event.clientX;
+  let y = event.clientY;
+  if (x + menuWidth > window.innerWidth) x = Math.max(8, window.innerWidth - menuWidth - 8);
+  if (y + menuHeight > window.innerHeight) y = Math.max(8, window.innerHeight - menuHeight - 8);
+  ctxX.value = x;
+  ctxY.value = y;
+  ctxCommit.value = null;
+  ctxWorkingChanges.value = true;
+  ctxResetSub.value = false;
+  ctxVisible.value = true;
+  closeRefCtx();
+  closeStashCtx();
 }
 
 function onCtx(e: MouseEvent, commit: CommitInfo) {
   e.preventDefault();
   ctxCommit.value = commit;
-  const menuWidth = 260;
+  const menuWidth = 360;
   const menuMaxHeight = window.innerHeight * 0.8;
   let x = e.clientX;
   let y = e.clientY;
@@ -982,12 +1006,16 @@ function onCtx(e: MouseEvent, commit: CommitInfo) {
   }
   ctxX.value = x;
   ctxY.value = y;
+  ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
   ctxVisible.value = true;
+  closeRefCtx();
+  closeStashCtx();
 }
 
 function closeCtx() {
   ctxVisible.value = false;
+  ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
   closeRefCtx();
   closeStashCtx();
@@ -1038,6 +1066,12 @@ function applyBranchContextAction(action: string, branch: string, sourceRemote =
 }
 
 function ctxAction(action: string) {
+  if (action === "toggle-amend") {
+    const enabled = !props.amendModeActive;
+    closeCtx();
+    emit("setAmendMode", enabled);
+    return;
+  }
   if (!ctxCommit.value) return;
   const sha = ctxCommit.value.sha;
   const branch = ctxBranchName();
@@ -1565,6 +1599,7 @@ onUnmounted(() => {
           :class="!hasCommitSelection ? 'bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]'"
           :style="{ top: '0px', height: rowHeight + 'px' }"
           @click="emit('selectWorkingChanges')"
+          @contextmenu="onWorkingChangesContextMenu"
         >
           <div class="flex-shrink-0 min-w-0 px-2" :style="{ width: graphBranchWidth + 'px' }">
             <span v-if="!showMessageColumn" class="block truncate text-[9px] font-semibold text-[var(--primary)]">{{ workingChangesBadgeLabel }}</span>
@@ -2036,10 +2071,38 @@ onUnmounted(() => {
 
       <div
         v-if="ctxVisible"
-        class="fixed z-[100] w-[360px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
+        class="fixed z-[100] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
+        :class="ctxWorkingChanges ? 'w-[300px]' : 'w-[360px]'"
         :style="{ left: ctxX + 'px', top: ctxY + 'px' }"
         @click.stop
       >
+        <template v-if="ctxWorkingChanges">
+          <button
+            class="ctx-item ctx-amend-item"
+            :disabled="!amendModeActive && (hasConflicts || !headSha)"
+            :class="!amendModeActive && (hasConflicts || !headSha) ? 'cursor-not-allowed opacity-45' : ''"
+            @click="ctxAction('toggle-amend')"
+          >
+            <span class="ctx-icon">
+              <span class="flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-[var(--border)] bg-[var(--input-background)]">
+                <Check v-if="amendModeActive" class="h-3 w-3 text-[var(--primary)]" />
+              </span>
+            </span>
+            <span class="ctx-main flex items-center gap-1.5">
+              <RotateCcw class="h-3.5 w-3.5 text-[var(--primary)]" />
+              Amend last commit
+            </span>
+            <span class="ctx-sub">
+              {{ amendModeActive
+                ? 'Amend mode is active in the Changes panel'
+                : hasConflicts
+                  ? 'Resolve conflicts before amending'
+                  : 'Add staged changes and edit the current HEAD commit' }}
+            </span>
+          </button>
+        </template>
+
+        <template v-else>
         <template v-if="ctxHasBranch()">
           <div class="space-y-1">
             <button class="ctx-item" @click="ctxAction('pull')"><span class="ctx-icon">⬇</span><span class="ctx-main">Pull changes</span><span class="ctx-sub">Fetch and fast-forward current branch</span></button>
@@ -2081,8 +2144,30 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <template v-if="ctxHasBranch() && ctxIsHeadCommit()">
-          <button class="ctx-item mt-1" @click="ctxAction('edit-message')"><span class="ctx-icon">✏</span><span class="ctx-main">Edit commit message</span><span class="ctx-sub">Amend message of current HEAD commit</span></button>
+        <template v-if="ctxIsHeadCommit()">
+          <button
+            class="ctx-item ctx-amend-item mt-1"
+            :disabled="!amendModeActive && hasConflicts"
+            :class="!amendModeActive && hasConflicts ? 'cursor-not-allowed opacity-45' : ''"
+            @click="ctxAction('toggle-amend')"
+          >
+            <span class="ctx-icon">
+              <span class="flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-[var(--border)] bg-[var(--input-background)]">
+                <Check v-if="amendModeActive" class="h-3 w-3 text-[var(--primary)]" />
+              </span>
+            </span>
+            <span class="ctx-main flex items-center gap-1.5">
+              <RotateCcw class="h-3.5 w-3.5 text-[var(--primary)]" />
+              Amend last commit
+            </span>
+            <span class="ctx-sub">
+              {{ amendModeActive
+                ? 'Amend mode is active in the Changes panel'
+                : hasConflicts
+                  ? 'Resolve conflicts before amending'
+                  : 'Use staged files, edit message and choose amend options' }}
+            </span>
+          </button>
         </template>
 
         <div class="border-t border-[var(--border)] my-1" />
@@ -2102,7 +2187,7 @@ onUnmounted(() => {
           <button class="ctx-item" @click="ctxAction('tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Create lightweight tag</span><span class="ctx-sub">Create tag on this commit</span></button>
           <button class="ctx-item" @click="ctxAction('annotated-tag')"><span class="ctx-icon">🏷✏</span><span class="ctx-main">Create annotated tag</span><span class="ctx-sub">Create tag with message and metadata</span></button>
         </div>
-
+        </template>
       </div>
     </Teleport>
   </div>
@@ -2270,6 +2355,23 @@ onUnmounted(() => {
   line-height: 1.2;
   color: var(--muted-foreground);
 }
+.ctx-amend-item {
+  grid-template-columns: 1rem minmax(0, 1fr);
+  grid-template-areas:
+    "icon main"
+    "sub sub";
+  column-gap: 0.4rem;
+  row-gap: 0.15rem;
+}
+.ctx-amend-item .ctx-icon {
+  grid-area: icon;
+  display: flex;
+  align-self: center;
+}
+.ctx-amend-item .ctx-sub {
+  display: block;
+  padding-left: 1.4rem;
+}
 .ctx-item-reset {
   grid-template-columns: 1fr auto;
   grid-template-areas: "main arrow";
@@ -2304,6 +2406,13 @@ onUnmounted(() => {
 :global(html.dummy-mode .ctx-item-reset) {
   grid-template-areas:
     "main arrow"
+    "sub sub";
+}
+
+:global(html.dummy-mode .ctx-amend-item) {
+  grid-template-columns: 1rem minmax(0, 1fr);
+  grid-template-areas:
+    "icon main"
     "sub sub";
 }
 </style>

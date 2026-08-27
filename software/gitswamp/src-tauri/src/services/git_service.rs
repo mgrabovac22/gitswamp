@@ -1500,9 +1500,17 @@ impl GitService {
     }
 
     pub fn stage_file(path: &str, file_path: &str) -> Result<(), String> {
+        Self::stage_files(path, &[file_path.to_string()])
+    }
+
+    pub fn stage_files(path: &str, file_paths: &[String]) -> Result<(), String> {
+        if file_paths.is_empty() {
+            return Ok(());
+        }
+
         let repo = GitRepository::open(path)?;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
-        let pathspec = [Path::new(file_path)];
+        let pathspec: Vec<&Path> = file_paths.iter().map(Path::new).collect();
         index
             .add_all(pathspec.iter(), git2::IndexAddOption::DEFAULT, None)
             .map_err(|e| e.message().to_string())?;
@@ -1511,17 +1519,27 @@ impl GitService {
     }
 
     pub fn unstage_file(path: &str, file_path: &str) -> Result<(), String> {
+        Self::unstage_files(path, &[file_path.to_string()])
+    }
+
+    pub fn unstage_files(path: &str, file_paths: &[String]) -> Result<(), String> {
+        if file_paths.is_empty() {
+            return Ok(());
+        }
+
         let repo = GitRepository::open(path)?;
-        let file = Path::new(file_path);
+        let paths: Vec<&Path> = file_paths.iter().map(Path::new).collect();
 
         if let Ok(head_obj) = repo.revparse_single("HEAD") {
-            repo.reset_default(Some(&head_obj), [file])
+            repo.reset_default(Some(&head_obj), paths)
                 .map_err(|e| e.message().to_string())?;
             return Ok(());
         }
 
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
-        let _ = index.remove_path(file);
+        for file in file_paths {
+            let _ = index.remove_path(Path::new(file));
+        }
         index.write().map_err(|e| e.message().to_string())?;
         Ok(())
     }
@@ -1564,8 +1582,8 @@ impl GitService {
         Ok(())
     }
 
-    pub fn pull(path: &str, token: Option<&str>) -> Result<String, String> {
-        RemoteService::pull(path, token)
+    pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
+        RemoteService::pull(path, token, auto_stash)
     }
 
     pub fn push(path: &str, token: Option<&str>) -> Result<String, String> {
@@ -2284,8 +2302,12 @@ impl GitService {
         StashService::stash_list(path)
     }
 
-    pub fn stash_push(path: &str, message: Option<&str>) -> Result<String, String> {
-        StashService::stash_push(path, message)
+    pub fn stash_push(
+        path: &str,
+        message: Option<&str>,
+        include_untracked: bool,
+    ) -> Result<String, String> {
+        StashService::stash_push(path, message, include_untracked)
     }
 
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {
@@ -2520,10 +2542,135 @@ impl GitService {
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let head_commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
         if head_commit.id().to_string() == sha {
-            GitRepository::git_cli(path, &["commit", "--amend", "-m", new_message])
+            drop(head_commit);
+            drop(head);
+            drop(repo);
+            Self::amend_commit_internal(path, new_message, false, false, false)
         } else {
             Err("Can only edit the message of the HEAD commit.".to_string())
         }
+    }
+
+    fn append_signoff(message: &str, signature: &git2::Signature<'_>) -> Result<String, String> {
+        let name = signature
+            .name()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Git user.name is required to add Signed-off-by.".to_string())?;
+        let email = signature
+            .email()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Git user.email is required to add Signed-off-by.".to_string())?;
+        let trailer = format!("Signed-off-by: {} <{}>", name.trim(), email.trim());
+        let trimmed = message.trim_end();
+
+        if trimmed
+            .lines()
+            .any(|line| line.trim().eq_ignore_ascii_case(&trailer))
+        {
+            return Ok(trimmed.to_string());
+        }
+
+        Ok(format!("{}\n\n{}", trimmed, trailer))
+    }
+
+    pub fn amend_commit(
+        path: &str,
+        message: &str,
+        reset_author: bool,
+        signoff: bool,
+    ) -> Result<String, String> {
+        Self::amend_commit_internal(path, message, reset_author, signoff, true)
+    }
+
+    fn amend_commit_internal(
+        path: &str,
+        message: &str,
+        reset_author: bool,
+        signoff: bool,
+        include_staged_snapshot: bool,
+    ) -> Result<String, String> {
+        let clean_message = message.trim();
+        if clean_message.is_empty() {
+            return Err("Commit message cannot be empty.".to_string());
+        }
+
+        let repo = GitRepository::open(path)?;
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let head_reference_name = head.name().map(str::to_string);
+        let head_is_branch = head.is_branch();
+        let head_commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Err("Cannot amend while unresolved conflicts exist.".to_string());
+        }
+
+        let tree_oid = if include_staged_snapshot {
+            index.write_tree().map_err(|e| e.message().to_string())?
+        } else {
+            head_commit.tree_id()
+        };
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
+        let configured_signature = repo.signature().map_err(|e| {
+            format!(
+                "Git identity is not configured. Set user.name and user.email before amending: {}",
+                e.message()
+            )
+        })?;
+        let author = if reset_author {
+            configured_signature.clone()
+        } else {
+            head_commit.author()
+        };
+        let final_message = if signoff {
+            Self::append_signoff(clean_message, &configured_signature)?
+        } else {
+            clean_message.to_string()
+        };
+
+        let parents = (0..head_commit.parent_count())
+            .map(|index| {
+                head_commit
+                    .parent(index)
+                    .map_err(|e| e.message().to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+
+        if tree_oid == head_commit.tree_id()
+            && final_message == head_commit.message().unwrap_or_default().trim_end()
+            && !reset_author
+        {
+            return Err("Nothing changed in the staged snapshot or commit message.".to_string());
+        }
+
+        let oid = repo
+            .commit(
+                None,
+                &author,
+                &configured_signature,
+                &final_message,
+                &tree,
+                &parent_refs,
+            )
+            .map_err(|e| e.message().to_string())?;
+
+        if head_is_branch {
+            let reference_name = head_reference_name
+                .ok_or_else(|| "Current branch reference is not available.".to_string())?;
+            repo.find_reference(&reference_name)
+                .map_err(|e| e.message().to_string())?
+                .set_target(oid, "commit: amend")
+                .map_err(|e| e.message().to_string())?;
+            repo.set_head(&reference_name)
+                .map_err(|e| e.message().to_string())?;
+        } else {
+            repo.set_head_detached(oid)
+                .map_err(|e| e.message().to_string())?;
+        }
+
+        Ok(oid.to_string())
     }
 
     pub fn create_annotated_tag(

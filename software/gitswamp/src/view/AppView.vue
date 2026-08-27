@@ -199,6 +199,7 @@ const backgroundMaintenanceTimerId = ref<number | null>(null);
 const backgroundMaintenanceInFlight = ref(false);
 const newBranchName = ref("");
 const stashMessage = ref("");
+const stashIncludeUntracked = ref(false);
 const showEditMessageDialog = ref(false);
 const editMessageSha = ref("");
 const editMessageText = ref("");
@@ -2573,7 +2574,7 @@ function maybeShowStaleWorkReminder(): void {
         style: "neutral",
         onClick: () => {
           stashMessage.value = `WIP ${new Date().toLocaleString()}`;
-          showStashDialog.value = true;
+          handleStash();
         },
       },
       { label: "Mute", style: "neutral", onClick: () => muteBackgroundReminder({ staleWorkReminderEnabled: false }, "Stale work") },
@@ -2649,7 +2650,7 @@ function maybeShowLargeChangeReminder(threshold: number): void {
         style: "neutral",
         onClick: () => {
           stashMessage.value = `WIP ${new Date().toLocaleString()}`;
-          showStashDialog.value = true;
+          handleStash();
         },
       },
       { label: "Mute", style: "neutral", onClick: () => muteBackgroundReminder({ largeChangeReminderEnabled: false }, "Large worktree") },
@@ -2721,11 +2722,65 @@ async function warmCommitDetailsCache(): Promise<void> {
   }
 }
 
-async function handlePull() {
+function isUntrackedStatus(file: { status?: string; staged?: boolean; conflicted?: boolean }): boolean {
+  const status = (file.status || "").toLowerCase();
+  return !file.staged
+    && !file.conflicted
+    && (status === "new" || status === "added" || status === "untracked" || status === "??");
+}
+
+const stashUntrackedFileCount = computed(() => git.unstagedFiles.value.filter(isUntrackedStatus).length);
+const stashTrackedChangeCount = computed(() => {
+  const paths = new Set<string>();
+  for (const file of [...git.stagedFiles.value, ...git.unstagedFiles.value]) {
+    if (!isUntrackedStatus(file)) paths.add(file.path);
+  }
+  return paths.size;
+});
+
+async function handlePull(autoStash = false) {
+  if (git.hasConflicts.value) {
+    toast.warning("Resolve current conflicts before pulling.");
+    onSelectConflicts();
+    return;
+  }
+
+  const changedPaths = new Set(git.fileStatuses.value.map((file) => file.path));
+  if (!autoStash && changedPaths.size > 0) {
+    const promptedRepoPath = git.repoPath.value;
+    const stagedCount = new Set(git.stagedFiles.value.map((file) => file.path)).size;
+    const untrackedCount = stashUntrackedFileCount.value;
+    const unstagedCount = new Set(
+      git.unstagedFiles.value.filter((file) => !isUntrackedStatus(file)).map((file) => file.path),
+    ).size;
+    toast.action(
+      "warning",
+      "Local changes must be protected before pull.",
+      [
+        {
+          label: "Stash & Pull",
+          style: "primary",
+          onClick: () => {
+            if (git.repoPath.value !== promptedRepoPath) {
+              toast.info("Repository changed. Pull was cancelled.");
+              return;
+            }
+            void handlePull(true);
+          },
+        },
+        { label: "Review Changes", style: "neutral", onClick: onSelectWorkingChanges },
+        { label: "Cancel", style: "neutral", onClick: () => {} },
+      ],
+      20000,
+      `${stagedCount} staged, ${unstagedCount} unstaged, ${untrackedCount} untracked. Tracked changes will be stashed and restored; untracked files stay protected in place.`,
+    );
+    return;
+  }
+
   appendLog("user", "Pull triggered.");
   activeRemoteAction.value = "pull";
   try {
-    await git.pull();
+    await git.pull(autoStash);
     if (git.error.value) {
       appendLog("error", `Pull failed: ${git.error.value}`);
     } else {
@@ -4711,13 +4766,15 @@ async function submitCreateBranch(name: string) {
 }
 
 function handleStash() {
+  stashIncludeUntracked.value = stashTrackedChangeCount.value === 0 && stashUntrackedFileCount.value > 0;
   showStashDialog.value = true;
 }
 
 function submitStash() {
-  git.stashPush(stashMessage.value || undefined);
+  git.stashPush(stashMessage.value || undefined, stashIncludeUntracked.value);
   showStashDialog.value = false;
   stashMessage.value = "";
+  stashIncludeUntracked.value = false;
 }
 
 function handleEditCommitMessage(sha: string) {
@@ -5026,6 +5083,9 @@ function submitCreateTag() {
       :existing-branch-names="git.localBranches.value.map((branch) => branch.name)"
       :show-stash-dialog="showStashDialog"
       :stash-message="stashMessage"
+      :stash-include-untracked="stashIncludeUntracked"
+      :stash-untracked-file-count="stashUntrackedFileCount"
+      :stash-tracked-change-count="stashTrackedChangeCount"
       :show-tag-dialog="showTagDialog"
       :tag-name="tagName"
       :show-annotated-tag-dialog="showAnnotatedTagDialog"
@@ -5042,6 +5102,7 @@ function submitCreateTag() {
       :rebase-conflict-busy="rebaseConflictBusy"
       @update:new-branch-name="newBranchName = $event"
       @update:stash-message="stashMessage = $event"
+      @update:stash-include-untracked="stashIncludeUntracked = $event"
       @update:tag-name="tagName = $event"
       @update:annotated-tag-name="annotatedTagName = $event"
       @update:annotated-tag-message="annotatedTagMessage = $event"

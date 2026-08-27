@@ -17,14 +17,9 @@ pub async fn stage_file(path: String, file_path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn stage_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        for file_path in file_paths {
-            GitService::stage_file(&path, &file_path)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || GitService::stage_files(&path, &file_paths))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -36,14 +31,9 @@ pub async fn unstage_file(path: String, file_path: String) -> Result<(), String>
 
 #[tauri::command]
 pub async fn unstage_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        for file_path in file_paths {
-            GitService::unstage_file(&path, &file_path)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || GitService::unstage_files(&path, &file_paths))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -51,6 +41,20 @@ pub async fn create_commit(path: String, message: String) -> Result<String, Stri
     tauri::async_runtime::spawn_blocking(move || GitService::create_commit(&path, &message))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn amend_commit(
+    path: String,
+    message: String,
+    reset_author: bool,
+    signoff: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::amend_commit(&path, &message, reset_author, signoff)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

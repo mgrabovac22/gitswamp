@@ -10,6 +10,7 @@ type RefreshDeps = {
   refreshStatus: () => Promise<void>;
   refreshBranches: () => Promise<void>;
   refreshTags: () => Promise<void>;
+  refreshStashes: () => Promise<void>;
 };
 
 export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
@@ -75,7 +76,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function pull() {
+  async function pull(autoStash = false) {
     if (!state.repoPath.value) return;
     const repoPath = state.repoPath.value;
     let loadingToastId: number | null = null;
@@ -85,17 +86,30 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       const result = await callTauri<string>("pull", {
         path: repoPath,
         token: getTokenForUrl(state, getOriginUrl(state)),
+        autoStash,
       });
-      state.terminalOutput.value.push("$ git pull\n" + result);
+      state.terminalOutput.value.push(`$ git pull${autoStash ? " --autostash" : ""}\n` + result);
       await refreshRemoteRefs(repoPath, true, true);
-      toast.success("Pull completed successfully");
+      toast.success(autoStash ? "Pull completed and local changes are safe" : "Pull completed successfully");
       state.error.value = null;
     } catch (e) {
       const errorMsg = String(e);
       state.error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
       state.terminalOutput.value.push("$ git pull\nError: " + e);
       await refreshRemoteRefs(repoPath, true, true);
-      toast.error("Pull failed: " + String(e));
+      if (errorMsg.startsWith("PULL_SUCCEEDED_STASH_RESTORE_FAILED:")
+        || errorMsg.startsWith("PULL_FAILED_STASH_RETAINED:")) {
+        await refresh.refreshStashes().catch(() => {});
+      }
+      if (errorMsg.startsWith("WORKTREE_DIRTY:")) {
+        toast.warning("Pull stopped because local working changes were detected.");
+      } else if (errorMsg.startsWith("PULL_SUCCEEDED_STASH_RESTORE_FAILED:")) {
+        toast.error("Remote changes were pulled, but local changes need to be restored from the safety stash.", 14000);
+      } else if (errorMsg.startsWith("PULL_FAILED_STASH_RETAINED:")) {
+        toast.error("Pull failed. Local changes are safe in the retained stash.", 14000);
+      } else {
+        toast.error("Pull failed: " + String(e));
+      }
     } finally {
       state.loading.value = false;
       if (loadingToastId !== null) {
