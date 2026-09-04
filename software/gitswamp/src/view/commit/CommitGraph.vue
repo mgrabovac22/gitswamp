@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
+import { Check, RotateCcw } from "lucide-vue-next";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -31,11 +32,14 @@ const props = defineProps<{
   hasWorkingChanges: boolean;
   hasConflicts?: boolean;
   currentBranch: string;
+  headSha?: string | null;
   hasMore?: boolean;
   stashes?: StashInfo[];
   tags?: TagInfo[];
   openPullRequestBranches?: string[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
+  commitWaveLoading?: boolean;
+  amendModeActive?: boolean;
 }>();
 
 type CommitSelectPayload = {
@@ -81,6 +85,8 @@ const emit = defineEmits<{
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
+  focusHead: [];
+  setAmendMode: [enabled: boolean];
 }>();
 
 const searchInput = ref("");
@@ -89,16 +95,20 @@ const scrollTop = ref(0);
 const viewportHeight = ref(600);
 const hoveredRefRow = ref<number | null>(null);
 const hoveredStashRow = ref<number | null>(null);
+const graphLaneWidth = ref(20);
+const graphBranchWidth = ref(BRANCH_COL);
 
 const ctxVisible = ref(false);
 const ctxX = ref(0);
 const ctxY = ref(0);
 const ctxCommit = ref<CommitInfo | null>(null);
 const ctxResetSub = ref(false);
+const ctxWorkingChanges = ref(false);
 const refCtxVisible = ref(false);
 const refCtxX = ref(0);
 const refCtxY = ref(0);
 const refCtxRef = ref<DisplayRef | null>(null);
+const refCtxCommitSha = ref<string | null>(null);
 const stashCtxVisible = ref(false);
 const stashCtxX = ref(0);
 const stashCtxY = ref(0);
@@ -115,23 +125,27 @@ const searchInputEl = ref<HTMLInputElement | null>(null);
 const compactWorkingLabel = ref(globalThis.innerWidth < 1120);
 const loadingToEnd = ref(false);
 
-type GraphOptionalColumn = "author" | "authorEmail" | "sha" | "timeAgo" | "date" | "parents" | "refs";
+type GraphOptionalColumn = "graph" | "message" | "author" | "authorEmail" | "sha" | "timeAgo" | "date" | "parents" | "refs";
 
 const GRAPH_COLUMN_STORAGE_KEY = "gitswamp-graph-columns";
 const GRAPH_ISOLATE_STORAGE_KEY = "gitswamp-graph-isolate-current";
 const GRAPH_ISOLATE_BRANCH_STORAGE_KEY = "gitswamp-graph-isolate-branch";
 const GRAPH_SCROLL_POSITION_PREFIX = "gitswamp-graph-scroll::";
+const GRAPH_LANE_WIDTH_STORAGE_KEY = "gitswamp-graph-lane-width";
+const GRAPH_BRANCH_WIDTH_STORAGE_KEY = "gitswamp-graph-branch-width";
 const TIME_AGO_COL = 88;
 const DATE_COL = 136;
 const EMAIL_COL = 180;
 const PARENTS_COL = 72;
 const REFS_COL = 64;
-const fixedGraphColumns = ["Branch / Tag", "Graph", "Commit Message"] as const;
+const fixedGraphColumns = ["Branch / Tag"] as const;
 const optionalGraphColumns: readonly {
   key: GraphOptionalColumn;
   label: string;
   description: string;
 }[] = [
+  { key: "graph", label: "Graph", description: "Commit nodes, lanes and parent connections" },
+  { key: "message", label: "Commit Message", description: "Commit subject line" },
   { key: "author", label: "Author", description: "Author name with avatar marker" },
   { key: "authorEmail", label: "Author Email", description: "Commit author email" },
   { key: "sha", label: "SHA", description: "Short commit hash" },
@@ -141,6 +155,8 @@ const optionalGraphColumns: readonly {
   { key: "refs", label: "Refs", description: "Branch/tag refs count" },
 ];
 const defaultGraphColumnVisibility: Record<GraphOptionalColumn, boolean> = {
+  graph: true,
+  message: true,
   author: true,
   authorEmail: false,
   sha: true,
@@ -151,6 +167,8 @@ const defaultGraphColumnVisibility: Record<GraphOptionalColumn, boolean> = {
 };
 const graphColumnVisibility = ref<Record<GraphOptionalColumn, boolean>>({ ...defaultGraphColumnVisibility });
 
+const showGraphColumn = computed(() => graphColumnVisibility.value.graph);
+const showMessageColumn = computed(() => graphColumnVisibility.value.message);
 const showAuthorColumn = computed(() => graphColumnVisibility.value.author);
 const showAuthorEmailColumn = computed(() => graphColumnVisibility.value.authorEmail);
 const showShaColumn = computed(() => graphColumnVisibility.value.sha);
@@ -174,6 +192,7 @@ const selectedShaSet = computed(() => {
   return new Set<string>();
 });
 const hasCommitSelection = computed(() => selectedShaSet.value.size > 0);
+const hasMultiCommitSelection = computed(() => selectedShaSet.value.size > 1);
 
 function isCommitSelected(sha: string): boolean {
   return selectedShaSet.value.has(sha);
@@ -184,6 +203,13 @@ function onCommitClick(event: MouseEvent, commit: CommitInfo) {
     commit,
     additive: event.ctrlKey || event.metaKey,
   });
+}
+
+function commitRowStyle(idx: number) {
+  return {
+    top: `${idx * rowHeight.value + wcOffset.value}px`,
+    height: `${rowHeight.value}px`,
+  };
 }
 
 function updateCompactWorkingLabel() {
@@ -367,11 +393,14 @@ const activeCommits = computed(() => {
   return props.commits.filter((commit) => isolated.has(commit.sha));
 });
 
+const COMMIT_DATE_CACHE_LIMIT = 1800;
 const commitDateCache = new Map<number, string>();
 
 function commitDateLabel(timestamp: number): string {
   const cached = commitDateCache.get(timestamp);
   if (cached) {
+    commitDateCache.delete(timestamp);
+    commitDateCache.set(timestamp, cached);
     return cached;
   }
 
@@ -388,7 +417,15 @@ function commitDateLabel(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+  if (commitDateCache.has(timestamp)) {
+    commitDateCache.delete(timestamp);
+  }
   commitDateCache.set(timestamp, formatted);
+  while (commitDateCache.size > COMMIT_DATE_CACHE_LIMIT) {
+    const oldestTimestamp = commitDateCache.keys().next().value;
+    if (oldestTimestamp === undefined) break;
+    commitDateCache.delete(oldestTimestamp);
+  }
   return formatted;
 }
 
@@ -404,6 +441,8 @@ function resetGraphSettings() {
   graphColumnVisibility.value = { ...defaultGraphColumnVisibility };
   isolateCurrentBranch.value = false;
   isolatedBranchName.value = "";
+  graphLaneWidth.value = 20;
+  graphBranchWidth.value = BRANCH_COL;
 }
 
 function isolateSpecificBranch(branchName: string) {
@@ -417,12 +456,34 @@ function isSearchMatch(sha: string): boolean {
   return searchMatchSet.value.has(sha);
 }
 
+const GRAPH_SMOOTH_SCROLL_KEY = "gitswamp-graph-smooth-scroll";
+
+function resolveGraphScrollBehavior(behavior: ScrollBehavior): ScrollBehavior {
+  if (behavior !== "auto") {
+    return behavior;
+  }
+
+  return localStorage.getItem(GRAPH_SMOOTH_SCROLL_KEY) === "true" ? "smooth" : "auto";
+}
+
 function scrollToCommitSha(sha: string, behavior: ScrollBehavior = "auto"): boolean {
   const idx = activeCommits.value.findIndex((commit) => commit.sha === sha);
   if (idx < 0 || !scrollContainer.value) return false;
   const top = Math.max(0, idx * rowHeight.value + wcOffset.value - rowHeight.value * 2);
-  scrollContainer.value.scrollTo({ top, behavior });
+  scrollContainer.value.scrollTo({ top, behavior: resolveGraphScrollBehavior(behavior) });
   return true;
+}
+
+async function onFocusHeadCommit(event: Event) {
+  const detail = (event as CustomEvent<{ repoPath?: string; sha?: string }>).detail;
+  if (!detail?.sha || detail.repoPath !== props.repoPath) return;
+
+  if (isolateCurrentBranch.value && !activeCommits.value.some((commit) => commit.sha === detail.sha)) {
+    isolatedBranchName.value = normalizeBranchName(props.currentBranch);
+  }
+
+  await nextTick();
+  scrollToCommitSha(detail.sha, "smooth");
 }
 
 function selectSearchCommit(sha: string, behavior: ScrollBehavior = "auto"): boolean {
@@ -554,7 +615,7 @@ const {
   displayRefs,
   topDisplayRef,
   extraDisplayRefCount,
-} = useCommitGraphLayout(layoutProps, rowHeight, scrollTop, viewportHeight);
+} = useCommitGraphLayout(layoutProps, rowHeight, scrollTop, viewportHeight, graphLaneWidth);
 
 let st: ReturnType<typeof setTimeout> | null = null;
 function onSearch() {
@@ -593,10 +654,11 @@ function onRefDblClick(ref: DisplayRef, commit: CommitInfo) {
   }
 }
 
-function onRefContextMenu(event: MouseEvent, ref: DisplayRef) {
+function onRefContextMenu(event: MouseEvent, ref: DisplayRef, commit: CommitInfo) {
   event.preventDefault();
   event.stopPropagation();
   refCtxRef.value = ref;
+  refCtxCommitSha.value = commit.sha;
   const menuWidth = 200;
   const menuHeight = 160;
   let x = event.clientX;
@@ -696,6 +758,7 @@ function stashAction(action: "pop" | "apply" | "drop" | "view", item?: StashInfo
 function closeRefCtx() {
   refCtxVisible.value = false;
   refCtxRef.value = null;
+  refCtxCommitSha.value = null;
 }
 
 function checkoutAndIsolateRef(ref: DisplayRef) {
@@ -714,6 +777,7 @@ function checkoutAndIsolateRef(ref: DisplayRef) {
 function refAction(action: string) {
   if (!refCtxRef.value) return;
   const r = refCtxRef.value;
+  const commitSha = refCtxCommitSha.value;
   closeRefCtx();
   switch (action) {
     case "checkout-local":
@@ -745,6 +809,9 @@ function refAction(action: string) {
       break;
     case "delete-tag":
       emit("deleteTag", r.name);
+      break;
+    case "checkout-tag":
+      if (commitSha) emit("checkout", commitSha);
       break;
   }
 }
@@ -900,14 +967,34 @@ function ctxBranchRef(): MergedRef | null {
 
 function ctxIsHeadCommit(): boolean {
   if (!ctxCommit.value) return false;
+  if (props.headSha) return ctxCommit.value.sha === props.headSha;
   const refs = mergedRefs(ctxCommit.value);
   return refs.some(r => r.name === props.currentBranch);
+}
+
+function onWorkingChangesContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const menuWidth = 300;
+  const menuHeight = 76;
+  let x = event.clientX;
+  let y = event.clientY;
+  if (x + menuWidth > window.innerWidth) x = Math.max(8, window.innerWidth - menuWidth - 8);
+  if (y + menuHeight > window.innerHeight) y = Math.max(8, window.innerHeight - menuHeight - 8);
+  ctxX.value = x;
+  ctxY.value = y;
+  ctxCommit.value = null;
+  ctxWorkingChanges.value = true;
+  ctxResetSub.value = false;
+  ctxVisible.value = true;
+  closeRefCtx();
+  closeStashCtx();
 }
 
 function onCtx(e: MouseEvent, commit: CommitInfo) {
   e.preventDefault();
   ctxCommit.value = commit;
-  const menuWidth = 260;
+  const menuWidth = 360;
   const menuMaxHeight = window.innerHeight * 0.8;
   let x = e.clientX;
   let y = e.clientY;
@@ -919,12 +1006,16 @@ function onCtx(e: MouseEvent, commit: CommitInfo) {
   }
   ctxX.value = x;
   ctxY.value = y;
+  ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
   ctxVisible.value = true;
+  closeRefCtx();
+  closeStashCtx();
 }
 
 function closeCtx() {
   ctxVisible.value = false;
+  ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
   closeRefCtx();
   closeStashCtx();
@@ -975,6 +1066,12 @@ function applyBranchContextAction(action: string, branch: string, sourceRemote =
 }
 
 function ctxAction(action: string) {
+  if (action === "toggle-amend") {
+    const enabled = !props.amendModeActive;
+    closeCtx();
+    emit("setAmendMode", enabled);
+    return;
+  }
   if (!ctxCommit.value) return;
   const sha = ctxCommit.value.sha;
   const branch = ctxBranchName();
@@ -1035,6 +1132,20 @@ function onFocusSearchShortcut() {
   searchInputEl.value?.select();
 }
 
+function onFocusSelectedCommitShortcut() {
+  const selectedSha = props.selected?.sha;
+  if (!selectedSha) {
+    return;
+  }
+
+  nextTick(() => {
+    const el = document.getElementById(`commit-row-${selectedSha}`);
+    if (el) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  });
+}
+
 function isEditableTarget(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
   if (!element) return false;
@@ -1044,13 +1155,13 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function scrollGraphToTop(behavior: ScrollBehavior = "auto") {
   if (!scrollContainer.value) return;
-  scrollContainer.value.scrollTo({ top: 0, behavior });
+  scrollContainer.value.scrollTo({ top: 0, behavior: resolveGraphScrollBehavior(behavior) });
 }
 
 function scrollGraphToBottom(behavior: ScrollBehavior = "auto") {
   if (!scrollContainer.value) return;
   const target = Math.max(0, scrollContainer.value.scrollHeight - scrollContainer.value.clientHeight);
-  scrollContainer.value.scrollTo({ top: target, behavior });
+  scrollContainer.value.scrollTo({ top: target, behavior: resolveGraphScrollBehavior(behavior) });
 }
 
 async function waitForCommitGrowth(previousCount: number, timeoutMs = 2400): Promise<boolean> {
@@ -1082,6 +1193,54 @@ async function jumpToEndStep() {
   }
 }
 
+function handleGraphSelectionArrowKey(event: KeyboardEvent): boolean {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+    return false;
+  }
+
+  const commits = props.commits || [];
+  if (!commits.length) {
+    return true;
+  }
+
+  event.preventDefault();
+
+  const currentSha = props.selected?.sha || null;
+  let idx = commits.findIndex((commit) => commit.sha === currentSha);
+  if (idx === -1) {
+    idx = event.key === "ArrowDown" ? 0 : commits.length - 1;
+  } else if (event.key === "ArrowDown") {
+    idx = Math.min(commits.length - 1, idx + 1);
+  } else {
+    idx = Math.max(0, idx - 1);
+  }
+
+  const target = commits[idx];
+  if (!target) {
+    return true;
+  }
+
+  emit("select", { commit: target, additive: false });
+
+  nextTick(() => {
+    const el = document.getElementById(`commit-row-${target.sha}`);
+    if (el && scrollContainer.value) {
+      const top = el.getBoundingClientRect().top - scrollContainer.value.getBoundingClientRect().top + scrollContainer.value.scrollTop;
+      const desired = Math.max(0, top - scrollContainer.value.clientHeight / 2);
+      scrollContainer.value.scrollTo({ top: desired, behavior: "smooth" });
+      return;
+    }
+
+    if (scrollContainer.value) {
+      const wc = scrollContainer.value;
+      const desired = Math.max(0, (idx * rowHeight.value) - (wc.clientHeight / 2));
+      wc.scrollTo({ top: desired, behavior: "smooth" });
+    }
+  });
+
+  return true;
+}
+
 function onGlobalGraphKeyDown(event: KeyboardEvent) {
   if (isEditableTarget(event.target)) {
     return;
@@ -1100,6 +1259,10 @@ function onGlobalGraphKeyDown(event: KeyboardEvent) {
   if (event.key === "End") {
     event.preventDefault();
     void jumpToEndStep();
+  }
+
+  if (handleGraphSelectionArrowKey(event)) {
+    return;
   }
 }
 
@@ -1148,6 +1311,18 @@ watch(graphColumnVisibility, (value) => {
   } catch {}
 }, { deep: true });
 
+watch(graphLaneWidth, (value) => {
+  try {
+    localStorage.setItem(GRAPH_LANE_WIDTH_STORAGE_KEY, String(value));
+  } catch {}
+});
+
+watch(graphBranchWidth, (value) => {
+  try {
+    localStorage.setItem(GRAPH_BRANCH_WIDTH_STORAGE_KEY, String(value));
+  } catch {}
+});
+
 watch(isolateCurrentBranch, (value) => {
   localStorage.setItem(GRAPH_ISOLATE_STORAGE_KEY, String(value));
 });
@@ -1163,6 +1338,8 @@ onMounted(() => {
     if (savedColumns) {
       const parsed = JSON.parse(savedColumns) as Partial<Record<GraphOptionalColumn, boolean>>;
       graphColumnVisibility.value = {
+        graph: parsed.graph ?? defaultGraphColumnVisibility.graph,
+        message: parsed.message ?? defaultGraphColumnVisibility.message,
         author: parsed.author ?? defaultGraphColumnVisibility.author,
         authorEmail: parsed.authorEmail ?? defaultGraphColumnVisibility.authorEmail,
         sha: parsed.sha ?? defaultGraphColumnVisibility.sha,
@@ -1173,6 +1350,16 @@ onMounted(() => {
       };
     }
   } catch {}
+
+  const savedLaneWidth = Number(localStorage.getItem(GRAPH_LANE_WIDTH_STORAGE_KEY));
+  if (Number.isFinite(savedLaneWidth) && savedLaneWidth >= 14) {
+    graphLaneWidth.value = Math.min(36, Math.round(savedLaneWidth));
+  }
+
+  const savedBranchWidth = Number(localStorage.getItem(GRAPH_BRANCH_WIDTH_STORAGE_KEY));
+  if (Number.isFinite(savedBranchWidth) && savedBranchWidth >= 100) {
+    graphBranchWidth.value = Math.min(240, Math.round(savedBranchWidth));
+  }
 
   const savedIsolate = localStorage.getItem(GRAPH_ISOLATE_STORAGE_KEY);
   if (savedIsolate !== null) {
@@ -1187,6 +1374,8 @@ onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.addEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
+  globalThis.addEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
+  globalThis.addEventListener("gitswamp-focus-head-commit", onFocusHeadCommit as EventListener);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
   updateCompactWorkingLabel();
   if (scrollContainer.value) {
@@ -1203,6 +1392,8 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onGlobalGraphKeyDown);
   globalThis.removeEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
+  globalThis.removeEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
+  globalThis.removeEventListener("gitswamp-focus-head-commit", onFocusHeadCommit as EventListener);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
 });
 </script>
@@ -1229,6 +1420,15 @@ onUnmounted(() => {
         <button
           v-if="!isSearchActive"
           class="ml-1 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          :disabled="!headSha"
+          title="Jump to current HEAD commit"
+          @click="emit('focusHead')"
+        >
+          Head
+        </button>
+        <button
+          v-if="!isSearchActive"
+          class="px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
           title="Jump to top (Home)"
           @click="scrollGraphToTop('auto')"
         >
@@ -1276,6 +1476,15 @@ onUnmounted(() => {
         <button
           v-if="isSearchActive"
           class="ml-2 px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          :disabled="!headSha"
+          title="Jump to current HEAD commit"
+          @click="emit('focusHead')"
+        >
+          Head
+        </button>
+        <button
+          v-if="isSearchActive"
+          class="px-1.5 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--secondary)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
           title="Jump to top (Home)"
           @click="scrollGraphToTop('auto')"
         >
@@ -1301,9 +1510,9 @@ onUnmounted(() => {
         </button>
       </div>
       <div class="flex items-center py-0.5 text-[9px] text-[var(--muted-foreground)] uppercase tracking-wider font-medium border-t border-[var(--border)]">
-        <div class="flex-shrink-0 px-2 text-right" :style="{ width: BRANCH_COL + 'px' }">Branch / Tag</div>
-        <div class="flex-shrink-0 text-center" :style="{ width: graphWidth + 'px' }">Graph</div>
-        <div class="flex-1 px-3">Commit Message</div>
+        <div class="flex-shrink-0 px-2 text-right" :style="{ width: graphBranchWidth + 'px' }">Branch / Tag</div>
+        <div v-if="showGraphColumn" class="flex-shrink-0 text-center" :style="{ width: graphWidth + 'px' }">Graph</div>
+        <div v-if="showMessageColumn" class="flex-1 px-3">Commit Message</div>
         <div v-if="showAuthorColumn" class="flex-shrink-0 px-1" :style="{ width: AUTHOR_COL + 'px' }">Author</div>
         <div v-if="showAuthorEmailColumn" class="flex-shrink-0 px-1" :style="{ width: EMAIL_COL + 'px' }">Email</div>
         <div v-if="showShaColumn" class="flex-shrink-0 px-1" :style="{ width: SHA_COL + 'px' }">SHA</div>
@@ -1315,15 +1524,19 @@ onUnmounted(() => {
     </div>
 
     <div v-if="!activeCommits.length && !hasWorkingChanges" class="flex-1 flex items-center justify-center text-sm text-[var(--muted-foreground)]">
-      No commits to display
+      <div v-if="props.commitWaveLoading" class="text-xs text-[var(--muted-foreground)]">Loading commits...</div>
+      <template v-else>
+        No commits to display
+      </template>
     </div>
 
     <div v-else ref="scrollContainer" class="commit-scroll flex-1 overflow-y-auto min-h-0" @scroll="onScroll">
       <div class="relative" :style="{ height: totalH + 'px' }">
         <svg
+          v-if="showGraphColumn"
           class="absolute top-0"
           style="pointer-events: none;"
-          :style="{ left: BRANCH_COL + 'px', width: graphWidth + 'px', height: totalH + 'px' }"
+          :style="{ left: graphBranchWidth + 'px', width: graphWidth + 'px', height: totalH + 'px' }"
         >
           <path
             v-if="hasWorkingChanges && graph.nodes.length > 0"
@@ -1386,10 +1599,13 @@ onUnmounted(() => {
           :class="!hasCommitSelection ? 'bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]'"
           :style="{ top: '0px', height: rowHeight + 'px' }"
           @click="emit('selectWorkingChanges')"
+          @contextmenu="onWorkingChangesContextMenu"
         >
-          <div class="flex-shrink-0" :style="{ width: BRANCH_COL + 'px' }" />
-          <div class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
-          <div class="flex-1 flex items-center px-3 min-w-0">
+          <div class="flex-shrink-0 min-w-0 px-2" :style="{ width: graphBranchWidth + 'px' }">
+            <span v-if="!showMessageColumn" class="block truncate text-[9px] font-semibold text-[var(--primary)]">{{ workingChangesBadgeLabel }}</span>
+          </div>
+          <div v-if="showGraphColumn" class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
+          <div v-if="showMessageColumn" class="flex-1 flex items-center px-3 min-w-0">
             <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[var(--primary)]/20 text-[var(--primary)] border border-[var(--primary)]/30 whitespace-nowrap">
               {{ workingChangesBadgeLabel }}
             </span>
@@ -1410,9 +1626,11 @@ onUnmounted(() => {
           :style="{ top: ((hasWorkingChanges ? 1 : 0) * rowHeight) + 'px', height: rowHeight + 'px' }"
           @click="emit('selectConflicts')"
         >
-          <div class="flex-shrink-0" :style="{ width: BRANCH_COL + 'px' }" />
-          <div class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
-          <div class="flex-1 flex items-center px-3 min-w-0">
+          <div class="flex-shrink-0 min-w-0 px-2" :style="{ width: graphBranchWidth + 'px' }">
+            <span v-if="!showMessageColumn" class="block truncate text-[9px] font-semibold text-[#ef4444]">● Conflicts</span>
+          </div>
+          <div v-if="showGraphColumn" class="flex-shrink-0" :style="{ width: graphWidth + 'px' }" />
+          <div v-if="showMessageColumn" class="flex-1 flex items-center px-3 min-w-0">
             <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[#ef4444]/15 text-[#ef4444] border border-[#ef4444]/35">
               ● Conflicts
             </span>
@@ -1429,13 +1647,15 @@ onUnmounted(() => {
         <div
           v-for="item in visibleNodes"
           :key="item.node.commit.sha"
+          :id="`commit-row-${item.node.commit.sha}`"
           class="absolute left-0 right-0 flex items-center cursor-pointer transition-colors graph-row"
-          :class="isCommitSelected(item.node.commit.sha)
-            ? 'bg-[var(--primary)]/10'
-            : isSearchMatch(item.node.commit.sha)
-              ? 'search-hit-row hover:bg-[var(--primary)]/10'
-              : 'hover:bg-[var(--secondary)]'"
-          :style="{ top: (item.idx * rowHeight + wcOffset) + 'px', height: rowHeight + 'px' }"
+          :class="[
+            isSearchMatch(item.node.commit.sha) ? 'search-hit-row hover:bg-[var(--primary)]/10' : 'hover:bg-[var(--secondary)]',
+            isCommitSelected(item.node.commit.sha)
+              ? (hasMultiCommitSelection ? 'selected-commit-row--multi' : 'selected-commit-row')
+              : '',
+          ]"
+          :style="commitRowStyle(item.idx)"
           @click="onCommitClick($event, item.node.commit)"
           @contextmenu="onCtx($event, item.node.commit)"
           @dragover.prevent="onCommitRowDragOver($event, item.node.commit)"
@@ -1447,7 +1667,7 @@ onUnmounted(() => {
               'branch-drop-zone': !!dragBranch && !!preferredDropTarget(item.node.commit),
               'branch-drop-target': dropTargetBranch === preferredDropTarget(item.node.commit)?.name,
             }"
-            :style="{ width: BRANCH_COL + 'px' }"
+            :style="{ width: graphBranchWidth + 'px' }"
             @mouseenter="hoveredRefRow = item.idx"
             @mouseleave="hoveredRefRow = null; hoveredStashRow = null"
             @dragover.stop.prevent="onBranchColumnDragOver($event, item.node.commit)"
@@ -1472,7 +1692,7 @@ onUnmounted(() => {
                 @dragend.stop="onBranchDragEnd"
                 @dragover.stop.prevent="onBranchDragOver($event, topDisplayRef(item.node.commit)!)"
                 @drop.stop.prevent="onBranchDrop($event, topDisplayRef(item.node.commit)!)"
-                @contextmenu.stop.prevent="onRefContextMenu($event, topDisplayRef(item.node.commit)!)"
+                @contextmenu.stop.prevent="onRefContextMenu($event, topDisplayRef(item.node.commit)!, item.node.commit)"
               >
                 <svg v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-70" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5" /><rect x="4" y="12" width="8" height="1.5" rx="0.5" opacity="0.6"/><rect x="6" y="13.5" width="4" height="1" rx="0.5" opacity="0.4"/></svg>
                 <span v-if="topDisplayRef(item.node.commit)?.kind === 'branch' && topDisplayRef(item.node.commit)?.remote" v-html="providerIconMarkup" />
@@ -1549,7 +1769,7 @@ onUnmounted(() => {
                 @dragend.stop="onBranchDragEnd"
                 @dragover.stop.prevent="onBranchDragOver($event, mr)"
                 @drop.stop.prevent="onBranchDrop($event, mr)"
-                @contextmenu.stop.prevent="onRefContextMenu($event, mr)"
+                @contextmenu.stop.prevent="onRefContextMenu($event, mr, item.node.commit)"
               >
                 <svg v-if="mr.kind === 'branch' && mr.local" class="w-2.5 h-2.5 flex-shrink-0 opacity-60" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="8" rx="1.5"/></svg>
                 <span v-if="mr.kind === 'branch' && mr.remote" v-html="providerIconMarkup" />
@@ -1580,7 +1800,7 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div class="flex-shrink-0 relative h-full overflow-visible" :style="{ width: graphWidth + 'px' }">
+          <div v-if="showGraphColumn" class="flex-shrink-0 relative h-full overflow-visible" :style="{ width: graphWidth + 'px' }">
             <div
               class="absolute top-0 bottom-0 pointer-events-none"
               :style="{
@@ -1593,7 +1813,7 @@ onUnmounted(() => {
             />
           </div>
 
-          <div class="flex-1 flex items-center px-3 min-w-0">
+          <div v-if="showMessageColumn" class="flex-1 flex items-center px-3 min-w-[320px] relative z-10" :class="showGraphColumn ? '-ml-6 pl-8' : ''">
             <span
               class="text-[11px] text-[var(--foreground)] truncate"
               :style="{ opacity: 'var(--graph-message-opacity, 0.85)' }"
@@ -1635,7 +1855,7 @@ onUnmounted(() => {
           class="absolute left-0 right-0 flex items-center justify-center text-[9px] text-[var(--muted-foreground)]"
           :style="{ top: totalH + 'px', height: rowHeight + 'px' }"
         >
-          Loading more commits...
+          {{ props.commitWaveLoading ? "Loading commits..." : "Loading more commits..." }}
         </div>
       </div>
     </div>
@@ -1650,7 +1870,7 @@ onUnmounted(() => {
           <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
             <div>
               <h3 class="text-xs font-semibold text-[var(--foreground)]">Graph Columns</h3>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Default columns stay fixed, optional columns can be toggled.</p>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Branch / Tag stays fixed. Every other column can be toggled.</p>
             </div>
             <button
               class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
@@ -1662,7 +1882,41 @@ onUnmounted(() => {
 
           <div class="p-4 space-y-4">
             <div>
-              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Fixed</div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Layout</div>
+              <div class="space-y-3">
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between text-[10px] text-[var(--muted-foreground)]">
+                    <span>Graph zoom</span>
+                    <span>{{ graphLaneWidth }} px per lane</span>
+                  </div>
+                  <input
+                    v-model.number="graphLaneWidth"
+                    type="range"
+                    min="14"
+                    max="36"
+                    step="1"
+                    class="w-full accent-[var(--primary)]"
+                  />
+                </div>
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between text-[10px] text-[var(--muted-foreground)]">
+                    <span>Branch column</span>
+                    <span>{{ graphBranchWidth }} px</span>
+                  </div>
+                  <input
+                    v-model.number="graphBranchWidth"
+                    type="range"
+                    min="100"
+                    max="240"
+                    step="5"
+                    class="w-full accent-[var(--primary)]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-2">Fixed column</div>
               <div class="flex flex-wrap gap-1.5">
                 <span
                   v-for="label in fixedGraphColumns"
@@ -1764,6 +2018,7 @@ onUnmounted(() => {
         </template>
         <template v-else>
           <div class="space-y-1">
+            <button class="ctx-item" @click="refAction('checkout-tag')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout tagged commit</span><span class="ctx-sub">Switch to {{ refCtxRef.name }} in detached HEAD</span></button>
             <button class="ctx-item" @click="refAction('delete-tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Delete tag</span><span class="ctx-sub">Delete tag {{ refCtxRef.name }}</span></button>
             <button class="ctx-item" @click="refAction('copy-name')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy tag name</span><span class="ctx-sub">Copy name to clipboard</span></button>
           </div>
@@ -1816,10 +2071,38 @@ onUnmounted(() => {
 
       <div
         v-if="ctxVisible"
-        class="fixed z-[100] w-[360px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
+        class="fixed z-[100] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)] max-h-[80vh] overflow-y-auto"
+        :class="ctxWorkingChanges ? 'w-[300px]' : 'w-[360px]'"
         :style="{ left: ctxX + 'px', top: ctxY + 'px' }"
         @click.stop
       >
+        <template v-if="ctxWorkingChanges">
+          <button
+            class="ctx-item ctx-amend-item"
+            :disabled="!amendModeActive && (hasConflicts || !headSha)"
+            :class="!amendModeActive && (hasConflicts || !headSha) ? 'cursor-not-allowed opacity-45' : ''"
+            @click="ctxAction('toggle-amend')"
+          >
+            <span class="ctx-icon">
+              <span class="flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-[var(--border)] bg-[var(--input-background)]">
+                <Check v-if="amendModeActive" class="h-3 w-3 text-[var(--primary)]" />
+              </span>
+            </span>
+            <span class="ctx-main flex items-center gap-1.5">
+              <RotateCcw class="h-3.5 w-3.5 text-[var(--primary)]" />
+              Amend last commit
+            </span>
+            <span class="ctx-sub">
+              {{ amendModeActive
+                ? 'Amend mode is active in the Changes panel'
+                : hasConflicts
+                  ? 'Resolve conflicts before amending'
+                  : 'Add staged changes and edit the current HEAD commit' }}
+            </span>
+          </button>
+        </template>
+
+        <template v-else>
         <template v-if="ctxHasBranch()">
           <div class="space-y-1">
             <button class="ctx-item" @click="ctxAction('pull')"><span class="ctx-icon">⬇</span><span class="ctx-main">Pull changes</span><span class="ctx-sub">Fetch and fast-forward current branch</span></button>
@@ -1861,8 +2144,30 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <template v-if="ctxHasBranch() && ctxIsHeadCommit()">
-          <button class="ctx-item mt-1" @click="ctxAction('edit-message')"><span class="ctx-icon">✏</span><span class="ctx-main">Edit commit message</span><span class="ctx-sub">Amend message of current HEAD commit</span></button>
+        <template v-if="ctxIsHeadCommit()">
+          <button
+            class="ctx-item ctx-amend-item mt-1"
+            :disabled="!amendModeActive && hasConflicts"
+            :class="!amendModeActive && hasConflicts ? 'cursor-not-allowed opacity-45' : ''"
+            @click="ctxAction('toggle-amend')"
+          >
+            <span class="ctx-icon">
+              <span class="flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-[var(--border)] bg-[var(--input-background)]">
+                <Check v-if="amendModeActive" class="h-3 w-3 text-[var(--primary)]" />
+              </span>
+            </span>
+            <span class="ctx-main flex items-center gap-1.5">
+              <RotateCcw class="h-3.5 w-3.5 text-[var(--primary)]" />
+              Amend last commit
+            </span>
+            <span class="ctx-sub">
+              {{ amendModeActive
+                ? 'Amend mode is active in the Changes panel'
+                : hasConflicts
+                  ? 'Resolve conflicts before amending'
+                  : 'Use staged files, edit message and choose amend options' }}
+            </span>
+          </button>
         </template>
 
         <div class="border-t border-[var(--border)] my-1" />
@@ -1882,7 +2187,7 @@ onUnmounted(() => {
           <button class="ctx-item" @click="ctxAction('tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Create lightweight tag</span><span class="ctx-sub">Create tag on this commit</span></button>
           <button class="ctx-item" @click="ctxAction('annotated-tag')"><span class="ctx-icon">🏷✏</span><span class="ctx-main">Create annotated tag</span><span class="ctx-sub">Create tag with message and metadata</span></button>
         </div>
-
+        </template>
       </div>
     </Teleport>
   </div>
@@ -1905,24 +2210,30 @@ onUnmounted(() => {
 
 .node-pop {
   transform-origin: center;
-  animation: popIn 0.3s ease-out forwards;
-}
-@keyframes popIn {
-  0% { opacity: 0; transform: scale(0.3); }
-  70% { transform: scale(1.08); }
-  100% { opacity: 1; transform: scale(1); }
-}
-
-.graph-row {
-  animation: rowFade 0.2s ease-out;
-}
-@keyframes rowFade {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .search-hit-row {
   background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+
+.selected-commit-row {
+  position: relative;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  animation: selectedCommitPulse 1.6s ease-in-out infinite;
+}
+
+.selected-commit-row--multi {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  animation: none;
+}
+
+@keyframes selectedCommitPulse {
+  0% {
+    background: color-mix(in srgb, var(--primary) 10%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--primary) 16%, transparent);
+  }
 }
 
 .stash-badge {
@@ -2044,6 +2355,23 @@ onUnmounted(() => {
   line-height: 1.2;
   color: var(--muted-foreground);
 }
+.ctx-amend-item {
+  grid-template-columns: 1rem minmax(0, 1fr);
+  grid-template-areas:
+    "icon main"
+    "sub sub";
+  column-gap: 0.4rem;
+  row-gap: 0.15rem;
+}
+.ctx-amend-item .ctx-icon {
+  grid-area: icon;
+  display: flex;
+  align-self: center;
+}
+.ctx-amend-item .ctx-sub {
+  display: block;
+  padding-left: 1.4rem;
+}
 .ctx-item-reset {
   grid-template-columns: 1fr auto;
   grid-template-areas: "main arrow";
@@ -2078,6 +2406,13 @@ onUnmounted(() => {
 :global(html.dummy-mode .ctx-item-reset) {
   grid-template-areas:
     "main arrow"
+    "sub sub";
+}
+
+:global(html.dummy-mode .ctx-amend-item) {
+  grid-template-columns: 1rem minmax(0, 1fr);
+  grid-template-areas:
+    "icon main"
     "sub sub";
 }
 </style>

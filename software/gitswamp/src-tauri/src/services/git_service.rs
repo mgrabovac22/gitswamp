@@ -11,15 +11,17 @@ use crate::constants::{
 };
 use crate::models::{
     AzureRepo, BitbucketRepo, BranchInfo, CommitFileInfo, CommitInfo, ConflictHotspot,
-    ConflictPair, FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, MergeRiskPreflight,
-    RepoInfo, StagedDiffSummary, StashInfo, TagInfo,
+    ConflictPair, FileStatusInfo, GhostBranchState, GithubRepo, GitlabRepo, LostCommitInfo,
+    MergeRiskPreflight, RepoInfo, RepositoryOperationInfo, StagedDiffSummary, StashInfo, TagInfo,
 };
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
-use crate::services::helpers::{ahead_behind, build_ref_map, build_remotes, index_status_label, time_ago, wt_status_label};
+use crate::services::helpers::{
+    ahead_behind, build_ref_map, build_remotes, index_status_label, time_ago, wt_status_label,
+};
 use crate::services::integration_service::IntegrationService;
 use crate::services::remote_service::RemoteService;
-use crate::services::stash_service::StashService;
+use crate::services::stash_service::{StashService, PULL_SAFETY_STASH_PREFIX};
 
 pub struct GitService;
 
@@ -82,8 +84,7 @@ impl GitService {
     }
 
     fn normalize_relative_path(path: &Path) -> String {
-        path
-            .to_string_lossy()
+        path.to_string_lossy()
             .replace('\\', "/")
             .trim_matches('/')
             .to_string()
@@ -108,7 +109,11 @@ impl GitService {
         if path.contains("/db/") || path.contains("migration") {
             return "data";
         }
-        if path.contains("/test/") || path.contains("/tests/") || path.contains(".test.") || path.contains(".spec.") {
+        if path.contains("/test/")
+            || path.contains("/tests/")
+            || path.contains(".test.")
+            || path.contains(".spec.")
+        {
             return "tests";
         }
         "general"
@@ -151,10 +156,7 @@ impl GitService {
         let mut paths = HashSet::new();
 
         for delta in diff.deltas() {
-            let candidate = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path());
+            let candidate = delta.new_file().path().or_else(|| delta.old_file().path());
 
             let Some(path) = candidate else {
                 continue;
@@ -322,9 +324,12 @@ impl GitService {
             .find_reference(&remote_ref_name)
             .map_err(|_| format!("Remote branch 'origin/{}' was not found.", branch_name))?;
 
-        let target_oid = remote_ref
-            .target()
-            .ok_or_else(|| format!("Remote branch 'origin/{}' has no target commit.", branch_name))?;
+        let target_oid = remote_ref.target().ok_or_else(|| {
+            format!(
+                "Remote branch 'origin/{}' has no target commit.",
+                branch_name
+            )
+        })?;
         let target_commit = repo
             .find_commit(target_oid)
             .map_err(|e| e.message().to_string())?;
@@ -336,7 +341,9 @@ impl GitService {
 
     fn finish_rebase(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<(), String> {
         let sig = Self::rebase_signature(repo)?;
-        rebase.finish(Some(&sig)).map_err(|e| e.message().to_string())?;
+        rebase
+            .finish(Some(&sig))
+            .map_err(|e| e.message().to_string())?;
         repo.cleanup_state().map_err(|e| e.message().to_string())?;
         Ok(())
     }
@@ -373,7 +380,10 @@ impl GitService {
         }
     }
 
-    fn advance_rebase_operations(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<RebaseRunState, String> {
+    fn advance_rebase_operations(
+        repo: &Repository,
+        rebase: &mut git2::Rebase<'_>,
+    ) -> Result<RebaseRunState, String> {
         while let Some(step) = rebase.next() {
             step.map_err(|e| e.message().to_string())?;
 
@@ -417,7 +427,8 @@ impl GitService {
             .unwrap_or(false);
         let base_branch = Self::read_repo_config(&repo, GHOST_BASE_KEY).unwrap_or_default();
         let ghost_branch = Self::read_repo_config(&repo, GHOST_BRANCH_KEY).unwrap_or_default();
-        let branch_exists = !ghost_branch.is_empty() && repo.find_branch(&ghost_branch, BranchType::Local).is_ok();
+        let branch_exists =
+            !ghost_branch.is_empty() && repo.find_branch(&ghost_branch, BranchType::Local).is_ok();
 
         Ok(GhostBranchState {
             active: active && !ghost_branch.is_empty() && branch_exists,
@@ -502,10 +513,7 @@ impl GitService {
         Self::clear_repo_config(&repo_after, GHOST_BASE_KEY);
         Self::clear_repo_config(&repo_after, GHOST_BRANCH_KEY);
 
-        Ok(format!(
-            "Ghost branch materialized as '{}'.",
-            branch_name
-        ))
+        Ok(format!("Ghost branch materialized as '{}'.", branch_name))
     }
 
     pub fn discard_ghost_branch(path: &str) -> Result<String, String> {
@@ -532,13 +540,18 @@ impl GitService {
         let mut checkout = git2::build::CheckoutBuilder::new();
         checkout.force().remove_untracked(true);
         repo_ghost
-            .reset(head_commit.as_object(), git2::ResetType::Hard, Some(&mut checkout))
+            .reset(
+                head_commit.as_object(),
+                git2::ResetType::Hard,
+                Some(&mut checkout),
+            )
             .map_err(|e| e.message().to_string())?;
 
         Self::checkout_branch(path, &state.base_branch)?;
 
         let repo_after = GitRepository::open(path)?;
-        if let Ok(mut ghost_branch) = repo_after.find_branch(&state.ghost_branch, BranchType::Local) {
+        if let Ok(mut ghost_branch) = repo_after.find_branch(&state.ghost_branch, BranchType::Local)
+        {
             ghost_branch.delete().map_err(|e| e.message().to_string())?;
         }
 
@@ -550,6 +563,56 @@ impl GitService {
             "Discarded ghost branch '{}' and restored '{}'.",
             state.ghost_branch, state.base_branch
         ))
+    }
+
+    fn repository_operation(
+        repo: &Repository,
+        current_branch: &str,
+    ) -> Option<RepositoryOperationInfo> {
+        let (kind, fallback_message, message_paths): (&str, String, &[&str]) = match repo.state() {
+            git2::RepositoryState::Clean => return None,
+            git2::RepositoryState::Merge => (
+                "merge",
+                format!("Merge into {}", current_branch),
+                &["MERGE_MSG"],
+            ),
+            git2::RepositoryState::Rebase
+            | git2::RepositoryState::RebaseInteractive
+            | git2::RepositoryState::RebaseMerge => (
+                "rebase",
+                "Continue rebase".to_string(),
+                &["rebase-merge/message", "rebase-apply/message"],
+            ),
+            git2::RepositoryState::CherryPick | git2::RepositoryState::CherryPickSequence => (
+                "cherry-pick",
+                "Continue cherry-pick".to_string(),
+                &["MERGE_MSG"],
+            ),
+            git2::RepositoryState::Revert | git2::RepositoryState::RevertSequence => {
+                ("revert", "Continue revert".to_string(), &["MERGE_MSG"])
+            }
+            git2::RepositoryState::Bisect => ("bisect", "Bisect in progress".to_string(), &[]),
+            git2::RepositoryState::ApplyMailbox | git2::RepositoryState::ApplyMailboxOrRebase => (
+                "apply-mailbox",
+                "Apply mailbox in progress".to_string(),
+                &["rebase-apply/message"],
+            ),
+        };
+
+        let message = message_paths
+            .iter()
+            .find_map(|relative_path| {
+                std::fs::read_to_string(repo.path().join(relative_path))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or(fallback_message);
+
+        Some(RepositoryOperationInfo {
+            kind: kind.to_string(),
+            message,
+        })
     }
 
     pub fn repo_info(path: &str) -> Result<RepoInfo, String> {
@@ -569,6 +632,7 @@ impl GitService {
             .unwrap_or_else(|| path.to_string());
 
         let remotes = build_remotes(&repo);
+        let operation = Self::repository_operation(&repo, &branch_name);
 
         Ok(RepoInfo {
             path: path.to_string(),
@@ -577,40 +641,61 @@ impl GitService {
             is_clean: statuses.is_empty(),
             head_sha,
             remotes,
+            operation,
         })
     }
 
     pub fn commits(path: &str, max_count: usize) -> Result<Vec<CommitInfo>, String> {
+        Self::commits_with_options(path, max_count, false)
+    }
+
+    pub fn commits_with_options(
+        path: &str,
+        max_count: usize,
+        quick: bool,
+    ) -> Result<Vec<CommitInfo>, String> {
         let repo = GitRepository::open(path)?;
         let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
 
-        if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
-            for item in branches.flatten() {
-                if let Some(oid) = item.0.get().target() {
-                    let _ = revwalk.push(oid);
+        let mut quick_tip_oids = Vec::new();
+        if quick {
+            let _ = revwalk.push_head();
+            for branch_type in [BranchType::Local, BranchType::Remote] {
+                if let Ok(branches) = repo.branches(Some(branch_type)) {
+                    for item in branches.flatten() {
+                        if let Some(oid) = item.0.get().target() {
+                            quick_tip_oids.push(oid);
+                        }
+                    }
                 }
             }
-        }
-        if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
-            for item in branches.flatten() {
-                if let Some(oid) = item.0.get().target() {
-                    let _ = revwalk.push(oid);
+        } else {
+            if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                for item in branches.flatten() {
+                    if let Some(oid) = item.0.get().target() {
+                        let _ = revwalk.push(oid);
+                    }
                 }
             }
+            if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
+                for item in branches.flatten() {
+                    if let Some(oid) = item.0.get().target() {
+                        let _ = revwalk.push(oid);
+                    }
+                }
+            }
+            let _ = revwalk.push_head();
         }
-        let _ = revwalk.push_head();
         revwalk
             .set_sorting(Sort::TIME | Sort::TOPOLOGICAL)
             .map_err(|e| e.message().to_string())?;
 
         let mut ref_map = build_ref_map(&repo);
         if let Ok(head) = repo.head() {
-            if !head.is_branch() {
-                if let Some(head_target) = head.target() {
-                    let refs = ref_map.entry(head_target.to_string()).or_default();
-                    if !refs.iter().any(|value| value == "HEAD") {
-                        refs.push("HEAD".to_string());
-                    }
+            if let Some(head_target) = head.target() {
+                let refs = ref_map.entry(head_target.to_string()).or_default();
+                if !head.is_branch() && !refs.iter().any(|value| value == "HEAD") {
+                    refs.push("HEAD".to_string());
                 }
             }
         }
@@ -623,7 +708,12 @@ impl GitService {
         let mut result = Vec::new();
         let mut seen = HashSet::new();
 
-        for oid in revwalk.flatten().take(max_count) {
+        let mut candidate_oids: Vec<git2::Oid> = revwalk.flatten().take(max_count).collect();
+        if quick {
+            candidate_oids.extend(quick_tip_oids);
+        }
+
+        for oid in candidate_oids {
             if !seen.insert(oid) {
                 continue;
             }
@@ -651,6 +741,10 @@ impl GitService {
                 parent_shas,
                 refs,
             });
+        }
+
+        if quick {
+            result.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
         }
 
         Ok(result)
@@ -707,7 +801,12 @@ impl GitService {
                 continue;
             }
 
-            let author = commit_object.author().name().unwrap_or("Unknown").trim().to_string();
+            let author = commit_object
+                .author()
+                .name()
+                .unwrap_or("Unknown")
+                .trim()
+                .to_string();
             let author = if author.is_empty() {
                 "Unknown".to_string()
             } else {
@@ -795,13 +894,15 @@ impl GitService {
 
         let mut hotspots: Vec<ConflictHotspot> = by_path
             .into_iter()
-            .map(|(path, (score, merge_touches, conflict_mentions))| ConflictHotspot {
-                path,
-                score,
-                merge_touches,
-                conflict_mentions,
-                collision_index: conflict_mentions,
-            })
+            .map(
+                |(path, (score, merge_touches, conflict_mentions))| ConflictHotspot {
+                    path,
+                    score,
+                    merge_touches,
+                    conflict_mentions,
+                    collision_index: conflict_mentions,
+                },
+            )
             .collect();
 
         hotspots.sort_by(|a, b| {
@@ -888,13 +989,15 @@ impl GitService {
 
         let mut pairs: Vec<ConflictPair> = by_pair
             .into_iter()
-            .map(|((left_path, right_path), (score, co_touches, conflict_touches))| ConflictPair {
-                left_path,
-                right_path,
-                co_touches,
-                conflict_touches,
-                score,
-            })
+            .map(
+                |((left_path, right_path), (score, co_touches, conflict_touches))| ConflictPair {
+                    left_path,
+                    right_path,
+                    co_touches,
+                    conflict_touches,
+                    score,
+                },
+            )
             .collect();
 
         pairs.sort_by(|a, b| {
@@ -976,7 +1079,11 @@ impl GitService {
         Ok(files)
     }
 
-    fn resolve_branch_oid(repo: &Repository, branch_name: &str, remote: bool) -> Result<git2::Oid, String> {
+    fn resolve_branch_oid(
+        repo: &Repository,
+        branch_name: &str,
+        remote: bool,
+    ) -> Result<git2::Oid, String> {
         let trimmed = branch_name.trim();
         if trimmed.is_empty() {
             return Err("Branch name cannot be empty.".to_string());
@@ -1029,12 +1136,18 @@ impl GitService {
         let source_oid = Self::resolve_branch_oid(&repo, source_branch, source_remote)?;
         let target_oid = Self::resolve_branch_oid(&repo, target_branch, false)?;
 
-        let source_commit = repo.find_commit(source_oid).map_err(|e| e.message().to_string())?;
-        let target_commit = repo.find_commit(target_oid).map_err(|e| e.message().to_string())?;
+        let source_commit = repo
+            .find_commit(source_oid)
+            .map_err(|e| e.message().to_string())?;
+        let target_commit = repo
+            .find_commit(target_oid)
+            .map_err(|e| e.message().to_string())?;
         let base_oid = repo
             .merge_base(source_oid, target_oid)
             .map_err(|e| format!("Could not compute merge-base: {}", e.message()))?;
-        let base_commit = repo.find_commit(base_oid).map_err(|e| e.message().to_string())?;
+        let base_commit = repo
+            .find_commit(base_oid)
+            .map_err(|e| e.message().to_string())?;
 
         let source_tree = source_commit.tree().map_err(|e| e.message().to_string())?;
         let target_tree = target_commit.tree().map_err(|e| e.message().to_string())?;
@@ -1050,10 +1163,8 @@ impl GitService {
         let source_paths = Self::collect_diff_paths(&source_diff);
         let target_paths = Self::collect_diff_paths(&target_diff);
 
-        let shared_paths: HashSet<String> = source_paths
-            .intersection(&target_paths)
-            .cloned()
-            .collect();
+        let shared_paths: HashSet<String> =
+            source_paths.intersection(&target_paths).cloned().collect();
 
         let hotspots = Self::conflict_hotspots(path, max_count, lookback_months)?;
         let hotspots_by_path: HashMap<String, ConflictHotspot> = hotspots
@@ -1091,7 +1202,10 @@ impl GitService {
 
         Ok(MergeRiskPreflight {
             source_ref: if source_remote {
-                format!("origin/{}", source_branch.trim().trim_start_matches("origin/"))
+                format!(
+                    "origin/{}",
+                    source_branch.trim().trim_start_matches("origin/")
+                )
             } else {
                 source_branch.trim().to_string()
             },
@@ -1141,7 +1255,9 @@ impl GitService {
                     files.push(next_path);
                 }
                 Some(git2::ObjectType::Tree) => {
-                    let subtree = repo.find_tree(entry.id()).map_err(|e| e.message().to_string())?;
+                    let subtree = repo
+                        .find_tree(entry.id())
+                        .map_err(|e| e.message().to_string())?;
                     Self::collect_commit_tree_paths(repo, &subtree, &next_path, files)?;
                 }
                 _ => {}
@@ -1154,9 +1270,13 @@ impl GitService {
     pub fn branches(path: &str) -> Result<Vec<BranchInfo>, String> {
         let repo = GitRepository::open(path)?;
         let head = repo.head().ok();
-        let head_name = head
-            .as_ref()
-            .and_then(|h| if h.is_branch() { h.shorthand().map(|s| s.to_string()) } else { None });
+        let head_name = head.as_ref().and_then(|h| {
+            if h.is_branch() {
+                h.shorthand().map(|s| s.to_string())
+            } else {
+                None
+            }
+        });
 
         let mut result = Vec::new();
 
@@ -1311,7 +1431,10 @@ impl GitService {
                 let current = scope_hits.entry(scope).or_insert(0);
                 *current += 1;
 
-                if let Some(ext) = Path::new(&file_path).extension().and_then(|value| value.to_str()) {
+                if let Some(ext) = Path::new(&file_path)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                {
                     let cleaned = ext.trim().to_lowercase();
                     if !cleaned.is_empty() {
                         file_types.insert(format!(".{}", cleaned));
@@ -1440,9 +1563,17 @@ impl GitService {
     }
 
     pub fn stage_file(path: &str, file_path: &str) -> Result<(), String> {
+        Self::stage_files(path, &[file_path.to_string()])
+    }
+
+    pub fn stage_files(path: &str, file_paths: &[String]) -> Result<(), String> {
+        if file_paths.is_empty() {
+            return Ok(());
+        }
+
         let repo = GitRepository::open(path)?;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
-        let pathspec = [Path::new(file_path)];
+        let pathspec: Vec<&Path> = file_paths.iter().map(Path::new).collect();
         index
             .add_all(pathspec.iter(), git2::IndexAddOption::DEFAULT, None)
             .map_err(|e| e.message().to_string())?;
@@ -1451,35 +1582,138 @@ impl GitService {
     }
 
     pub fn unstage_file(path: &str, file_path: &str) -> Result<(), String> {
+        Self::unstage_files(path, &[file_path.to_string()])
+    }
+
+    pub fn unstage_files(path: &str, file_paths: &[String]) -> Result<(), String> {
+        if file_paths.is_empty() {
+            return Ok(());
+        }
+
         let repo = GitRepository::open(path)?;
-        let file = Path::new(file_path);
+        let paths: Vec<&Path> = file_paths.iter().map(Path::new).collect();
 
         if let Ok(head_obj) = repo.revparse_single("HEAD") {
-            repo.reset_default(Some(&head_obj), [file])
+            repo.reset_default(Some(&head_obj), paths)
                 .map_err(|e| e.message().to_string())?;
             return Ok(());
         }
 
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
-        let _ = index.remove_path(file);
+        for file in file_paths {
+            let _ = index.remove_path(Path::new(file));
+        }
         index.write().map_err(|e| e.message().to_string())?;
         Ok(())
     }
 
     pub fn create_commit(path: &str, message: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        let is_merge = repo.state() == git2::RepositoryState::Merge;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Err("Resolve all conflicts before committing.".to_string());
+        }
         let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
-        let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let head_parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let mut parent_ids = HashSet::new();
+        parent_ids.insert(head_parent.id());
+        let mut parents = vec![head_parent];
+
+        if is_merge {
+            let merge_head = std::fs::read_to_string(repo.path().join("MERGE_HEAD"))
+                .map_err(|error| format!("Merge metadata could not be read: {}", error))?;
+            for raw_oid in merge_head
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                let oid = git2::Oid::from_str(raw_oid)
+                    .map_err(|error| format!("Invalid MERGE_HEAD '{}': {}", raw_oid, error))?;
+                if parent_ids.insert(oid) {
+                    parents.push(repo.find_commit(oid).map_err(|error| {
+                        format!("Merge parent {} could not be loaded: {}", oid, error)
+                    })?);
+                }
+            }
+
+            if parents.len() < 2 {
+                return Err(
+                    "Merge cannot be completed because its second parent is missing.".to_string(),
+                );
+            }
+        }
+
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
 
         let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
             .map_err(|e| e.message().to_string())?;
 
+        if is_merge {
+            repo.cleanup_state().map_err(|e| e.message().to_string())?;
+        }
+
         Ok(oid.to_string())
+    }
+
+    fn restore_latest_pull_safety_stash(path: &str) -> Result<Option<String>, String> {
+        let Some(stash_oid) =
+            StashService::latest_stash_oid_with_message_prefix(path, PULL_SAFETY_STASH_PREFIX)?
+        else {
+            return Ok(None);
+        };
+
+        StashService::restore_stash_with_index(path, stash_oid).map(Some)
+    }
+
+    pub fn restore_pull_safety_stash(path: &str) -> Result<String, String> {
+        Ok(Self::restore_latest_pull_safety_stash(path)?
+            .unwrap_or_else(|| "No GitSwamp pull safety stash was found.".to_string()))
+    }
+
+    pub fn abort_merge(path: &str, restore_pull_safety_stash: bool) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        if repo.state() != git2::RepositoryState::Merge {
+            return Err("No merge is currently in progress.".to_string());
+        }
+        let pre_merge_head = repo.head().ok().and_then(|head| head.target());
+        let matching_safety_stash = if restore_pull_safety_stash {
+            StashService::latest_stash_oid_with_message_prefix(path, PULL_SAFETY_STASH_PREFIX)?
+                .filter(|stash_oid| {
+                    let Some(head_oid) = pre_merge_head else {
+                        return false;
+                    };
+                    repo.find_commit(*stash_oid)
+                        .ok()
+                        .and_then(|commit| commit.parent_id(0).ok())
+                        == Some(head_oid)
+                })
+        } else {
+            None
+        };
+        drop(repo);
+
+        let abort_result = RemoteService::run_git_command(path, &["merge", "--abort"])?;
+        let restored = matching_safety_stash
+            .map(|stash_oid| StashService::restore_stash_with_index(path, stash_oid))
+            .transpose()?;
+
+        let mut result = if abort_result.trim().is_empty() {
+            "Merge aborted.".to_string()
+        } else {
+            abort_result
+        };
+        if let Some(restored_message) = restored {
+            result.push(' ');
+            result.push_str(&restored_message);
+        }
+        Ok(result)
     }
 
     pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(), String> {
@@ -1502,8 +1736,8 @@ impl GitService {
         Ok(())
     }
 
-    pub fn pull(path: &str, token: Option<&str>) -> Result<String, String> {
-        RemoteService::pull(path, token)
+    pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
+        RemoteService::pull(path, token, auto_stash)
     }
 
     pub fn push(path: &str, token: Option<&str>) -> Result<String, String> {
@@ -1550,7 +1784,9 @@ impl GitService {
             return Err("Cherry-pick has conflicts. Resolve them manually.".to_string());
         }
         let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
@@ -1572,18 +1808,15 @@ impl GitService {
             return Err("Revert has conflicts. Resolve them manually.".to_string());
         }
         let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
         let msg = format!(
             "Revert \"{}\"",
-            commit
-                .message()
-                .unwrap_or("")
-                .lines()
-                .next()
-                .unwrap_or("")
+            commit.message().unwrap_or("").lines().next().unwrap_or("")
         );
         repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&parent])
             .map_err(|e| e.message().to_string())?;
@@ -1718,7 +1951,9 @@ impl GitService {
         }
 
         match Self::advance_rebase_operations(&repo, &mut rebase)? {
-            RebaseRunState::Completed => Ok("Skipped current patch and continued rebase.".to_string()),
+            RebaseRunState::Completed => {
+                Ok("Skipped current patch and continued rebase.".to_string())
+            }
             RebaseRunState::Conflicts => Err(Self::rebase_conflict_error(
                 "Rebase stopped on another conflicting patch.",
             )),
@@ -1740,7 +1975,9 @@ impl GitService {
     pub fn create_tag_at(path: &str, name: &str, sha: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
-        let obj = repo.find_object(oid, None).map_err(|e| e.message().to_string())?;
+        let obj = repo
+            .find_object(oid, None)
+            .map_err(|e| e.message().to_string())?;
         repo.tag_lightweight(name, &obj, false)
             .map_err(|e| e.message().to_string())?;
         Ok(format!("Tag '{}' created.", name))
@@ -1750,14 +1987,32 @@ impl GitService {
         url: &str,
         path: &str,
         shallow: bool,
+        folder_name: Option<&str>,
         token: Option<&str>,
         mut progress: F,
     ) -> Result<String, String>
     where
         F: FnMut(CloneProgressUpdate),
     {
-        let repo_name = url.split('/').last().unwrap_or("repo").trim_end_matches(".git");
-        let dest = Path::new(path).join(repo_name);
+        let repo_name = url
+            .split('/')
+            .last()
+            .unwrap_or("repo")
+            .trim_end_matches(".git");
+
+        let selected_name = folder_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(repo_name);
+
+        if selected_name.contains('/') || selected_name.contains('\\') {
+            return Err("Folder name cannot contain path separators.".to_string());
+        }
+        if selected_name == "." || selected_name == ".." {
+            return Err("Folder name is invalid.".to_string());
+        }
+
+        let dest = Path::new(path).join(selected_name);
 
         let clone_url = url.to_string();
         let destination = dest.to_string_lossy().to_string();
@@ -1903,7 +2158,9 @@ impl GitService {
             .map_err(|e| e.message().to_string())?
             .write_tree()
             .map_err(|e| e.message().to_string())?;
-        let tree = repo.find_tree(tree_id).map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|e| e.message().to_string())?;
 
         repo.commit(
             Some(&format!("refs/heads/{}", branch)),
@@ -1923,7 +2180,11 @@ impl GitService {
         Ok(format!("Initialized repository with branch '{}'.", branch))
     }
 
-    pub fn search_commits(path: &str, query: &str, max_count: usize) -> Result<Vec<CommitInfo>, String> {
+    pub fn search_commits(
+        path: &str,
+        query: &str,
+        max_count: usize,
+    ) -> Result<Vec<CommitInfo>, String> {
         let repo = GitRepository::open(path)?;
         let q = query.trim().to_lowercase();
         if q.is_empty() {
@@ -2064,10 +2325,119 @@ impl GitService {
         Ok(files)
     }
 
+    fn remember_lost_commit(
+        commits: &mut Vec<LostCommitInfo>,
+        candidate: LostCommitInfo,
+        max_count: usize,
+    ) {
+        if commits.len() < max_count {
+            commits.push(candidate);
+            return;
+        }
+
+        let Some((oldest_index, oldest)) =
+            commits.iter().enumerate().min_by(|(_, left), (_, right)| {
+                left.timestamp
+                    .cmp(&right.timestamp)
+                    .then_with(|| right.sha.cmp(&left.sha))
+            })
+        else {
+            return;
+        };
+
+        if candidate.timestamp > oldest.timestamp
+            || (candidate.timestamp == oldest.timestamp && candidate.sha < oldest.sha)
+        {
+            commits[oldest_index] = candidate;
+        }
+    }
+
+    pub fn lost_commits(path: &str, max_count: usize) -> Result<Vec<LostCommitInfo>, String> {
+        let repo = GitRepository::open(path)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let max_count = max_count.clamp(1, 200);
+        let mut reachable = HashSet::new();
+        let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
+        let _ = revwalk.set_sorting(Sort::NONE);
+
+        if let Ok(head) = repo.head() {
+            if let Ok(head_commit) = head.peel(git2::ObjectType::Commit) {
+                let _ = revwalk.push(head_commit.id());
+            }
+        }
+
+        if let Ok(references) = repo.references() {
+            for reference_result in references {
+                let Ok(reference) = reference_result else {
+                    continue;
+                };
+                let Ok(commit_object) = reference.peel(git2::ObjectType::Commit) else {
+                    continue;
+                };
+                let _ = revwalk.push(commit_object.id());
+            }
+        }
+
+        for oid_result in revwalk {
+            if let Ok(oid) = oid_result {
+                reachable.insert(oid);
+            }
+        }
+
+        let odb = repo.odb().map_err(|e| e.message().to_string())?;
+        let mut commits = Vec::with_capacity(max_count.min(32));
+        odb.foreach(|oid| {
+            if reachable.contains(oid) {
+                return true;
+            }
+
+            let Ok((_, git2::ObjectType::Commit)) = odb.read_header(*oid) else {
+                return true;
+            };
+            let Ok(commit) = repo.find_commit(*oid) else {
+                return true;
+            };
+
+            let sha = oid.to_string();
+            let short_sha = sha[..7.min(sha.len())].to_string();
+            let timestamp = commit.time().seconds();
+            let parent_shas: Vec<String> = commit.parent_ids().map(|id| id.to_string()).collect();
+            Self::remember_lost_commit(
+                &mut commits,
+                LostCommitInfo {
+                    sha,
+                    short_sha,
+                    message: commit.message().unwrap_or("").trim().to_string(),
+                    author_name: commit.author().name().unwrap_or("Unknown").to_string(),
+                    author_email: commit.author().email().unwrap_or("").to_string(),
+                    timestamp,
+                    time_ago: time_ago(now, timestamp),
+                    parent_shas,
+                    source: "unreachable".to_string(),
+                },
+                max_count,
+            );
+            true
+        })
+        .map_err(|e| e.message().to_string())?;
+
+        commits.sort_by(|a, b| {
+            b.timestamp
+                .cmp(&a.timestamp)
+                .then_with(|| a.sha.cmp(&b.sha))
+        });
+        Ok(commits)
+    }
+
     pub fn create_branch(path: &str, name: &str, start_point: Option<&str>) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
         let commit = if let Some(sp) = start_point {
-            let obj = repo.revparse_single(sp).map_err(|e| e.message().to_string())?;
+            let obj = repo
+                .revparse_single(sp)
+                .map_err(|e| e.message().to_string())?;
             obj.peel_to_commit().map_err(|e| e.message().to_string())?
         } else {
             let head = repo.head().map_err(|e| e.message().to_string())?;
@@ -2092,8 +2462,12 @@ impl GitService {
         StashService::stash_list(path)
     }
 
-    pub fn stash_push(path: &str, message: Option<&str>) -> Result<String, String> {
-        StashService::stash_push(path, message)
+    pub fn stash_push(
+        path: &str,
+        message: Option<&str>,
+        include_untracked: bool,
+    ) -> Result<String, String> {
+        StashService::stash_push(path, message, include_untracked)
     }
 
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {
@@ -2154,33 +2528,77 @@ impl GitService {
         GitRepository::git_cli(path, &["tag", "-d", name])
     }
 
-    pub fn discard_file(path: &str, file_path: &str) -> Result<(), String> {
-        let repo = GitRepository::open(path)?;
-        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+    fn remove_worktree_path(repo_root: &Path, file_path: &str) -> Result<(), String> {
+        let relative = Self::sanitize_relative_path(file_path)?;
+        let full = repo_root.join(relative);
+        if full.is_dir() {
+            std::fs::remove_dir_all(&full).map_err(|e| e.to_string())?;
+        } else if full.exists() {
+            std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn discard_file_with_statuses(
+        repo: &Repository,
+        repo_root: &Path,
+        statuses: &git2::Statuses<'_>,
+        file_path: &str,
+    ) -> Result<(), String> {
         let is_conflicted = statuses
             .iter()
             .any(|s| s.path() == Some(file_path) && s.status().is_conflicted());
         if is_conflicted {
-            return Self::resolve_conflict_file(path, file_path, "ours");
+            return Self::resolve_conflict_file(&repo_root.to_string_lossy(), file_path, "ours");
         }
+
         let is_untracked = statuses
             .iter()
             .any(|s| s.path() == Some(file_path) && s.status().contains(git2::Status::WT_NEW));
-        if is_untracked {
-            let full = Path::new(path).join(file_path);
-            std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+        let has_index_entry = repo
+            .index()
+            .map_err(|e| e.message().to_string())?
+            .get_path(Path::new(file_path), 0)
+            .is_some();
+
+        if is_untracked || !has_index_entry {
+            Self::remove_worktree_path(repo_root, file_path)?;
         } else {
-            repo.checkout_head(Some(
-                git2::build::CheckoutBuilder::default()
-                    .path(file_path)
-                    .force(),
-            ))
+            repo.checkout_index(
+                None,
+                Some(
+                    git2::build::CheckoutBuilder::default()
+                        .path(file_path)
+                        .force(),
+                ),
+            )
             .map_err(|e| e.message().to_string())?;
         }
         Ok(())
     }
 
-    pub fn resolve_conflict_file(path: &str, file_path: &str, strategy: &str) -> Result<(), String> {
+    pub fn discard_file(path: &str, file_path: &str) -> Result<(), String> {
+        let repo = GitRepository::open(path)?;
+        let repo_root = Path::new(path);
+        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+        Self::discard_file_with_statuses(&repo, repo_root, &statuses, file_path)
+    }
+
+    pub fn discard_files(path: &str, file_paths: &[String]) -> Result<(), String> {
+        let repo = GitRepository::open(path)?;
+        let repo_root = Path::new(path);
+        let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
+        for file_path in file_paths {
+            Self::discard_file_with_statuses(&repo, repo_root, &statuses, file_path)?;
+        }
+        Ok(())
+    }
+
+    pub fn resolve_conflict_file(
+        path: &str,
+        file_path: &str,
+        strategy: &str,
+    ) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
         let full_path = Path::new(path).join(file_path);
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
@@ -2284,13 +2702,143 @@ impl GitService {
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let head_commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
         if head_commit.id().to_string() == sha {
-            GitRepository::git_cli(path, &["commit", "--amend", "-m", new_message])
+            drop(head_commit);
+            drop(head);
+            drop(repo);
+            Self::amend_commit_internal(path, new_message, false, false, false)
         } else {
             Err("Can only edit the message of the HEAD commit.".to_string())
         }
     }
 
-    pub fn create_annotated_tag(path: &str, name: &str, sha: &str, message: &str) -> Result<String, String> {
+    fn append_signoff(message: &str, signature: &git2::Signature<'_>) -> Result<String, String> {
+        let name = signature
+            .name()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Git user.name is required to add Signed-off-by.".to_string())?;
+        let email = signature
+            .email()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Git user.email is required to add Signed-off-by.".to_string())?;
+        let trailer = format!("Signed-off-by: {} <{}>", name.trim(), email.trim());
+        let trimmed = message.trim_end();
+
+        if trimmed
+            .lines()
+            .any(|line| line.trim().eq_ignore_ascii_case(&trailer))
+        {
+            return Ok(trimmed.to_string());
+        }
+
+        Ok(format!("{}\n\n{}", trimmed, trailer))
+    }
+
+    pub fn amend_commit(
+        path: &str,
+        message: &str,
+        reset_author: bool,
+        signoff: bool,
+    ) -> Result<String, String> {
+        Self::amend_commit_internal(path, message, reset_author, signoff, true)
+    }
+
+    fn amend_commit_internal(
+        path: &str,
+        message: &str,
+        reset_author: bool,
+        signoff: bool,
+        include_staged_snapshot: bool,
+    ) -> Result<String, String> {
+        let clean_message = message.trim();
+        if clean_message.is_empty() {
+            return Err("Commit message cannot be empty.".to_string());
+        }
+
+        let repo = GitRepository::open(path)?;
+        let head = repo.head().map_err(|e| e.message().to_string())?;
+        let head_reference_name = head.name().map(str::to_string);
+        let head_is_branch = head.is_branch();
+        let head_commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        if index.has_conflicts() {
+            return Err("Cannot amend while unresolved conflicts exist.".to_string());
+        }
+
+        let tree_oid = if include_staged_snapshot {
+            index.write_tree().map_err(|e| e.message().to_string())?
+        } else {
+            head_commit.tree_id()
+        };
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| e.message().to_string())?;
+        let configured_signature = repo.signature().map_err(|e| {
+            format!(
+                "Git identity is not configured. Set user.name and user.email before amending: {}",
+                e.message()
+            )
+        })?;
+        let author = if reset_author {
+            configured_signature.clone()
+        } else {
+            head_commit.author()
+        };
+        let final_message = if signoff {
+            Self::append_signoff(clean_message, &configured_signature)?
+        } else {
+            clean_message.to_string()
+        };
+
+        let parents = (0..head_commit.parent_count())
+            .map(|index| {
+                head_commit
+                    .parent(index)
+                    .map_err(|e| e.message().to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+
+        if tree_oid == head_commit.tree_id()
+            && final_message == head_commit.message().unwrap_or_default().trim_end()
+            && !reset_author
+        {
+            return Err("Nothing changed in the staged snapshot or commit message.".to_string());
+        }
+
+        let oid = repo
+            .commit(
+                None,
+                &author,
+                &configured_signature,
+                &final_message,
+                &tree,
+                &parent_refs,
+            )
+            .map_err(|e| e.message().to_string())?;
+
+        if head_is_branch {
+            let reference_name = head_reference_name
+                .ok_or_else(|| "Current branch reference is not available.".to_string())?;
+            repo.find_reference(&reference_name)
+                .map_err(|e| e.message().to_string())?
+                .set_target(oid, "commit: amend")
+                .map_err(|e| e.message().to_string())?;
+            repo.set_head(&reference_name)
+                .map_err(|e| e.message().to_string())?;
+        } else {
+            repo.set_head_detached(oid)
+                .map_err(|e| e.message().to_string())?;
+        }
+
+        Ok(oid.to_string())
+    }
+
+    pub fn create_annotated_tag(
+        path: &str,
+        name: &str,
+        sha: &str,
+        message: &str,
+    ) -> Result<String, String> {
         GitRepository::git_cli(path, &["tag", "-a", name, sha, "-m", message])
     }
 
@@ -2298,11 +2846,19 @@ impl GitService {
         RemoteService::reset_branch_to_remote(path, branch)
     }
 
-    pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
-        IntegrationService::search_github_repos(token, query)
+    pub fn search_github_repos(
+        token: &str,
+        query: &str,
+        include_public: bool,
+    ) -> Result<Vec<GithubRepo>, String> {
+        IntegrationService::search_github_repos(token, query, include_public)
     }
 
-    pub fn search_gitlab_repos(domain: &str, token: &str, query: &str) -> Result<Vec<GitlabRepo>, String> {
+    pub fn search_gitlab_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Vec<GitlabRepo>, String> {
         IntegrationService::search_gitlab_repos(domain, token, query)
     }
 
@@ -2310,7 +2866,11 @@ impl GitService {
         IntegrationService::search_bitbucket_repos(token, query)
     }
 
-    pub fn search_azure_repos(domain: &str, token: &str, query: &str) -> Result<Vec<AzureRepo>, String> {
+    pub fn search_azure_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Vec<AzureRepo>, String> {
         IntegrationService::search_azure_repos(domain, token, query)
     }
 
@@ -2318,8 +2878,37 @@ impl GitService {
         IntegrationService::generate_ssh_key(email, key_name)
     }
 
-    pub fn add_gitlab_ssh_key(domain: &str, token: &str, title: &str, key: &str) -> Result<(), String> {
+    pub fn add_gitlab_ssh_key(
+        domain: &str,
+        token: &str,
+        title: &str,
+        key: &str,
+    ) -> Result<(), String> {
         IntegrationService::add_gitlab_ssh_key(domain, token, title, key)
+    }
+
+    pub fn add_github_ssh_key(token: &str, title: &str, key: &str) -> Result<(), String> {
+        IntegrationService::add_github_ssh_key(token, title, key)
+    }
+
+    pub fn list_github_ssh_keys(token: &str) -> Result<Vec<crate::models::GithubSshKey>, String> {
+        IntegrationService::list_github_ssh_keys(token)
+    }
+
+    pub fn delete_github_ssh_key(token: &str, key_id: u64) -> Result<(), String> {
+        IntegrationService::delete_github_ssh_key(token, key_id)
+    }
+
+    pub fn verify_github_token(token: &str) -> Result<String, String> {
+        IntegrationService::verify_github_token(token)
+    }
+
+    pub fn load_ssh_public_key_from_file(file_path: &str) -> Result<String, String> {
+        IntegrationService::load_ssh_public_key_from_file(file_path)
+    }
+
+    pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
+        IntegrationService::connect_github_oauth_via_gh_cli()
     }
 
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
@@ -2342,15 +2931,27 @@ impl GitService {
         IntegrationService::open_path_with_tool(path, tool)
     }
 
-    pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<crate::models::FileDiff, String> {
+    pub fn get_working_diff(
+        path: &str,
+        file_path: &str,
+        staged: bool,
+    ) -> Result<crate::models::FileDiff, String> {
         DiffService::get_working_diff(path, file_path, staged)
     }
 
-    pub fn get_commit_diff(path: &str, sha: &str, file_path: &str) -> Result<crate::models::FileDiff, String> {
+    pub fn get_commit_diff(
+        path: &str,
+        sha: &str,
+        file_path: &str,
+    ) -> Result<crate::models::FileDiff, String> {
         DiffService::get_commit_diff(path, sha, file_path)
     }
 
-    pub fn get_file_content(path: &str, file_path: &str, sha: Option<&str>) -> Result<String, String> {
+    pub fn get_file_content(
+        path: &str,
+        file_path: &str,
+        sha: Option<&str>,
+    ) -> Result<String, String> {
         DiffService::get_file_content(path, file_path, sha)
     }
 
@@ -2358,7 +2959,11 @@ impl GitService {
         DiffService::get_staged_file_content(path, file_path)
     }
 
-    pub fn get_file_blame(path: &str, file_path: &str, sha: Option<&str>) -> Result<Vec<crate::models::FileBlameLine>, String> {
+    pub fn get_file_blame(
+        path: &str,
+        file_path: &str,
+        sha: Option<&str>,
+    ) -> Result<Vec<crate::models::FileBlameLine>, String> {
         DiffService::get_file_blame(path, file_path, sha)
     }
 
@@ -2370,11 +2975,29 @@ impl GitService {
         DiffService::save_file_content(path, file_path, content)
     }
 
-    pub fn revert_hunk(path: &str, file_path: &str, hunk_index: usize, staged: bool) -> Result<(), String> {
+    pub fn revert_hunk(
+        path: &str,
+        file_path: &str,
+        hunk_index: usize,
+        staged: bool,
+    ) -> Result<(), String> {
         DiffService::revert_hunk(path, file_path, hunk_index, staged)
     }
 
-    pub fn push_to_platform(path: &str, platform: &str, token: &str, repo_name: &str) -> Result<String, String> {
+    pub fn stage_hunk(path: &str, file_path: &str, hunk_index: usize) -> Result<(), String> {
+        DiffService::stage_hunk(path, file_path, hunk_index)
+    }
+
+    pub fn unstage_hunk(path: &str, file_path: &str, hunk_index: usize) -> Result<(), String> {
+        DiffService::unstage_hunk(path, file_path, hunk_index)
+    }
+
+    pub fn push_to_platform(
+        path: &str,
+        platform: &str,
+        token: &str,
+        repo_name: &str,
+    ) -> Result<String, String> {
         RemoteService::push_to_platform(path, platform, token, repo_name)
     }
 

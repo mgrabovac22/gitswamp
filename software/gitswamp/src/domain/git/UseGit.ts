@@ -5,7 +5,7 @@ import { createGhostActions } from "./composables/gitGhostActions";
 import { createHistoryActions } from "./composables/gitHistoryActions";
 import { createRefreshActions } from "./composables/gitRefreshActions";
 import { createRemoteActions } from "./composables/gitRemoteActions";
-import { createRepoActions } from "./composables/gitRepositoryActions";
+import { createRepoActions, type OpenRepositoryOptions } from "./composables/gitRepositoryActions";
 import { createGitState } from "./composables/gitState";
 import { createStashActions } from "./composables/gitStashActions";
 import { createStatusActions } from "./composables/gitStatusActions";
@@ -39,8 +39,11 @@ const status = createStatusActions(
   state,
   {
     refreshStatus: refresh.refreshStatus,
+    requestStatusValidation: refresh.requestStatusValidation,
     refreshCommits: refresh.refreshCommits,
     refreshBranches: refresh.refreshBranches,
+    refreshStashes: refresh.refreshStashes,
+    refreshRepoInfo: refresh.refreshRepoInfo,
   },
   toast,
 );
@@ -51,6 +54,8 @@ const branches = createBranchActions(
     refreshCommits: refresh.refreshCommits,
     refreshBranches: refresh.refreshBranches,
     refreshStatus: refresh.refreshStatus,
+    refreshStashes: refresh.refreshStashes,
+    refreshRepoInfo: refresh.refreshRepoInfo,
   },
   toast,
 );
@@ -72,6 +77,7 @@ const remote = createRemoteActions(
     refreshStatus: refresh.refreshStatus,
     refreshBranches: refresh.refreshBranches,
     refreshTags: refresh.refreshTags,
+    refreshStashes: refresh.refreshStashes,
   },
   toast,
 );
@@ -96,11 +102,27 @@ const history = createHistoryActions(
   toast,
 );
 
-const terminal = createTerminalActions(state);
+const terminal = createTerminalActions(
+  state,
+  {
+    refreshStatus: refresh.refreshStatus,
+    refreshStashes: refresh.refreshStashes,
+  },
+);
 
-async function openRepositoryWithGhost(path: string) {
-  await repo.openRepository(path);
-  await ghost.refreshGhostBranchState();
+async function openRepositoryWithGhost(path: string, options?: OpenRepositoryOptions) {
+  const openPromise = repo.openRepository(path, options);
+  if (options?.background) {
+    void openPromise.finally(() => {
+      if (state.repoPath.value === path) {
+        void ghost.refreshGhostBranchState();
+      }
+    });
+    return;
+  }
+
+  await openPromise;
+  void ghost.refreshGhostBranchState();
 }
 
 async function refreshAllWithGhost() {
@@ -159,6 +181,27 @@ async function confirmAndExitGhostMode(actionLabel: string): Promise<boolean> {
   return true;
 }
 
+async function focusHeadCommit(notifyIfMissing = true): Promise<boolean> {
+  const repoPath = state.repoPath.value;
+  const sha = state.repoInfo.value?.head_sha || "";
+  if (!repoPath || !sha) {
+    if (notifyIfMissing) toast.warning("This repository does not have a HEAD commit yet.");
+    return false;
+  }
+
+  const loaded = await refresh.ensureCommitLoaded(sha);
+  if (repoPath !== state.repoPath.value) return false;
+  if (!loaded) {
+    if (notifyIfMissing) toast.warning("HEAD could not be located in the first 50,000 commits.");
+    return false;
+  }
+
+  globalThis.dispatchEvent(new CustomEvent("gitswamp-focus-head-commit", {
+    detail: { repoPath, sha },
+  }));
+  return true;
+}
+
 async function checkoutBranchWithGhostGuard(branchName: string) {
   if (shouldOfferGhostExitForTarget(branchName)) {
     const proceed = await confirmAndExitGhostMode(`checking out "${branchName}"`);
@@ -167,7 +210,10 @@ async function checkoutBranchWithGhostGuard(branchName: string) {
     }
   }
 
-  await branches.checkoutBranch(branchName);
+  const checkedOut = await branches.checkoutBranch(branchName);
+  if (checkedOut) {
+    await focusHeadCommit();
+  }
 }
 
 async function checkoutCommitWithGhostGuard(sha: string) {
@@ -178,7 +224,10 @@ async function checkoutCommitWithGhostGuard(sha: string) {
     }
   }
 
-  await history.checkoutCommit(sha);
+  const checkedOut = await history.checkoutCommit(sha);
+  if (checkedOut) {
+    await focusHeadCommit();
+  }
 }
 
 async function deleteBranchWithGhostGuard(name: string) {
@@ -222,8 +271,10 @@ export function useGit() {
     stashes: state.stashes,
     tags: state.tags,
     currentBranch: state.currentBranch,
+    repositoryOperation: state.repositoryOperation,
     loading: state.loading,
     loadingMore: state.loadingMore,
+    commitWaveLoading: state.commitWaveLoading,
     error: state.error,
     searchQuery: state.searchQuery,
     searchResults: state.searchResults,
@@ -239,12 +290,15 @@ export function useGit() {
     openRepository: openRepositoryWithGhost,
     refreshCommits: refresh.refreshCommits,
     refreshBranches: refresh.refreshBranches,
+    refreshRepoInfo: refresh.refreshRepoInfo,
     refreshStatus: refresh.refreshStatus,
     refreshStashes: refresh.refreshStashes,
     refreshTags: refresh.refreshTags,
     refreshAll: refreshAllWithGhost,
     loadMoreCommits: refresh.loadMoreCommits,
+    loadAllCommits: refresh.loadAllCommits,
     ensureCommitLoaded: refresh.ensureCommitLoaded,
+    focusHeadCommit,
     getCommitFiles: refresh.getCommitFiles,
 
     stageFile: status.stageFile,
@@ -252,6 +306,8 @@ export function useGit() {
     stageAll: status.stageAll,
     unstageAll: status.unstageAll,
     commitChanges: status.commitChanges,
+    restorePullSafetyStash: status.restorePullSafetyStash,
+    amendLastCommit: status.amendLastCommit,
     discardFile: status.discardFile,
     discardAll: status.discardAll,
     resolveAllConflicts: status.resolveAllConflicts,
@@ -262,6 +318,7 @@ export function useGit() {
     deleteBranch: deleteBranchWithGhostGuard,
     renameBranch: branches.renameBranch,
     mergeBranchIntoCurrent: branches.mergeBranchIntoCurrent,
+    abortMerge: branches.abortMerge,
     rebaseBranchOnto: branches.rebaseBranchOnto,
     rebaseContinue: branches.rebaseContinue,
     rebaseSkip: branches.rebaseSkip,
@@ -272,6 +329,7 @@ export function useGit() {
     pushToMultiplePlatforms: remote.pushToMultiplePlatforms,
     checkOriginExists: remote.checkOriginExists,
     fetchAll: remote.fetchAll,
+    backgroundFetchAll: remote.backgroundFetchAll,
     deleteRemoteBranch: remote.deleteRemoteBranch,
     setUpstream: remote.setUpstream,
     resetBranchToRemote: remote.resetBranchToRemote,

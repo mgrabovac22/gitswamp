@@ -25,6 +25,62 @@ impl GitRepository {
         format!("{} (PATH has {} dirs)", exe, path_count)
     }
 
+    pub fn install_git() -> Result<String, String> {
+        if Self::is_git_available() {
+            return Ok("Git is already installed.".to_string());
+        }
+
+        #[cfg(windows)]
+        {
+            if Self::command_exists("winget") {
+                let mut cmd = std::process::Command::new("winget");
+                cmd.args([
+                    "install",
+                    "--id",
+                    "Git.Git",
+                    "-e",
+                    "--source",
+                    "winget",
+                    "--accept-source-agreements",
+                    "--accept-package-agreements",
+                ]);
+                cmd.creation_flags(CREATE_NO_WINDOW);
+
+                return cmd
+                    .spawn()
+                    .map(|_| {
+                        "Started Git installation via winget. After completion, click Refresh detection.".to_string()
+                    })
+                    .map_err(|e| e.to_string());
+            }
+
+            Self::open_download_page("https://git-scm.com/download/win")?;
+            return Ok("Winget was not found. Opened Git download page for Windows.".to_string());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if Self::command_exists("brew") {
+                return std::process::Command::new("brew")
+                    .args(["install", "git"])
+                    .spawn()
+                    .map(|_| {
+                        "Started Git installation via Homebrew. After completion, click Refresh detection.".to_string()
+                    })
+                    .map_err(|e| e.to_string());
+            }
+
+            Self::open_download_page("https://git-scm.com/download/mac")?;
+            return Ok("Homebrew was not found. Opened Git download page for macOS.".to_string());
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Self::open_download_page("https://git-scm.com/download/linux")?;
+            Ok("Opened Git installation instructions for Linux.".to_string())
+        }
+    }
+
     pub fn git_cli(path: &str, args: &[&str]) -> Result<String, String> {
         Self::run_git_cmd(Some(path), args)
     }
@@ -119,6 +175,55 @@ impl GitRepository {
         }
     }
 
+    fn is_git_available() -> bool {
+        if let Ok(output) = std::process::Command::new("git").arg("--version").output() {
+            if output.status.success() {
+                return true;
+            }
+        }
+
+        let detected = Self::find_git();
+        detected != "git" && Path::new(&detected).exists()
+    }
+
+    fn command_exists(name: &str) -> bool {
+        std::process::Command::new(name)
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn open_download_page(url: &str) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", url])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg(url)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("xdg-open")
+                .arg(url)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
+
     fn full_path_live() -> String {
         #[cfg(not(windows))]
         {
@@ -204,7 +309,8 @@ impl GitRepository {
             if candidate.exists() {
                 let exe_str = candidate.to_string_lossy().to_string();
                 if exe_str != primary {
-                    if let Ok(output) = Self::try_git_exec(&exe_str, cwd, args, full_path.as_str()) {
+                    if let Ok(output) = Self::try_git_exec(&exe_str, cwd, args, full_path.as_str())
+                    {
                         if output.status.success() {
                             let stdout = String::from_utf8_lossy(&output.stdout);
                             let stderr = String::from_utf8_lossy(&output.stderr);

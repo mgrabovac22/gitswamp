@@ -18,16 +18,18 @@ const EMPTY_GHOST_STATE: GhostBranchState = {
 
 export function createGhostActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
   async function refreshGhostBranchState() {
-    if (!state.repoPath.value) {
+    const repoPath = state.repoPath.value;
+    if (!repoPath) {
       state.ghostBranchState.value = { ...EMPTY_GHOST_STATE };
       return;
     }
 
     try {
-      state.ghostBranchState.value = await callTauri<GhostBranchState>("get_ghost_branch_state", {
-        path: state.repoPath.value,
-      });
+      const result = await callTauri<GhostBranchState>("get_ghost_branch_state", { path: repoPath });
+      if (repoPath !== state.repoPath.value) return;
+      state.ghostBranchState.value = result;
     } catch {
+      if (repoPath !== state.repoPath.value) return;
       state.ghostBranchState.value = { ...EMPTY_GHOST_STATE };
     }
   }

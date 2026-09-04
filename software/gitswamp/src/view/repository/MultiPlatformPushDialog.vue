@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from "vue"
-import { X, Github, GitBranch, Loader2 } from "lucide-vue-next"
+import { Github, GitBranch, Loader2 } from "lucide-vue-next"
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue"
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue"
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue"
 
 const props = defineProps<{
   visible: boolean
@@ -71,13 +72,7 @@ function handleClose() {
       <!-- Header -->
       <div class="flex items-center justify-between p-4 border-b border-slate-700">
         <h2 class="text-lg font-semibold text-slate-100">Push to Platform</h2>
-        <button
-          @click="handleClose"
-          class="p-1 hover:bg-slate-800 rounded transition-colors"
-          :disabled="pushing"
-        >
-          <X :size="20" class="text-slate-400" />
-        </button>
+        <CloseIconButton title="Close push dialog" :disabled="pushing" @click="handleClose" />
       </div>
 
       <!-- Content -->

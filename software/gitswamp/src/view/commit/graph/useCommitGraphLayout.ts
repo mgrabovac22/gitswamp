@@ -160,10 +160,6 @@ function buildGraphModel(commits: CommitInfo[]) {
   };
 }
 
-function laneX(lane: number): number {
-  return lane * LANE_WIDTH + LANE_WIDTH / 2 + 4;
-}
-
 function nodeConnectionGap(commit: CommitInfo): number {
   // Merge edges should connect to the center of the merge node.
   if (commit.parent_shas.length > 1) {
@@ -207,8 +203,13 @@ export function useCommitGraphLayout(
   rowHeight: Ref<number>,
   scrollTop: Ref<number>,
   viewportHeight: Ref<number>,
+  laneWidth: Ref<number>,
 ) {
   const graph = computed(() => buildGraphModel(props.commits));
+
+  function laneX(lane: number): number {
+    return lane * laneWidth.value + laneWidth.value / 2 + 4;
+  }
 
   const stashNodes = computed(() => {
     if (!props.stashes?.length) return [];
@@ -261,7 +262,7 @@ export function useCommitGraphLayout(
   const graphWidth = computed(() => {
     const maxStashLane = stashNodes.value.length > 0 ? Math.max(...stashNodes.value.map(s => s.lane)) : 0;
     const totalLanes = Math.max(graph.value.laneCount, maxStashLane + 1);
-    return Math.max((totalLanes + 1) * LANE_WIDTH + 8, 40);
+    return Math.max((totalLanes + 1) * laneWidth.value + 8, 40);
   });
 
   const wcRows = computed(() => {

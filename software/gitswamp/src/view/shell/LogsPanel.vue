@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { X, ListTree, User, AlertTriangle } from "lucide-vue-next";
+import { ListTree, User, AlertTriangle } from "lucide-vue-next";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
 type LogTab = "app" | "user" | "error";
 
@@ -38,13 +39,7 @@ function tabClass(tab: LogTab): string {
   <div class="h-full flex flex-col bg-[var(--card)] border-l border-[var(--border)]">
     <div class="flex items-center justify-between px-3 py-2 border-b border-[var(--border)]">
       <div class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-[0.08em]">Logs</div>
-      <button
-        class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-        title="Close logs panel"
-        @click="emit('close')"
-      >
-        <X class="w-4 h-4" />
-      </button>
+      <CloseIconButton size="sm" title="Close logs panel" @click="emit('close')" />
     </div>
 
     <div class="px-2 py-2 flex items-center gap-1 border-b border-[var(--border)]">

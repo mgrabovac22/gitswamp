@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
-import { Shield, Eye, EyeOff, Check, Trash2, X, Layout, Monitor, Sun, Moon } from "lucide-vue-next";
+import { Shield, Eye, EyeOff, Check, Trash2, Layout, Monitor, Sun, Moon } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import {
   APP_THEME_OPTIONS,
   applyAppPalettePreference,
@@ -18,6 +19,10 @@ import {
   getStoredCommitAnalyzerSettings,
   updateCommitAnalyzerSettings,
 } from "@/shared/config/commitAnalyzerPreferences";
+import {
+  getStoredSmartGitignoreWizardEnabled,
+  storeSmartGitignoreWizardEnabled,
+} from "@/shared/config/gitignoreWizardPreferences";
 
 const props = defineProps<{
   token: string | null;
@@ -44,11 +49,13 @@ const reducedMotion = ref(false);
 const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
+const smartGitignoreWizardEnabled = ref(true);
 const commitAnalyzerEnabled = ref(true);
-
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
 const lightThemeOptions = appThemeOptions.filter((theme) => theme.group === "light");
+const DEFAULT_DARK_PALETTE: AppPalettePreference = "default";
+const DEFAULT_LIGHT_PALETTE: AppPalettePreference = "default-light";
 
 const fontSizes = {
   small: "14px",
@@ -62,7 +69,7 @@ onMounted(() => {
   }
   themeMode.value = getStoredThemeModePreference();
   appPalette.value = getStoredAppPalettePreference();
-  
+
   const savedFontSize = localStorage.getItem("gitswamp-font-size");
   if (savedFontSize && (savedFontSize === "small" || savedFontSize === "medium" || savedFontSize === "large")) {
     fontSize.value = savedFontSize;
@@ -103,7 +110,8 @@ onMounted(() => {
   }
 
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
-  
+  smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
+
   applySettings();
 });
 
@@ -139,6 +147,10 @@ watch(commitAnalyzerEnabled, (value) => {
   updateCommitAnalyzerSettings({ enabled: value });
 });
 
+watch(smartGitignoreWizardEnabled, (value) => {
+  storeSmartGitignoreWizardEnabled(value);
+});
+
 watch(appPalette, (value) => {
   applyAppPalettePreference(value);
   storeAppPalettePreference(value);
@@ -160,7 +172,9 @@ function themeLabel(theme: AppThemeOption): string {
 }
 
 function toggleThemeMode() {
-  themeMode.value = themeMode.value === "dark" ? "light" : "dark";
+  const nextMode: ThemeModePreference = themeMode.value === "dark" ? "light" : "dark";
+  themeMode.value = nextMode;
+  appPalette.value = nextMode === "dark" ? DEFAULT_DARK_PALETTE : DEFAULT_LIGHT_PALETTE;
 }
 
 function handleSave() {
@@ -184,9 +198,7 @@ function handleDelete() {
           <Shield class="w-4 h-4 text-[var(--primary)]" />
           <h2 class="text-sm font-semibold text-[var(--foreground)]">Settings</h2>
         </div>
-        <button @click="emit('close')" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors">
-          <X class="w-4 h-4 text-[var(--muted-foreground)]" />
-        </button>
+        <CloseIconButton title="Close settings" @click="emit('close')" />
       </div>
 
       <div class="p-5 space-y-4 overflow-y-auto flex-1">
@@ -330,7 +342,7 @@ function handleDelete() {
           <div class="flex items-center justify-between py-2">
             <div>
               <div class="text-xs font-medium text-[var(--foreground)] block">Reduced Motion</div>
-              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disable graph and UI animations</p>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disable graph and UI animations except the current HEAD branch ring</p>
             </div>
             <button
               @click="reducedMotion = !reducedMotion"
@@ -391,6 +403,23 @@ function handleDelete() {
               <div
                 class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
                 :class="notifyGitkeep ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
+              />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--foreground)] block">Smart .gitignore Wizard</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Suggest generated and private untracked files for .gitignore</p>
+            </div>
+            <button
+              @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled"
+              class="relative w-10 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
+              :class="smartGitignoreWizardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'"
+            >
+              <div
+                class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                :class="smartGitignoreWizardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
               />
             </button>
           </div>

@@ -7,6 +7,8 @@ import {
   Settings,
   Loader2,
   Download,
+  ShieldAlert,
+  UserCircle2,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -14,8 +16,10 @@ import BranchQuickActions from "@/view/shell/BranchQuickActions.vue";
 import headerIcon from "@/assets/logo_git_croc.gif";
 import headerTextLogoDark from "@/assets/logo_dark.png";
 import headerTextLogoLight from "@/assets/logo_light.png";
+import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
+import type { GitRpgProfile } from "@/features/repository/rpg/gitRpgProfiler";
 
-defineProps<{
+const props = defineProps<{
   loading: boolean;
   activeAction?: "pull" | "push" | "fetch" | null;
   ghostActive?: boolean;
@@ -23,6 +27,14 @@ defineProps<{
     level: "none" | "medium" | "high";
     label: string;
   };
+  rpgProfile?: GitRpgProfile | null;
+  rpgLoading?: boolean;
+  identityGuard?: {
+    enabled: boolean;
+    mismatch: boolean;
+    label: string;
+    detail: string;
+  } | null;
 }>();
 
 const emit = defineEmits<{
@@ -33,6 +45,8 @@ const emit = defineEmits<{
   ghostBranch: [];
   materializeGhostBranch: [];
   discardGhostBranch: [];
+  explainGitState: [];
+  identityGuard: [];
   stash: [];
   terminal: [];
   settings: [];
@@ -40,6 +54,14 @@ const emit = defineEmits<{
 
 const isLight = ref(document.documentElement.classList.contains("light"));
 const textLogo = computed(() => (isLight.value ? headerTextLogoLight : headerTextLogoDark));
+const rpgRole = computed(() => props.rpgProfile?.primaryRole || null);
+const rpgShieldTitle = computed(() => {
+  if (rpgRole.value) {
+    return `${rpgRole.value.title}, click me`;
+  }
+
+  return props.rpgLoading ? "Git RPG profile loading, click me" : "Git RPG profile, click me";
+});
 
 const themeObserver = new MutationObserver(() => {
   isLight.value = document.documentElement.classList.contains("light");
@@ -122,6 +144,29 @@ onUnmounted(() => {
       >
         {{ originConflictRisk.level === 'high' ? 'Conflict Risk' : 'Merge Warning' }}
       </span>
+      <AppButton
+        v-if="identityGuard?.enabled"
+        variant="ghost"
+        size="sm"
+        class="h-8 w-8 px-0 transition-all"
+        :class="identityGuard.mismatch
+          ? 'text-[#f59e0b] hover:bg-[#f59e0b]/10 hover:text-[#fbbf24] ring-1 ring-[#f59e0b]/35 animate-pulse'
+          : 'text-[var(--muted-foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)]'"
+        :title="identityGuard.detail"
+        @click="emit('identityGuard')"
+      >
+        <ShieldAlert v-if="identityGuard.mismatch" class="w-4 h-4" />
+        <UserCircle2 v-else class="w-4 h-4" />
+      </AppButton>
+      <AppButton
+        variant="ghost"
+        size="sm"
+        class="h-8 w-8 px-0 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] transition-all"
+        :title="rpgShieldTitle"
+        @click="emit('explainGitState')"
+      >
+        <GitRpgShield :role="rpgRole" :loading="props.rpgLoading" size="header" />
+      </AppButton>
       <BranchQuickActions
         :loading="loading"
         :ghost-active="!!ghostActive"
@@ -169,4 +214,5 @@ onUnmounted(() => {
     opacity: 1;
   }
 }
+
 </style>

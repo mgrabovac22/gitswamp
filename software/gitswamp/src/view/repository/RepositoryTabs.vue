@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Folder, Plus, X, Home, Menu, HelpCircle, Info } from "lucide-vue-next";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
+import { Folder, Plus, X, Home, Menu, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { isEditableTarget } from "@/shared/dom/keyboardTargets";
+import type { AppHelpSection } from "@/features/shell/keyboardShortcuts";
 import type { RepoInfo } from "@/types";
 
-type MenuSection = "file" | "edit" | "view" | "help";
-type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap";
+const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDialog.vue"));
+
+type MenuSection = "file" | "edit" | "view" | "options" | "help";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout";
 
 interface MenuAction {
   id: string;
@@ -19,15 +23,21 @@ interface MenuAction {
 const props = defineProps<{
   tabs: { id: string; repo: RepoInfo | null; label: string }[];
   activeTabId: string;
+  canReopenClosedTab?: boolean;
 }>();
 
 const emit = defineEmits<{
   selectTab: [id: string];
   closeTab: [id: string];
   newTab: [];
+  reopenClosedTab: [];
   openRepository: [];
   toggleTerminal: [];
   openSettings: [];
+  openIntegrations: [];
+  openGitIntegration: [];
+  openAdvanced: [];
+  openOrganisations: [];
   refreshRepository: [];
   openInVsCode: [];
   openInExplorer: [];
@@ -41,6 +51,7 @@ const menuButton = ref<HTMLElement | null>(null);
 const menuPanel = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 const showHelpPanel = ref(false);
+const helpPanelSection = ref<AppHelpSection>("shortcuts");
 const showAboutPanel = ref(false);
 const activeSection = ref<MenuSection>("file");
 const menuPanelStyle = ref<Record<string, string>>({});
@@ -50,13 +61,25 @@ const sectionLabels: { id: MenuSection; label: string }[] = [
   { id: "file", label: "File" },
   { id: "edit", label: "Edit" },
   { id: "view", label: "View" },
+  { id: "options", label: "Options" },
   { id: "help", label: "Help" },
 ];
 
 const activeTab = computed(() => props.tabs.find((tab) => tab.id === props.activeTabId) ?? null);
 const hasActiveRepo = computed(() => !!activeTab.value?.repo);
 const activeRepoPath = computed(() => activeTab.value?.repo?.path ?? "");
-const canCloseActiveTab = computed(() => props.tabs.length > 1);
+const canCloseActiveTab = computed(() => props.tabs.length > 1 || !!activeTab.value?.repo);
+
+function canCloseTab(tab: { id: string; repo: RepoInfo | null; label: string }): boolean {
+  return props.tabs.length > 1 || !!tab.repo;
+}
+
+function closeTabWithMiddleClick(tab: { id: string; repo: RepoInfo | null; label: string }) {
+  if (!canCloseTab(tab)) {
+    return;
+  }
+  emit("closeTab", tab.id);
+}
 
 function toggleMenu() {
   menuOpen.value = !menuOpen.value;
@@ -79,7 +102,8 @@ function updateMenuPosition() {
   };
 }
 
-function openHelpPanel() {
+function openHelpPanel(section: AppHelpSection = "shortcuts") {
+  helpPanelSection.value = section;
   showHelpPanel.value = true;
   closeMenu();
 }
@@ -125,6 +149,14 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Ctrl+W",
       disabled: !canCloseActiveTab.value,
       run: () => emit("closeTab", props.activeTabId),
+    },
+    {
+      id: "reopen-closed-tab",
+      label: "Reopen Closed Tab",
+      description: "Restore the most recently closed workspace tab.",
+      shortcut: "Ctrl+Shift+T",
+      disabled: !props.canReopenClosedTab,
+      run: () => emit("reopenClosedTab"),
     },
     {
       id: "create-gist",
@@ -178,10 +210,26 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       run: () => emit("setHistoryView", "graph"),
     },
     {
+      id: "view-galaxy",
+      label: "Galaxy View",
+      description: "Explore commits and branches as an interactive canvas galaxy.",
+      shortcut: "Alt+2",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "galaxy"),
+    },
+    {
+      id: "view-city",
+      label: "Repository City",
+      description: "Navigate folders, file hotspots and branch activity as a city.",
+      shortcut: "Alt+7",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "city"),
+    },
+    {
       id: "view-productivity",
       label: "Productivity Arena",
       description: "Show commit activity and productivity analytics.",
-      shortcut: "Alt+2",
+      shortcut: "Alt+3",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "productivity"),
     },
@@ -189,7 +237,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       id: "view-time-machine",
       label: "Time Machine",
       description: "Navigate history frames and inspect repository state.",
-      shortcut: "Alt+3",
+      shortcut: "Alt+4",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "time-machine"),
     },
@@ -197,9 +245,17 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       id: "view-conflict-heatmap",
       label: "Usual Conflict Suspects",
       description: "Highlight merge hotspots and risky conflict areas.",
-      shortcut: "Alt+4",
+      shortcut: "Alt+5",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "conflict-heatmap"),
+    },
+    {
+      id: "view-burnout",
+      label: "Burnout Analytics",
+      description: "Show contributor focus, after-hours rhythm and hot-file ownership pressure.",
+      shortcut: "Alt+6",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "burnout"),
     },
     {
       id: "open-explorer",
@@ -209,21 +265,62 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       disabled: !hasActiveRepo.value,
       run: () => emit("openInExplorer"),
     },
+  ],
+  options: [
     {
-      id: "open-settings",
-      label: "Open Settings",
-      description: "Configure appearance, behavior and authentication.",
+      id: "open-integrations",
+      label: "Integrations",
+      description: "Manage GitHub, GitLab, Bitbucket and Azure connections.",
+      shortcut: "Ctrl+Shift+I",
+      run: () => emit("openIntegrations"),
+    },
+    {
+      id: "open-git-integration",
+      label: "Git Integration",
+      description: "Check Git installation and configure background auto-fetch.",
+      shortcut: "Ctrl+Shift+K",
+      run: () => emit("openGitIntegration"),
+    },
+    {
+      id: "open-preferences",
+      label: "Options",
+      description: "Configure appearance, behavior and application options.",
       shortcut: "Ctrl+,",
       run: () => emit("openSettings"),
+    },
+    {
+      id: "open-advanced",
+      label: "Advanced",
+      description: "Configure graph behavior and advanced toggles.",
+      run: () => emit("openAdvanced"),
+    },
+    {
+      id: "open-organisations",
+      label: "Organisations",
+      description: "Manage organisation repositories and batch clone selections.",
+      shortcut: "Ctrl+Shift+Y",
+      run: () => emit("openOrganisations"),
     },
   ],
   help: [
     {
-      id: "help-overview",
-      label: "Help and Shortcuts",
-      description: "Open help panel with shortcuts and key features.",
+      id: "help-shortcuts",
+      label: "Keyboard Shortcuts",
+      description: "Browse and filter every available keyboard shortcut.",
       shortcut: "F1",
-      run: openHelpPanel,
+      run: () => openHelpPanel("shortcuts"),
+    },
+    {
+      id: "help-overview",
+      label: "Feature Guide",
+      description: "Open a concise guide to the main GitSwamp workflows.",
+      run: () => openHelpPanel("overview"),
+    },
+    {
+      id: "help-rpg-roles",
+      label: "Git RPG Roles",
+      description: "Browse role shields and the commit patterns behind them.",
+      run: () => openHelpPanel("roles"),
     },
     {
       id: "help-about",
@@ -234,7 +331,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     {
       id: "help-logs",
       label: "Logs",
-      description: "Open app, user and error log panel on the right side.",
+      description: "Show or hide the app, user and error log panel.",
       shortcut: "Ctrl+Shift+L",
       run: () => emit("openLogs"),
     },
@@ -256,9 +353,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
 function executeAction(action: MenuAction) {
   if (action.disabled) return;
   action.run();
-  if (action.id !== "help-overview") {
-    closeMenu();
-  }
+  closeMenu();
 }
 
 function onDocumentPointerDown(event: MouseEvent) {
@@ -276,17 +371,10 @@ function onWindowReposition() {
   updateMenuPosition();
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  const element = target as HTMLElement | null;
-  if (!element) return false;
-  const tag = element.tagName.toLowerCase();
-  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select";
-}
-
 function onGlobalKeyDown(event: KeyboardEvent) {
   if (event.key === "F1" && !isEditableTarget(event.target)) {
     event.preventDefault();
-    openHelpPanel();
+    openHelpPanel("shortcuts");
     return;
   }
 
@@ -317,7 +405,8 @@ onUnmounted(() => {
     <div ref="menuRoot" class="relative flex-shrink-0">
       <button
         ref="menuButton"
-        class="h-9 w-9 flex items-center justify-center rounded-t-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-all [app-region:no-drag]"
+        type="button"
+        class="h-9 w-9 flex items-center justify-center rounded-t-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-all [app-region:no-drag] pointer-events-auto"
         title="Menu"
         @click.stop="toggleMenu"
       >
@@ -330,6 +419,7 @@ onUnmounted(() => {
         v-for="tab in tabs"
         :key="tab.id"
         @click="emit('selectTab', tab.id)"
+        @mousedown.middle.prevent.stop="closeTabWithMiddleClick(tab)"
         :class="[
           'h-9 px-3 rounded-t-md flex items-center gap-2 text-xs font-medium transition-colors relative group min-w-0 max-w-48 flex-shrink-0',
           activeTabId === tab.id
@@ -341,7 +431,7 @@ onUnmounted(() => {
         <Folder v-else class="w-3 h-3 text-[var(--primary)] flex-shrink-0" />
         <span class="truncate">{{ tab.label }}</span>
         <button
-          v-if="tabs.length > 1"
+          v-if="tab.repo || tabs.length > 1"
           @click.stop="emit('closeTab', tab.id)"
           class="ml-1 p-0.5 rounded hover:bg-[#ef4444]/20 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
         >
@@ -408,58 +498,11 @@ onUnmounted(() => {
     </div>
   </Teleport>
 
-  <Teleport to="body">
-    <div
-      v-if="showHelpPanel"
-      class="fixed inset-0 z-[7100] flex items-center justify-center bg-black/55 backdrop-blur-sm"
-      @click.self="showHelpPanel = false"
-    >
-      <div class="w-[700px] max-w-[95vw] max-h-[88vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl">
-        <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <HelpCircle class="w-4 h-4 text-[var(--primary)]" />
-            <h3 class="text-sm font-semibold text-[var(--foreground)]">Help and Keyboard Shortcuts</h3>
-          </div>
-          <button
-            class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            @click="showHelpPanel = false"
-          >
-            <X class="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div class="px-4 py-4 space-y-4">
-          <section>
-            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Core Features</h4>
-            <ul class="space-y-1 text-[11px] text-[var(--muted-foreground)]">
-              <li>Graph panel: search, navigate matches, isolate branch history, drag and drop merge requests.</li>
-              <li>Repository sidebar: local and remote branches, stashes, tags, plus Create a Gist action.</li>
-              <li>Right-click menus on commits and branches expose checkout, merge, reset, and branch operations.</li>
-              <li>Terminal panel supports git aliases, quick actions, history, reverse search and open-tool commands.</li>
-            </ul>
-          </section>
-
-          <section>
-            <h4 class="text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide mb-2">Shortcuts</h4>
-            <div class="space-y-1.5 text-[11px]">
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open help and shortcuts</span><span class="text-[var(--muted-foreground)] font-mono">F1</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">New tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+T</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Close active tab</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+W</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Toggle terminal panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+`</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Refresh repository data</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+R</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in VS Code</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+O</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open repository in folder explorer</span><span class="text-[var(--muted-foreground)] font-mono">Alt+O</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Usual Conflict Suspects</span><span class="text-[var(--muted-foreground)] font-mono">Alt+4</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Focus commit search</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+R</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open Gist creator</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+G</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open settings</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+,</span></div>
-              <div class="flex items-center justify-between gap-3"><span class="text-[var(--foreground)]">Open logs panel</span><span class="text-[var(--muted-foreground)] font-mono">Ctrl+Shift+L</span></div>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <AppHelpDialog
+    :open="showHelpPanel"
+    :initial-section="helpPanelSection"
+    @close="showHelpPanel = false"
+  />
 
   <Teleport to="body">
     <div
@@ -538,25 +581,12 @@ onUnmounted(() => {
 
 <style scoped>
 .tabs-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(139, 92, 246, 0.3) transparent;
+  scrollbar-width: none;
 }
 
 .tabs-scroll::-webkit-scrollbar {
-  height: 5px;
-}
-
-.tabs-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.tabs-scroll::-webkit-scrollbar-thumb {
-  background: rgba(139, 92, 246, 0.28);
-  border-radius: 999px;
-}
-
-.tabs-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 92, 246, 0.45);
+  width: 0;
+  height: 0;
 }
 
 .menu-action-desc {
@@ -567,4 +597,5 @@ onUnmounted(() => {
 :global(html.dummy-mode .menu-action-desc) {
   display: block;
 }
+
 </style>

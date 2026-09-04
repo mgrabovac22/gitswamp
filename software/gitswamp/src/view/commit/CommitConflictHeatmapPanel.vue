@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { FileCode2, Folder, FolderOpen } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { ConflictHotspot, ConflictPair } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
@@ -19,6 +20,49 @@ const loadingLetters = "LOADING".split("");
 const hotspotCache = new Map<string, ConflictHotspot[]>();
 const pairCache = new Map<string, ConflictPair[]>();
 const treeCache = new Map<string, string[]>();
+const HOTSPOT_CACHE_LIMIT = 3;
+const PAIR_CACHE_LIMIT = 3;
+const TREE_CACHE_LIMIT = 1;
+
+function getCachedEntry<T>(cache: Map<string, T>, key: string): T | null {
+  const value = cache.get(key);
+  if (!value) return null;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedEntry<T>(cache: Map<string, T>, key: string, value: T, limit: number) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
+}
+
+function pruneCachesForRepo(repoPath: string) {
+  const repoPrefix = `${repoPath}::`;
+  for (const key of hotspotCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      hotspotCache.delete(key);
+    }
+  }
+  for (const key of pairCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      pairCache.delete(key);
+    }
+  }
+  for (const key of treeCache.keys()) {
+    if (key !== repoPath) {
+      treeCache.delete(key);
+    }
+  }
+}
 
 type MergeWindowKey = (typeof MERGE_WINDOWS)[number]["key"];
 
@@ -530,7 +574,7 @@ async function loadHotspots() {
     return;
   }
 
-  const cachedRows = hotspotCache.get(cacheKey);
+  const cachedRows = getCachedEntry(hotspotCache, cacheKey);
   if (cachedRows) {
     hotspots.value = cachedRows;
     hotspotsLoading.value = false;
@@ -552,7 +596,7 @@ async function loadHotspots() {
     }
 
     hotspots.value = items;
-    hotspotCache.set(cacheKey, items);
+    setCachedEntry(hotspotCache, cacheKey, items, HOTSPOT_CACHE_LIMIT);
   } catch {
     if (runToken !== hotspotRunToken) {
       return;
@@ -579,7 +623,7 @@ async function loadRiskPairs() {
     return;
   }
 
-  const cachedRows = pairCache.get(cacheKey);
+  const cachedRows = getCachedEntry(pairCache, cacheKey);
   if (cachedRows) {
     riskyPairs.value = cachedRows;
     pairsLoading.value = false;
@@ -602,7 +646,7 @@ async function loadRiskPairs() {
 
     const limited = rows.slice(0, 36);
     riskyPairs.value = limited;
-    pairCache.set(cacheKey, limited);
+    setCachedEntry(pairCache, cacheKey, limited, PAIR_CACHE_LIMIT);
   } catch {
     if (runToken !== pairRunToken) {
       return;
@@ -629,7 +673,7 @@ async function loadRepositoryTree() {
     return;
   }
 
-  const cachedPaths = treeCache.get(cacheKey);
+  const cachedPaths = getCachedEntry(treeCache, cacheKey);
   if (cachedPaths) {
     repositoryPaths.value = cachedPaths;
     treeLoading.value = false;
@@ -651,7 +695,7 @@ async function loadRepositoryTree() {
     }
 
     repositoryPaths.value = paths;
-    treeCache.set(cacheKey, paths);
+    setCachedEntry(treeCache, cacheKey, paths, TREE_CACHE_LIMIT);
   } catch {
     if (runToken !== treeRunToken) {
       return;
@@ -668,7 +712,8 @@ async function loadRepositoryTree() {
 
 watch(
   () => props.repoPath,
-  () => {
+  (repoPath) => {
+    pruneCachesForRepo(repoPath);
     query.value = "";
     selectedTreePath.value = "";
     expandedNodeIds.value = [];
@@ -721,10 +766,19 @@ watch(
   },
   { immediate: true },
 );
+
+onUnmounted(() => {
+  hotspots.value = [];
+  riskyPairs.value = [];
+  repositoryPaths.value = [];
+  hotspotCache.clear();
+  pairCache.clear();
+  treeCache.clear();
+});
 </script>
 
 <template>
-  <div class="flex-1 min-h-0 overflow-y-auto bg-[var(--background)] conflict-surface">
+  <div class="flex-1 min-h-0 overflow-y-auto bg-[var(--background)]">
     <div class="p-4 md:p-5 space-y-4">
       <section class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -733,13 +787,7 @@ watch(
             <h2 class="text-lg md:text-xl font-bold text-[var(--foreground)]">Integration Signals</h2>
             <p class="text-xs text-[var(--muted-foreground)] mt-1">Repository tree heatmap, collision index, and coupling pairs.</p>
           </div>
-          <button
-            class="h-7 w-7 rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:border-[var(--destructive)]/50 transition-colors"
-            title="Back to Git Graph"
-            @click="emit('close')"
-          >
-            x
-          </button>
+          <CloseIconButton title="Back to Git Graph" @click="emit('close')" />
         </div>
       </section>
 
@@ -1021,13 +1069,6 @@ watch(
 </template>
 
 <style scoped>
-.conflict-surface {
-  scroll-behavior: auto;
-  scrollbar-gutter: stable;
-  contain: layout paint style;
-  will-change: scroll-position;
-}
-
 .window-selector {
   display: inline-flex;
   align-items: center;
@@ -1310,14 +1351,14 @@ watch(
 }
 
 .tree-risk-badge.tree-risk-moderate {
-  color: rgba(255, 247, 214, 1);
-  background: rgba(146, 64, 14, 0.64);
-  border: 1px solid rgba(251, 191, 36, 0.66);
+  color: rgba(180, 83, 9, 1);
+  background: rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.48);
 }
 
 .tree-risk-badge.tree-risk-high {
-  color: rgba(255, 241, 242, 1);
-  background: rgba(127, 29, 29, 0.86);
+  color: rgba(252, 165, 165, 1);
+  background: rgba(185, 28, 28, 0.26);
   border: 1px solid rgba(248, 113, 113, 0.6);
 }
 
@@ -1328,9 +1369,9 @@ watch(
 }
 
 .tree-risk-badge.tree-file-risk-moderate {
-  color: rgba(255, 247, 214, 1);
-  background: rgba(146, 64, 14, 0.64);
-  border: 1px solid rgba(245, 158, 11, 0.68);
+  color: rgba(180, 83, 9, 1);
+  background: rgba(245, 158, 11, 0.22);
+  border: 1px solid rgba(245, 158, 11, 0.5);
 }
 
 .tree-risk-badge.tree-file-risk-high {
@@ -1357,20 +1398,5 @@ watch(
     transform: translateY(-3px);
     opacity: 1;
   }
-}
-
-:global(html.gitswamp-linux) .panel-loader-overlay {
-  backdrop-filter: none;
-}
-
-:global(html.gitswamp-linux) .loader-letter {
-  animation: none;
-}
-
-:global(html.gitswamp-linux) .hotspot-scroll,
-:global(html.gitswamp-linux) .repo-tree-list,
-:global(html.gitswamp-linux) .pairs-scroll {
-  max-height: none !important;
-  overflow-y: visible !important;
 }
 </style>

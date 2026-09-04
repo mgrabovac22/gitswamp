@@ -1,21 +1,49 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import FileDiffViewer from "@/shared/ui/FileDiffViewer.vue";
+import { computed, defineAsyncComponent, ref, watch } from "vue";
 import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
-import CommitProductivityPanel from "@/view/commit/CommitProductivityPanel.vue";
-import CommitTimeMachinePanel from "@/view/commit/CommitTimeMachinePanel.vue";
-import CommitConflictHeatmapPanel from "@/view/commit/CommitConflictHeatmapPanel.vue";
 import CommitDetails from "@/view/commit/CommitDetails.vue";
 import TerminalPanel from "@/view/shell/TerminalPanel.vue";
 import LogsPanel from "@/view/shell/LogsPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
-import RemoteInsightsPanel from "@/view/repository/RemoteInsightsPanel.vue";
-import type { CommitInfo, StashInfo, IssueInfo, PullRequestInfo } from "@/types";
+import { useResizableWorkspace } from "@/features/repository/workspace/useResizableWorkspace";
+import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
+import ManualBisectOverlay from "@/features/repository/manual-bisect/ManualBisectOverlay.vue";
+import { useManualBisect } from "@/features/repository/manual-bisect/useManualBisect";
+import type {
+  AmendCommitOptions,
+  CommitInfo,
+  StashInfo,
+  IssueInfo,
+  PullRequestInfo,
+  GistInfo,
+  LostCommitInfo,
+  RemoteIssueCreatePayload,
+  RemotePullRequestCreatePayload,
+  RemoteLabelInfo,
+  RemoteMilestoneInfo,
+  RemoteUserInfo,
+} from "@/types";
 
-type HistoryViewMode = "graph" | "productivity" | "time-machine" | "conflict-heatmap" | "remote-insights" | "conflict-resolve";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
+interface RemoteCreateOptions {
+  labels: RemoteLabelInfo[];
+  milestones: RemoteMilestoneInfo[];
+  assignees: RemoteUserInfo[];
+  reviewers: RemoteUserInfo[];
+}
+
+const FileDiffViewer = defineAsyncComponent(() => import("@/shared/ui/FileDiffViewer.vue"));
+const CommitGalaxyPanel = defineAsyncComponent(() => import("@/view/commit/CommitGalaxyPanel.vue"));
+const RepositoryCityPanel = defineAsyncComponent(() => import("@/features/repository/city/RepositoryCityPanel.vue"));
+const CommitProductivityPanel = defineAsyncComponent(() => import("@/view/commit/CommitProductivityPanel.vue"));
+const CommitTimeMachinePanel = defineAsyncComponent(() => import("@/view/commit/CommitTimeMachinePanel.vue"));
+const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/commit/CommitConflictHeatmapPanel.vue"));
+const CommitBurnoutAnalyticsPanel = defineAsyncComponent(() => import("@/view/commit/CommitBurnoutAnalyticsPanel.vue"));
+const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository/RemoteInsightsPanel.vue"));
+const LostFoundPanel = defineAsyncComponent(() => import("@/view/repository/LostFoundPanel.vue"));
 
 const props = defineProps<{
   git: any;
@@ -24,13 +52,26 @@ const props = defineProps<{
   openPullRequestBranches?: string[];
   issues?: IssueInfo[];
   pullRequests?: PullRequestInfo[];
+  gists?: GistInfo[];
+  lostCommits?: LostCommitInfo[];
+  lostCommitsLoading?: boolean;
+  rescuingLostCommitSha?: string | null;
+  issuesHasMore?: boolean;
+  pullRequestsHasMore?: boolean;
+  issuesLoadingAll?: boolean;
+  pullRequestsLoadingAll?: boolean;
   selectedIssue?: IssueInfo | null;
   selectedPullRequest?: PullRequestInfo | null;
+  remoteInsightDetailLoading?: boolean;
+  remoteCreateOptions?: RemoteCreateOptions;
+  remoteCreateOptionsLoading?: boolean;
   remoteInsightsMode?: RemoteInsightsViewMode;
   showDiffViewer: boolean;
   diffFilePath: string;
   diffCommitSha: string | null;
   diffStaged: boolean;
+  diffFallbackStatus?: string | null;
+  diffFallbackOldPath?: string | null;
   conflictResolverPath?: string;
   detailsPanelCollapsed: boolean;
   historyViewMode: HistoryViewMode;
@@ -41,6 +82,8 @@ const props = defineProps<{
   appLogs: string[];
   userLogs: string[];
   errorLogs: string[];
+  smartGitignoreWizardEnabled?: boolean;
+  bugAutopsyEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -52,7 +95,7 @@ const emit = defineEmits<{
   closeDiffViewer: [];
   closeConflictResolver: [];
   conflictResolved: [];
-  openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean }];
+  openDiffViewer: [payload: { path: string; sha: string | null; staged: boolean; fallbackStatus?: string | null; fallbackOldPath?: string | null }];
   openConflictResolver: [filePath: string];
   selectCommit: [payload: CommitSelectionPayload];
   selectWorkingChanges: [];
@@ -60,10 +103,15 @@ const emit = defineEmits<{
   selectStash: [stash: StashInfo];
   selectIssue: [issueNumber: number];
   selectPullRequest: [pullRequestNumber: number];
+  loadAllIssues: [];
+  loadAllPullRequests: [];
+  openGist: [url: string];
   openCreateIssue: [];
   openCreatePullRequest: [];
-  createIssue: [payload: { title: string; description: string }];
-  createPullRequest: [payload: { title: string; description: string; sourceBranch: string; targetBranch: string }];
+  createIssue: [payload: RemoteIssueCreatePayload];
+  createPullRequest: [payload: RemotePullRequestCreatePayload];
+  refreshLostFound: [];
+  rescueLostCommit: [payload: { sha: string; branchName: string }];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   checkoutRemoteBranch: [name: string];
@@ -84,146 +132,195 @@ const hasWorkingChanges = computed(
 );
 
 const hasConflicts = computed(() => props.git.hasConflicts.value);
+const repositoryOperation = computed(() => props.git.repositoryOperation.value);
 const selectedCommitCount = computed(() => props.git.selectedCommits.value.length);
+const amendModeRequested = ref(false);
+const headCommit = computed<CommitInfo | null>(() => {
+  const headSha = props.git.repoInfo.value?.head_sha || "";
+  if (!headSha) return null;
+  return props.git.commits.value.find((commit: CommitInfo) => commit.sha === headSha) ?? null;
+});
+const headCommitPublished = computed(() => {
+  const head = headCommit.value;
+  if (!head) return false;
+  const remoteNames = new Set(props.git.remoteBranches.value.map((branch: { name: string }) => branch.name));
+  return head.refs.some((ref: string) => remoteNames.has(ref));
+});
+const terminalUntrackedFileCount = computed(() =>
+  props.git.unstagedFiles.value.filter((file: { status?: string; staged?: boolean; conflicted?: boolean }) => {
+    const status = (file.status || "").toLowerCase();
+    return !file.staged && !file.conflicted && (status === "new" || status === "added" || status === "untracked" || status === "??");
+  }).length,
+);
+const workingFilePaths = computed(() => Array.from(new Set([
+  ...props.git.stagedFiles.value.map((file: { path: string }) => file.path),
+  ...props.git.unstagedFiles.value.map((file: { path: string }) => file.path),
+])));
 
 const showDetailsPanel = computed(
   () => props.historyViewMode === "graph"
-    && (props.viewingWorkingChanges || props.viewingStash || selectedCommitCount.value > 0 || props.git.selectedCommit.value !== null),
+    && (props.viewingWorkingChanges
+      || props.viewingStash
+      || selectedCommitCount.value > 0
+      || props.git.selectedCommit.value !== null
+      || repositoryOperation.value !== null),
 );
 
 const canAmendSelectedCommit = computed(() => {
   if (selectedCommitCount.value !== 1) return false;
 
   const selected = props.git.selectedCommit.value;
-  const branch = props.git.currentBranch.value;
-  if (!selected || !branch) return false;
-
-  const remoteBranch = `origin/${branch}`;
-  const headRef = `HEAD -> ${branch}`;
-  return selected.refs.some((ref: string) => ref === branch || ref === remoteBranch || ref.includes(headRef));
+  const headSha = props.git.repoInfo.value?.head_sha || "";
+  return !!selected && !!headSha && selected.sha === headSha;
 });
 
-const SIDEBAR_WIDTH_KEY = "gitswamp-sidebar-width";
-const DETAILS_WIDTH_KEY = "gitswamp-details-width";
-const LOGS_WIDTH_KEY = "gitswamp-logs-width";
-const TERMINAL_HEIGHT_KEY = "gitswamp-terminal-height";
-const sidebarWidth = ref(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 224);
-const detailsWidth = ref(Number(localStorage.getItem(DETAILS_WIDTH_KEY)) || 320);
-const logsWidth = ref(Number(localStorage.getItem(LOGS_WIDTH_KEY)) || 360);
-const terminalHeight = ref(Number(localStorage.getItem(TERMINAL_HEIGHT_KEY)) || 240);
-const resizeTarget = ref<"sidebar" | "details" | "logs" | "terminal" | null>(null);
-const resizeStartX = ref(0);
-const resizeStartWidth = ref(0);
-const resizeStartY = ref(0);
-const resizeStartHeight = ref(0);
-const workspaceColumnRef = ref<HTMLElement | null>(null);
-
-const contentAreaStyle = computed(() => {
-  if (!props.showTerminal) return undefined;
-  return { height: `calc(100% - ${terminalHeight.value}px)` };
+watch(() => props.git.repoPath.value, () => {
+  amendModeRequested.value = false;
 });
 
-const terminalPanelStyle = computed(() => ({
-  height: `${terminalHeight.value}px`,
-}));
+watch(
+  () => repositoryOperation.value?.kind || "",
+  (kind) => {
+    if (kind !== "merge") return;
+    emit("selectWorkingChanges");
+    emit("update:detailsPanelCollapsed", false);
+  },
+  { immediate: true },
+);
 
-function clampWidth(target: "sidebar" | "details" | "logs", width: number): number {
-  if (target === "sidebar") {
-    return Math.min(Math.max(width, 180), 420);
-  }
+const {
+  sidebarWidth,
+  detailsWidth,
+  logsWidth,
+  workspaceColumnRef,
+  contentAreaStyle,
+  terminalPanelStyle,
+  beginResize,
+} = useResizableWorkspace(() => props.showTerminal);
 
-  if (target === "logs") {
-    return Math.min(Math.max(width, 280), 720);
-  }
-
-  return Math.min(Math.max(width, 260), 700);
-}
-
-function clampTerminalHeight(height: number): number {
-  const containerHeight = workspaceColumnRef.value?.clientHeight ?? globalThis.innerHeight;
-  const maxHeight = Math.max(180, Math.floor(containerHeight * 0.7));
-  return Math.min(Math.max(height, 140), maxHeight);
-}
-
-function onWindowResize() {
-  terminalHeight.value = clampTerminalHeight(terminalHeight.value);
-}
-
-function beginResize(target: "sidebar" | "details" | "logs" | "terminal", event: MouseEvent) {
-  resizeTarget.value = target;
-
-  if (target === "terminal") {
-    resizeStartY.value = event.clientY;
-    resizeStartHeight.value = terminalHeight.value;
-    document.body.style.cursor = "row-resize";
-  } else {
-    resizeStartX.value = event.clientX;
-    if (target === "sidebar") {
-      resizeStartWidth.value = sidebarWidth.value;
-    } else if (target === "logs") {
-      resizeStartWidth.value = logsWidth.value;
-    } else {
-      resizeStartWidth.value = detailsWidth.value;
-    }
-    document.body.style.cursor = "col-resize";
-  }
-
-  document.body.style.userSelect = "none";
-}
-
-function onPointerMove(event: MouseEvent) {
-  if (!resizeTarget.value) return;
-
-  if (resizeTarget.value === "terminal") {
-    const deltaY = event.clientY - resizeStartY.value;
-    terminalHeight.value = clampTerminalHeight(resizeStartHeight.value - deltaY);
-    return;
-  }
-
-  const deltaX = event.clientX - resizeStartX.value;
-  if (resizeTarget.value === "sidebar") {
-    sidebarWidth.value = clampWidth("sidebar", resizeStartWidth.value + deltaX);
-  } else if (resizeTarget.value === "logs") {
-    logsWidth.value = clampWidth("logs", resizeStartWidth.value - deltaX);
-  } else {
-    detailsWidth.value = clampWidth("details", resizeStartWidth.value - deltaX);
-  }
-}
-
-function endResize() {
-  if (!resizeTarget.value) return;
-
-  if (resizeTarget.value === "terminal") {
-    localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight.value));
-  } else if (resizeTarget.value === "logs") {
-    localStorage.setItem(LOGS_WIDTH_KEY, String(logsWidth.value));
-  } else {
-    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
-    localStorage.setItem(DETAILS_WIDTH_KEY, String(detailsWidth.value));
-  }
-
-  resizeTarget.value = null;
-  document.body.style.cursor = "";
-  document.body.style.userSelect = "";
-}
-
-onMounted(() => {
-  terminalHeight.value = clampTerminalHeight(terminalHeight.value);
-  globalThis.addEventListener("mousemove", onPointerMove);
-  globalThis.addEventListener("mouseup", endResize);
-  globalThis.addEventListener("resize", onWindowResize);
-});
-
-onUnmounted(() => {
-  globalThis.removeEventListener("mousemove", onPointerMove);
-  globalThis.removeEventListener("mouseup", endResize);
-  globalThis.removeEventListener("resize", onWindowResize);
-  document.body.style.cursor = "";
-  document.body.style.userSelect = "";
+const { scheduleDestructiveAction } = useUndoableDestructiveAction();
+const {
+  session: manualBisectSession,
+  busy: manualBisectBusy,
+  detailsState: manualBisectDetailsState,
+  remaining: manualBisectRemaining,
+  currentCommit: manualBisectCurrentCommit,
+  badBound: manualBisectBadBound,
+  goodBound: manualBisectGoodBound,
+  culprit: manualBisectCulprit,
+  start: startManualBisect,
+  selectGood: selectManualBisectGood,
+  mark: markManualBisect,
+  retryCheckout: retryManualBisectCheckout,
+  cancel: cancelManualBisect,
+  close: closeManualBisect,
+  checkoutCulprit: checkoutManualBisectCulprit,
+  returnToOriginalBranch: returnManualBisectToOriginalBranch,
+} = useManualBisect({
+  commits: props.git.commits,
+  displayedCommits: props.git.displayedCommits,
+  currentBranch: props.git.currentBranch,
+  hasWorkingChanges,
+  hasConflicts,
+  gitError: props.git.error,
+  checkoutCommit: props.git.checkoutCommit,
+  checkoutBranch: props.git.checkoutBranch,
+  ensureCommitLoaded: props.git.ensureCommitLoaded,
+  selectCommit: (commit) => emit("selectCommit", { commit, additive: false }),
 });
 
 function toggleDetailsPanel() {
   emit("update:detailsPanelCollapsed", !props.detailsPanelCollapsed);
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+function scheduleDeleteBranch(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete branch "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep the branch.",
+    run: () => props.git.deleteBranch(name),
+  });
+}
+
+function scheduleDeleteRemoteBranch(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete remote branch "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep the remote branch.",
+    run: () => props.git.deleteRemoteBranch(name),
+  });
+}
+
+function scheduleDeleteBranchAndRemote(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete local and remote branch "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep both branch refs.",
+    run: () => emit("deleteBranchAndRemote", name),
+  });
+}
+
+function scheduleDeleteTag(name: string) {
+  scheduleDestructiveAction({
+    message: `Delete tag "${name}" in 5 seconds.`,
+    detail: "Click Undo to keep the tag.",
+    run: () => props.git.deleteTag(name),
+  });
+}
+
+function scheduleResetToCommit(sha: string, mode: "soft" | "mixed" | "hard") {
+  scheduleDestructiveAction({
+    message: `Reset ${mode} to ${sha.slice(0, 8)} in 5 seconds.`,
+    detail: mode === "hard"
+      ? "Hard reset can drop working-tree changes. Click Undo to cancel."
+      : "Click Undo to keep the current branch position.",
+    run: () => props.git.resetToCommit(sha, mode),
+  });
+}
+
+function scheduleResetBranchToRemote(branch: string) {
+  scheduleDestructiveAction({
+    message: `Reset "${branch}" to remote in 5 seconds.`,
+    detail: "Click Undo to keep the local branch state.",
+    run: () => props.git.resetBranchToRemote(branch),
+  });
+}
+
+function scheduleStashPop(index: number) {
+  scheduleDestructiveAction({
+    message: `Pop stash@{${index}} in 5 seconds.`,
+    detail: "Click Undo to leave the stash untouched.",
+    run: () => props.git.stashPop(index),
+  });
+}
+
+function scheduleStashDrop(index: number) {
+  scheduleDestructiveAction({
+    message: `Drop stash@{${index}} in 5 seconds.`,
+    detail: "Click Undo to keep the stash entry.",
+    run: () => props.git.stashDrop(index),
+  });
+}
+
+function scheduleDiscardFile(path: string) {
+  scheduleDestructiveAction({
+    message: `Discard "${fileNameFromPath(path)}" in 5 seconds.`,
+    detail: "Only unstaged working-tree changes are discarded. Click Undo to cancel.",
+    run: () => props.git.discardFile(path),
+  });
+}
+
+function scheduleDiscardAll() {
+  scheduleDestructiveAction({
+    message: "Discard all unstaged changes in 5 seconds.",
+    detail: "Staged changes stay staged. Click Undo to cancel.",
+    run: () => props.git.discardAll(),
+  });
+}
+
+async function abortCurrentMerge() {
+  await props.git.abortMerge(true);
 }
 
 async function handleJumpToSearchResult(sha: string) {
@@ -255,17 +352,30 @@ async function handleAmendCommitMessage(newMessage: string) {
   }
 }
 
+async function handleAmendCommit(options: AmendCommitOptions) {
+  await props.git.amendLastCommit(options);
+}
+
+function setAmendModeFromGraph(enabled: boolean) {
+  amendModeRequested.value = enabled;
+  if (!enabled) return;
+  emit("selectWorkingChanges");
+  emit("update:detailsPanelCollapsed", false);
+}
+
 function handleRefreshState() {
   Promise.all([
     props.git.refreshStatus(),
     props.git.refreshCommits(),
     props.git.refreshBranches(),
+    props.git.refreshStashes(),
+    props.git.refreshRepoInfo(),
   ]).catch(() => {});
 }
 </script>
 
 <template>
-  <div class="flex-1 flex overflow-hidden">
+  <div class="relative flex-1 flex overflow-hidden">
     <div class="h-full flex-shrink-0" :style="{ width: `${sidebarWidth}px` }">
       <RepositorySidebar
         :branches="props.git.localBranches.value"
@@ -276,20 +386,32 @@ function handleRefreshState() {
         :open-pull-request-branches="props.openPullRequestBranches || []"
         :issues="props.issues || []"
         :pull-requests="props.pullRequests || []"
+        :gists="props.gists || []"
+        :lost-commits="props.lostCommits || []"
+        :issues-has-more="props.issuesHasMore"
+        :pull-requests-has-more="props.pullRequestsHasMore"
+        :issues-loading-all="props.issuesLoadingAll"
+        :pull-requests-loading-all="props.pullRequestsLoadingAll"
         :selected-issue-number="props.selectedIssue?.number || null"
         :selected-pull-request-number="props.selectedPullRequest?.number || null"
         :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
         @checkout="props.git.checkoutBranch($event)"
+        @checkout-remote="emit('checkoutRemoteBranch', $event)"
+        @checkout-tag="props.git.checkoutCommit($event)"
         @create-branch="props.git.createBranch($event)"
-        @delete-branch="props.git.deleteBranch($event)"
-        @stash-pop="props.git.stashPop($event)"
+        @delete-branch="scheduleDeleteBranch($event)"
+        @stash-pop="scheduleStashPop($event)"
         @stash-apply="props.git.stashApply($event)"
-        @stash-drop="props.git.stashDrop($event)"
+        @stash-drop="scheduleStashDrop($event)"
         @select-issue="emit('selectIssue', $event)"
         @select-pull-request="emit('selectPullRequest', $event)"
+        @load-all-issues="emit('loadAllIssues')"
+        @load-all-pull-requests="emit('loadAllPullRequests')"
+        @open-gist="emit('openGist', $event)"
         @open-create-issue="emit('openCreateIssue')"
         @open-create-pull-request="emit('openCreatePullRequest')"
         @create-gist="emit('createGist')"
+        @open-lost-found="emit('setHistoryView', 'lost-found')"
       />
     </div>
 
@@ -308,6 +430,8 @@ function handleRefreshState() {
           :file-path="props.diffFilePath"
           :commit-sha="props.diffCommitSha"
           :staged="props.diffStaged"
+          :fallback-status="props.diffFallbackStatus"
+          :fallback-old-path="props.diffFallbackOldPath"
           @close="emit('closeDiffViewer')"
           @refresh="props.git.refreshStatus()"
         />
@@ -334,7 +458,10 @@ function handleRefreshState() {
           :has-working-changes="hasWorkingChanges"
           :has-conflicts="hasConflicts"
           :current-branch="props.git.currentBranch.value"
+          :head-sha="props.git.repoInfo.value?.head_sha || null"
+          :amend-mode-active="amendModeRequested"
           :has-more="props.git.hasMoreCommits.value"
+          :commit-wave-loading="props.git.commitWaveLoading.value"
           :stashes="props.git.stashes.value"
           :tags="props.git.tags.value"
           :open-pull-request-branches="props.openPullRequestBranches || []"
@@ -345,13 +472,15 @@ function handleRefreshState() {
           @select-working-changes="emit('selectWorkingChanges')"
           @select-conflicts="emit('selectConflicts')"
           @load-more="props.git.loadMoreCommits()"
+          @focus-head="props.git.focusHeadCommit()"
+          @set-amend-mode="setAmendModeFromGraph($event)"
           @checkout="props.git.checkoutCommit($event)"
           @create-branch-at="emit('createBranchAt', $event)"
           @cherry-pick="props.git.cherryPick($event)"
           @revert="props.git.revertCommit($event)"
-          @reset-soft="props.git.resetToCommit($event, 'soft')"
-          @reset-mixed="props.git.resetToCommit($event, 'mixed')"
-          @reset-hard="props.git.resetToCommit($event, 'hard')"
+          @reset-soft="scheduleResetToCommit($event, 'soft')"
+          @reset-mixed="scheduleResetToCommit($event, 'mixed')"
+          @reset-hard="scheduleResetToCommit($event, 'hard')"
           @copy-sha="() => {}"
           @create-tag-at="emit('createTagAt', $event)"
           @create-annotated-tag-at="emit('createAnnotatedTagAt', $event)"
@@ -362,20 +491,45 @@ function handleRefreshState() {
           @set-upstream="(branch: string, remoteBranch: string) => props.git.setUpstream(branch, remoteBranch)"
           @edit-commit-message="emit('editCommitMessage', $event)"
           @rename-branch="emit('renameBranch', $event)"
-          @delete-branch="props.git.deleteBranch($event)"
-          @delete-remote-branch="props.git.deleteRemoteBranch($event)"
-          @delete-branch-and-remote="emit('deleteBranchAndRemote', $event)"
+          @delete-branch="scheduleDeleteBranch($event)"
+          @delete-remote-branch="scheduleDeleteRemoteBranch($event)"
+          @delete-branch-and-remote="scheduleDeleteBranchAndRemote($event)"
           @copy-branch-name="() => {}"
-          @reset-branch-to-remote="props.git.resetBranchToRemote($event)"
-          @delete-tag="props.git.deleteTag($event)"
-          @stash-pop="props.git.stashPop($event)"
+          @reset-branch-to-remote="scheduleResetBranchToRemote($event)"
+          @delete-tag="scheduleDeleteTag($event)"
+          @stash-pop="scheduleStashPop($event)"
           @stash-apply="props.git.stashApply($event)"
-          @stash-drop="props.git.stashDrop($event)"
+          @stash-drop="scheduleStashDrop($event)"
           @select-stash="emit('selectStash', $event)"
           @request-merge="emit('requestMerge', $event)"
           @request-rebase="emit('requestRebase', $event)"
           @time-machine-blame="emit('timeMachineBlame', $event)"
           @jump-to-search-result="handleJumpToSearchResult($event)"
+        />
+
+        <CommitGalaxyPanel
+          v-else-if="props.historyViewMode === 'galaxy'"
+          class="flex-1"
+          :commits="props.git.displayedCommits.value"
+          :branches="props.git.branches.value"
+          :current-branch="props.git.currentBranch.value"
+          :selected-sha="props.git.selectedCommit.value?.sha || null"
+          :has-more="props.git.hasMoreCommits.value"
+          @close="emit('setHistoryView', 'graph')"
+          @load-more="props.git.loadMoreCommits()"
+          @load-all="props.git.loadAllCommits()"
+          @select="emit('selectCommit', $event)"
+        />
+
+        <RepositoryCityPanel
+          v-else-if="props.historyViewMode === 'city'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :branches="props.git.branches.value"
+          :current-branch="props.git.currentBranch.value"
+          :working-file-paths="workingFilePaths"
+          @close="emit('setHistoryView', 'graph')"
+          @open-file="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: false })"
         />
 
         <CommitProductivityPanel
@@ -400,12 +554,36 @@ function handleRefreshState() {
           @close="emit('setHistoryView', 'graph')"
         />
 
+        <CommitBurnoutAnalyticsPanel
+          v-else-if="props.historyViewMode === 'burnout'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :commits="props.git.displayedCommits.value"
+          @close="emit('setHistoryView', 'graph')"
+        />
+
+        <LostFoundPanel
+          v-else-if="props.historyViewMode === 'lost-found'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          :lost-commits="props.lostCommits || []"
+          :loading="props.lostCommitsLoading"
+          :rescuing-sha="props.rescuingLostCommitSha"
+          @close="emit('setHistoryView', 'graph')"
+          @refresh="emit('refreshLostFound')"
+          @rescue="emit('rescueLostCommit', $event)"
+          @open-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: false })"
+        />
+
         <RemoteInsightsPanel
           v-else
           class="flex-1"
           :mode="props.remoteInsightsMode || 'pull-request-detail'"
           :pull-request="props.selectedPullRequest || null"
           :issue="props.selectedIssue || null"
+          :detail-loading="props.remoteInsightDetailLoading"
+          :create-options="props.remoteCreateOptions"
+          :create-options-loading="props.remoteCreateOptionsLoading"
           :remote-branches="props.git.remoteBranches.value"
           :current-branch="props.git.currentBranch.value"
           @close="emit('setHistoryView', 'graph')"
@@ -445,36 +623,49 @@ function handleRefreshState() {
           </button>
 
           <CommitDetails
+            v-model:amend-mode-requested="amendModeRequested"
             v-show="!props.detailsPanelCollapsed"
+            class="h-full"
             :commit="props.git.selectedCommit.value"
             :selected-commits="props.git.selectedCommits.value"
             :can-amend-selected-commit="canAmendSelectedCommit"
+            :head-commit="headCommit"
+            :head-commit-published="headCommitPublished"
+            :operation-busy="props.git.loading.value"
+            :repository-operation="repositoryOperation"
             :staged-files="props.git.stagedFiles.value"
             :unstaged-files="props.git.unstagedFiles.value"
             :conflict-files="props.git.conflictFiles.value"
             :has-conflicts="props.git.hasConflicts.value"
             :commit-files="props.git.selectedCommitFiles.value"
-            :is-working-changes="props.viewingWorkingChanges"
+            :is-working-changes="props.viewingWorkingChanges || repositoryOperation !== null"
             :is-stash="props.viewingStash"
             :selected-stash="props.git.selectedStash.value"
             :stash-files="props.git.selectedStashFiles.value"
             :repo-path="props.git.repoPath.value"
+            :smart-gitignore-wizard-enabled="props.smartGitignoreWizardEnabled"
+            :bug-autopsy-enabled="props.bugAutopsyEnabled"
+            :manual-bisect="manualBisectDetailsState"
             @stage="props.git.stageFile($event)"
             @unstage="props.git.unstageFile($event)"
             @stage-all="props.git.stageAll()"
             @unstage-all="props.git.unstageAll()"
             @commit="props.git.commitChanges($event)"
-            @discard="props.git.discardFile($event)"
-            @discard-all="props.git.discardAll()"
+            @abort-merge="abortCurrentMerge"
+            @amend-commit="handleAmendCommit($event)"
+            @discard="scheduleDiscardFile($event)"
+            @discard-all="scheduleDiscardAll"
             @resolve-all-conflicts="props.git.resolveAllConflicts()"
             @resolve-conflict="props.git.promptResolveConflict($event)"
             @manual-resolve="emit('openConflictResolver', $event)"
-            @stash-pop="props.git.stashPop($event)"
+            @stash-pop="scheduleStashPop($event)"
             @stash-apply="props.git.stashApply($event)"
-            @stash-drop="props.git.stashDrop($event)"
+            @stash-drop="scheduleStashDrop($event)"
             @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
             @refresh-state="handleRefreshState"
+            @start-manual-bisect="startManualBisect($event)"
+            @select-manual-bisect-good="selectManualBisectGood($event)"
           />
         </div>
 
@@ -511,11 +702,32 @@ function handleRefreshState() {
         :output="props.git.terminalOutput.value"
         :repo-path="props.git.repoPath.value"
         :allow-all-commands="props.terminalAllowAll"
+        :staged-file-count="props.git.stagedFiles.value.length"
+        :unstaged-file-count="props.git.unstagedFiles.value.length"
+        :untracked-file-count="terminalUntrackedFileCount"
+        :conflict-file-count="props.git.conflictFiles.value.length"
         :style="terminalPanelStyle"
-        @run="props.git.runTerminalCommand($event.command, $event.allowAll)"
+        @run="props.git.runTerminalCommand($event.command, $event.allowAll, { safetyStashFirst: $event.safetyStashFirst })"
         @update:allow-all-commands="emit('update:terminalAllowAll', $event)"
         @close="emit('update:showTerminal', false)"
       />
     </div>
+
+    <ManualBisectOverlay
+      v-if="manualBisectSession"
+      :session="manualBisectSession"
+      :busy="manualBisectBusy"
+      :remaining="manualBisectRemaining"
+      :current-commit="manualBisectCurrentCommit"
+      :bad-bound="manualBisectBadBound"
+      :good-bound="manualBisectGoodBound"
+      :culprit="manualBisectCulprit"
+      @cancel="cancelManualBisect"
+      @retry-checkout="retryManualBisectCheckout"
+      @mark="markManualBisect($event)"
+      @checkout-culprit="checkoutManualBisectCulprit"
+      @return-to-original-branch="returnManualBisectToOriginalBranch"
+      @close="closeManualBisect"
+    />
   </div>
 </template>

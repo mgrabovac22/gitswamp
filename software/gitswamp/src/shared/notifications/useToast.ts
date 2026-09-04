@@ -71,12 +71,16 @@ function info(message: string, duration?: number) {
   return addToast("info", message, duration);
 }
 
+function infoDetail(message: string, detail: string, duration?: number) {
+  return addToast("info", message, duration ?? 10000, undefined, { detail });
+}
+
 function warning(message: string, duration?: number) {
   return addToast("warning", message, duration ?? 8000);
 }
 
-function action(type: Toast["type"], message: string, actions: ToastAction[], duration = 15000) {
-  return addToast(type, message, duration, actions);
+function action(type: Toast["type"], message: string, actions: ToastAction[], duration = 15000, detail?: string) {
+  return addToast(type, message, duration, actions, detail ? { detail } : undefined);
 }
 
 function loading(message: string) {
@@ -115,6 +119,7 @@ export function useToast() {
     success,
     error,
     info,
+    infoDetail,
     warning,
     loading,
     progress,

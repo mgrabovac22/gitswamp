@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { CommitInfo, ConflictHotspot } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
@@ -47,6 +48,48 @@ const selectedAuthor = ref("all");
 const commitCache = new Map<string, CommitInfo[]>();
 const killerCache = new Map<string, BugKillerRow[]>();
 const conflictCache = new Map<string, ConflictHotspot[]>();
+const COMMIT_CACHE_LIMIT = 2;
+const STATS_CACHE_LIMIT = 2;
+
+function getCachedEntry<T>(cache: Map<string, T>, key: string): T | null {
+  const value = cache.get(key);
+  if (!value) return null;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedEntry<T>(cache: Map<string, T>, key: string, value: T, limit: number) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
+}
+
+function pruneCachesForRepo(repoPath: string) {
+  const repoPrefix = `${repoPath}::`;
+  for (const key of commitCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      commitCache.delete(key);
+    }
+  }
+  for (const key of killerCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      killerCache.delete(key);
+    }
+  }
+  for (const key of conflictCache.keys()) {
+    if (!key.startsWith(repoPrefix)) {
+      conflictCache.delete(key);
+    }
+  }
+}
 
 let loadRunToken = 0;
 
@@ -634,7 +677,7 @@ function isRunActive(runToken: number): boolean {
 async function loadCommitsForRun(runToken: number, maxCount: number) {
   const cacheKey = `${props.repoPath}::${maxCount}`;
 
-  const cachedCommits = commitCache.get(cacheKey);
+  const cachedCommits = getCachedEntry(commitCache, cacheKey);
   if (cachedCommits) {
     historyCommits.value = cachedCommits;
     historyLoading.value = false;
@@ -649,7 +692,7 @@ async function loadCommitsForRun(runToken: number, maxCount: number) {
     });
     if (!isRunActive(runToken)) return;
     historyCommits.value = commits;
-    commitCache.set(cacheKey, commits);
+    setCachedEntry(commitCache, cacheKey, commits, COMMIT_CACHE_LIMIT);
   } catch {
     if (!isRunActive(runToken)) return;
     historyCommits.value = [];
@@ -664,7 +707,7 @@ async function loadCommitsForRun(runToken: number, maxCount: number) {
 async function loadBugKillerStatsForRun(runToken: number, maxCount: number) {
   const cacheKey = `${props.repoPath}::${maxCount}`;
 
-  const cachedRows = killerCache.get(cacheKey);
+  const cachedRows = getCachedEntry(killerCache, cacheKey);
   if (cachedRows) {
     bugKillers.value = cachedRows;
     bugKillerLoading.value = false;
@@ -680,7 +723,7 @@ async function loadBugKillerStatsForRun(runToken: number, maxCount: number) {
     if (!isRunActive(runToken)) return;
     const normalizedRows = normalizeBugKillerRows(killerRows);
     bugKillers.value = normalizedRows;
-    killerCache.set(cacheKey, normalizedRows);
+    setCachedEntry(killerCache, cacheKey, normalizedRows, STATS_CACHE_LIMIT);
   } catch {
     if (!isRunActive(runToken)) return;
     bugKillers.value = [];
@@ -695,7 +738,7 @@ async function loadBugKillerStatsForRun(runToken: number, maxCount: number) {
 async function loadConflictSignalsForRun(runToken: number, maxCount: number) {
   const cacheKey = `${props.repoPath}::${maxCount}`;
 
-  const cachedRows = conflictCache.get(cacheKey);
+  const cachedRows = getCachedEntry(conflictCache, cacheKey);
   if (cachedRows) {
     conflictHotspots.value = cachedRows;
     conflictLoading.value = false;
@@ -710,7 +753,7 @@ async function loadConflictSignalsForRun(runToken: number, maxCount: number) {
     });
     if (!isRunActive(runToken)) return;
     conflictHotspots.value = conflictRows;
-    conflictCache.set(cacheKey, conflictRows);
+    setCachedEntry(conflictCache, cacheKey, conflictRows, STATS_CACHE_LIMIT);
   } catch {
     if (!isRunActive(runToken)) return;
     conflictHotspots.value = [];
@@ -730,7 +773,8 @@ function enableLoadAllHistory() {
 
 watch(
   () => props.repoPath,
-  () => {
+  (repoPath) => {
+    pruneCachesForRepo(repoPath);
     loadAllHistory.value = false;
     selectedAuthor.value = "all";
     void loadArenaData();
@@ -744,10 +788,19 @@ watch(uniqueAuthorNames, (authorNames) => {
     selectedAuthor.value = "all";
   }
 });
+
+onUnmounted(() => {
+  historyCommits.value = [];
+  bugKillers.value = [];
+  conflictHotspots.value = [];
+  commitCache.clear();
+  killerCache.clear();
+  conflictCache.clear();
+});
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto min-h-0 relative productivity-surface productivity-scroll-root">
+  <div class="flex-1 overflow-y-auto min-h-0 relative productivity-surface">
     <div class="absolute inset-0 pointer-events-none productivity-radial" />
     <div class="relative z-10 p-4 md:p-5 space-y-4">
       <section class="rounded-lg border border-[var(--border)] bg-[var(--card)]/90 backdrop-blur-sm p-4">
@@ -783,13 +836,7 @@ watch(uniqueAuthorNames, (authorNames) => {
               Load all
             </button>
             <span v-else class="arena-mode-pill">All history loaded</span>
-            <button
-              class="arena-close"
-              title="Back to Git Graph"
-              @click="emit('close')"
-            >
-              x
-            </button>
+            <CloseIconButton title="Back to Git Graph" @click="emit('close')" />
           </div>
         </div>
       </section>
@@ -1166,13 +1213,6 @@ watch(uniqueAuthorNames, (authorNames) => {
     linear-gradient(145deg, color-mix(in srgb, var(--background) 94%, black 6%) 0%, var(--background) 52%, color-mix(in srgb, var(--card) 72%, var(--background) 28%) 100%);
 }
 
-.productivity-scroll-root {
-  scroll-behavior: auto;
-  scrollbar-gutter: stable;
-  contain: layout paint style;
-  will-change: scroll-position;
-}
-
 .productivity-radial {
   background-image: repeating-linear-gradient(
     125deg,
@@ -1401,19 +1441,6 @@ watch(uniqueAuthorNames, (authorNames) => {
   animation: productivity-loader-wave 1.08s ease-in-out infinite;
 }
 
-.arena-close {
-  width: 28px;
-  height: 28px;
-  border-radius: 0.45rem;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--secondary) 78%, transparent);
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
 .arena-load-all {
   height: 28px;
   border-radius: 0.45rem;
@@ -1446,12 +1473,6 @@ watch(uniqueAuthorNames, (authorNames) => {
   font-size: 11px;
   font-weight: 600;
   padding: 0 10px;
-}
-
-.arena-close:hover {
-  color: var(--foreground);
-  border-color: color-mix(in srgb, var(--destructive) 62%, var(--border));
-  background: color-mix(in srgb, var(--destructive) 14%, var(--secondary));
 }
 
 .arena-author-filter {
@@ -1512,26 +1533,6 @@ watch(uniqueAuthorNames, (authorNames) => {
 
 .heatmap-cell:hover {
   transform: scale(1.07);
-}
-
-:global(html.gitswamp-linux) .productivity-surface {
-  background: linear-gradient(180deg, var(--background) 0%, color-mix(in srgb, var(--card) 60%, var(--background) 40%) 100%);
-}
-
-:global(html.gitswamp-linux) .productivity-radial {
-  display: none;
-}
-
-:global(html.gitswamp-linux) .section-loader-overlay {
-  backdrop-filter: none;
-}
-
-:global(html.gitswamp-linux) .heatmap-cell {
-  transition: none;
-}
-
-:global(html.gitswamp-linux) .loader-letter {
-  animation: none;
 }
 
 @keyframes productivity-loader-wave {

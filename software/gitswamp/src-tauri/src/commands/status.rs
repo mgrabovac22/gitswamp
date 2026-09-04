@@ -17,14 +17,9 @@ pub async fn stage_file(path: String, file_path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn stage_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        for file_path in file_paths {
-            GitService::stage_file(&path, &file_path)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || GitService::stage_files(&path, &file_paths))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -36,14 +31,9 @@ pub async fn unstage_file(path: String, file_path: String) -> Result<(), String>
 
 #[tauri::command]
 pub async fn unstage_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        for file_path in file_paths {
-            GitService::unstage_file(&path, &file_path)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || GitService::unstage_files(&path, &file_paths))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -51,6 +41,39 @@ pub async fn create_commit(path: String, message: String) -> Result<String, Stri
     tauri::async_runtime::spawn_blocking(move || GitService::create_commit(&path, &message))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn abort_merge(
+    path: String,
+    restore_pull_safety_stash: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::abort_merge(&path, restore_pull_safety_stash.unwrap_or(true))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn restore_pull_safety_stash(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::restore_pull_safety_stash(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn amend_commit(
+    path: String,
+    message: String,
+    reset_author: bool,
+    signoff: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::amend_commit(&path, &message, reset_author, signoff)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -62,18 +85,17 @@ pub async fn discard_file(path: String, file_path: String) -> Result<(), String>
 
 #[tauri::command]
 pub async fn discard_files(path: String, file_paths: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        for file_path in file_paths {
-            GitService::discard_file(&path, &file_path)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || GitService::discard_files(&path, &file_paths))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn resolve_conflict_file(path: String, file_path: String, strategy: String) -> Result<(), String> {
+pub async fn resolve_conflict_file(
+    path: String,
+    file_path: String,
+    strategy: String,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::resolve_conflict_file(&path, &file_path, &strategy)
     })
@@ -83,13 +105,18 @@ pub async fn resolve_conflict_file(path: String, file_path: String, strategy: St
 
 #[tauri::command]
 pub async fn resolve_all_conflicts(path: String, strategy: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || GitService::resolve_all_conflicts(&path, &strategy))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::resolve_all_conflicts(&path, &strategy)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn get_empty_directories(path: String, max_count: Option<usize>) -> Result<Vec<String>, String> {
+pub async fn get_empty_directories(
+    path: String,
+    max_count: Option<usize>,
+) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::get_empty_directories(&path, max_count.unwrap_or(200))
     })
@@ -98,7 +125,11 @@ pub async fn get_empty_directories(path: String, max_count: Option<usize>) -> Re
 }
 
 #[tauri::command]
-pub async fn add_gitkeep(path: String, directory_path: String, stage: Option<bool>) -> Result<String, String> {
+pub async fn add_gitkeep(
+    path: String,
+    directory_path: String,
+    stage: Option<bool>,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::add_gitkeep(&path, &directory_path, stage.unwrap_or(true))
     })

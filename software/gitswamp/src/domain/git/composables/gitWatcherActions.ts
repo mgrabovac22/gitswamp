@@ -11,6 +11,7 @@ type RefreshDeps = {
 
 export function createWatcherActions(state: GitState, deps: RefreshDeps) {
   let watchInterval: ReturnType<typeof setInterval> | null = null;
+  let polling = false;
 
   function startFileWatcher() {
     stopFileWatcher();
@@ -26,9 +27,13 @@ export function createWatcherActions(state: GitState, deps: RefreshDeps) {
   }
 
   async function pollStatus() {
-    if (!state.repoPath.value) return;
+    if (!state.repoPath.value || polling) return;
+    polling = true;
+    const repoPath = state.repoPath.value;
     try {
-      const newStatuses = await callTauri<FileStatusInfo[]>("get_status", { path: state.repoPath.value });
+      const newStatuses = await callTauri<FileStatusInfo[]>("get_status", { path: repoPath });
+      if (repoPath !== state.repoPath.value) return;
+
       const newHash = statusHash(newStatuses);
       if (newHash === state.lastStatusHash.value) return;
 
@@ -36,9 +41,10 @@ export function createWatcherActions(state: GitState, deps: RefreshDeps) {
       state.fileStatuses.value = newStatuses;
 
       const topCheck = await callTauri<CommitInfo[]>("get_commits", {
-        path: state.repoPath.value,
+        path: repoPath,
         maxCount: 1,
       });
+      if (repoPath !== state.repoPath.value) return;
 
       if (topCheck.length > 0 && topCheck[0].sha !== state.commits.value[0]?.sha) {
         await deps.refreshCommits();
@@ -46,6 +52,8 @@ export function createWatcherActions(state: GitState, deps: RefreshDeps) {
       }
     } catch {
       // Ignore periodic watcher errors.
+    } finally {
+      polling = false;
     }
   }
 

@@ -1,10 +1,28 @@
 use crate::services::git_service::GitService;
 
 #[tauri::command]
-pub async fn pull(path: String, token: Option<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || GitService::pull(&path, token.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn get_lost_commits(
+    path: String,
+    max_count: Option<usize>,
+) -> Result<Vec<crate::models::LostCommitInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::lost_commits(&path, max_count.unwrap_or(50))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pull(
+    path: String,
+    token: Option<String>,
+    auto_stash: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::pull(&path, token.as_deref(), auto_stash.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -37,6 +55,15 @@ pub fn run_git_command(path: String, args: Vec<String>) -> Result<String, String
 #[tauri::command]
 pub fn run_shell_command(path: String, command: String) -> Result<String, String> {
     GitService::run_shell_command(&path, &command)
+}
+
+#[tauri::command]
+pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -105,22 +132,37 @@ pub fn delete_tag(path: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn search_github_repos(token: String, query: String) -> Result<Vec<crate::models::GithubRepo>, String> {
-    crate::services::git_service::GitService::search_github_repos(&token, &query)
+pub fn search_github_repos(
+    token: String,
+    query: String,
+    include_public: bool,
+) -> Result<Vec<crate::models::GithubRepo>, String> {
+    crate::services::git_service::GitService::search_github_repos(&token, &query, include_public)
 }
 
 #[tauri::command]
-pub fn search_gitlab_repos(domain: String, token: String, query: String) -> Result<Vec<crate::models::GitlabRepo>, String> {
+pub fn search_gitlab_repos(
+    domain: String,
+    token: String,
+    query: String,
+) -> Result<Vec<crate::models::GitlabRepo>, String> {
     crate::services::git_service::GitService::search_gitlab_repos(&domain, &token, &query)
 }
 
 #[tauri::command]
-pub fn search_bitbucket_repos(token: String, query: String) -> Result<Vec<crate::models::BitbucketRepo>, String> {
+pub fn search_bitbucket_repos(
+    token: String,
+    query: String,
+) -> Result<Vec<crate::models::BitbucketRepo>, String> {
     crate::services::git_service::GitService::search_bitbucket_repos(&token, &query)
 }
 
 #[tauri::command]
-pub fn search_azure_repos(domain: String, token: String, query: String) -> Result<Vec<crate::models::AzureRepo>, String> {
+pub fn search_azure_repos(
+    domain: String,
+    token: String,
+    query: String,
+) -> Result<Vec<crate::models::AzureRepo>, String> {
     crate::services::git_service::GitService::search_azure_repos(&domain, &token, &query)
 }
 
@@ -130,8 +172,43 @@ pub fn generate_ssh_key(email: String, key_name: String) -> Result<(String, Stri
 }
 
 #[tauri::command]
-pub fn add_gitlab_ssh_key(domain: String, token: String, title: String, key: String) -> Result<(), String> {
+pub fn add_gitlab_ssh_key(
+    domain: String,
+    token: String,
+    title: String,
+    key: String,
+) -> Result<(), String> {
     crate::services::git_service::GitService::add_gitlab_ssh_key(&domain, &token, &title, &key)
+}
+
+#[tauri::command]
+pub fn add_github_ssh_key(token: String, title: String, key: String) -> Result<(), String> {
+    crate::services::git_service::GitService::add_github_ssh_key(&token, &title, &key)
+}
+
+#[tauri::command]
+pub fn list_github_ssh_keys(token: String) -> Result<Vec<crate::models::GithubSshKey>, String> {
+    crate::services::git_service::GitService::list_github_ssh_keys(&token)
+}
+
+#[tauri::command]
+pub fn delete_github_ssh_key(token: String, key_id: u64) -> Result<(), String> {
+    crate::services::git_service::GitService::delete_github_ssh_key(&token, key_id)
+}
+
+#[tauri::command]
+pub fn verify_github_token(token: String) -> Result<String, String> {
+    crate::services::git_service::GitService::verify_github_token(&token)
+}
+
+#[tauri::command]
+pub fn load_ssh_public_key_from_file(file_path: String) -> Result<String, String> {
+    crate::services::git_service::GitService::load_ssh_public_key_from_file(&file_path)
+}
+
+#[tauri::command]
+pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
+    crate::services::git_service::GitService::connect_github_oauth_via_gh_cli()
 }
 
 #[tauri::command]
@@ -150,7 +227,11 @@ pub fn get_available_external_tools() -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn open_file_with_editor(path: String, file_path: String, editor: String) -> Result<(), String> {
+pub fn open_file_with_editor(
+    path: String,
+    file_path: String,
+    editor: String,
+) -> Result<(), String> {
     GitService::open_file_with_editor(&path, &file_path, &editor)
 }
 
@@ -165,7 +246,12 @@ pub fn rename_branch(path: String, old_name: String, new_name: String) -> Result
 }
 
 #[tauri::command]
-pub async fn delete_remote_branch(path: String, remote: String, branch: String, token: Option<String>) -> Result<String, String> {
+pub async fn delete_remote_branch(
+    path: String,
+    remote: String,
+    branch: String,
+    token: Option<String>,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::delete_remote_branch(&path, &remote, &branch, token.as_deref())
     })
@@ -179,12 +265,21 @@ pub fn set_upstream(path: String, branch: String, remote_branch: String) -> Resu
 }
 
 #[tauri::command]
-pub fn edit_commit_message(path: String, sha: String, new_message: String) -> Result<String, String> {
+pub fn edit_commit_message(
+    path: String,
+    sha: String,
+    new_message: String,
+) -> Result<String, String> {
     GitService::edit_commit_message(&path, &sha, &new_message)
 }
 
 #[tauri::command]
-pub fn create_annotated_tag(path: String, name: String, sha: String, message: String) -> Result<String, String> {
+pub fn create_annotated_tag(
+    path: String,
+    name: String,
+    sha: String,
+    message: String,
+) -> Result<String, String> {
     GitService::create_annotated_tag(&path, &name, &sha, &message)
 }
 
@@ -194,7 +289,12 @@ pub fn reset_branch_to_remote(path: String, branch: String) -> Result<String, St
 }
 
 #[tauri::command]
-pub async fn push_to_platform(path: String, platform: String, provider_token: String, repo_name: String) -> Result<String, String> {
+pub async fn push_to_platform(
+    path: String,
+    platform: String,
+    provider_token: String,
+    repo_name: String,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         GitService::push_to_platform(&path, &platform, &provider_token, &repo_name)
     })

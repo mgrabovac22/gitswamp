@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2 } from "lucide-vue-next";
+import { FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History, Paintbrush } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
 import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
 import {
@@ -13,6 +13,7 @@ import {
 } from "@/shared/config/diffViewCache";
 import { useToast } from "@/shared/notifications/useToast";
 import { useGit } from "@/domain/git/UseGit";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import logoCrocGif from "@/assets/logo_croc.gif";
 import logoCrocLoadingGif from "@/assets/logo_croc_loading.gif";
 
@@ -21,6 +22,8 @@ const props = defineProps<{
   filePath: string;
   commitSha?: string | null;
   staged?: boolean;
+  fallbackStatus?: string | null;
+  fallbackOldPath?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -44,14 +47,16 @@ const showBlamePanel = ref(false);
 const blameLoading = ref(false);
 const blameError = ref<string | null>(null);
 const blameLines = ref<FileBlameLine[]>([]);
-const blameCache = ref(new Map<string, FileBlameLine[]>());
-const splitPaneRefs = ref(new Map<string, HTMLElement>());
+const blameCache = shallowRef(new Map<string, FileBlameLine[]>());
+const splitPaneRefs = shallowRef(new Map<string, HTMLElement>());
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
-const highlightedLineCache = ref(new Map<string, string>());
+const fileJourneyOpen = ref(false);
+const highlightedLineCache = shallowRef(new Map<string, string>());
 const toast = useToast();
 const git = useGit();
+const timeLapseScrollContainer = ref<HTMLElement | null>(null);
 
 interface TimeLapseFrame {
   sha: string;
@@ -72,6 +77,7 @@ const TIME_LAPSE_MAX_FRAMES = 22;
 const DEFAULT_TIME_LAPSE_COMMIT_WINDOW = 100;
 const MIN_TIME_LAPSE_COMMIT_WINDOW = 20;
 const MAX_TIME_LAPSE_COMMIT_WINDOW = 2000;
+const TIME_LAPSE_FRAME_INTERVAL_MS = 2000;
 const timeLapseCommitWindowOptions = [50, 75, 100, 150, 200, 300, 500, 800, 1000] as const;
 const timeLapseCommitWindow = ref(DEFAULT_TIME_LAPSE_COMMIT_WINDOW);
 
@@ -88,15 +94,42 @@ const timeLapseCommitWindowSafe = computed(() => {
 // Virtualization state
 const scrollTop = ref(0);
 const containerHeight = ref(400);
-const LINE_HEIGHT = 20; // pixels per line
+const LINE_HEIGHT = 18; // pixels per line
 const OVERSCAN = 10;
-const MAX_HIGHLIGHT_CACHE_SIZE = 2000;
+const fileDiffScrollContainer = ref<HTMLElement | null>(null);
+const FILE_DIFF_OVERVIEW_MIN_VISIBLE_RATIO = 1.08;
+const FILE_DIFF_OVERVIEW_MIN_MARKER_PERCENT = 0.75;
+const FILE_DIFF_OVERVIEW_MIN_VIEWPORT_PERCENT = 10;
+const DEFAULT_MAX_HIGHLIGHT_CACHE_SIZE = 2000;
+const MEMORY_SAVER_MAX_HIGHLIGHT_CACHE_SIZE = 900;
+const DEFAULT_MAX_BLAME_CACHE_ENTRIES = 36;
+const MEMORY_SAVER_MAX_BLAME_CACHE_ENTRIES = 14;
 
 let fileWatchInterval: ReturnType<typeof setInterval> | null = null;
 let lastFileHash = "";
 let fileWatchRequestInFlight = false;
 let fileContentLoadSequence = 0;
 let cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+function isMemorySaverModeEnabled(): boolean {
+  return localStorage.getItem("gitswamp-memory-saver-mode") === "true";
+}
+
+function currentHighlightCacheLimit(): number {
+  return isMemorySaverModeEnabled()
+    ? MEMORY_SAVER_MAX_HIGHLIGHT_CACHE_SIZE
+    : DEFAULT_MAX_HIGHLIGHT_CACHE_SIZE;
+}
+
+function currentBlameCacheLimit(): number {
+  return isMemorySaverModeEnabled()
+    ? MEMORY_SAVER_MAX_BLAME_CACHE_ENTRIES
+    : DEFAULT_MAX_BLAME_CACHE_ENTRIES;
+}
+
+function isBlameByDefaultEnabled(): boolean {
+  return localStorage.getItem("gitswamp-prefer-blame-by-default") === "true";
+}
 
 function getFileContentCacheKey(): string | null {
   if (props.commitSha) {
@@ -139,9 +172,71 @@ function estimateDiffChars(value: FileDiff): number {
   return chars;
 }
 
+function splitContentForSyntheticDiff(content: string): string[] {
+  if (!content) return [];
+  const matches = content.match(/.*(?:\n|$)/g) || [];
+  return matches.filter((line, index) => line.length > 0 || index < matches.length - 1);
+}
+
+function buildSyntheticWholeFileDiff(content: string, status: "added" | "deleted", filePath: string): FileDiff {
+  const lines = splitContentForSyntheticDiff(content).map((line, index) => ({
+    line_type: status === "added" ? "addition" as const : "deletion" as const,
+    old_line_no: status === "deleted" ? index + 1 : null,
+    new_line_no: status === "added" ? index + 1 : null,
+    content: line,
+  }));
+
+  return {
+    path: filePath,
+    old_path: status === "deleted" ? filePath : null,
+    status,
+    is_binary: false,
+    hunks: lines.length
+      ? [{
+          old_start: status === "deleted" ? 1 : 0,
+          old_lines: status === "deleted" ? lines.length : 0,
+          new_start: status === "added" ? 1 : 0,
+          new_lines: status === "added" ? lines.length : 0,
+          header: status === "added"
+            ? `@@ -0,0 +1,${lines.length} @@`
+            : `@@ -1,${lines.length} +0,0 @@`,
+          lines,
+        }]
+      : [],
+  };
+}
+
+async function loadSyntheticPickaxeDiff(): Promise<FileDiff | null> {
+  const status = props.fallbackStatus === "added" || props.fallbackStatus === "deleted"
+    ? props.fallbackStatus
+    : null;
+  if (!props.commitSha || !status) {
+    return null;
+  }
+
+  const filePath = status === "deleted" ? (props.fallbackOldPath || props.filePath) : props.filePath;
+  const treeSpec = status === "deleted"
+    ? `${props.commitSha}^:${filePath}`
+    : `${props.commitSha}:${filePath}`;
+
+  try {
+    const content = await invoke<string>("run_git_command", {
+      path: props.repoPath,
+      args: ["-c", "core.quotePath=false", "show", treeSpec],
+    });
+    if (content.length > 1_200_000) {
+      throw new Error("File is too large for raw fallback view.");
+    }
+    return buildSyntheticWholeFileDiff(content, status, filePath);
+  } catch {
+    return null;
+  }
+}
+
 function maintainHighlightCache() {
-  if (highlightedLineCache.value.size > MAX_HIGHLIGHT_CACHE_SIZE) {
-    const toDelete = Math.floor(MAX_HIGHLIGHT_CACHE_SIZE * 0.2);
+  const cacheLimit = currentHighlightCacheLimit();
+  if (highlightedLineCache.value.size > cacheLimit) {
+    const toDelete = Math.floor(cacheLimit * 0.2);
     let deleted = 0;
     for (const key of highlightedLineCache.value.keys()) {
       if (deleted >= toDelete) break;
@@ -151,11 +246,76 @@ function maintainHighlightCache() {
   }
 }
 
+function maintainBlameCache() {
+  const cacheLimit = currentBlameCacheLimit();
+  if (blameCache.value.size <= cacheLimit) {
+    return;
+  }
+
+  const toDelete = Math.max(1, blameCache.value.size - cacheLimit);
+  let deleted = 0;
+  for (const key of blameCache.value.keys()) {
+    blameCache.value.delete(key);
+    deleted += 1;
+    if (deleted >= toDelete) {
+      break;
+    }
+  }
+}
+
 const isWorkingChanges = computed(() => !props.commitSha);
 const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
 const fileNameParts = computed(() => splitFilePath(props.filePath));
 const blameSupportedView = computed(() => viewMode.value === "diff" || viewMode.value === "split-diff");
 const blamePanelVisible = computed(() => showBlamePanel.value && blameSupportedView.value);
+const fileJourneyAvailable = computed(() => {
+  const currentDiff = diff.value;
+  const isDiffView = viewMode.value === "diff" || viewMode.value === "split-diff" || viewMode.value === "file-diff";
+  return isDiffView && !!currentDiff && !loading.value && !error.value && !currentDiff.is_binary;
+});
+const fileJourneyVisible = computed(() => fileJourneyOpen.value && fileJourneyAvailable.value);
+
+interface QuickFileJourney {
+  createdBy: string;
+  lastChangedBy: string;
+  lastChanged: string;
+}
+
+const quickFileJourney = computed<QuickFileJourney>(() => {
+  if (timeLapseFrames.value.length > 0) {
+    const firstFrame = timeLapseFrames.value[0];
+    const lastFrame = timeLapseFrames.value[timeLapseFrames.value.length - 1];
+    return {
+      createdBy: firstFrame?.author || "Unknown",
+      lastChangedBy: lastFrame?.author || "Unknown",
+      lastChanged: lastFrame ? formatTimeLapseTimestamp(lastFrame.timestamp) : "Unknown",
+    };
+  }
+
+  let firstLine: FileBlameLine | null = null;
+  let lastLine: FileBlameLine | null = null;
+
+  for (const line of blameLines.value) {
+    if (!line.is_uncommitted) {
+      if (!firstLine || line.author_time < firstLine.author_time) firstLine = line;
+      if (!lastLine || line.author_time > lastLine.author_time) lastLine = line;
+    }
+  }
+
+  if (firstLine && lastLine) {
+    return {
+      createdBy: firstLine.author || "Unknown",
+      lastChangedBy: lastLine.author || "Unknown",
+      lastChanged: formatBlameTimestamp(lastLine.author_time),
+    };
+  }
+
+  return {
+    createdBy: props.commitSha ? "Current commit" : "Not loaded",
+    lastChangedBy: props.commitSha ? "Current commit" : (props.staged ? "Index" : "Working tree"),
+    lastChanged: props.commitSha ? props.commitSha.slice(0, 8) : (isUnstaged.value ? "Unstaged" : "Staged"),
+  };
+});
 
 interface InlineDiffPair {
   compareText: string;
@@ -163,6 +323,7 @@ interface InlineDiffPair {
 
 const INLINE_PAIR_MIN_SCORE = 0.25;
 const INLINE_LCS_MAX_CELLS = 220000;
+const INLINE_TOKEN_LCS_MAX_CELLS = 100000;
 const INLINE_PAIR_MAX_CELLS = 24000;
 const INLINE_PAIR_DIFF_LINE_LIMIT = 2400;
 const INLINE_PAIR_DIFF_CHAR_LIMIT = 260000;
@@ -178,6 +339,29 @@ const rawDiffFallbackActive = ref(false);
 const rawDiffFallbackReason = ref<string | null>(null);
 let diffColoringDeadline = 0;
 let diffFallbackNotified = false;
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+
+  const tag = element.tagName.toLowerCase();
+  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select" || tag === "option";
+}
+
+function dispatchFocusSelectedCommit() {
+  globalThis.dispatchEvent(new Event("gitswamp-focus-selected-commit"));
+}
+
+function handleGlobalKeyDown(event: KeyboardEvent) {
+  if (event.key !== "ArrowLeft" || isInteractiveTarget(event.target) || viewMode.value === "edit") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  emit("close");
+  dispatchFocusSelectedCommit();
+}
 
 function resetDiffColoringBudget() {
   diffColoringDeadline = Date.now() + DIFF_COLORING_TIMEOUT_MS;
@@ -414,8 +598,158 @@ function backtrackLcsKeepMask(base: string, compare: string, dp: Uint32Array[]):
   return keep;
 }
 
+const INLINE_TOKEN_SPLIT_PATTERN = /(\w+|\s+|[^\s\w]+)/g;
+
+function isWhitespaceToken(value: string): boolean {
+  return /^\s+$/.test(value);
+}
+
+function bridgeWhitespaceRuns(tokens: string[], changedMask: boolean[]): boolean[] {
+  const bridged = [...changedMask];
+  let idx = 0;
+
+  while (idx < tokens.length) {
+    if (!isWhitespaceToken(tokens[idx])) {
+      idx += 1;
+      continue;
+    }
+
+    const start = idx;
+    while (idx < tokens.length && isWhitespaceToken(tokens[idx])) {
+      idx += 1;
+    }
+
+    const left = start - 1;
+    const right = idx;
+    if (left >= 0 && right < tokens.length && bridged[left] && bridged[right]) {
+      for (let run = start; run < right; run += 1) {
+        bridged[run] = true;
+      }
+    }
+  }
+
+  return bridged;
+}
+
+function buildInlineSegmentsFromTokens(
+  tokens: string[],
+  changedMask: boolean[],
+  changedClass: string,
+): { parts: string[]; hasChanged: boolean } {
+  const parts: string[] = [];
+  let segment = "";
+  let segmentChanged = changedMask[0] ?? false;
+  let hasChanged = segmentChanged;
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const changed = changedMask[idx] ?? false;
+    if (idx > 0 && changed !== segmentChanged) {
+      pushInlineSegment(parts, segment, segmentChanged, changedClass);
+      segment = "";
+      segmentChanged = changed;
+    }
+
+    segment += tokens[idx];
+    if (changed) {
+      hasChanged = true;
+    }
+  }
+
+  pushInlineSegment(parts, segment, segmentChanged, changedClass);
+  return { parts, hasChanged };
+}
+
+function tokenizeInlineText(value: string): string[] {
+  const tokens = value.match(INLINE_TOKEN_SPLIT_PATTERN);
+  if (!tokens || tokens.length === 0) {
+    return [value];
+  }
+  return tokens;
+}
+
+function computeTokenLcsKeepMask(baseTokens: string[], compareTokens: string[]): boolean[] | null {
+  const rows = baseTokens.length;
+  const cols = compareTokens.length;
+  if (rows === 0) {
+    return [];
+  }
+
+  if ((rows + 1) * (cols + 1) > INLINE_TOKEN_LCS_MAX_CELLS) {
+    return null;
+  }
+
+  const dp = buildTokenLcsMatrix(baseTokens, compareTokens);
+  return backtrackTokenLcsKeepMask(baseTokens, compareTokens, dp);
+}
+
+function buildTokenLcsMatrix(baseTokens: string[], compareTokens: string[]): Uint32Array[] {
+  const rows = baseTokens.length;
+  const cols = compareTokens.length;
+
+  const dp = Array.from({ length: rows + 1 }, () => new Uint32Array(cols + 1));
+
+  for (let row = 1; row <= rows; row += 1) {
+    for (let col = 1; col <= cols; col += 1) {
+      if (baseTokens[row - 1] === compareTokens[col - 1]) {
+        dp[row][col] = dp[row - 1][col - 1] + 1;
+      } else {
+        dp[row][col] = Math.max(dp[row - 1][col], dp[row][col - 1]);
+      }
+    }
+  }
+
+  return dp;
+}
+
+function backtrackTokenLcsKeepMask(baseTokens: string[], compareTokens: string[], dp: Uint32Array[]): boolean[] {
+  const rows = baseTokens.length;
+  const cols = compareTokens.length;
+
+  const keep = Array.from({ length: rows }, () => false);
+  let row = rows;
+  let col = cols;
+
+  while (row > 0 && col > 0) {
+    if (baseTokens[row - 1] === compareTokens[col - 1]) {
+      keep[row - 1] = true;
+      row -= 1;
+      col -= 1;
+      continue;
+    }
+
+    if (dp[row - 1][col] >= dp[row][col - 1]) {
+      row -= 1;
+    } else {
+      col -= 1;
+    }
+  }
+
+  return keep;
+}
+
+function buildTokenInlineMarkup(base: string, compare: string, changedClass: string): string | null {
+  const baseTokens = tokenizeInlineText(base);
+  const compareTokens = tokenizeInlineText(compare);
+  const keepMask = computeTokenLcsKeepMask(baseTokens, compareTokens);
+  if (!keepMask || keepMask.length !== baseTokens.length) {
+    return null;
+  }
+
+  const changedMask = bridgeWhitespaceRuns(
+    baseTokens,
+    keepMask.map((keep) => !keep),
+  );
+  const { parts, hasChanged } = buildInlineSegmentsFromTokens(baseTokens, changedMask, changedClass);
+
+  if (!hasChanged) {
+    return null;
+  }
+
+  return parts.join("");
+}
+
 watch(
-  () => [props.filePath, props.staged, props.commitSha],
+  () => [props.filePath, props.staged, props.commitSha, props.fallbackStatus, props.fallbackOldPath],
   () => {
     fileContentLoadSequence += 1;
     currentHunkIndex.value = 0;
@@ -457,6 +791,14 @@ watch(viewMode, (mode) => {
 watch(timeLapseCommitWindowSafe, () => {
   if (viewMode.value !== "time-lapse") return;
   void loadTimeLapseFrames();
+});
+
+watch([() => timeLapseFrameIndex.value, () => viewMode.value], async () => {
+  if (viewMode.value !== "time-lapse") return;
+  const frame = activeTimeLapseFrame.value;
+  if (!frame) return;
+
+  scrollToTimeLapseFrame(frame);
 });
 
 watch(blamePanelVisible, (visible) => {
@@ -516,7 +858,15 @@ async function reload() {
       void loadFileContentAsync();
     }
   } catch (e) {
-    error.value = String(e);
+    const fallbackDiff = await loadSyntheticPickaxeDiff();
+    if (fallbackDiff) {
+      diff.value = fallbackDiff;
+      lastFileHash = hashDiffStructure(fallbackDiff);
+      highlightedLineCache.value.clear();
+      error.value = null;
+    } else {
+      error.value = String(e);
+    }
   } finally {
     loading.value = false;
   }
@@ -536,8 +886,6 @@ async function loadFileContentAsync(forceRefresh = false) {
     if (loadSequence !== fileContentLoadSequence) return;
     fileContent.value = loadedContent;
     
-    // Allow UI to update
-    await nextTick();
     await new Promise(resolve => requestAnimationFrame(resolve));
     if (loadSequence !== fileContentLoadSequence) return;
   } catch (e) {
@@ -545,6 +893,10 @@ async function loadFileContentAsync(forceRefresh = false) {
       error.value = String(e);
     }
   } finally {
+    if (loadSequence === fileContentLoadSequence && viewMode.value === "file-diff") {
+      syncFileDiffViewportMetrics();
+    }
+
     if (loadSequence === fileContentLoadSequence) {
       loadingFileContent.value = false;
     }
@@ -619,6 +971,7 @@ async function loadFileBlame(forceRefresh = false) {
 
     blameLines.value = lines;
     blameCache.value.set(blameCacheKey, lines);
+    maintainBlameCache();
   } catch (e) {
     blameLines.value = [];
     blameError.value = String(e);
@@ -661,6 +1014,8 @@ const inlineBlameByLine = computed(() => {
     return map;
   }
 
+  const showHeaderOnEveryLine = isBlameByDefaultEnabled();
+
   let groupStart = 0;
   const finalizeGroup = (startIdx: number, endIdx: number) => {
     const size = endIdx - startIdx + 1;
@@ -668,7 +1023,7 @@ const inlineBlameByLine = computed(() => {
       const line = sorted[idx];
       map.set(line.line_no, {
         entry: line,
-        showHeader: idx === startIdx,
+        showHeader: showHeaderOnEveryLine || idx === startIdx,
         groupSize: size,
       });
     }
@@ -817,6 +1172,36 @@ async function revertHunk(hunkIdx: number) {
   }
 }
 
+async function stageHunk(hunkIdx: number) {
+  if (!diff.value || !isUnstaged.value) return;
+  try {
+    await invoke("stage_hunk", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      hunkIndex: hunkIdx,
+    });
+    emit("refresh");
+    await reload();
+  } catch (e) {
+    error.value = `Failed to stage hunk: ${e}`;
+  }
+}
+
+async function unstageHunk(hunkIdx: number) {
+  if (!diff.value || !isWorkingChanges.value || !props.staged) return;
+  try {
+    await invoke("unstage_hunk", {
+      path: props.repoPath,
+      filePath: props.filePath,
+      hunkIndex: hunkIdx,
+    });
+    emit("refresh");
+    await reload();
+  } catch (e) {
+    error.value = `Failed to unstage hunk: ${e}`;
+  }
+}
+
 function startFileWatch() {
   if (fileWatchInterval) return;
   
@@ -867,13 +1252,33 @@ watch(isUnstaged, (val) => {
   }
 }, { immediate: true });
 
+watch(
+  () => [props.filePath, props.commitSha, props.staged, props.fallbackStatus, props.fallbackOldPath],
+  () => {
+    if (!isBlameByDefaultEnabled() || !blameSupportedView.value) {
+      return;
+    }
+
+    showBlamePanel.value = true;
+    void loadFileBlame();
+  },
+);
+
 onMounted(() => {
   pruneDiffViewerCaches();
   cacheCleanupInterval = setInterval(() => {
     pruneDiffViewerCaches();
   }, CACHE_CLEANUP_INTERVAL_MS);
+  document.addEventListener("keydown", handleGlobalKeyDown, true);
+  window.addEventListener("resize", syncFileDiffViewportMetrics);
 
-  reload();
+  const enableBlameByDefault = isBlameByDefaultEnabled();
+  reload().finally(() => {
+    if (enableBlameByDefault && !diff.value?.is_binary && blameSupportedView.value) {
+      showBlamePanel.value = true;
+      void loadFileBlame();
+    }
+  });
   if (isUnstaged.value) {
     startFileWatch();
   }
@@ -884,6 +1289,9 @@ onUnmounted(() => {
     clearInterval(cacheCleanupInterval);
     cacheCleanupInterval = null;
   }
+
+  document.removeEventListener("keydown", handleGlobalKeyDown, true);
+  window.removeEventListener("resize", syncFileDiffViewportMetrics);
 
   stopFileWatch();
   stopTimeLapsePlayback();
@@ -1277,6 +1685,16 @@ function buildTimeLapseRenderLines(frame: TimeLapseFrame | null): TimeLapseRende
 }
 
 const activeTimeLapseRenderLines = computed(() => buildTimeLapseRenderLines(activeTimeLapseFrame.value));
+const timeLapseCanAdvance = computed(() => timeLapseFrameIndex.value < timeLapseFrames.value.length - 1);
+const timeLapseCanRetreat = computed(() => timeLapseFrameIndex.value > 0);
+const timeLapseEndMessageShown = ref(false);
+const timeLapseProgressPercent = computed(() => {
+  if (timeLapseFrames.value.length <= 0) {
+    return 0;
+  }
+
+  return ((timeLapseFrameIndex.value + 1) / timeLapseFrames.value.length) * 100;
+});
 
 function stopTimeLapsePlayback() {
   if (timeLapseTimer) {
@@ -1287,13 +1705,26 @@ function stopTimeLapsePlayback() {
 }
 
 function nextTimeLapseFrame() {
-  if (timeLapseFrames.value.length === 0) return;
-  timeLapseFrameIndex.value = (timeLapseFrameIndex.value + 1) % timeLapseFrames.value.length;
+  if (timeLapseFrames.value.length === 0) return false;
+
+  if (timeLapseFrameIndex.value >= timeLapseFrames.value.length - 1) {
+    if (!timeLapseEndMessageShown.value) {
+      toast.info("Reached the last time-lapse frame.");
+      timeLapseEndMessageShown.value = true;
+    }
+    stopTimeLapsePlayback();
+    return false;
+  }
+
+  timeLapseFrameIndex.value += 1;
+  timeLapseEndMessageShown.value = false;
+  return true;
 }
 
 function previousTimeLapseFrame() {
   if (timeLapseFrames.value.length === 0) return;
-  timeLapseFrameIndex.value = (timeLapseFrameIndex.value - 1 + timeLapseFrames.value.length) % timeLapseFrames.value.length;
+  timeLapseFrameIndex.value = Math.max(0, timeLapseFrameIndex.value - 1);
+  timeLapseEndMessageShown.value = false;
 }
 
 function toggleTimeLapsePlay() {
@@ -1306,8 +1737,10 @@ function toggleTimeLapsePlay() {
 
   timeLapsePlaying.value = true;
   timeLapseTimer = setInterval(() => {
-    nextTimeLapseFrame();
-  }, 850);
+    if (!nextTimeLapseFrame()) {
+      stopTimeLapsePlayback();
+    }
+  }, TIME_LAPSE_FRAME_INTERVAL_MS);
 }
 
 function formatTimeLapseTimestamp(timestamp: number): string {
@@ -1488,20 +1921,35 @@ async function shareSelectionAsSnippet() {
 
   try {
     const gistUrl = await createGithubGistLink(fileName, selected);
-    await navigator.clipboard.writeText(gistUrl);
+    try {
+      await navigator.clipboard.writeText(gistUrl);
+    } catch (cErr) {
+      console.warn("Failed to write gist URL to clipboard:", cErr);
+    }
     toast.success("Snippet shared as gist. Link copied to clipboard.");
   } catch {
+    // Try to create a paste.rs fallback and show diagnostic info
     try {
       const pasteUrl = await createPasteRsLink(selected);
       if (pasteUrl) {
-        await navigator.clipboard.writeText(pasteUrl);
-        toast.success("Snippet shared. Link copied to clipboard.");
+        try {
+          await navigator.clipboard.writeText(pasteUrl);
+        } catch (cErr) {
+          console.warn("Failed to write paste.rs URL to clipboard:", cErr);
+        }
+        toast.success("Snippet shared via paste.rs. Link copied to clipboard.");
         return;
       }
-    } catch {
+    } catch (pasteErr) {
+      console.error("createPasteRsLink failed:", pasteErr);
     }
 
-    await navigator.clipboard.writeText(selected);
+    try {
+      await navigator.clipboard.writeText(selected);
+    } catch (cErr) {
+      console.error("Failed to copy selection to clipboard:", cErr);
+    }
+
     toast.warning("Could not create gist link. Selected snippet was copied to clipboard instead.");
   }
 }
@@ -1516,31 +1964,45 @@ async function createGithubGistLink(fileName: string, selected: string): Promise
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch("https://api.github.com/gists", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      description: `GitSwamp snippet from ${fileName}`,
-      public: true,
-      files: {
-        [fileName]: {
-          content: selected,
+  try {
+    const response = await fetch("https://api.github.com/gists", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        description: `GitSwamp snippet from ${fileName}`,
+        public: true,
+        files: {
+          [fileName]: {
+            content: selected,
+          },
         },
-      },
-    }),
-  });
+      }),
+    });
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      const statusText = `${response.status} ${response.statusText}`.trim();
+      const errMsg = "GitHub gist API error: " + statusText + (bodyText ? " - " + bodyText : "");
+      console.error(errMsg);
+      throw new Error(errMsg);
+    }
+
+    const payload = await response.json() as Record<string, unknown>;
+    const gistUrl = String(payload.html_url || payload.url || "").trim();
+    if (!gistUrl) {
+      const payloadText = JSON.stringify(payload || {});
+      const errMsg = `GitHub gist response missing URL: ${payloadText}`;
+      console.error(errMsg);
+      throw new Error(errMsg);
+    }
+
+    return gistUrl;
+  } catch (err: any) {
+    // Normalize error message and log for diagnostics. Caller will fall back.
+    const message = err?.message || String(err);
+    console.error("createGithubGistLink failed:", message);
+    throw new Error(`createGithubGistLink failed: ${message}`);
   }
-
-  const payload = await response.json() as Record<string, unknown>;
-  const gistUrl = String(payload.html_url || payload.url || "").trim();
-  if (!gistUrl) {
-    throw new Error("Missing gist URL");
-  }
-
-  return gistUrl;
 }
 
 async function createPasteRsLink(selected: string): Promise<string | null> {
@@ -1579,12 +2041,160 @@ const visibleFileLines = computed(() => {
   return result;
 });
 
-const totalFileHeight = computed(() => fullFileLines.value.length * LINE_HEIGHT);
+const fileDiffOverviewLines = computed(() => {
+  if (viewMode.value === "time-lapse") {
+    return activeTimeLapseRenderLines.value.map((line) => ({ type: line.type }));
+  }
 
-function onFileDiffScroll(e: Event) {
-  const el = e.target as HTMLElement;
+  return fullFileLines.value;
+});
+
+const totalFileHeight = computed(() => fileDiffOverviewLines.value.length * LINE_HEIGHT);
+
+interface FileDiffOverviewSegment {
+  topPercent: number;
+  heightPercent: number;
+  type: "addition" | "deletion";
+}
+
+const showFileDiffOverview = computed(() => {
+  if ((viewMode.value !== "file-diff" && viewMode.value !== "time-lapse") || loadingFileContent.value) {
+    return false;
+  }
+
+  const total = fileDiffOverviewLines.value.length;
+  if (total === 0) {
+    return false;
+  }
+
+  return totalFileHeight.value > containerHeight.value * FILE_DIFF_OVERVIEW_MIN_VISIBLE_RATIO;
+});
+
+const showTimeLapseOverview = computed(() => {
+  return viewMode.value === "time-lapse" && !timeLapseLoading.value && !!activeTimeLapseFrame.value;
+});
+
+const fileDiffOverviewSegments = computed<FileDiffOverviewSegment[]>(() => {
+  const lines = fileDiffOverviewLines.value;
+  const total = lines.length;
+  if (total === 0) {
+    return [];
+  }
+
+  const segments: FileDiffOverviewSegment[] = [];
+  let idx = 0;
+
+  while (idx < total) {
+    const type = lines[idx].type;
+    if (type !== "addition" && type !== "deletion") {
+      idx += 1;
+      continue;
+    }
+
+    const start = idx;
+    while (idx < total && lines[idx].type === type) {
+      idx += 1;
+    }
+
+    const length = idx - start;
+    segments.push({
+      topPercent: (start / total) * 100,
+      heightPercent: Math.max(FILE_DIFF_OVERVIEW_MIN_MARKER_PERCENT, (length / total) * 100),
+      type,
+    });
+  }
+
+  return segments;
+});
+
+const fileDiffOverviewViewport = computed(() => {
+  const totalHeight = totalFileHeight.value;
+  const viewportHeight = containerHeight.value;
+
+  if (totalHeight <= 0 || viewportHeight <= 0) {
+    return {
+      topPercent: 0,
+      heightPercent: 100,
+    };
+  }
+
+  const rawHeightPercent = (viewportHeight / totalHeight) * 100;
+  const heightPercent = Math.min(100, Math.max(FILE_DIFF_OVERVIEW_MIN_VIEWPORT_PERCENT, rawHeightPercent));
+  const maxScroll = Math.max(1, totalHeight - viewportHeight);
+  const clampedScrollTop = Math.max(0, Math.min(scrollTop.value, maxScroll));
+  const availableTrack = Math.max(0, 100 - heightPercent);
+  const topPercent = availableTrack > 0
+    ? (clampedScrollTop / maxScroll) * availableTrack
+    : 0;
+
+  return {
+    topPercent,
+    heightPercent,
+  };
+});
+
+function syncFileDiffViewportMetrics() {
+  const el = fileDiffScrollContainer.value;
+  if (!el) {
+    return;
+  }
+
   scrollTop.value = el.scrollTop;
   containerHeight.value = el.clientHeight;
+}
+
+function onFileDiffScroll(event: Event) {
+  const el = event.target as HTMLElement;
+  scrollTop.value = el.scrollTop;
+  containerHeight.value = el.clientHeight;
+}
+
+function scrollToTimeLapseFrame(frame: TimeLapseFrame | null) {
+  if (!frame) return;
+  const el = timeLapseScrollContainer.value;
+  if (!el) return;
+
+  let anchor = 1;
+  if (frame.diffLines && frame.diffLines.length) {
+    const firstAddition = frame.diffLines.find((line) => line.line_type === "addition" && line.new_line_no != null && line.new_line_no > 0);
+    if (firstAddition?.new_line_no) {
+      anchor = firstAddition.new_line_no;
+    } else {
+      const firstAny = frame.diffLines.find((line) => line.new_line_no != null && line.new_line_no > 0);
+      if (firstAny?.new_line_no) {
+        anchor = firstAny.new_line_no;
+      }
+    }
+  }
+
+  const desired = Math.max(0, (anchor - 1) * LINE_HEIGHT - el.clientHeight / 2);
+  const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+  const nextScroll = Math.max(0, Math.min(maxScroll, desired));
+
+  try {
+    el.scrollTo({ top: nextScroll, behavior: "smooth" });
+  } catch {
+    el.scrollTop = nextScroll;
+  }
+
+  scrollTop.value = nextScroll;
+}
+
+function jumpToFileDiffPosition(event: MouseEvent) {
+  const el = viewMode.value === "time-lapse" ? timeLapseScrollContainer.value : fileDiffScrollContainer.value;
+  if (!el || totalFileHeight.value <= 0) {
+    return;
+  }
+
+  const target = event.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  const y = event.clientY - rect.top;
+  const ratio = Math.max(0, Math.min(1, y / Math.max(1, rect.height)));
+  const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+  const nextScroll = Math.max(0, Math.min(maxScroll, ratio * totalFileHeight.value - el.clientHeight / 2));
+
+  el.scrollTop = nextScroll;
+  scrollTop.value = nextScroll;
 }
 
 function lineClass(type: string): string {
@@ -1854,6 +2464,11 @@ function buildInlineDiffMarkup(base: string, compare: string, changedClass: stri
     return escapeHtml(base);
   }
 
+  const tokenMarkup = buildTokenInlineMarkup(base, compare, changedClass);
+  if (tokenMarkup) {
+    return tokenMarkup;
+  }
+
   const keepMask = computeLcsKeepMask(base, compare);
   if (!keepMask || keepMask.length !== base.length) {
     return buildPrefixSuffixInlineMarkup(base, compare, changedClass);
@@ -1878,27 +2493,12 @@ function pushInlineSegment(parts: string[], value: string, changed: boolean, cha
 }
 
 function buildInlineSegmentsFromMask(base: string, keepMask: boolean[], changedClass: string): { parts: string[]; hasChanged: boolean } {
-  const parts: string[] = [];
-  let segment = "";
-  let segmentChanged = !keepMask[0];
-  let hasChanged = segmentChanged;
-
-  for (let idx = 0; idx < base.length; idx += 1) {
-    const changed = !keepMask[idx];
-    if (idx > 0 && changed !== segmentChanged) {
-      pushInlineSegment(parts, segment, segmentChanged, changedClass);
-      segment = "";
-      segmentChanged = changed;
-    }
-
-    segment += base[idx];
-    if (changed) {
-      hasChanged = true;
-    }
-  }
-
-  pushInlineSegment(parts, segment, segmentChanged, changedClass);
-  return { parts, hasChanged };
+  const baseChars = base.split("");
+  const changedMask = bridgeWhitespaceRuns(
+    baseChars,
+    keepMask.map((keep) => !keep),
+  );
+  return buildInlineSegmentsFromTokens(baseChars, changedMask, changedClass);
 }
 
 function onEditInput() {
@@ -1908,10 +2508,17 @@ function onEditInput() {
 watch(usePlainTextHighlighting, () => {
   highlightedLineCache.value.clear();
 });
+
+watch(
+  () => [props.filePath, props.commitSha, props.staged, props.fallbackStatus, props.fallbackOldPath],
+  () => {
+    fileJourneyOpen.value = false;
+  },
+);
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-[var(--card)] overflow-hidden">
+  <div class="relative h-full flex flex-col bg-[var(--card)] overflow-hidden">
     <div class="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] bg-[var(--card)] flex-shrink-0">
       <div class="flex items-center gap-3 min-w-0">
         <Pencil v-if="isWorkingChanges" class="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
@@ -1969,6 +2576,21 @@ watch(usePlainTextHighlighting, () => {
         </div>
 
         <div class="flex items-center gap-2">
+          <button
+            type="button"
+            :disabled="!fileJourneyAvailable"
+            :class="[
+              'p-1.5 rounded-md border transition-colors',
+              fileJourneyOpen
+                ? 'border-[var(--primary)] bg-[var(--primary)] text-white'
+                : 'border-[var(--diff-border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]',
+              !fileJourneyAvailable ? 'opacity-45 cursor-not-allowed hover:text-[var(--muted-foreground)]' : ''
+            ]"
+            title="Toggle file journey"
+            @click="fileJourneyOpen = !fileJourneyOpen"
+          >
+            <History class="w-3.5 h-3.5" />
+          </button>
           <div class="flex bg-[var(--secondary)] rounded-md overflow-hidden">
             <button
               @click="viewMode = 'diff'"
@@ -2067,16 +2689,11 @@ watch(usePlainTextHighlighting, () => {
           </button>
         </div>
 
-        <button
-          @click="emit('close')"
-          class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-        >
-          <X class="w-5 h-5" />
-        </button>
+        <CloseIconButton title="Close diff view" @click="emit('close')" />
       </div>
     </div>
 
-    <div class="flex-1 min-h-0 flex bg-[var(--diff-bg)] font-mono text-[13px] leading-[1.5]">
+    <div class="flex-1 min-h-0 flex bg-[var(--diff-bg)] font-mono text-[12px] leading-[1.4]">
       <div class="flex-1 min-w-0 overflow-auto">
       <div v-if="loading" class="flex items-center justify-center h-full">
         <div class="diff-loader-shell">
@@ -2138,14 +2755,32 @@ watch(usePlainTextHighlighting, () => {
             <span class="text-xs text-[var(--diff-link)]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
             </span>
-            <button
-              v-if="isWorkingChanges"
-              @click="revertHunk(hunkIdx)"
-              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-            >
-              <Undo2 class="w-3 h-3" />
-              Revert Hunk
-            </button>
+            <div v-if="isWorkingChanges" class="flex items-center gap-1">
+              <button
+                v-if="isUnstaged"
+                @click="stageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Paintbrush class="w-3 h-3" />
+                Stage Hunk
+              </button>
+              <button
+                v-else-if="props.staged"
+                @click="unstageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Unstage Hunk
+              </button>
+              <button
+                v-if="isUnstaged"
+                @click="revertHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Discard Hunk
+              </button>
+            </div>
           </div>
 
           <div>
@@ -2236,14 +2871,32 @@ watch(usePlainTextHighlighting, () => {
             <span class="text-xs text-[var(--diff-link)]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
             </span>
-            <button
-              v-if="isWorkingChanges"
-              @click="revertHunk(hunkIdx)"
-              class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-            >
-              <Undo2 class="w-3 h-3" />
-              Revert Hunk
-            </button>
+            <div v-if="isWorkingChanges" class="flex items-center gap-1">
+              <button
+                v-if="isUnstaged"
+                @click="stageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Paintbrush class="w-3 h-3" />
+                Stage Hunk
+              </button>
+              <button
+                v-else-if="props.staged"
+                @click="unstageHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Unstage Hunk
+              </button>
+              <button
+                v-if="isUnstaged"
+                @click="revertHunk(hunkIdx)"
+                class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                <Undo2 class="w-3 h-3" />
+                Discard Hunk
+              </button>
+            </div>
           </div>
 
           <div
@@ -2256,7 +2909,7 @@ watch(usePlainTextHighlighting, () => {
               <div
                 v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                 :key="`${hunkIdx}-blame-${rowIdx}`"
-                class="min-h-[20px] px-2 py-0.5 overflow-hidden"
+                class="min-h-[18px] px-2 py-0.5 overflow-hidden"
               >
                 <template v-if="getInlineBlame(getSplitRowBlameLineNo(row))?.showHeader">
                   <div class="text-[10px] font-medium text-[var(--foreground)] truncate">
@@ -2270,7 +2923,7 @@ watch(usePlainTextHighlighting, () => {
             </div>
 
             <div
-              class="border-r border-[var(--diff-border)] overflow-x-auto overflow-y-hidden"
+              class="split-diff-scroll border-r border-[var(--diff-border)] overflow-x-auto overflow-y-hidden"
               :ref="(el) => setSplitPaneRef(hunkIdx, 'old', el)"
               @scroll="onSplitPaneScroll(hunkIdx, 'old', $event)"
             >
@@ -2278,18 +2931,18 @@ watch(usePlainTextHighlighting, () => {
                 <div
                   v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                   :key="`${hunkIdx}-old-${rowIdx}`"
-                  :class="['flex min-h-[20px]', splitCellClass(row.oldType)]"
+                  :class="['flex min-h-[18px]', splitCellClass(row.oldType)]"
                 >
-                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
                     {{ row.oldLineNo ?? '' }}
                   </div>
-                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[20px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'old')"></code></pre>
+                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[18px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'old')"></code></pre>
                 </div>
               </div>
             </div>
 
             <div
-              class="overflow-x-auto overflow-y-hidden"
+              class="split-diff-scroll overflow-x-auto overflow-y-hidden"
               :ref="(el) => setSplitPaneRef(hunkIdx, 'new', el)"
               @scroll="onSplitPaneScroll(hunkIdx, 'new', $event)"
             >
@@ -2297,12 +2950,12 @@ watch(usePlainTextHighlighting, () => {
                 <div
                   v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                   :key="`${hunkIdx}-new-${rowIdx}`"
-                  :class="['flex min-h-[20px]', splitCellClass(row.newType)]"
+                  :class="['flex min-h-[18px]', splitCellClass(row.newType)]"
                 >
-                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
+                  <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
                     {{ row.newLineNo ?? '' }}
                   </div>
-                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[20px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'new')"></code></pre>
+                  <pre class="diff-code-line flex-1 px-1.5 whitespace-pre overflow-hidden leading-[18px] m-0 select-text"><code class="hljs bg-transparent" v-html="getSplitCellHtml(row, 'new')"></code></pre>
                 </div>
               </div>
             </div>
@@ -2314,77 +2967,103 @@ watch(usePlainTextHighlighting, () => {
         </div>
       </div>
 
-      <div v-else-if="viewMode === 'file-diff'" class="min-w-fit h-full overflow-auto" @scroll="onFileDiffScroll">
+      <div v-else-if="viewMode === 'file-diff'" class="relative h-full min-w-0">
         <div
-          v-if="rawDiffFallbackActive"
-          class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
+          ref="fileDiffScrollContainer"
+          class="h-full min-w-fit overflow-auto pr-6"
+          @scroll="onFileDiffScroll"
         >
-          {{ rawDiffFallbackReason || 'Coloring exceeded 5 seconds. Showing regular Git diff.' }}
-        </div>
-
-        <div v-if="loadingFileContent" class="flex items-center justify-center h-full">
-          <div class="diff-loader-shell">
-            <img :src="logoCrocGif" alt="Loading file content" class="diff-loader-logo" />
-            <div class="diff-loader-wave" aria-label="Loading">
-              <span
-                v-for="(letter, idx) in loadingLetters"
-                :key="'file-' + letter + idx"
-                :style="{ animationDelay: `${idx * 0.08}s` }"
-              >
-                {{ letter }}
-              </span>
-            </div>
-            <p class="diff-loader-caption">{{ loadingLabel }}...</p>
-          </div>
-        </div>
-        <div v-else-if="fullFileLines.length > 0" class="h-full">
           <div
-            v-if="usePlainTextHighlighting"
+            v-if="rawDiffFallbackActive"
             class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
           >
-            Large file mode: syntax coloring is simplified to reduce loading time.
+            {{ rawDiffFallbackReason || 'Coloring exceeded 5 seconds. Showing regular Git diff.' }}
           </div>
-          <div class="relative" :style="{ height: totalFileHeight + 'px' }">
-          <div
-            v-for="item in visibleFileLines"
-            :key="item.idx"
-            :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
-            :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
-          >
-            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
-              {{ item.line.oldLineNo ?? '' }}
+
+          <div v-if="loadingFileContent" class="flex items-center justify-center h-full">
+            <div class="diff-loader-shell">
+              <img :src="logoCrocGif" alt="Loading file content" class="diff-loader-logo" />
+              <div class="diff-loader-wave" aria-label="Loading">
+                <span
+                  v-for="(letter, idx) in loadingLetters"
+                  :key="'file-' + letter + idx"
+                  :style="{ animationDelay: `${idx * 0.08}s` }"
+                >
+                  {{ letter }}
+                </span>
+              </div>
+              <p class="diff-loader-caption">{{ loadingLabel }}...</p>
             </div>
-            <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[11px] leading-[20px]">
-              {{ item.line.lineNo || '' }}
-            </div>
-            <div 
-              class="w-5 flex-shrink-0 text-center select-none font-bold leading-[20px]"
-              :class="item.line.type === 'addition' ? 'text-[var(--diff-sign-add)]' : item.line.type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
+          </div>
+          <div v-else-if="fullFileLines.length > 0" class="h-full">
+            <div
+              v-if="usePlainTextHighlighting"
+              class="sticky top-0 z-20 px-3 py-1 text-[11px] border-y border-[var(--diff-border)] bg-[var(--secondary)]/90 text-[var(--muted-foreground)]"
             >
-              {{ linePrefix(item.line.type) }}
+              Large file mode: syntax coloring is simplified to reduce loading time.
             </div>
-            <pre 
-              class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[20px] m-0 select-text"
-              :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
-            ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line)"></code></pre>
+            <div class="relative" :style="{ height: totalFileHeight + 'px' }">
+            <div
+              v-for="item in visibleFileLines"
+              :key="item.idx"
+              :class="['flex absolute left-0 right-0', lineClass(item.line.type)]"
+              :style="{ top: (item.idx * LINE_HEIGHT) + 'px', height: LINE_HEIGHT + 'px' }"
+            >
+              <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
+                {{ item.line.oldLineNo ?? '' }}
+              </div>
+              <div class="diff-line-no w-10 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
+                {{ item.line.lineNo || '' }}
+              </div>
+              <div
+                class="w-5 flex-shrink-0 text-center select-none font-bold leading-[20px]"
+                :class="item.line.type === 'addition' ? 'text-[var(--diff-sign-add)]' : item.line.type === 'deletion' ? 'text-[var(--diff-sign-del)]' : 'text-[var(--diff-sign-neutral)]'"
+              >
+                {{ linePrefix(item.line.type) }}
+              </div>
+              <pre
+                class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden leading-[18px] m-0 select-text"
+                :class="item.line.type === 'addition' ? 'text-[var(--diff-add-fg)]' : item.line.type === 'deletion' ? 'text-[var(--diff-del-fg)]' : 'text-[var(--diff-text)]'"
+              ><code class="hljs bg-transparent" v-html="getHighlightedFileLine(item.idx, item.line)"></code></pre>
+            </div>
+            </div>
           </div>
+          <div v-else-if="!loading && !loadingFileContent" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
+            No file content available
           </div>
         </div>
-        <div v-else-if="!loading && !loadingFileContent" class="flex items-center justify-center h-64 text-[var(--muted-foreground)]">
-          No file content available
-        </div>
+
+        <button
+          v-if="showFileDiffOverview"
+          class="file-diff-overview"
+          type="button"
+          title="Jump through changes"
+          @click="jumpToFileDiffPosition"
+        >
+          <span
+            v-for="(segment, idx) in fileDiffOverviewSegments"
+            :key="`overview-${idx}`"
+            class="file-diff-overview-segment"
+            :class="segment.type === 'addition' ? 'file-diff-overview-segment-add' : 'file-diff-overview-segment-del'"
+            :style="{ top: `${segment.topPercent}%`, height: `${segment.heightPercent}%` }"
+          />
+          <span
+            class="file-diff-overview-viewport"
+            :style="{ top: `${fileDiffOverviewViewport.topPercent}%`, height: `${fileDiffOverviewViewport.heightPercent}%` }"
+          />
+        </button>
       </div>
 
       <div v-else-if="viewMode === 'edit'" class="min-w-fit h-full">
         <textarea
           v-model="editContent"
           @input="onEditInput"
-          class="w-full h-full bg-[var(--diff-bg)] text-[var(--diff-text)] p-3 resize-none outline-none font-mono text-[13px] leading-[1.5]"
+          class="w-full h-full bg-[var(--diff-bg)] text-[var(--diff-text)] p-3 resize-none outline-none font-mono text-[12px] leading-[1.4]"
           spellcheck="false"
         ></textarea>
       </div>
 
-      <div v-else-if="viewMode === 'time-lapse'" class="h-full flex flex-col overflow-hidden">
+      <div v-else-if="viewMode === 'time-lapse'" class="h-full flex flex-col overflow-hidden relative">
         <div class="px-3 py-2 border-b border-[var(--diff-border)] bg-[var(--secondary)]/40 flex items-center justify-between gap-2">
           <div class="flex items-center gap-2 flex-wrap min-w-0">
             <div class="text-[11px] text-[var(--muted-foreground)]">
@@ -2405,6 +3084,7 @@ watch(usePlainTextHighlighting, () => {
             <button
               class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
               title="Previous frame"
+              :disabled="!timeLapseCanRetreat"
               @click="previousTimeLapseFrame"
             >
               <StepBack class="w-4 h-4" />
@@ -2420,12 +3100,33 @@ watch(usePlainTextHighlighting, () => {
             <button
               class="p-1 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
               title="Next frame"
+              :disabled="!timeLapseCanAdvance"
               @click="nextTimeLapseFrame"
             >
               <StepForward class="w-4 h-4" />
             </button>
           </div>
         </div>
+
+        <button
+          v-if="showTimeLapseOverview"
+          class="file-diff-overview file-diff-overview-time-lapse"
+          type="button"
+          title="Jump through timeline frames"
+          @click="jumpToFileDiffPosition"
+        >
+          <span
+            v-for="(segment, idx) in fileDiffOverviewSegments"
+            :key="`timeline-overview-${idx}`"
+            class="file-diff-overview-segment"
+            :class="segment.type === 'addition' ? 'file-diff-overview-segment-add' : 'file-diff-overview-segment-del'"
+            :style="{ top: `${segment.topPercent}%`, height: `${segment.heightPercent}%` }"
+          />
+          <span
+            class="file-diff-overview-viewport"
+            :style="{ top: `${fileDiffOverviewViewport.topPercent}%`, height: `${fileDiffOverviewViewport.heightPercent}%` }"
+          />
+        </button>
 
         <div v-if="timeLapseLoading" class="flex-1 flex items-center justify-center">
           <div class="time-lapse-loader-shell">
@@ -2447,7 +3148,7 @@ watch(usePlainTextHighlighting, () => {
               {{ activeTimeLapseFrame.shortSha }} by {{ activeTimeLapseFrame.author }} • {{ formatTimeLapseTimestamp(activeTimeLapseFrame.timestamp) }}
             </div>
           </div>
-          <div class="flex-1 overflow-auto">
+          <div ref="timeLapseScrollContainer" class="flex-1 overflow-auto time-lapse-scroll-container" @scroll="onFileDiffScroll">
             <div v-if="activeTimeLapseRenderLines.length === 0" class="h-full flex items-center justify-center text-[var(--muted-foreground)] text-sm">
               No timeline content available for this frame.
             </div>
@@ -2474,17 +3175,41 @@ watch(usePlainTextHighlighting, () => {
                 >
                   {{ linePrefix(line.type) }}
                 </div>
-                <pre class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden m-0 select-text"><code class="hljs bg-transparent">{{ line.content }}</code></pre>
+                <pre class="diff-code-line flex-1 px-1.5 whitespace-pre-wrap break-all overflow-hidden m-0 select-text"><code class="hljs bg-transparent" v-html="getHighlightedLine(line.content, `time-lapse:${line.key}:${line.content}`)"></code></pre>
               </div>
             </div>
           </div>
           <div class="px-3 py-1.5 border-t border-[var(--diff-border)] bg-[var(--secondary)]/40 text-[10px] text-[var(--muted-foreground)]">
             Frame {{ Math.min(timeLapseFrameIndex + 1, timeLapseFrames.length) }} / {{ timeLapseFrames.length }} • scanned last {{ timeLapseCommitWindowSafe }} commits
           </div>
+          <div class="h-1 bg-[var(--secondary)]/70">
+            <div class="h-full bg-[var(--primary)]/70 transition-[width] duration-300" :style="{ width: `${timeLapseProgressPercent}%` }" />
+          </div>
         </div>
       </div>
 
       </div>
+    </div>
+
+    <div
+      v-if="fileJourneyVisible"
+      class="absolute bottom-3 right-3 z-[90] w-[210px] max-w-[calc(100%-1.5rem)] rounded-md border border-[var(--diff-border)] bg-[var(--card)]/96 p-2 shadow-xl backdrop-blur"
+    >
+      <div class="mb-1.5 flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-[var(--foreground)]">
+          <FileText class="h-3.5 w-3.5 text-[var(--primary)]" />
+          <span class="truncate">File Journey</span>
+        </div>
+        <CloseIconButton size="sm" subtle title="Hide file journey" @click="fileJourneyOpen = false" />
+      </div>
+      <dl class="grid grid-cols-[64px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-snug">
+        <dt class="text-[var(--muted-foreground)]">Created</dt>
+        <dd class="truncate text-[var(--foreground)]">{{ quickFileJourney.createdBy }}</dd>
+        <dt class="text-[var(--muted-foreground)]">Last by</dt>
+        <dd class="truncate text-[var(--foreground)]">{{ quickFileJourney.lastChangedBy }}</dd>
+        <dt class="text-[var(--muted-foreground)]">When</dt>
+        <dd class="truncate text-[var(--foreground)]">{{ quickFileJourney.lastChanged }}</dd>
+      </dl>
     </div>
   </div>
 </template>
@@ -2547,6 +3272,33 @@ watch(usePlainTextHighlighting, () => {
   filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--foreground) 16%, transparent));
 }
 
+.time-lapse-scroll-container {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(139, 92, 246, 0.55) rgba(139, 92, 246, 0.08);
+  scrollbar-gutter: stable;
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar-track {
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.52);
+  border-radius: 999px;
+  border: 2px solid rgba(0, 0, 0, 0);
+  background-clip: padding-box;
+}
+
+.time-lapse-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.7);
+  background-clip: padding-box;
+}
+
 @keyframes loaderFloat {
   0%,
   100% {
@@ -2580,26 +3332,87 @@ watch(usePlainTextHighlighting, () => {
   contain: layout style paint;
 }
 
+.split-diff-scroll {
+  scrollbar-width: none;
+}
+
+.split-diff-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 :deep(.diff-inline-add) {
-  background: var(--diff-inline-add-bg);
-  border: 1.5px solid color-mix(in srgb, var(--diff-sign-add) 90%, transparent);
+  background: color-mix(in srgb, var(--diff-inline-add-bg) 42%, transparent);
+  border: 0;
   border-radius: 2px;
   color: var(--diff-inline-add-text);
   font-weight: inherit;
   font-style: normal;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 85%, transparent), 0 0 2px color-mix(in srgb, var(--diff-sign-add) 30%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-add) 18%, transparent),
+    0 0 4px color-mix(in srgb, var(--diff-sign-add) 12%, transparent);
   text-decoration: none;
 }
 
 :deep(.diff-inline-del) {
-  background: var(--diff-inline-del-bg);
-  border: 1.5px solid color-mix(in srgb, var(--diff-sign-del) 90%, transparent);
+  background: color-mix(in srgb, var(--diff-inline-del-bg) 42%, transparent);
+  border: 0;
   border-radius: 2px;
   color: var(--diff-inline-del-text);
   font-weight: inherit;
   font-style: normal;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 85%, transparent), 0 0 2px color-mix(in srgb, var(--diff-sign-del) 30%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--diff-sign-del) 18%, transparent),
+    0 0 4px color-mix(in srgb, var(--diff-sign-del) 12%, transparent);
   text-decoration: none;
+}
+
+.file-diff-overview {
+  position: absolute;
+  top: 14px;
+  right: 10px;
+  width: 28px;
+  height: 136px;
+  border: 1px solid color-mix(in srgb, var(--diff-border) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--foreground) 12%, transparent);
+  overflow: hidden;
+  cursor: pointer;
+  z-index: 32;
+}
+
+.file-diff-overview-time-lapse {
+  top: 85px;
+  right: 25px;
+  z-index: 60;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.file-diff-overview-segment {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  border-radius: 999px;
+}
+
+.file-diff-overview-segment-add {
+  background: color-mix(in srgb, var(--diff-sign-add) 80%, var(--card) 20%);
+}
+
+.file-diff-overview-segment-del {
+  background: color-mix(in srgb, var(--diff-sign-del) 82%, var(--card) 18%);
+}
+
+.file-diff-overview-viewport {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--diff-link) 72%, white 28%);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 8%, transparent);
 }
 </style>
 

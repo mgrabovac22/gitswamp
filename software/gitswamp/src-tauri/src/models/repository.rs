@@ -8,6 +8,12 @@ pub struct RemoteInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RepositoryOperationInfo {
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RepoInfo {
     pub path: String,
     pub name: String,
@@ -15,4 +21,5 @@ pub struct RepoInfo {
     pub is_clean: bool,
     pub head_sha: Option<String>,
     pub remotes: Vec<RemoteInfo>,
+    pub operation: Option<RepositoryOperationInfo>,
 }

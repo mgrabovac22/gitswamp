@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, ref, watch, type Component } from "vue
 import { invoke } from "@tauri-apps/api/core";
 import { FileArchive, FileCode2, FileImage, FileText, Folder } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { CommitInfo, CommitFileInfo } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
@@ -56,6 +57,31 @@ const panelScrollContainer = ref<HTMLElement | null>(null);
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
 const commitTreeCache = new Map<string, string[]>();
 const fileContentCache = new Map<string, string>();
+const COMMIT_FILES_CACHE_LIMIT = 12;
+const COMMIT_TREE_CACHE_LIMIT = 3;
+const FILE_CONTENT_CACHE_LIMIT = 8;
+const FILE_CONTENT_CACHE_MAX_CHARS = 220_000;
+
+function getCachedEntry<T>(cache: Map<string, T>, key: string): T | null {
+  const value = cache.get(key);
+  if (value === undefined) return null;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedEntry<T>(cache: Map<string, T>, key: string, value: T, limit: number) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
+}
 
 let autoplayTimer: number | null = null;
 let snapshotScheduleTimer: number | null = null;
@@ -451,8 +477,8 @@ async function loadExplorerFile(path: string, shaOverride?: string) {
   selectedExplorerFilePath.value = path;
   explorerFileError.value = "";
 
-  const cachedContent = fileContentCache.get(cacheKey);
-  if (cachedContent !== undefined) {
+  const cachedContent = getCachedEntry(fileContentCache, cacheKey);
+  if (cachedContent !== null) {
     selectedExplorerFileContent.value = cachedContent;
     explorerFileLoading.value = false;
     return;
@@ -470,7 +496,9 @@ async function loadExplorerFile(path: string, shaOverride?: string) {
       return;
     }
 
-    fileContentCache.set(cacheKey, content);
+    if (content.length <= FILE_CONTENT_CACHE_MAX_CHARS) {
+      setCachedEntry(fileContentCache, cacheKey, content, FILE_CONTENT_CACHE_LIMIT);
+    }
     selectedExplorerFileContent.value = content;
   } catch {
     if (runToken === explorerRunToken && selectedExplorerFilePath.value === path) {
@@ -535,8 +563,8 @@ async function syncExplorerPreviewForCommit(sha: string) {
   selectedExplorerFilePath.value = preferredPath;
 
   if (autoPlay.value) {
-    const cachedContent = fileContentCache.get(`${props.repoPath}::${sha}::${preferredPath}`);
-    if (cachedContent !== undefined) {
+    const cachedContent = getCachedEntry(fileContentCache, `${props.repoPath}::${sha}::${preferredPath}`);
+    if (cachedContent !== null) {
       selectedExplorerFileContent.value = cachedContent;
       explorerFileError.value = "";
     }
@@ -568,8 +596,8 @@ async function loadSnapshotData() {
   }
 
   const cacheKey = snapshotCacheKey(commit.sha);
-  const cachedFiles = commitFilesCache.get(cacheKey);
-  const cachedTree = commitTreeCache.get(cacheKey);
+  const cachedFiles = getCachedEntry(commitFilesCache, cacheKey);
+  const cachedTree = getCachedEntry(commitTreeCache, cacheKey);
 
   filesError.value = "";
   treeError.value = "";
@@ -618,7 +646,7 @@ async function loadSnapshotData() {
 
   if (filesResult.status === "fulfilled") {
     selectedFiles.value = filesResult.value;
-    commitFilesCache.set(cacheKey, filesResult.value);
+    setCachedEntry(commitFilesCache, cacheKey, filesResult.value, COMMIT_FILES_CACHE_LIMIT);
     if (!filesResult.value.some((item) => item.path === selectedFilePath.value)) {
       selectedFilePath.value = filesResult.value[0]?.path || "";
     }
@@ -628,7 +656,7 @@ async function loadSnapshotData() {
 
   if (treeResult.status === "fulfilled") {
     snapshotPaths.value = treeResult.value;
-    commitTreeCache.set(cacheKey, treeResult.value);
+    setCachedEntry(commitTreeCache, cacheKey, treeResult.value, COMMIT_TREE_CACHE_LIMIT);
   } else {
     treeError.value = "Could not load directory snapshot for this commit.";
   }
@@ -772,11 +800,18 @@ watch(
 onUnmounted(() => {
   stopAutoplay();
   clearSnapshotScheduleTimer();
+  historyCommits.value = [];
+  selectedFiles.value = [];
+  snapshotPaths.value = [];
+  selectedExplorerFileContent.value = "";
+  commitFilesCache.clear();
+  commitTreeCache.clear();
+  fileContentCache.clear();
 });
 </script>
 
 <template>
-  <div ref="panelScrollContainer" class="flex-1 min-h-0 overflow-y-auto time-machine-surface tm-scroll-root">
+  <div ref="panelScrollContainer" class="flex-1 min-h-0 overflow-y-auto time-machine-surface">
     <div class="p-4 md:p-5 space-y-4">
       <section class="tm-card">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -789,13 +824,7 @@ onUnmounted(() => {
             <div class="px-3 py-1.5 rounded-md border border-[var(--border)] bg-[var(--secondary)]">
               <span class="text-[11px] font-semibold text-[var(--primary)]">Frame {{ hasCommits ? selectedIndex + 1 : 0 }} / {{ historyCommits.length }}</span>
             </div>
-            <button
-              class="tm-close"
-              title="Back to Git Graph"
-              @click="emit('close')"
-            >
-              x
-            </button>
+            <CloseIconButton title="Back to Git Graph" @click="emit('close')" />
           </div>
         </div>
       </section>
@@ -934,7 +963,7 @@ onUnmounted(() => {
 
             <div v-if="filesError && selectedFiles.length === 0" class="text-xs text-[var(--destructive)]">{{ filesError }}</div>
             <div v-else-if="selectedFiles.length === 0" class="text-xs text-[var(--muted-foreground)]">No changed files in this snapshot.</div>
-            <div v-else class="space-y-2 max-h-[360px] overflow-y-auto pr-1 tm-inner-scroll">
+            <div v-else class="space-y-2 max-h-[360px] overflow-y-auto pr-1">
               <div
                 v-for="file in selectedFiles"
                 :key="file.path"
@@ -982,7 +1011,7 @@ onUnmounted(() => {
           <article class="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45 p-2.5 tm-subcard-shell">
             <div v-if="treeError && directoryEntries.length === 0" class="text-xs text-[var(--destructive)]">{{ treeError }}</div>
             <div v-else-if="directoryEntries.length === 0" class="text-xs text-[var(--muted-foreground)]">No entries in this directory.</div>
-            <div v-else class="max-h-[300px] overflow-y-auto space-y-1 pr-1 tm-inner-scroll">
+            <div v-else class="max-h-[300px] overflow-y-auto space-y-1 pr-1">
               <button
                 v-for="entry in directoryEntries"
                 :key="entry.path"
@@ -1009,7 +1038,7 @@ onUnmounted(() => {
               {{ selectedExplorerFilePath ? selectedExplorerFilePath : "Select a file to preview snapshot content" }}
             </div>
             <div v-if="explorerFileError && !selectedExplorerFileContent" class="text-xs text-[var(--destructive)]">{{ explorerFileError }}</div>
-            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text tm-inner-scroll">{{ selectedExplorerFileContent }}</pre>
+            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text">{{ selectedExplorerFileContent }}</pre>
             <div v-else class="text-xs text-[var(--muted-foreground)]">No file selected.</div>
 
             <div v-if="explorerFileLoading" class="tm-subcard-overlay">
@@ -1034,13 +1063,6 @@ onUnmounted(() => {
     radial-gradient(circle at 14% 16%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 42%),
     radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--chart-2) 14%, transparent), transparent 40%),
     linear-gradient(165deg, color-mix(in srgb, var(--background) 96%, black 4%) 0%, var(--background) 52%, color-mix(in srgb, var(--card) 70%, var(--background) 30%) 100%);
-}
-
-.tm-scroll-root {
-  scroll-behavior: auto;
-  scrollbar-gutter: stable;
-  contain: layout paint style;
-  will-change: scroll-position;
 }
 
 .tm-card {
@@ -1112,25 +1134,6 @@ onUnmounted(() => {
   border-color: color-mix(in srgb, var(--primary) 52%, var(--border));
   color: var(--foreground);
   background: color-mix(in srgb, var(--secondary) 70%, var(--primary) 30%);
-}
-
-.tm-close {
-  width: 28px;
-  height: 28px;
-  border-radius: 0.45rem;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--secondary) 78%, transparent);
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.tm-close:hover {
-  color: var(--foreground);
-  border-color: color-mix(in srgb, var(--destructive) 60%, var(--border));
-  background: color-mix(in srgb, var(--destructive) 16%, var(--secondary));
 }
 
 .tm-loader-logo {
@@ -1261,22 +1264,5 @@ onUnmounted(() => {
   font-size: 11px;
   line-height: 1.5;
   white-space: pre;
-}
-
-:global(html.gitswamp-linux) .time-machine-surface {
-  background: linear-gradient(180deg, var(--background) 0%, color-mix(in srgb, var(--card) 62%, var(--background) 38%) 100%);
-}
-
-:global(html.gitswamp-linux) .tm-subcard-overlay {
-  backdrop-filter: none;
-}
-
-:global(html.gitswamp-linux) .tm-loader-letter {
-  animation: none;
-}
-
-:global(html.gitswamp-linux) .tm-inner-scroll {
-  max-height: none !important;
-  overflow-y: visible !important;
 }
 </style>

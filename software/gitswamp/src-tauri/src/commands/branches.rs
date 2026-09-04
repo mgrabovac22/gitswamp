@@ -12,7 +12,11 @@ pub fn checkout_branch(path: String, branch_name: String) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn create_branch(path: String, name: String, start_point: Option<String>) -> Result<(), String> {
+pub fn create_branch(
+    path: String,
+    name: String,
+    start_point: Option<String>,
+) -> Result<(), String> {
     GitService::create_branch(&path, &name, start_point.as_deref())
 }
 

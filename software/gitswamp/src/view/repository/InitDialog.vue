@@ -2,7 +2,6 @@
 import { ref, computed } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  X,
   Monitor,
   Github,
   GitBranch,
@@ -11,6 +10,7 @@ import {
 } from "lucide-vue-next";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
 const props = defineProps<{
   visible: boolean;
@@ -121,9 +121,7 @@ function onInit() {
           </button>
           <span class="text-sm font-semibold text-[var(--foreground)]">Initialize a Repository</span>
         </div>
-        <button @click="emit('close')" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors">
-          <X class="w-4 h-4 text-[var(--muted-foreground)]" />
-        </button>
+        <CloseIconButton title="Close init dialog" @click="emit('close')" />
       </div>
 
       <div v-if="showGrid" class="p-6">

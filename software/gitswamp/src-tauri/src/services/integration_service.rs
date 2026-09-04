@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -5,12 +6,12 @@ use std::path::{Path, PathBuf};
 use std::os::windows::process::CommandExt;
 
 use crate::constants::{
-    API_AZURE_REPOS_PATH, API_BITBUCKET_LIST_REPOS, API_GITHUB_LIST_REPOS,
-    API_GITHUB_SEARCH_REPOS, API_GITLAB_BASE_PATH, API_GITLAB_USER_KEYS_PATH,
-    API_GITLAB_USER_PATH, APP_USER_AGENT, AZURE_HOST, AZURE_LEGACY_HOST,
+    API_AZURE_REPOS_PATH, API_BITBUCKET_LIST_REPOS, API_GITHUB_LIST_REPOS, API_GITHUB_SEARCH_REPOS,
+    API_GITHUB_USER_KEYS_PATH, API_GITHUB_USER_PATH, API_GITLAB_BASE_PATH,
+    API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT, AZURE_HOST, AZURE_LEGACY_HOST,
     GITHUB_ACCEPT_HEADER, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
 };
-use crate::models::{AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo};
+use crate::models::{AzureRepo, BitbucketRepo, GithubRepo, GithubSshKey, GitlabRepo};
 use crate::services::helpers::urlencoded;
 
 #[cfg(windows)]
@@ -19,6 +20,48 @@ use crate::constants::CREATE_NO_WINDOW;
 pub struct IntegrationService;
 
 impl IntegrationService {
+    fn map_github_repo(
+        item: &serde_json::Value,
+        viewer_login: &str,
+        is_public_search_result: bool,
+    ) -> Option<GithubRepo> {
+        Some(GithubRepo {
+            full_name: item["full_name"].as_str()?.to_string(),
+            clone_url: item["clone_url"].as_str()?.to_string(),
+            description: item["description"].as_str().unwrap_or("").to_string(),
+            is_private: item["private"].as_bool().unwrap_or(false),
+            stars: item["stargazers_count"].as_u64().unwrap_or(0) as u32,
+            owner_login: item["owner"]["login"].as_str().unwrap_or("").to_string(),
+            owner_type: item["owner"]["type"].as_str().unwrap_or("User").to_string(),
+            viewer_login: viewer_login.to_string(),
+            is_public_search_result,
+        })
+    }
+
+    fn github_repo_matches_query(item: &serde_json::Value, query: &str) -> bool {
+        let normalized_query = query.trim().to_lowercase();
+        if normalized_query.is_empty() {
+            return true;
+        }
+
+        let full_name = item["full_name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase();
+        let description = item["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase();
+        let owner_login = item["owner"]["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase();
+
+        full_name.contains(&normalized_query)
+            || description.contains(&normalized_query)
+            || owner_login.contains(&normalized_query)
+    }
+
     fn base64_encode(data: &[u8]) -> String {
         const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut result = String::new();
@@ -52,7 +95,9 @@ impl IntegrationService {
     fn azure_api_base_url(domain: &str) -> Result<String, String> {
         let trimmed = domain.trim().trim_end_matches('/');
         if trimmed.is_empty() {
-            return Err("Azure host domain is required (for example: dev.azure.com/myorg)".to_string());
+            return Err(
+                "Azure host domain is required (for example: dev.azure.com/myorg)".to_string(),
+            );
         }
 
         let without_scheme = trimmed
@@ -61,25 +106,22 @@ impl IntegrationService {
             .unwrap_or(trimmed);
 
         let mut split = without_scheme.splitn(2, '/');
-        let host = split
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase();
+        let host = split.next().unwrap_or_default().trim().to_lowercase();
         let raw_path = split.next().unwrap_or_default().trim_matches('/');
 
         if host.is_empty() {
-            return Err("Azure host domain is required (for example: dev.azure.com/myorg)".to_string());
+            return Err(
+                "Azure host domain is required (for example: dev.azure.com/myorg)".to_string(),
+            );
         }
 
         if host == AZURE_HOST {
-            let organization = raw_path
-                .split('/')
-                .next()
-                .unwrap_or_default()
-                .trim();
+            let organization = raw_path.split('/').next().unwrap_or_default().trim();
             if organization.is_empty() {
-                return Err("Azure DevOps URL must include organization, for example: dev.azure.com/myorg".to_string());
+                return Err(
+                    "Azure DevOps URL must include organization, for example: dev.azure.com/myorg"
+                        .to_string(),
+                );
             }
 
             return Ok(format!("{}{}/{}", HTTPS_SCHEME, host, organization));
@@ -119,38 +161,76 @@ impl IntegrationService {
         (https_url, ssh_url)
     }
 
-    pub fn search_github_repos(token: &str, query: &str) -> Result<Vec<GithubRepo>, String> {
-        let url = if query.is_empty() {
-            API_GITHUB_LIST_REPOS.to_string()
-        } else {
-            API_GITHUB_SEARCH_REPOS.replace("{}", &urlencoded(query))
-        };
-        let resp = ureq::get(&url)
+    pub fn search_github_repos(
+        token: &str,
+        query: &str,
+        include_public: bool,
+    ) -> Result<Vec<GithubRepo>, String> {
+        let viewer_resp = ureq::get(API_GITHUB_USER_PATH)
             .set("Authorization", &format!("Bearer {}", token))
             .set("Accept", GITHUB_ACCEPT_HEADER)
             .set("User-Agent", APP_USER_AGENT)
             .call()
             .map_err(|e| format!("GitHub API error: {}", e))?;
-        let body: serde_json::Value = resp
+        let viewer_body: serde_json::Value = viewer_resp
             .into_json()
             .map_err(|e| format!("JSON parse error: {}", e))?;
-        let items = if query.is_empty() {
-            body.as_array().cloned().unwrap_or_default()
-        } else {
-            body["items"].as_array().cloned().unwrap_or_default()
-        };
-        let repos = items
+        let viewer_login = viewer_body["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        let accessible_resp = ureq::get(API_GITHUB_LIST_REPOS)
+            .set("Authorization", &format!("Bearer {}", token))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+        let accessible_body: serde_json::Value = accessible_resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        let accessible_items = accessible_body.as_array().cloned().unwrap_or_default();
+
+        let mut repos_by_name: HashMap<String, GithubRepo> = HashMap::new();
+
+        for item in accessible_items
             .iter()
-            .filter_map(|item| {
-                Some(GithubRepo {
-                    full_name: item["full_name"].as_str()?.to_string(),
-                    clone_url: item["clone_url"].as_str()?.to_string(),
-                    description: item["description"].as_str().unwrap_or("").to_string(),
-                    is_private: item["private"].as_bool().unwrap_or(false),
-                    stars: item["stargazers_count"].as_u64().unwrap_or(0) as u32,
-                })
-            })
-            .collect();
+            .filter(|item| Self::github_repo_matches_query(item, query))
+        {
+            if let Some(repo) = Self::map_github_repo(item, &viewer_login, false) {
+                repos_by_name.insert(repo.full_name.clone(), repo);
+            }
+        }
+
+        if include_public && !query.trim().is_empty() {
+            let public_url = API_GITHUB_SEARCH_REPOS.replace("{}", &urlencoded(query.trim()));
+            let public_resp = ureq::get(&public_url)
+                .set("Authorization", &format!("Bearer {}", token))
+                .set("Accept", GITHUB_ACCEPT_HEADER)
+                .set("User-Agent", APP_USER_AGENT)
+                .call()
+                .map_err(|e| format!("GitHub API error: {}", e))?;
+            let public_body: serde_json::Value = public_resp
+                .into_json()
+                .map_err(|e| format!("JSON parse error: {}", e))?;
+            let public_items = public_body["items"].as_array().cloned().unwrap_or_default();
+
+            for item in public_items
+                .iter()
+                .filter(|item| Self::github_repo_matches_query(item, query))
+            {
+                if let Some(repo) = Self::map_github_repo(item, &viewer_login, true) {
+                    repos_by_name.entry(repo.full_name.clone()).or_insert(repo);
+                }
+            }
+        }
+
+        let mut repos: Vec<GithubRepo> = repos_by_name.into_values().collect();
+        repos.sort_by(|left, right| {
+            left.is_public_search_result
+                .cmp(&right.is_public_search_result)
+                .then_with(|| left.full_name.cmp(&right.full_name))
+        });
         Ok(repos)
     }
 
@@ -305,7 +385,8 @@ impl IntegrationService {
             .map_err(|_| "Cannot find home directory")?;
 
         let ssh_dir = Path::new(&home).join(".ssh");
-        std::fs::create_dir_all(&ssh_dir).map_err(|e| format!("Failed to create .ssh dir: {}", e))?;
+        std::fs::create_dir_all(&ssh_dir)
+            .map_err(|e| format!("Failed to create .ssh dir: {}", e))?;
 
         let key_path = ssh_dir.join(key_name);
         let pub_key_path = ssh_dir.join(format!("{}.pub", key_name));
@@ -372,7 +453,12 @@ impl IntegrationService {
         ))
     }
 
-    pub fn add_gitlab_ssh_key(domain: &str, token: &str, title: &str, key: &str) -> Result<(), String> {
+    pub fn add_gitlab_ssh_key(
+        domain: &str,
+        token: &str,
+        title: &str,
+        key: &str,
+    ) -> Result<(), String> {
         let url = format!("{}{}{}", HTTPS_SCHEME, domain, API_GITLAB_USER_KEYS_PATH);
 
         let body = serde_json::json!({
@@ -411,6 +497,290 @@ impl IntegrationService {
             }
             Err(e) => Err(format!("Failed to add SSH key: {}", e)),
         }
+    }
+
+    pub fn add_github_ssh_key(token: &str, title: &str, key: &str) -> Result<(), String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required to add an SSH key.".to_string());
+        }
+
+        let normalized_key = Self::normalize_ssh_public_key(key)?;
+        let key_title = if title.trim().is_empty() {
+            "gitswamp"
+        } else {
+            title.trim()
+        };
+
+        let body = serde_json::json!({
+            "title": key_title,
+            "key": normalized_key,
+        });
+
+        let result = ureq::post(API_GITHUB_USER_KEYS_PATH)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .set("Content-Type", "application/json")
+            .send_json(&body);
+
+        match result {
+            Ok(resp) => {
+                if resp.status() == 201 || resp.status() == 200 {
+                    Ok(())
+                } else {
+                    Err(format!("GitHub returned status {}", resp.status()))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                if let Ok(body) = resp.into_string() {
+                    let body_lower = body.to_lowercase();
+                    if code == 404 && body_lower.contains("not found") {
+                        return Err("GitHub rejected SSH key creation. The token/oauth scope must include admin:public_key.".to_string());
+                    }
+                    if body_lower.contains("already in use")
+                        || body_lower.contains("key is already")
+                        || body_lower.contains("already exists")
+                    {
+                        return Ok(());
+                    }
+                    Err(format!("GitHub error ({}): {}", code, body))
+                } else {
+                    Err(format!("GitHub returned status {}", code))
+                }
+            }
+            Err(e) => Err(format!("Failed to add GitHub SSH key: {}", e)),
+        }
+    }
+
+    pub fn list_github_ssh_keys(token: &str) -> Result<Vec<GithubSshKey>, String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required to list SSH keys.".to_string());
+        }
+
+        let resp = ureq::get(API_GITHUB_USER_KEYS_PATH)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let items = body.as_array().cloned().unwrap_or_default();
+        let keys = items
+            .iter()
+            .filter_map(|item| {
+                Some(GithubSshKey {
+                    id: item["id"].as_u64()?,
+                    title: item["title"].as_str().unwrap_or("Untitled").to_string(),
+                    key: item["key"].as_str().unwrap_or("").to_string(),
+                    fingerprint: item["fingerprint"].as_str().unwrap_or("").to_string(),
+                    created_at: item["created_at"].as_str().unwrap_or("").to_string(),
+                })
+            })
+            .collect();
+
+        Ok(keys)
+    }
+
+    pub fn delete_github_ssh_key(token: &str, key_id: u64) -> Result<(), String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required to delete an SSH key.".to_string());
+        }
+
+        if key_id == 0 {
+            return Err("A valid GitHub SSH key id is required.".to_string());
+        }
+
+        let url = format!("{}/{}", API_GITHUB_USER_KEYS_PATH, key_id);
+        let result = ureq::delete(&url)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call();
+
+        match result {
+            Ok(resp) => {
+                if resp.status() == 204 || resp.status() == 200 || resp.status() == 202 {
+                    Ok(())
+                } else {
+                    Err(format!("GitHub returned status {}", resp.status()))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                if body.trim().is_empty() {
+                    Err(format!("GitHub returned status {}", code))
+                } else {
+                    Err(format!("GitHub error ({}): {}", code, body))
+                }
+            }
+            Err(e) => Err(format!("Failed to delete GitHub SSH key: {}", e)),
+        }
+    }
+
+    pub fn verify_github_token(token: &str) -> Result<String, String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("GitHub token is required.".to_string());
+        }
+
+        let resp = ureq::get(API_GITHUB_USER_PATH)
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .set("Accept", GITHUB_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        Ok(body["login"].as_str().unwrap_or("Unknown").to_string())
+    }
+
+    pub fn load_ssh_public_key_from_file(file_path: &str) -> Result<String, String> {
+        let path = PathBuf::from(file_path.trim());
+        if path.as_os_str().is_empty() {
+            return Err("SSH key file path is required.".to_string());
+        }
+
+        if !path.exists() {
+            return Err(format!("SSH key file not found: {}", path.display()));
+        }
+
+        if !path.is_file() {
+            return Err(format!("Path is not a file: {}", path.display()));
+        }
+
+        let key_text = if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("pub"))
+            .unwrap_or(false)
+        {
+            fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read SSH public key file: {}", e))?
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(raw_text) => {
+                    let raw_trimmed = raw_text.trim_start();
+                    if raw_trimmed.starts_with("ssh-") || raw_trimmed.starts_with("ecdsa-") {
+                        raw_text
+                    } else {
+                        let candidates = Self::ssh_keygen_candidates();
+                        Self::derive_public_key(&candidates, &path)?
+                    }
+                }
+                Err(_) => {
+                    let candidates = Self::ssh_keygen_candidates();
+                    Self::derive_public_key(&candidates, &path)?
+                }
+            }
+        };
+
+        Self::normalize_ssh_public_key(&key_text)
+    }
+
+    pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
+        let gh_binary = Self::find_command_in_path(&["gh.exe", "gh"]).ok_or_else(|| {
+            "GitHub CLI (gh) was not found. Install it to use OAuth sign-in.".to_string()
+        })?;
+
+        let mut login_cmd = std::process::Command::new(&gh_binary);
+        login_cmd.args([
+            "auth",
+            "login",
+            "--hostname",
+            "github.com",
+            "--web",
+            "--git-protocol",
+            "ssh",
+            "--skip-ssh-key",
+            "--scopes",
+            "repo,read:org,admin:public_key",
+        ]);
+
+        #[cfg(windows)]
+        login_cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let login_output = login_cmd
+            .output()
+            .map_err(|e| format!("Failed to start GitHub CLI login: {}", e))?;
+
+        if !login_output.status.success() {
+            let stderr = String::from_utf8_lossy(&login_output.stderr)
+                .trim()
+                .to_string();
+            let stdout = String::from_utf8_lossy(&login_output.stdout)
+                .trim()
+                .to_string();
+            let details = if !stderr.is_empty() { stderr } else { stdout };
+            if details.is_empty() {
+                return Err("GitHub OAuth login failed via GitHub CLI.".to_string());
+            }
+            return Err(format!(
+                "GitHub OAuth login failed via GitHub CLI: {}",
+                details
+            ));
+        }
+
+        // Best-effort scope refresh in case user already had an existing gh session.
+        let mut refresh_cmd = std::process::Command::new(&gh_binary);
+        refresh_cmd.args([
+            "auth",
+            "refresh",
+            "--hostname",
+            "github.com",
+            "--scopes",
+            "repo,read:org,admin:public_key",
+        ]);
+
+        #[cfg(windows)]
+        refresh_cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let _ = refresh_cmd.output();
+
+        let mut token_cmd = std::process::Command::new(&gh_binary);
+        token_cmd.args(["auth", "token", "--hostname", "github.com"]);
+
+        #[cfg(windows)]
+        token_cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let token_output = token_cmd
+            .output()
+            .map_err(|e| format!("Failed to read token from GitHub CLI: {}", e))?;
+
+        if !token_output.status.success() {
+            let stderr = String::from_utf8_lossy(&token_output.stderr)
+                .trim()
+                .to_string();
+            let stdout = String::from_utf8_lossy(&token_output.stdout)
+                .trim()
+                .to_string();
+            let details = if !stderr.is_empty() { stderr } else { stdout };
+            if details.is_empty() {
+                return Err("GitHub CLI could not return an OAuth token.".to_string());
+            }
+            return Err(format!(
+                "GitHub CLI could not return an OAuth token: {}",
+                details
+            ));
+        }
+
+        let token = String::from_utf8_lossy(&token_output.stdout)
+            .trim()
+            .to_string();
+        if token.is_empty() {
+            return Err("GitHub CLI returned an empty OAuth token.".to_string());
+        }
+
+        Ok(token)
     }
 
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
@@ -573,9 +943,8 @@ impl IntegrationService {
     }
 
     fn open_with_android_studio(file_path: &Path) -> Result<(), String> {
-        let binary = Self::detect_android_studio_path().ok_or_else(|| {
-            "Android Studio executable not found on this machine.".to_string()
-        })?;
+        let binary = Self::detect_android_studio_path()
+            .ok_or_else(|| "Android Studio executable not found on this machine.".to_string())?;
 
         let mut command = std::process::Command::new(binary);
         command.arg(file_path);
@@ -710,9 +1079,9 @@ impl IntegrationService {
         }
 
         if let Ok(program_files) = std::env::var("ProgramFiles") {
-            if let Some(path) =
-                Self::find_visual_studio_installation(&Path::new(&program_files).join("Microsoft Visual Studio"))
-            {
+            if let Some(path) = Self::find_visual_studio_installation(
+                &Path::new(&program_files).join("Microsoft Visual Studio"),
+            ) {
                 return Some(path);
             }
         }
@@ -729,12 +1098,9 @@ impl IntegrationService {
     }
 
     fn detect_android_studio_path() -> Option<PathBuf> {
-        if let Some(path) = Self::find_command_in_path(&[
-            "studio64.exe",
-            "studio.exe",
-            "studio.bat",
-            "studio",
-        ]) {
+        if let Some(path) =
+            Self::find_command_in_path(&["studio64.exe", "studio.exe", "studio.bat", "studio"])
+        {
             return Some(path);
         }
 
@@ -844,16 +1210,22 @@ impl IntegrationService {
     }
 
     fn detect_intellij_path() -> Option<PathBuf> {
-        if let Some(path) = Self::find_command_in_path(&["idea64.exe", "idea.exe", "idea.bat", "idea"]) {
+        if let Some(path) =
+            Self::find_command_in_path(&["idea64.exe", "idea.exe", "idea.bat", "idea"])
+        {
             return Some(path);
         }
 
         let direct_candidates = vec![
             PathBuf::from(r"C:\Program Files\JetBrains\IntelliJ IDEA\bin\idea64.exe"),
-            PathBuf::from(r"C:\Program Files\JetBrains\IntelliJ IDEA Community Edition\bin\idea64.exe"),
+            PathBuf::from(
+                r"C:\Program Files\JetBrains\IntelliJ IDEA Community Edition\bin\idea64.exe",
+            ),
             PathBuf::from(r"C:\Program Files\JetBrains\IntelliJ IDEA Ultimate\bin\idea64.exe"),
             PathBuf::from(r"C:\Program Files (x86)\JetBrains\IntelliJ IDEA\bin\idea.exe"),
-            PathBuf::from(r"C:\Program Files (x86)\JetBrains\IntelliJ IDEA Community Edition\bin\idea.exe"),
+            PathBuf::from(
+                r"C:\Program Files (x86)\JetBrains\IntelliJ IDEA Community Edition\bin\idea.exe",
+            ),
         ];
 
         if let Some(path) = direct_candidates.into_iter().find(|p| p.exists()) {
@@ -865,7 +1237,9 @@ impl IntegrationService {
         }
 
         if let Ok(program_files) = std::env::var("ProgramFiles") {
-            if let Some(path) = Self::find_intellij_installation(&Path::new(&program_files).join("JetBrains")) {
+            if let Some(path) =
+                Self::find_intellij_installation(&Path::new(&program_files).join("JetBrains"))
+            {
                 return Some(path);
             }
         }
@@ -982,6 +1356,27 @@ impl IntegrationService {
         paths.push(value);
     }
 
+    fn normalize_ssh_public_key(value: &str) -> Result<String, String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err("SSH public key is empty.".to_string());
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let key_type = parts.next().unwrap_or_default();
+        let key_body = parts.next().unwrap_or_default();
+        if key_type.is_empty() || key_body.is_empty() {
+            return Err("Invalid SSH public key format.".to_string());
+        }
+
+        let remainder = parts.collect::<Vec<_>>().join(" ");
+        if remainder.is_empty() {
+            Ok(format!("{} {}", key_type, key_body))
+        } else {
+            Ok(format!("{} {} {}", key_type, key_body, remainder))
+        }
+    }
+
     fn ssh_keygen_candidates() -> Vec<PathBuf> {
         let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -1041,7 +1436,10 @@ impl IntegrationService {
         candidates
     }
 
-    fn derive_public_key(candidates: &[PathBuf], private_key_path: &Path) -> Result<String, String> {
+    fn derive_public_key(
+        candidates: &[PathBuf],
+        private_key_path: &Path,
+    ) -> Result<String, String> {
         let mut failures: Vec<String> = Vec::new();
 
         for ssh_keygen in candidates {

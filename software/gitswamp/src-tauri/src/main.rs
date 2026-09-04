@@ -3,4 +3,3 @@
 fn main() {
     gitswamp_lib::run()
 }
-

@@ -2,7 +2,7 @@
 
 ## 1. Command Overview
 
-GitSwamp exposes Tauri commands organized across multiple modules. All commands are asynchronous and use type-safe serialization. Modules include: repository, commits, commit_files, branches, status, diff, stash, tags, clone_init, operations, credentials, conflicts, and ghost.
+GitSwamp exposes 102 Tauri commands organized across multiple modules. All commands are asynchronous and use type-safe serialization. Modules include: repository, commits, commit_files, branches, status, diff, stash, tags, clone_init, operations, credentials, conflicts, ghost, and logs.
 
 ## 2. Repository Commands
 
@@ -420,8 +420,31 @@ invoke("revert_hunk", {
   repo_path: string;
   file_path: string;
   hunk_index: number;
+  staged: boolean;
 }): Promise<void>
 ```
+
+#### stage_hunk
+
+```typescript
+invoke("stage_hunk", {
+  repo_path: string;
+  file_path: string;
+  hunk_index: number;
+}): Promise<void>
+```
+
+#### unstage_hunk
+
+```typescript
+invoke("unstage_hunk", {
+  repo_path: string;
+  file_path: string;
+  hunk_index: number;
+}): Promise<void>
+```
+
+These hunk commands power the diff viewer's micro-staging controls: Stage hunk, Unstage hunk, and Discard hunk.
 
 ## 7. Stash Commands
 
@@ -710,6 +733,8 @@ invoke("run_shell_command", {
 // Execute shell command in repository context
 ```
 
+The integrated terminal wraps this command with a frontend safety layer before execution. Destructive manual Git commands such as `git reset --hard`, forced `git clean`, destructive `git restore`, checkout overwrite, tracked-file removal, stash pop/drop/clear, local branch delete, and force push show a preview and may offer a safety stash before continuing.
+
 #### get_available_external_tools
 
 ```typescript
@@ -745,7 +770,6 @@ await invoke("open_path_with_tool", { path: repoPath, tool: "explorer" });
 
 ```typescript
 invoke("save_token", {
-  provider: string;  // "github" | "gitlab"
   token: string;
 }): Promise<void>
 ```
@@ -753,17 +777,13 @@ invoke("save_token", {
 #### load_token
 
 ```typescript
-invoke("load_token", {
-  provider: string;
-}): Promise<string | null>
+invoke("load_token"): Promise<string | null>
 ```
 
 #### delete_token
 
 ```typescript
-invoke("delete_token", {
-  provider: string;
-}): Promise<void>
+invoke("delete_token"): Promise<void>
 ```
 
 #### save_provider_token
@@ -771,9 +791,7 @@ invoke("delete_token", {
 ```typescript
 invoke("save_provider_token", {
   provider: string;
-  username: string;
   token: string;
-  expires_at?: number;
 }): Promise<void>
 ```
 
@@ -782,15 +800,11 @@ invoke("save_provider_token", {
 ```typescript
 invoke("load_provider_token", {
   provider: string;
-}): Promise<ProviderToken | null>
+}): Promise<string | null>
 
 // Response
-{
-  provider: string;       // "github" | "gitlab"
-  token: string;          // API token
-  username: string;       // Associated username
-  expires_at?: number;    // Expiration timestamp
-}
+// Stored provider token string, or null when absent.
+// Self-hosted GitLab stores "domain|token".
 ```
 
 #### delete_provider_token
@@ -1091,7 +1105,7 @@ try {
 } catch (error: any) {
   const errorMessage: string = error;
   console.error("Command failed:", errorMessage);
-  
+
   // Handle specific errors
   if (errorMessage.includes("not found")) {
     // Repository not found

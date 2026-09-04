@@ -11,7 +11,9 @@ GitSwamp aims to simplify Git repository management by providing:
 - Real-time repository status visualization
 - Advanced Git operations made accessible
 - Multi-repository support with easy switching
-- Seamless GitHub and GitLab integration
+- GitHub, GitLab, Bitbucket, and Azure DevOps integration where available
+- Fast safety rails around destructive Git operations
+- Repository intelligence views that explain history, team rhythm, conflict risk, and release changes
 - Cross-platform compatibility (Windows, macOS, Linux)
 
 ## 3. Project Scope
@@ -26,6 +28,8 @@ The project focuses on delivering a comprehensive Git management solution that:
 4. **Resolve Conflicts** - Built-in merge conflict resolution interface
 5. **Integrate with Remote Services** - GitHub and GitLab repository search and authentication
 6. **Support Advanced Operations** - Stashing, tagging, cherry-picking, rebasing, and more
+7. **Analyze Repository Motion** - Graph, Galaxy, Productivity, Time Machine, Conflict Suspects, and Burnout views for history intelligence
+8. **Protect Destructive Workflows** - Undoable destructive UI actions and terminal safety previews with optional safety stash
 
 ### 3.2 Target Users
 
@@ -96,6 +100,8 @@ gitswamp/
 - **Clone Repository** - Clone from GitHub, GitLab, or any Git remote
 - **Initialize Repository** - Create new Git repositories locally
 - **Repository Info** - View remote URLs, branch tracking, and metadata
+- **Start Dashboard** - Show authored GitHub pull requests, assigned GitHub issues, open repositories, recent repositories, and useful local context
+- **Organization Search Profiles** - Save provider/organization/team/repository filters for repeat cloning workflows
 
 ### 6.2 Branch Management
 
@@ -109,20 +115,24 @@ gitswamp/
 ### 6.3 Commit Operations
 
 - **Commit History** - Visual, interactive commit graph with branching visualization
+- **Galaxy View** - Canvas-based branch and commit visualization with 3D-style motion, zoom, tree mode, and branch/commit focus controls
 - **Commit Details** - View full commit information, author, timestamp, and message
 - **File Changes** - See all files modified in each commit
 - **Search Commits** - Search through commit history by message or author
 - **Cherry Pick** - Apply specific commits to current branch
 - **Revert Commits** - Create new commits that undo changes
+- **Release Notes** - Generate structured Markdown release notes after successful merge flows
 
 ### 6.4 File Operations
 
 - **Stage Files** - Add files to the staging area
 - **Unstage Files** - Remove files from staging area
 - **View Diffs** - Side-by-side and unified diff viewing
-- **Edit Hunks** - Selectively apply or discard changes by hunk
-- **Discard Changes** - Discard working directory changes
+- **Micro-Staging** - Stage, unstage, or discard individual hunks from the diff viewer
+- **Discard Changes** - Discard only the intended unstaged working-tree changes, with undoable destructive UI flow where applicable
+- **Smart .gitignore Wizard** - Suggest generated/private untracked files and update `.gitignore` safely
 - **File History** - View file changes across commits
+- **File Journey** - Lightweight file summary in the diff viewer showing created-by and last-changed context when quick data is available
 
 ### 6.5 Stash Management
 
@@ -150,15 +160,18 @@ gitswamp/
 
 - **Pull/Push** - Synchronize with remote repositories
 - **Fetch** - Retrieve updates from remotes
+- **Fetch Prune** - Refresh remote refs and prune deleted remote branches during fetch/pull flows
 - **Reset** - Reset to specific commits or branches
 - **Rebase** - Rebase branches with conflict handling
 - **Edit Commit Messages** - Amend and modify commit messages
 - **SSH Key Generation** - Generate SSH keys for GitLab
+- **Terminal Safety Layer** - Preview destructive manual Git commands and offer safety stash before execution
 
 ### 6.9 Remote Integration
 
 - **GitHub Support** - Search and clone GitHub repositories, GitHub API integration
 - **GitLab Support** - Search and clone GitLab repositories, SSH key management
+- **Bitbucket and Azure DevOps Support** - Token-backed repository search/clone where configured
 - **Repository Search** - Search for public repositories across services
 - **Provider Authentication** - Token-based authentication for API access
 - **SSH Integration** - SSH key generation and management
@@ -166,10 +179,12 @@ gitswamp/
 ### 6.10 User Interface Features
 
 - **Multi-Tab Support** - Switch between open repositories with ease
+- **Tab Shortcuts** - Ctrl+Tab switches repository tabs, middle-click closes a tab, Ctrl+W closes the active tab
+- **Command Palette (Ctrl+K)** - Search and run common actions without navigating menus
 - **Hamburger Menu (☰)** - Quick access to File, Edit, View, and Help sections
   - File: New Tab, Open Repository, Close Tab, Create Gist
   - Edit: Copy Repository Path, Refresh Repository, Open in VS Code
-  - View: Toggle Terminal, Open in Folder Explorer, Open Settings
+  - View: Toggle Terminal, Commit Graph, Galaxy View, Productivity Arena, Time Machine, Usual Conflict Suspects, Burnout Analytics, Open in Folder Explorer, Open Settings
   - Help: In-app Shortcuts, Online Guide, Report Issue
 - **In-App Help Panel (F1)** - Shortcut guide and quick start guide
 - **Folder Explorer Shortcut (Alt+O)** - Open active repository in system explorer
@@ -178,7 +193,17 @@ gitswamp/
 - **Compact Mode** - Minimize UI for larger editor view
 - **Custom Font Size** - Adjustable interface font
 - **Toast Notifications** - System-wide notifications for all operations
+- **Undo Toasts** - Destructive UI actions are delayed briefly and can be cancelled from a toast
 - **Settings Dialog** - Configure application preferences
+- **Background Maintenance Preferences** - Optional, off-by-default repository reminders and health refresh mechanisms that surface through toasts
+
+### 6.11 Commit Intelligence Views
+
+- **Galaxy View** - Visual commit map with spiral/layer/constellation layouts, 3D/balanced/circling motion, and tree mode
+- **Productivity Arena** - Commit rhythm, author balance, streaks, and stability scoring
+- **Time Machine** - Commit-by-commit history playback with snapshot explorer and rollback guidance
+- **Usual Conflict Suspects** - Merge-window hotspot analysis, tree heatmap, and risky pair detection
+- **Burnout Analytics** - Contributor workload, after-hours trends, repository burnout pulse, and team focus risk signals
 
 ## 7. Architecture Overview
 
@@ -218,24 +243,25 @@ gitswamp/
 
 ### 7.3 Component Architecture
 
-**Frontend Components (19 total):**
-- 4 Layout components for structure
-- 6 Repository management components
-- 3 Commit visualization components
-- 6 Reusable UI components
+**Frontend Components (41 Vue components):**
+- Shell components for title bar, header, settings, command palette, terminal, logs, and branch actions
+- Repository components for tabs, landing dashboard, clone/init/auth/action dialogs, sidebar, workspace, and remote insights
+- Commit components for graph, galaxy, productivity, time machine, conflict suspects, burnout analytics, details, file items, and Smart .gitignore
+- Shared UI components for buttons, inputs, close icon buttons, diff viewer, conflict resolver, toasts, and provider icons
 
-**Backend Commands (47 total):**
+**Backend Commands (102 total):**
 - Repository operations
 - Commit history and details
 - Branch management
 - File status and staging
-- Diff generation and file operations
+- Diff generation, file operations, hunk staging, and hunk discard
 - Stash operations
 - Tag management
 - Clone and initialization
 - Advanced Git operations
-- GitHub and GitLab integration
+- GitHub, GitLab, Bitbucket, and Azure-related integration helpers
 - Credentials and token management
+- Logs, external tools, terminal execution, and analytics support
 
 ## 8. Development Status
 
@@ -255,9 +281,9 @@ gitswamp/
 | GitHub Integration | Functional | 80% |
 | GitLab Integration | Functional | 80% |
 | Conflict Resolution | Functional | 85% |
-| Performance Optimization | Ongoing | 60% |
+| Performance Optimization | Ongoing | 75% |
 | Testing Suite | In Progress | 40% |
-| Documentation | In Progress | 70% |
+| Documentation | In Progress | 80% |
 
 ## 9. Key Metrics
 
@@ -265,11 +291,11 @@ gitswamp/
 
 | Metric | Value |
 |--------|-------|
-| Frontend Components | 19 |
-| Vue Composables | 2 |
-| TypeScript Files | 30+ |
-| Rust Command Modules | 12 |
-| Total Commands | 47 |
+| Frontend Components | 41 Vue components |
+| Vue Composables | Domain-specific composable modules |
+| TypeScript Files | 70+ |
+| Rust Command Modules | 14 |
+| Total Commands | 102 |
 | Data Models | 10+ |
 | CSS Utilities | Tailwind |
 

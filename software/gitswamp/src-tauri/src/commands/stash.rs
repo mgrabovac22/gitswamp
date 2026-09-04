@@ -1,5 +1,5 @@
-use crate::models::StashInfo;
 use crate::models::CommitFileInfo;
+use crate::models::StashInfo;
 use crate::services::git_service::GitService;
 
 #[tauri::command]
@@ -10,10 +10,20 @@ pub async fn stash_list(path: String) -> Result<Vec<StashInfo>, String> {
 }
 
 #[tauri::command]
-pub async fn stash_push(path: String, message: Option<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || GitService::stash_push(&path, message.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn stash_push(
+    path: String,
+    message: Option<String>,
+    include_untracked: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::stash_push(
+            &path,
+            message.as_deref(),
+            include_untracked.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

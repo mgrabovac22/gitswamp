@@ -434,16 +434,15 @@ pub struct UserPreferences {
 }
 ```
 
-### 9.2 Provider Token
+### 9.2 Provider Token Storage
 
 ```rust
-pub struct ProviderToken {
-    pub provider: String,         // "github" or "gitlab"
-    pub token: String,            // OAuth/API token
-    pub username: String,         // Associated username
-    pub expires_at: Option<i64>,  // Token expiration
-}
+// Current IPC credential commands store and return token strings per provider key.
+// The provider key is part of the command argument and the storage filename.
+type ProviderToken = String;
 ```
+
+Supported provider keys include `github`, `github-enterprise`, `gitlab`, `gitlab-self`, `bitbucket`, `bitbucket-dc`, `azure`, and `azure-domain`. Self-hosted GitLab stores `domain|token` as the token string.
 
 ## 10. Model Relationships
 

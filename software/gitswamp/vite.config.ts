@@ -3,6 +3,8 @@ import path from "node:path";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 const host = process.env.TAURI_DEV_HOST;
+const tauriPlatform = process.env.TAURI_ENV_PLATFORM;
+const runtimeBuildTarget = tauriPlatform === "windows" ? "chrome105" : "safari13";
 
 export default defineConfig(async () => ({
   plugins: [vue(), tailwindcss()],
@@ -12,6 +14,8 @@ export default defineConfig(async () => ({
     },
   },
   build: {
+    target: runtimeBuildTarget,
+    cssTarget: runtimeBuildTarget,
     chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {

@@ -59,7 +59,8 @@ pub fn load_token() -> Result<Option<String>, String> {
     if encoded.is_empty() {
         return Ok(None);
     }
-    let obfuscated = base64_decode(encoded).map_err(|e| format!("Failed to decode token: {}", e))?;
+    let obfuscated =
+        base64_decode(encoded).map_err(|e| format!("Failed to decode token: {}", e))?;
     let bytes = obfuscate(&obfuscated);
     String::from_utf8(bytes)
         .map(|s| Some(s))
@@ -89,12 +90,14 @@ pub fn load_provider_token(provider: String) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let encoded = fs::read_to_string(&path).map_err(|e| format!("Failed to read {} token: {}", provider, e))?;
+    let encoded = fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {} token: {}", provider, e))?;
     let encoded = encoded.trim();
     if encoded.is_empty() {
         return Ok(None);
     }
-    let obfuscated = base64_decode(encoded).map_err(|e| format!("Failed to decode {} token: {}", provider, e))?;
+    let obfuscated = base64_decode(encoded)
+        .map_err(|e| format!("Failed to decode {} token: {}", provider, e))?;
     let bytes = obfuscate(&obfuscated);
     String::from_utf8(bytes)
         .map(|s| Some(s))
@@ -105,7 +108,8 @@ pub fn load_provider_token(provider: String) -> Result<Option<String>, String> {
 pub fn delete_provider_token(provider: String) -> Result<(), String> {
     let path = provider_credentials_path(&provider);
     if path.exists() {
-        fs::remove_file(&path).map_err(|e| format!("Failed to delete {} token: {}", provider, e))?;
+        fs::remove_file(&path)
+            .map_err(|e| format!("Failed to delete {} token: {}", provider, e))?;
     }
     Ok(())
 }
@@ -167,4 +171,3 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     }
     Ok(result)
 }
-

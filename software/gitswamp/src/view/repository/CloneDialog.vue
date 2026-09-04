@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir, join } from "@tauri-apps/api/path";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  X,
   Globe,
   Github,
   GitBranch,
@@ -14,8 +14,10 @@ import {
   Key,
 } from "lucide-vue-next";
 import type { AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo } from "@/types";
+import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
+import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
 const props = defineProps<{
   visible: boolean;
@@ -25,7 +27,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  clone: [url: string, path: string, shallow: boolean, done?: (ok: boolean, error?: string) => void];
+  clone: [url: string, path: string, shallow: boolean, folderName?: string | null, done?: (ok: boolean, error?: string) => void];
   searchGithub: [query: string];
   saveProviderToken: [provider: string, token: string];
 }>();
@@ -71,10 +73,15 @@ const tokenInstructions: Record<string, string> = {
   "azure": "Go to Azure DevOps → User settings → Personal access tokens → New Token with 'Code: Read' scope. Host example: dev.azure.com/myorg",
 };
 
+const DEFAULT_CLONE_PATH = String.raw`C:\Repozitoriji`;
+const CLONE_PATH_STORAGE_KEY = "gitswamp-clone-path";
+
 const activeSource = ref<string | null>(null);
-const clonePath = ref(String.raw`C:\Repozitoriji`);
+const clonePath = ref(DEFAULT_CLONE_PATH);
+const cloneFolderName = ref("");
 const cloneUrl = ref("");
 const shallowClone = ref(false);
+const browseAllPublicRepos = ref(false);
 const cloning = ref(false);
 const cloneError = ref<string | null>(null);
 
@@ -88,6 +95,12 @@ const githubRepos = ref<GithubRepo[]>([]);
 const githubLoading = ref(false);
 const githubError = ref<string | null>(null);
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+type GithubRepoSection = {
+  key: string;
+  title: string;
+  repos: GithubRepo[];
+};
 
 const gitlabSearch = ref("");
 const gitlabRepos = ref<GitlabRepo[]>([]);
@@ -107,6 +120,134 @@ const azureLoading = ref(false);
 const azureError = ref<string | null>(null);
 
 const showGrid = computed(() => activeSource.value === null);
+
+const normalizedGithubSearch = computed(() => githubSearch.value.trim().toLowerCase());
+
+function compareGithubRepos(left: GithubRepo, right: GithubRepo): number {
+  const leftRank = left.is_public_search_result ? 1 : 0;
+  const rightRank = right.is_public_search_result ? 1 : 0;
+  if (leftRank !== rightRank) return leftRank - rightRank;
+
+  const query = normalizedGithubSearch.value;
+  const leftOwner = left.owner_login.trim().toLowerCase();
+  const rightOwner = right.owner_login.trim().toLowerCase();
+  const leftName = left.full_name.trim().toLowerCase();
+  const rightName = right.full_name.trim().toLowerCase();
+
+  const leftOrgMatch = query && leftOwner.includes(query) ? 0 : 1;
+  const rightOrgMatch = query && rightOwner.includes(query) ? 0 : 1;
+  if (leftOrgMatch !== rightOrgMatch) return leftOrgMatch - rightOrgMatch;
+
+  const leftRepoMatch = query && leftName.includes(query) ? 0 : 1;
+  const rightRepoMatch = query && rightName.includes(query) ? 0 : 1;
+  if (leftRepoMatch !== rightRepoMatch) return leftRepoMatch - rightRepoMatch;
+
+  return leftName.localeCompare(rightName);
+}
+
+function buildGithubRepoSections(repos: GithubRepo[]): GithubRepoSection[] {
+  const uniqueRepos = new Map<string, GithubRepo>();
+  for (const repo of repos) {
+    if (!uniqueRepos.has(repo.full_name)) {
+      uniqueRepos.set(repo.full_name, repo);
+    }
+  }
+
+  const rankedRepos = [...uniqueRepos.values()].sort(compareGithubRepos);
+  const viewerLogin = rankedRepos.find((repo) => repo.viewer_login)?.viewer_login.trim().toLowerCase() || "";
+  const myRepos: GithubRepo[] = [];
+  const userGroups = new Map<string, GithubRepo[]>();
+  const orgGroups = new Map<string, GithubRepo[]>();
+  const otherPublicRepos: GithubRepo[] = [];
+
+  for (const repo of rankedRepos) {
+    if (repo.is_public_search_result) {
+      otherPublicRepos.push(repo);
+      continue;
+    }
+
+    const ownerLogin = repo.owner_login.trim();
+    const ownerType = repo.owner_type.trim().toLowerCase();
+    const belongsToViewer = !!viewerLogin && ownerLogin.toLowerCase() === viewerLogin;
+
+    if (belongsToViewer) {
+      myRepos.push(repo);
+      continue;
+    }
+
+    const bucket = ownerType === "organization" ? orgGroups : userGroups;
+    const reposForOwner = bucket.get(ownerLogin) || [];
+    reposForOwner.push(repo);
+    bucket.set(ownerLogin, reposForOwner);
+  }
+
+  const sections: GithubRepoSection[] = [];
+  if (myRepos.length > 0) {
+    sections.push({ key: "mine", title: "My repos", repos: myRepos });
+  }
+
+  for (const [owner, ownerRepos] of [...userGroups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    sections.push({ key: `user:${owner}`, title: `People: ${owner}`, repos: ownerRepos });
+  }
+
+  for (const [owner, ownerRepos] of [...orgGroups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    sections.push({ key: `org:${owner}`, title: `Organizations: ${owner}`, repos: ownerRepos });
+  }
+
+  if (otherPublicRepos.length > 0) {
+    sections.push({ key: "other-public", title: "Other public repos", repos: otherPublicRepos });
+  }
+
+  return sections;
+}
+
+function getRuntimePlatform(): string {
+  try {
+    return `${navigator.platform} ${navigator.userAgent}`.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isWindowsRuntime(): boolean {
+  return /win/i.test(getRuntimePlatform());
+}
+
+function isMacRuntime(): boolean {
+  return /mac|darwin/i.test(getRuntimePlatform());
+}
+
+function isLinuxRuntime(): boolean {
+  return /linux/i.test(getRuntimePlatform());
+}
+
+async function setDefaultClonePath() {
+  const storedPath = safeStorageGet(CLONE_PATH_STORAGE_KEY)?.trim();
+  if (storedPath) {
+    clonePath.value = storedPath;
+    return;
+  }
+
+  if (isWindowsRuntime()) {
+    clonePath.value = DEFAULT_CLONE_PATH;
+    return;
+  }
+
+  try {
+    const home = await homeDir();
+    clonePath.value = await join(home, "Repozitoriji");
+  } catch {
+    if (isMacRuntime()) {
+      clonePath.value = "/Users/Repozitoriji";
+    } else if (isLinuxRuntime()) {
+      clonePath.value = "/home/Repozitoriji";
+    } else {
+      clonePath.value = String.raw`C:\Repozitoriji`;
+    }
+  }
+}
+
+const githubRepoSections = computed<GithubRepoSection[]>(() => buildGithubRepoSections(githubRepos.value));
 
 function normalizeHostInput(value: string): string {
   const trimmed = value.trim();
@@ -271,11 +412,13 @@ async function onClone() {
   if (!cloneUrl.value.trim() || !clonePath.value.trim()) return;
   cloning.value = true;
   cloneError.value = null;
+  const customFolderName = cloneFolderName.value.trim() || null;
   emit(
     "clone",
     cloneUrl.value.trim(),
     clonePath.value.trim(),
     shallowClone.value,
+    customFolderName,
     (ok: boolean, error?: string) => {
       cloning.value = false;
       if (!ok) {
@@ -297,7 +440,7 @@ function onGithubSearch() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     doGithubSearch();
-  }, 400);
+  }, 1000);
 }
 
 async function doGithubSearch() {
@@ -312,6 +455,7 @@ async function doGithubSearch() {
     githubRepos.value = await invoke<GithubRepo[]>("search_github_repos", {
       token,
       query: githubSearch.value,
+      includePublic: browseAllPublicRepos.value,
     });
   } catch (e) {
     githubError.value = String(e);
@@ -325,7 +469,7 @@ function onGitlabSearch() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     doGitlabSearch();
-  }, 400);
+  }, 1000);
 }
 
 async function doGitlabSearch() {
@@ -362,7 +506,7 @@ function onBitbucketSearch() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     void doBitbucketSearch();
-  }, 400);
+  }, 1000);
 }
 
 async function doBitbucketSearch() {
@@ -395,7 +539,7 @@ function onAzureSearch() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     void doAzureSearch();
-  }, 400);
+  }, 1000);
 }
 
 async function doAzureSearch() {
@@ -425,6 +569,56 @@ async function doAzureSearch() {
 
 function selectAzureRepo(repo: AzureRepo) {
   cloneUrl.value = repo.clone_url_https;
+}
+
+function maybeFetchGithubRepos(src: string | null): void {
+  if (src === "github" && githubRepos.value.length === 0 && isProviderConnected("github")) {
+    void doGithubSearch();
+  }
+}
+
+function maybeFetchProviderRepos(src: string | null): void {
+  if ((src === "gitlab" || src === "gitlab-self") && !needsConnection.value && gitlabRepos.value.length === 0) {
+    void doGitlabSearch();
+  }
+  if (src === "bitbucket" && !needsConnection.value && bitbucketRepos.value.length === 0) {
+    void doBitbucketSearch();
+  }
+  if (src === "azure" && !needsConnection.value && azureRepos.value.length === 0) {
+    void doAzureSearch();
+  }
+}
+
+function syncActiveSource(src: string | null, visible: boolean): void {
+  if (visible && src === "github" && isProviderConnected("github") && githubRepos.value.length === 0) {
+    void doGithubSearch();
+  }
+
+  if (src === "azure" && !azureDomain.value) {
+    azureDomain.value = getStoredAzureDomain();
+  }
+
+  maybeFetchGithubRepos(src);
+  maybeFetchProviderRepos(src);
+
+  if (src !== "gitlab" && src !== "gitlab-self") {
+    gitlabRepos.value = [];
+    gitlabSearch.value = "";
+    gitlabPublicKey.value = "";
+    gitlabSshKeyGenerated.value = false;
+  }
+
+  if (src !== "bitbucket") {
+    bitbucketRepos.value = [];
+    bitbucketSearch.value = "";
+    bitbucketError.value = null;
+  }
+
+  if (src !== "azure") {
+    azureRepos.value = [];
+    azureSearch.value = "";
+    azureError.value = null;
+  }
 }
 
 async function generateSshKey() {
@@ -464,41 +658,20 @@ async function generateSshKey() {
   }
 }
 
-watch(activeSource, (src) => {
-  if (src === "azure" && !azureDomain.value) {
-    azureDomain.value = getStoredAzureDomain();
-  }
+watch([activeSource, () => props.visible], ([src, visible]) => {
+  syncActiveSource(src, visible);
+}, { immediate: true });
 
-  if (src === "github" && githubRepos.value.length === 0 && isProviderConnected("github")) {
-    doGithubSearch();
+watch([githubSearch, browseAllPublicRepos], () => {
+  if (activeSource.value === "github" && isProviderConnected("github")) {
+    onGithubSearch();
   }
-  if ((src === "gitlab" || src === "gitlab-self") && !needsConnection.value && gitlabRepos.value.length === 0) {
-    doGitlabSearch();
-  }
-  if (src === "bitbucket" && !needsConnection.value && bitbucketRepos.value.length === 0) {
-    doBitbucketSearch();
-  }
-  if (src === "azure" && !needsConnection.value && azureRepos.value.length === 0) {
-    doAzureSearch();
-  }
+});
 
-  if (src !== "gitlab" && src !== "gitlab-self") {
-    gitlabRepos.value = [];
-    gitlabSearch.value = "";
-    gitlabPublicKey.value = "";
-    gitlabSshKeyGenerated.value = false;
-  }
-
-  if (src !== "bitbucket") {
-    bitbucketRepos.value = [];
-    bitbucketSearch.value = "";
-    bitbucketError.value = null;
-  }
-
-  if (src !== "azure") {
-    azureRepos.value = [];
-    azureSearch.value = "";
-    azureError.value = null;
+watch(clonePath, (value) => {
+  const trimmed = value.trim();
+  if (trimmed) {
+    safeStorageSet(CLONE_PATH_STORAGE_KEY, trimmed);
   }
 });
 
@@ -524,6 +697,10 @@ const gitlabConnectionName = computed(() => (isGitlabSelfMode.value ? gitlabDoma
 
 const unimplementedProviders = new Set(["github-enterprise", "bitbucket-dc"]);
 const isUnimplemented = computed(() => !!activeSource.value && unimplementedProviders.has(activeSource.value));
+
+onMounted(() => {
+  void setDefaultClonePath();
+});
 </script>
 
 <template>
@@ -536,9 +713,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
           </button>
           <span class="text-sm font-semibold text-[var(--foreground)]">Clone a Repository</span>
         </div>
-        <button @click="emit('close')" class="p-1 rounded hover:bg-[var(--secondary)] transition-colors">
-          <X class="w-4 h-4 text-[var(--muted-foreground)]" />
-        </button>
+        <CloseIconButton title="Close clone dialog" @click="emit('close')" />
       </div>
 
       <div v-if="showGrid" class="p-6">
@@ -571,7 +746,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
       <div v-if="!showGrid" class="flex-1 p-5 flex flex-col overflow-hidden">
         <div class="space-y-3 flex-1 overflow-hidden flex flex-col">
           <div class="flex items-center gap-3 flex-shrink-0">
-            <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Clone to</label>
+              <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Clone to</div>
             <div class="flex-1 flex gap-2">
               <input
                 v-model="clonePath"
@@ -586,8 +761,17 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             </div>
           </div>
 
+          <div class="flex items-center gap-3 flex-shrink-0">
+              <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Folder</div>
+            <input
+              v-model="cloneFolderName"
+              placeholder="Optional (defaults to repository name)"
+              class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+            />
+          </div>
+
           <div v-if="isUrlMode" class="flex items-center gap-3 flex-shrink-0">
-            <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
+              <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</div>
             <input
               v-model="cloneUrl"
               placeholder="https://github.com/user/repo.git"
@@ -598,7 +782,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
           <template v-if="isGithubMode">
             <div class="flex items-center gap-3 flex-shrink-0">
-              <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</div>
               <div class="flex-1 relative">
                 <input
                   v-model="githubSearch"
@@ -617,32 +801,39 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
               <div v-if="!isProviderConnected('github')" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)] p-4 text-center">
                 No GitHub token configured.<br/>Go to Settings and add a Personal Access Token first.
               </div>
-              <div v-else-if="!githubRepos.length && !githubLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
+              <div v-else-if="!githubRepoSections.length && !githubLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
                 {{ githubSearch ? 'No repos found' : 'Loading your repos...' }}
               </div>
-              <button
-                v-for="repo in githubRepos"
-                :key="repo.full_name"
-                @click="selectRepo(repo)"
-                :class="[
-                  'w-full text-left px-3 py-2.5 border-b border-[var(--border)] hover:bg-[var(--primary)]/10 transition-colors',
-                  cloneUrl === repo.clone_url ? 'bg-[var(--primary)]/15' : ''
-                ]"
-              >
-                <div class="flex items-center gap-2">
-                  <Lock v-if="repo.is_private" class="w-3 h-3 text-[#f59e0b] flex-shrink-0" />
-                  <Github v-else class="w-3 h-3 text-[var(--muted-foreground)] flex-shrink-0" />
-                  <span class="text-xs text-[var(--foreground)] font-medium truncate">{{ repo.full_name }}</span>
-                  <span v-if="repo.stars > 0" class="flex items-center gap-0.5 text-[9px] text-[#f59e0b] flex-shrink-0 ml-auto">
-                    <Star class="w-2.5 h-2.5" />{{ repo.stars }}
-                  </span>
-                </div>
-                <p v-if="repo.description" class="text-[10px] text-[var(--muted-foreground)] truncate mt-0.5 pl-5">{{ repo.description }}</p>
-              </button>
+              <div v-else>
+                <section v-for="section in githubRepoSections" :key="section.key" class="border-b border-[var(--border)] last:border-b-0">
+                  <div class="px-3 py-2 text-[9px] font-semibold uppercase tracking-[0.18em] text-[var(--muted-foreground)] bg-[var(--secondary)]/30">
+                    {{ section.title }}
+                  </div>
+                  <button
+                    v-for="repo in section.repos"
+                    :key="repo.full_name"
+                    @click="selectRepo(repo)"
+                    :class="[
+                      'w-full text-left px-3 py-2.5 border-t border-[var(--border)] hover:bg-[var(--primary)]/10 transition-colors',
+                      cloneUrl === repo.clone_url ? 'bg-[var(--primary)]/15' : ''
+                    ]"
+                  >
+                    <div class="flex items-center gap-2">
+                      <Lock v-if="repo.is_private" class="w-3 h-3 text-[#f59e0b] flex-shrink-0" />
+                      <Github v-else class="w-3 h-3 text-[var(--muted-foreground)] flex-shrink-0" />
+                      <span class="text-xs text-[var(--foreground)] font-medium truncate">{{ repo.full_name }}</span>
+                      <span v-if="repo.stars > 0" class="flex items-center gap-0.5 text-[9px] text-[#f59e0b] flex-shrink-0 ml-auto">
+                        <Star class="w-2.5 h-2.5" />{{ repo.stars }}
+                      </span>
+                    </div>
+                    <p v-if="repo.description" class="text-[10px] text-[var(--muted-foreground)] truncate mt-0.5 pl-5">{{ repo.description }}</p>
+                  </button>
+                </section>
+              </div>
             </div>
 
             <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
-              <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</div>
               <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
                 {{ cloneUrl }}
               </div>
@@ -666,7 +857,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
               <div v-if="isGitlabSelfMode" class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Domain</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Domain</div>
                 <input
                   v-model="gitlabDomain"
                   placeholder="gitlab.example.com"
@@ -675,7 +866,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
                 />
               </div>
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</div>
                 <input
                   v-model="tokenInput"
                   type="password"
@@ -696,7 +887,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
             <template v-if="!needsConnection">
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</div>
                 <div class="flex-1 relative">
                   <input
                     v-model="gitlabSearch"
@@ -764,7 +955,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
               </div>
 
               <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</div>
                 <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
                   {{ cloneUrl }}
                 </div>
@@ -789,7 +980,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</div>
                 <input
                   v-model="tokenInput"
                   type="password"
@@ -809,7 +1000,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
             <template v-if="!needsConnection">
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</div>
                 <div class="flex-1 relative">
                   <input
                     v-model="bitbucketSearch"
@@ -851,7 +1042,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
               </div>
 
               <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</div>
                 <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
                   {{ cloneUrl }}
                 </div>
@@ -876,7 +1067,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Host Domain</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Host Domain</div>
                 <input
                   v-model="azureDomain"
                   placeholder="dev.azure.com/myorg"
@@ -885,7 +1076,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
                 />
               </div>
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</div>
                 <input
                   v-model="tokenInput"
                   type="password"
@@ -904,7 +1095,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
             <template v-if="!needsConnection">
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</div>
                 <div class="flex-1 relative">
                   <input
                     v-model="azureSearch"
@@ -946,7 +1137,7 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
               </div>
 
               <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
+                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</div>
                 <div class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-[10px] font-mono text-[var(--primary)] truncate">
                   {{ cloneUrl }}
                 </div>
@@ -990,7 +1181,6 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
 
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
-                <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</label>
                 <input
                   v-model="tokenInput"
                   type="password"
@@ -1010,7 +1200,6 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             </div>
 
             <div v-if="!needsConnection" class="flex items-center gap-3 flex-shrink-0">
-              <label class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">URL</label>
               <input
                 v-model="cloneUrl"
                 :placeholder="providerUrlHints[activeSource] || 'Repository URL'"
@@ -1028,6 +1217,10 @@ const isUnimplemented = computed(() => !!activeSource.value && unimplementedProv
             <label class="flex items-center gap-2 cursor-pointer text-xs text-[var(--muted-foreground)]">
               <input type="checkbox" v-model="shallowClone" class="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--background)] accent-[var(--primary)]" />
               Shallow clone
+            </label>
+            <label v-if="isGithubMode" class="flex items-center gap-2 cursor-pointer text-xs text-[var(--muted-foreground)]">
+              <input type="checkbox" v-model="browseAllPublicRepos" class="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--background)] accent-[var(--primary)]" />
+              Browse all public repos
             </label>
           </div>
 

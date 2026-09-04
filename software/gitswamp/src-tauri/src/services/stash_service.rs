@@ -3,6 +3,8 @@ use crate::repositories::git_repository::GitRepository;
 
 pub struct StashService;
 
+pub const PULL_SAFETY_STASH_PREFIX: &str = "GitSwamp pull safety ";
+
 impl StashService {
     pub fn stash_list(path: &str) -> Result<Vec<StashInfo>, String> {
         let mut repo = GitRepository::open(path)?;
@@ -55,37 +57,92 @@ impl StashService {
         Ok(stashes)
     }
 
-    pub fn stash_push(path: &str, message: Option<&str>) -> Result<String, String> {
-        let mut repo = GitRepository::open(path)?;
-
-        let sig = repo
-            .signature()
+    fn stash_signature(repo: &git2::Repository) -> Result<git2::Signature<'static>, String> {
+        repo.signature()
             .or_else(|_| git2::Signature::now("GitSwamp", "gitswamp@local"))
-            .map_err(|e| e.message().to_string())?;
+            .map_err(|e| e.message().to_string())
+    }
 
+    pub fn stash_push_oid(
+        path: &str,
+        message: Option<&str>,
+        include_untracked: bool,
+    ) -> Result<git2::Oid, String> {
+        let mut repo = GitRepository::open(path)?;
+        let sig = Self::stash_signature(&repo)?;
         let msg = message.unwrap_or("WIP");
+        let flags = include_untracked.then_some(git2::StashFlags::INCLUDE_UNTRACKED);
 
-        match repo.stash_save(&sig, msg, Some(git2::StashFlags::INCLUDE_UNTRACKED)) {
-            Ok(oid) => Ok(format!("Saved stash {}", oid)),
-            Err(include_err) => {
-                let include_msg = include_err.message().to_string();
+        repo.stash_save(&sig, msg, flags)
+            .map_err(|error| format!("Failed to create stash: {}", error.message()))
+    }
 
-                let fallback = repo
-                    .stash_save(&sig, msg, None)
-                    .map_err(|fallback_err| {
-                        format!(
-                            "Failed to stash tracked + untracked changes: {}. Fallback (tracked only) also failed: {}",
-                            include_msg,
-                            fallback_err.message()
-                        )
-                    })?;
+    pub fn stash_push(
+        path: &str,
+        message: Option<&str>,
+        include_untracked: bool,
+    ) -> Result<String, String> {
+        let oid = Self::stash_push_oid(path, message, include_untracked)?;
+        let scope = if include_untracked {
+            "tracked and untracked changes"
+        } else {
+            "tracked changes"
+        };
 
-                Ok(format!(
-                    "Saved stash {} (tracked files only; untracked files were skipped due to repository size)",
-                    fallback
-                ))
+        Ok(format!("Saved {} as stash {}", scope, oid))
+    }
+
+    fn stash_index_for_oid(repo: &mut git2::Repository, oid: git2::Oid) -> Result<usize, String> {
+        let mut found = None;
+        repo.stash_foreach(|index, _name, candidate| {
+            if *candidate == oid {
+                found = Some(index);
+                false
+            } else {
+                true
             }
-        }
+        })
+        .map_err(|e| e.message().to_string())?;
+
+        found.ok_or_else(|| format!("Safety stash {} was not found", oid))
+    }
+
+    pub fn latest_stash_oid_with_message_prefix(
+        path: &str,
+        message_prefix: &str,
+    ) -> Result<Option<git2::Oid>, String> {
+        let mut repo = GitRepository::open(path)?;
+        let mut found = None;
+        repo.stash_foreach(|_, name, oid| {
+            if name.contains(message_prefix) {
+                found = Some(*oid);
+                false
+            } else {
+                true
+            }
+        })
+        .map_err(|e| e.message().to_string())?;
+        Ok(found)
+    }
+
+    pub fn restore_stash_with_index(path: &str, oid: git2::Oid) -> Result<String, String> {
+        let mut repo = GitRepository::open(path)?;
+        let index = Self::stash_index_for_oid(&mut repo, oid)?;
+        let mut opts = git2::StashApplyOptions::new();
+        opts.reinstantiate_index();
+
+        repo.stash_pop(index, Some(&mut opts)).map_err(|error| {
+            format!(
+                "Failed to restore safety stash@{{{}}}: {}. The stash was kept.",
+                index,
+                error.message()
+            )
+        })?;
+
+        Ok(format!(
+            "Restored safety stash {} with its staged state",
+            oid
+        ))
     }
 
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {
@@ -130,7 +187,8 @@ impl StashService {
 
     pub fn stash_drop(path: &str, index: usize) -> Result<String, String> {
         let mut repo = GitRepository::open(path)?;
-        repo.stash_drop(index).map_err(|e| e.message().to_string())?;
+        repo.stash_drop(index)
+            .map_err(|e| e.message().to_string())?;
         Ok(format!("Dropped stash@{{{}}}", index))
     }
 

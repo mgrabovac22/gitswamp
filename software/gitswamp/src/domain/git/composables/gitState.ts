@@ -17,17 +17,18 @@ export function createGitState() {
   const repoPath = ref("");
   const repoInfo = ref<RepoInfo | null>(null);
   const commits = shallowRef<CommitInfo[]>([]);
-  const branches = ref<BranchInfo[]>([]);
-  const fileStatuses = ref<FileStatusInfo[]>([]);
+  const branches = shallowRef<BranchInfo[]>([]);
+  const fileStatuses = shallowRef<FileStatusInfo[]>([]);
   const selectedCommit = ref<CommitInfo | null>(null);
   const selectedCommits = ref<CommitInfo[]>([]);
-  const selectedCommitFiles = ref<CommitFileInfo[]>([]);
+  const selectedCommitFiles = shallowRef<CommitFileInfo[]>([]);
   const selectedStash = ref<StashInfo | null>(null);
-  const selectedStashFiles = ref<CommitFileInfo[]>([]);
-  const stashes = ref<StashInfo[]>([]);
-  const tags = ref<TagInfo[]>([]);
+  const selectedStashFiles = shallowRef<CommitFileInfo[]>([]);
+  const stashes = shallowRef<StashInfo[]>([]);
+  const tags = shallowRef<TagInfo[]>([]);
   const loading = ref(false);
   const loadingMore = ref(false);
+  const commitWaveLoading = ref(false);
   const error = ref<string | null>(null);
   const searchQuery = ref("");
   const searchResults = shallowRef<CommitInfo[] | null>(null);
@@ -58,6 +59,7 @@ export function createGitState() {
   });
   const hasConflicts = computed(() => conflictFiles.value.length > 0);
   const currentBranch = computed(() => repoInfo.value?.current_branch ?? "");
+  const repositoryOperation = computed(() => repoInfo.value?.operation ?? null);
   const displayedCommits = computed(() => commits.value);
 
   return {
@@ -75,6 +77,7 @@ export function createGitState() {
     tags,
     loading,
     loadingMore,
+    commitWaveLoading,
     error,
     searchQuery,
     searchResults,
@@ -93,6 +96,7 @@ export function createGitState() {
     conflictFiles,
     hasConflicts,
     currentBranch,
+    repositoryOperation,
     displayedCommits,
   };
 }
