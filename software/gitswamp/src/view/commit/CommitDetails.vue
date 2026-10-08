@@ -131,8 +131,6 @@ const stagedDiffSummary = ref<StagedDiffSummary>({
 const COMMIT_LINT_DEBOUNCE_MS = 300;
 let commitLintTimer: ReturnType<typeof setTimeout> | null = null;
 let copiedShaTimer: ReturnType<typeof setTimeout> | null = null;
-const showDiscardConfirm = ref(false);
-const discardPath = ref<string | null>(null);
 const copiedShaKey = ref<string | null>(null);
 const selectedChangePath = ref<string | null>(null);
 const commitFilesScrollContainer = ref<HTMLElement | null>(null);
@@ -145,7 +143,6 @@ const commitAnalyzerTooltipVisible = ref(false);
 const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "360px", zIndex: 2147483600 });
 const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
 const mergeInProgress = computed(() => props.repositoryOperation?.kind === "merge");
-const isDiscardingEntireMerge = computed(() => mergeInProgress.value && discardPath.value === null);
 let appliedOperationMessageKey = "";
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
@@ -167,29 +164,35 @@ function scrollSelectedCommitFileIntoView() {
 }
 
 function confirmDiscard(path: string | null) {
-  discardPath.value = path;
-  showDiscardConfirm.value = true;
-}
-
-function handleDiscardConfirm() {
-  if (isDiscardingEntireMerge.value) {
-    emit("abortMerge");
-    showDiscardConfirm.value = false;
-    discardPath.value = null;
-    return;
-  }
-  if (discardPath.value === null) {
-    emit("discardAll");
-  } else {
-    emit("discard", discardPath.value);
-  }
-  showDiscardConfirm.value = false;
-  discardPath.value = null;
-}
-
-function cancelDiscard() {
-  showDiscardConfirm.value = false;
-  discardPath.value = null;
+  const abortingMerge = mergeInProgress.value && path === null;
+  toast.action(
+    "error",
+    abortingMerge ? "Abort merge?" : "Discard changes?",
+    [
+      {
+        label: abortingMerge ? "Abort Merge" : "Yes, Discard",
+        style: "danger",
+        onClick: () => {
+          if (abortingMerge) {
+            emit("abortMerge");
+          } else if (path === null) {
+            emit("discardAll");
+          } else {
+            emit("discard", path);
+          }
+        },
+      },
+      {
+        label: "No",
+        style: "neutral",
+        onClick: () => undefined,
+      },
+    ],
+    0,
+    abortingMerge
+      ? "The branch returns to its pre-merge state. Protected pre-pull changes are restored when available."
+      : "This action cannot be undone.",
+  );
 }
 
 function currentCommitFileIndex(): number {
@@ -3464,39 +3467,6 @@ onUnmounted(() => {
       </div>
     </Teleport>
 
-    <!-- Discard Confirmation Toast -->
-    <Teleport to="body" v-if="showDiscardConfirm">
-      <div class="fixed bottom-4 right-4 z-[200] w-80 pointer-events-auto">
-        <div class="flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl backdrop-blur-md bg-[var(--card)] border-[var(--destructive)]/55 text-[var(--card-foreground)]">
-          <Trash2 class="w-5 h-5 flex-shrink-0 mt-0.5 text-[var(--destructive)]" />
-          <div class="flex-1 min-w-0">
-            <p class="text-sm text-[var(--card-foreground)] font-semibold">
-              {{ isDiscardingEntireMerge ? 'Abort merge?' : 'Discard changes?' }}
-            </p>
-            <p class="text-xs text-[var(--muted-foreground)] mt-1">
-              {{ isDiscardingEntireMerge
-                ? 'The branch returns to its pre-merge state. Protected pre-pull changes are restored when available.'
-                : 'This action cannot be undone.' }}
-            </p>
-            <div class="mt-3 flex gap-2 justify-start">
-              <button
-                @click="handleDiscardConfirm"
-                class="px-3 py-1.5 text-xs font-medium rounded bg-[var(--destructive)] text-[var(--destructive-foreground)] hover:brightness-95 transition-colors"
-              >
-                {{ isDiscardingEntireMerge ? 'Abort Merge' : 'Yes, Discard' }}
-              </button>
-              <button
-                @click="cancelDiscard"
-                class="px-3 py-1.5 text-xs font-medium rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:brightness-95 transition-colors"
-              >
-                No
-              </button>
-            </div>
-          </div>
-          <CloseIconButton size="sm" subtle title="Close discard confirmation" @click="cancelDiscard" />
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 

@@ -54,12 +54,13 @@ const colors = {
   },
 };
 
-function toastStyle(type: Toast["type"]): Record<string, string> {
-  const tone = colors[type];
+function toastStyle(toast: Toast): Record<string, string> {
+  const tone = colors[toast.type];
   return {
     backgroundColor: tone.backgroundColor,
     borderColor: tone.borderColor,
     color: tone.textColor,
+    order: toast.actions?.length ? "1" : "0",
   };
 }
 
@@ -101,13 +102,13 @@ function actionButtonStyle(style?: ToastAction["style"]): Record<string, string>
 
 <template>
   <Teleport to="body">
-    <div class="fixed bottom-4 right-4 z-[2147483647] flex flex-col gap-2 max-w-sm">
-      <TransitionGroup name="toast">
+    <div class="fixed bottom-4 right-4 z-[2147483647] max-w-sm">
+      <TransitionGroup name="toast" tag="div" class="flex flex-col gap-2">
         <div
           v-for="toast in toasts"
           :key="toast.id"
           class="flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl backdrop-blur-md"
-          :style="toastStyle(toast.type)"
+          :style="toastStyle(toast)"
         >
           <div v-if="toast.type === 'loading'" class="flex items-center gap-2.5 flex-shrink-0 mt-0.5">
             <img :src="logoCrocLoading" alt="Loading" class="toast-loader-logo" />

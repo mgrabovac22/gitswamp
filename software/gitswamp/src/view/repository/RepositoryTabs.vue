@@ -55,7 +55,7 @@ const helpPanelSection = ref<AppHelpSection>("shortcuts");
 const showAboutPanel = ref(false);
 const activeSection = ref<MenuSection>("file");
 const menuPanelStyle = ref<Record<string, string>>({});
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.3.0";
 
 const sectionLabels: { id: MenuSection; label: string }[] = [
   { id: "file", label: "File" },
