@@ -229,6 +229,14 @@ impl DiffService {
                     .map_err(|e| e.message().to_string())?;
                 if status.contains(git2::Status::WT_NEW) {
                     Self::build_untracked_file_diff(Path::new(path), file_path)
+                } else if status.is_empty() {
+                    Ok(FileDiff {
+                        path: file_path.to_string(),
+                        old_path: None,
+                        status: "modified".to_string(),
+                        hunks: Vec::new(),
+                        is_binary: false,
+                    })
                 } else {
                     Err(error)
                 }

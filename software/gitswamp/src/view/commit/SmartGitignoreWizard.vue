@@ -644,15 +644,15 @@ async function applySelectedRules(): Promise<void> {
 <template>
   <div
     v-if="visibleSuggestions.length > 0"
-    class="border-b border-[var(--border)] bg-[var(--card)]/70 px-3 py-3"
+    class="smart-ignore border-b border-[var(--border)] bg-[var(--card)]/70 px-3 py-3"
   >
-    <div class="flex items-start justify-between gap-3">
-      <div class="flex items-start gap-2 min-w-0">
+    <div class="smart-ignore-header flex items-start justify-between gap-3">
+      <div class="smart-ignore-copy flex items-start gap-2 min-w-0">
         <div class="mt-0.5 w-7 h-7 rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 flex items-center justify-center flex-shrink-0">
           <Sparkles class="w-3.5 h-3.5 text-[var(--primary)]" />
         </div>
         <div class="min-w-0">
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <span class="text-xs font-semibold text-[var(--foreground)]">Smart .gitignore Assistant</span>
             <span class="text-[9px] uppercase tracking-wide text-[var(--primary)] bg-[var(--primary)]/10 border border-[var(--primary)]/20 rounded px-1.5 py-0.5">
               generated/private
@@ -662,10 +662,10 @@ async function applySelectedRules(): Promise<void> {
           <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">{{ summaryText }}</p>
         </div>
       </div>
-      <div class="flex flex-wrap items-center justify-end gap-1.5 flex-shrink-0">
+      <div class="smart-ignore-actions flex flex-wrap items-center justify-end gap-1.5 flex-shrink-0">
         <button
           type="button"
-          class="px-2.5 py-1 rounded-md text-[10px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[var(--primary)] text-[var(--primary-foreground)] hover:bg-[var(--primary)]/90"
+          class="smart-ignore-primary-action px-2.5 py-1 rounded-md text-[10px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[var(--primary)] text-[var(--primary-foreground)] hover:bg-[var(--primary)]/90"
           :disabled="previewPatterns.length === 0 || applying || loadingGitignore"
           @click="applySelectedRules"
         >
@@ -740,6 +740,40 @@ async function applySelectedRules(): Promise<void> {
 </template>
 
 <style scoped>
+.smart-ignore {
+  container-type: inline-size;
+}
+
+.smart-ignore-copy {
+  flex: 1 1 auto;
+}
+
+@container (max-width: 430px) {
+  .smart-ignore-header {
+    flex-direction: column;
+    gap: 0.625rem;
+  }
+
+  .smart-ignore-copy,
+  .smart-ignore-actions {
+    width: 100%;
+  }
+
+  .smart-ignore-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .smart-ignore-actions button {
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  .smart-ignore-primary-action {
+    grid-column: 1 / -1;
+  }
+}
+
 .smart-ignore-enter-active,
 .smart-ignore-leave-active {
   transition: opacity 160ms ease, transform 160ms ease;
