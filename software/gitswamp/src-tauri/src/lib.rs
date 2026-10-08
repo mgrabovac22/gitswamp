@@ -5,7 +5,7 @@ mod repositories;
 mod services;
 
 use commands::branches::{checkout_branch, create_branch, delete_branch, get_branches};
-use commands::clone_init::{clone_repo, init_repo, search_commits};
+use commands::clone_init::{clone_repo, init_repo, initialize_empty_repo, search_commits};
 use commands::commit_files::get_commit_files;
 use commands::commits::{get_author_deletion_stats, get_commit_tree_paths, get_commits};
 use commands::conflicts::{
@@ -86,6 +86,7 @@ pub fn run() {
             fetch_all,
             clone_repo,
             init_repo,
+            initialize_empty_repo,
             search_commits,
             get_commit_files,
             stash_list,

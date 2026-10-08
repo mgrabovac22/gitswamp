@@ -352,6 +352,7 @@ export function useGit() {
 
     cloneRepo: repo.cloneRepo,
     initRepo: repo.initRepo,
+    initializeEmptyRepository: repo.initializeEmptyRepository,
     searchCommits: refresh.searchCommits,
     clearSearch: refresh.clearSearch,
     runTerminalCommand: terminal.runTerminalCommand,

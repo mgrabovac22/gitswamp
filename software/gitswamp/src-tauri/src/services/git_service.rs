@@ -245,6 +245,19 @@ impl GitService {
         Ok(current)
     }
 
+    fn unborn_branch_name(repo: &Repository) -> String {
+        repo.find_reference("HEAD")
+            .ok()
+            .and_then(|head| head.symbolic_target().map(|target| target.to_string()))
+            .and_then(|target| {
+                target
+                    .strip_prefix("refs/heads/")
+                    .map(|name| name.to_string())
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| DEFAULT_BRANCH.to_string())
+    }
+
     fn is_worktree_clean(repo: &Repository) -> Result<bool, String> {
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
@@ -617,13 +630,23 @@ impl GitService {
 
     pub fn repo_info(path: &str) -> Result<RepoInfo, String> {
         let repo = GitRepository::open(path)?;
-        let head = repo.head().map_err(|e| e.message().to_string())?;
-        let branch_name = if head.is_branch() {
-            head.shorthand().unwrap_or("HEAD").to_string()
-        } else {
-            "HEAD".to_string()
+        let (branch_name, head_sha) = match repo.head() {
+            Ok(head) => {
+                let branch = if head.is_branch() {
+                    head.shorthand().unwrap_or("HEAD").to_string()
+                } else {
+                    "HEAD".to_string()
+                };
+                (branch, head.target().map(|oid| oid.to_string()))
+            }
+            Err(error)
+                if error.code() == git2::ErrorCode::UnbornBranch
+                    || error.code() == git2::ErrorCode::NotFound =>
+            {
+                (Self::unborn_branch_name(&repo), None)
+            }
+            Err(error) => return Err(error.message().to_string()),
         };
-        let head_sha = head.target().map(|oid| oid.to_string());
         let statuses = repo.statuses(None).map_err(|e| e.message().to_string())?;
 
         let name = Path::new(path)
@@ -2180,6 +2203,59 @@ impl GitService {
         Ok(format!("Initialized repository with branch '{}'.", branch))
     }
 
+    pub fn initialize_empty_repo(path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+
+        let branch = match repo.head() {
+            Ok(head) if head.is_branch() => head
+                .shorthand()
+                .map(|name| name.to_string())
+                .filter(|name| !name.is_empty() && name != "HEAD")
+                .unwrap_or_else(|| Self::unborn_branch_name(&repo)),
+            _ => Self::unborn_branch_name(&repo),
+        };
+
+        let name = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| branch.clone());
+
+        let readme_path = Path::new(path).join("README.md");
+        if !readme_path.exists() {
+            std::fs::write(&readme_path, format!("# {}\n", name)).map_err(|e| e.to_string())?;
+        }
+
+        Self::stage_files(path, &["README.md".to_string()])?;
+
+        let sig = repo
+            .signature()
+            .or_else(|_| git2::Signature::now(DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL))
+            .map_err(|e| e.message().to_string())?;
+
+        let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        let tree_id = index.write_tree().map_err(|e| e.message().to_string())?;
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|e| e.message().to_string())?;
+
+        repo.commit(
+            Some(&format!("refs/heads/{}", branch)),
+            &sig,
+            &sig,
+            "Initial commit",
+            &tree,
+            &[],
+        )
+        .map_err(|e| e.message().to_string())?;
+
+        drop(tree);
+
+        repo.set_head(&format!("refs/heads/{}", branch))
+            .map_err(|e| e.message().to_string())?;
+
+        Ok(format!("Initialized repository '{}' with README.md.", name))
+    }
+
     pub fn search_commits(
         path: &str,
         query: &str,
@@ -3003,5 +3079,62 @@ impl GitService {
 
     pub fn check_origin(path: &str) -> Result<bool, String> {
         RemoteService::check_origin(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_repo_path(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("gitswamp-{}-{}", label, stamp))
+    }
+
+    #[test]
+    fn repo_info_handles_unborn_head() {
+        let path = unique_temp_repo_path("empty-repo-info");
+        std::fs::create_dir_all(&path).expect("create temp repo dir");
+        let path_str = path.to_string_lossy().to_string();
+
+        Repository::init(&path).expect("init repo");
+
+        let info = GitService::repo_info(&path_str).expect("repo_info should work on empty repo");
+        assert!(info.head_sha.is_none());
+        assert!(!info.current_branch.is_empty());
+        assert_ne!(info.current_branch, "HEAD");
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn initialize_empty_repo_creates_readme_and_initial_commit() {
+        let path = unique_temp_repo_path("empty-repo-init");
+        std::fs::create_dir_all(&path).expect("create temp repo dir");
+        let path_str = path.to_string_lossy().to_string();
+
+        Repository::init(&path).expect("init repo");
+
+        GitService::initialize_empty_repo(&path_str).expect("initialize empty repo");
+
+        let info = GitService::repo_info(&path_str).expect("repo_info after init");
+        assert!(info.head_sha.is_some());
+        assert!(!info.current_branch.is_empty());
+
+        let readme = std::fs::read_to_string(path.join("README.md")).expect("readme exists");
+        let repo_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        assert_eq!(readme, format!("# {}\n", repo_name));
+
+        let commits = GitService::commits(&path_str, 10).expect("list commits");
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].message, "Initial commit");
+
+        let _ = std::fs::remove_dir_all(&path);
     }
 }

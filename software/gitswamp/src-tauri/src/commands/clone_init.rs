@@ -35,6 +35,11 @@ pub fn init_repo(path: String, branch_name: Option<String>) -> Result<String, St
 }
 
 #[tauri::command]
+pub fn initialize_empty_repo(path: String) -> Result<String, String> {
+    GitService::initialize_empty_repo(&path)
+}
+
+#[tauri::command]
 pub fn search_commits(
     path: String,
     query: String,

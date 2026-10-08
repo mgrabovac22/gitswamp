@@ -256,6 +256,23 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     }
   }
 
+  async function initializeEmptyRepository(): Promise<boolean> {
+    const path = state.repoPath.value;
+    if (!path) return false;
+
+    try {
+      state.loading.value = true;
+      state.error.value = null;
+      await callTauri<string>("initialize_empty_repo", { path });
+      return true;
+    } catch (e) {
+      state.error.value = String(e);
+      return false;
+    } finally {
+      state.loading.value = false;
+    }
+  }
+
   async function searchGithubRepos(query: string): Promise<GithubRepo[]> {
     if (!state.githubToken.value) {
       state.error.value = "No GitHub token configured. Go to Options > Integrations to add one.";
@@ -277,6 +294,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     openRepository,
     cloneRepo,
     initRepo,
+    initializeEmptyRepository,
     searchGithubRepos,
   };
 }

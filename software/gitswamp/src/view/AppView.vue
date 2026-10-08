@@ -223,6 +223,11 @@ const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
 const showCommandPalette = ref(false);
 const showPickaxeSearch = ref(false);
+const initializingEmptyRepository = ref(false);
+
+const isEmptyRepository = computed(
+  () => !!git.repoInfo.value && !git.repoInfo.value.head_sha && git.commits.value.length === 0,
+);
 
 const showDiffViewer = ref(false);
 const diffFilePath = ref("");
@@ -4023,10 +4028,28 @@ async function openRepo(path: string) {
         viewingWorkingChanges.value = false;
         git.selectedCommit.value = null;
       }
+    } else {
+      toast.error(`Failed to open repository: ${git.error.value || "Unknown error"}`);
     }
   } catch (e) {
     console.error("Failed to open repository:", e);
     toast.error(`Failed to open repository: ${String(e)}`);
+  }
+}
+
+async function handleInitializeEmptyRepository() {
+  if (initializingEmptyRepository.value) return;
+  initializingEmptyRepository.value = true;
+  try {
+    const ok = await git.initializeEmptyRepository();
+    if (ok) {
+      await git.refreshAll();
+      toast.success("Repository initialized with README.md");
+    } else {
+      toast.error(`Failed to initialize repository: ${git.error.value || "Unknown error"}`);
+    }
+  } finally {
+    initializingEmptyRepository.value = false;
   }
 }
 
@@ -5045,6 +5068,21 @@ function submitCreateTag() {
         @terminal="toggleTerminalPanel"
         @settings="openOptions('preferences')"
       />
+      <div
+        v-if="isEmptyRepository"
+        class="flex items-center gap-3 px-4 py-2.5 bg-[var(--secondary)]/60 border-b border-[var(--border)]"
+      >
+        <div class="text-xs text-[var(--muted-foreground)]">
+          This repository is empty. Create an initial commit to start tracking history.
+        </div>
+        <button
+          :disabled="initializingEmptyRepository"
+          class="ml-auto px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--primary)] text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
+          @click="handleInitializeEmptyRepository"
+        >
+          {{ initializingEmptyRepository ? "Initializing..." : "Initialize with README" }}
+        </button>
+      </div>
       <RepositoryWorkspace
         :git="git"
         :show-terminal="showTerminal"
