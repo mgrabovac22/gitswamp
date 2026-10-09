@@ -259,7 +259,21 @@ impl DiffService {
             .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut diff_opts))
             .map_err(|e| e.message().to_string())?;
 
-        extract_file_diff(&diff, file_path)
+        match extract_file_diff(&diff, file_path) {
+            Ok(file_diff) => Ok(file_diff),
+            Err(not_found) => {
+                if let Some(untracked_tree) = commit.parent(2).and_then(|p| p.tree()).ok() {
+                    let mut untracked_opts = git2::DiffOptions::new();
+                    untracked_opts.context_lines(3).interhunk_lines(1);
+                    let untracked_diff = repo
+                        .diff_tree_to_tree(None, Some(&untracked_tree), Some(&mut untracked_opts))
+                        .map_err(|e| e.message().to_string())?;
+                    extract_file_diff(&untracked_diff, file_path)
+                } else {
+                    Err(not_found)
+                }
+            }
+        }
     }
 
     pub fn get_file_content(
@@ -273,9 +287,19 @@ impl DiffService {
             let oid = git2::Oid::from_str(commit_sha).map_err(|e| e.message().to_string())?;
             let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
             let tree = commit.tree().map_err(|e| e.message().to_string())?;
-            let entry = tree
-                .get_path(Path::new(file_path))
-                .map_err(|_| format!("File '{}' not found in commit", file_path))?;
+            let entry = match tree.get_path(Path::new(file_path)) {
+                Ok(entry) => entry,
+                Err(_) => {
+                    let untracked_tree = commit
+                        .parent(2)
+                        .and_then(|p| p.tree())
+                        .ok()
+                        .ok_or_else(|| format!("File '{}' not found in commit", file_path))?;
+                    untracked_tree
+                        .get_path(Path::new(file_path))
+                        .map_err(|_| format!("File '{}' not found in commit", file_path))?
+                }
+            };
             let blob = repo
                 .find_blob(entry.id())
                 .map_err(|e| e.message().to_string())?;

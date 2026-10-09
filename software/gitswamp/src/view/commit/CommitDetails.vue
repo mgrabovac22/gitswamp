@@ -151,6 +151,12 @@ function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
   emit("viewDiff", { path: filePath, sha: commitSha, staged });
 }
 
+function openStashDiff(filePath: string) {
+  const stash = props.selectedStash;
+  if (!stash) return;
+  openDiff(filePath, stash.stash_sha || null, false);
+}
+
 function scrollSelectedCommitFileIntoView() {
   const container = commitFilesScrollContainer.value;
   const selectedPath = selectedChangePath.value;
@@ -1588,6 +1594,7 @@ function openChangeMapFile(file: ChangeMapFile) {
   }
 
   if (props.isStash) {
+    openStashDiff(file.path);
     return;
   }
 
@@ -1662,6 +1669,7 @@ function openTreeFile(path: string) {
   }
 
   if (props.isStash) {
+    openStashDiff(normalized);
     return;
   }
 
@@ -3088,6 +3096,7 @@ onUnmounted(() => {
               v-for="f in stashFiles"
               :key="f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
+              @click="openStashDiff(f.path)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
@@ -3215,6 +3224,7 @@ onUnmounted(() => {
                   v-for="file in filteredChangeMapFiles"
                   :key="'map-stash-' + file.path"
                   class="group flex items-center gap-2 px-4 py-1.5 transition-colors hover:bg-[#f59e0b]/6"
+                  @click="openStashDiff(file.path)"
                   @contextmenu="openFileContextMenu($event, file.path)"
                 >
                   <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(file.status) }">{{ statusIcon(file.status) }}</span>

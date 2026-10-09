@@ -22,6 +22,8 @@ export function createRefreshActions(state: GitState) {
   let statusRequestId = 0;
   let repoInfoRequestId = 0;
   const coordinator = new RepositoryRefreshCoordinator();
+  const stashFilesCache = new Map<string, CommitFileInfo[]>();
+  const STASH_FILES_CACHE_LIMIT = 60;
 
   function scheduleCommitWaveFrame(callback: () => void) {
     if (typeof globalThis.requestAnimationFrame === "function") {
@@ -388,9 +390,23 @@ export function createRefreshActions(state: GitState) {
       return;
     }
 
+    const cacheKey = `${repoPath}\u0000${stash.stash_sha || stash.index}`;
+    const cached = stashFilesCache.get(cacheKey);
+    if (cached) {
+      state.selectedStashFiles.value = cached;
+      return;
+    }
+
     try {
       const files = await callTauri<CommitFileInfo[]>("stash_files", { path: repoPath, index: stash.index });
       if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;
+      stashFilesCache.set(cacheKey, files);
+      if (stashFilesCache.size > STASH_FILES_CACHE_LIMIT) {
+        const oldestKey = stashFilesCache.keys().next().value;
+        if (oldestKey !== undefined) {
+          stashFilesCache.delete(oldestKey);
+        }
+      }
       state.selectedStashFiles.value = files;
     } catch (e) {
       if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;

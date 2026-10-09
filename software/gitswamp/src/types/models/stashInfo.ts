@@ -4,4 +4,5 @@ export interface StashInfo {
   branch: string
   timestamp: string
   parent_sha: string
+  stash_sha: string
 }

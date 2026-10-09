@@ -7,4 +7,5 @@ pub struct StashInfo {
     pub branch: String,
     pub timestamp: String,
     pub parent_sha: String,
+    pub stash_sha: String,
 }
