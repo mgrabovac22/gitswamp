@@ -118,12 +118,28 @@ interface AzureRepo {
   stars: number;
 }
 
+interface GithubDeviceAuth {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+}
+
 interface GithubSshKey {
   id: number;
   title: string;
   key: string;
   fingerprint?: string;
   created_at?: string;
+}
+
+interface BitbucketSshKey {
+  uuid: string;
+  label: string;
+  key: string;
+  fingerprint: string;
+  created_on: string;
 }
 
 interface OrganisationRepoCandidate {
@@ -1159,6 +1175,7 @@ async function installGit(): Promise<void> {
 const githubTokenInput = ref("");
 const gitlabTokenInput = ref("");
 const bitbucketTokenInput = ref("");
+const bitbucketUsernameInput = ref("");
 const azureTokenInput = ref("");
 const azureDomainInput = ref("");
 const gitlabSelfTokenInput = ref("");
@@ -1170,6 +1187,8 @@ const githubSshBusy = ref(false);
 const githubKeysBusy = ref(false);
 const githubUser = ref<string | null>(null);
 const githubSshKeys = ref<GithubSshKey[]>([]);
+const githubOauthCode = ref("");
+const githubOauthUri = ref("");
 
 const githubSshEmailInput = ref("");
 const githubSshKeyNameInput = ref("gitswamp_github");
@@ -1178,6 +1197,15 @@ const githubExistingKeyTitleInput = ref("GitSwamp Existing Key");
 
 const gitlabTokenBusy = ref(false);
 const bitbucketTokenBusy = ref(false);
+const bitbucketVerifyBusy = ref(false);
+const bitbucketVerifyMessage = ref("");
+const bitbucketSshBusy = ref(false);
+const bitbucketKeysBusy = ref(false);
+const bitbucketSshKeys = ref<BitbucketSshKey[]>([]);
+const bitbucketSshEmailInput = ref("");
+const bitbucketSshKeyNameInput = ref("gitswamp_bitbucket");
+const bitbucketGeneratedKeyTitleInput = ref("GitSwamp Bitbucket Key");
+const bitbucketExistingKeyTitleInput = ref("GitSwamp Existing Key");
 const azureTokenBusy = ref(false);
 const gitlabSelfTokenBusy = ref(false);
 const gitlabSelfSshBusy = ref(false);
@@ -1343,16 +1371,56 @@ async function deleteGithubToken() {
   }
 }
 
-async function connectGithubOAuth() {
-  githubOauthBusy.value = true;
+async function copyGithubOauthCode() {
+  if (!githubOauthCode.value) return;
   try {
-    const token = (await invoke<string>("connect_github_oauth_via_gh_cli")).trim();
-    if (!token) {
-      throw new Error("OAuth flow completed but token was empty.");
+    await navigator.clipboard.writeText(githubOauthCode.value);
+    toast.success("Code copied to clipboard.");
+  } catch {
+    toast.error("Could not copy the code. Select and copy it manually.");
+  }
+}
+
+async function connectGithubOAuth() {
+  if (githubOauthBusy.value) return;
+
+  githubOauthBusy.value = true;
+  githubOauthCode.value = "";
+  githubOauthUri.value = "";
+
+  try {
+    const device = await invoke<GithubDeviceAuth>("github_oauth_start");
+    githubOauthCode.value = device.user_code;
+    githubOauthUri.value = device.verification_uri || "https://github.com/login/device";
+
+    try {
+      await navigator.clipboard.writeText(device.user_code);
+    } catch {
+      // Clipboard access is best-effort; the code is also shown in the UI.
     }
 
+    await openUrl(githubOauthUri.value).catch(() => {});
+    toast.info(`Enter code ${device.user_code} on GitHub to authorize.`);
+
+    const intervalMs = Math.max(device.interval || 5, 5) * 1000;
+    const expiresAt = Date.now() + (device.expires_in || 900) * 1000;
+    let token: string | null = null;
+
+    while (Date.now() < expiresAt) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      token = await invoke<string | null>("github_oauth_poll", { deviceCode: device.device_code });
+      if (token) {
+        break;
+      }
+    }
+
+    if (!token) {
+      throw new Error("Timed out waiting for GitHub authorization.");
+    }
+
+    const oauthToken = token;
     await assertGitActionOk(async () => {
-      await git.saveProviderToken("github", token);
+      await git.saveProviderToken("github", oauthToken);
       await git.reloadAuthTokens();
     });
 
@@ -1360,14 +1428,11 @@ async function connectGithubOAuth() {
     await refreshGithubUser();
     toast.success("Connected to GitHub via OAuth.");
   } catch (e) {
-    const message = String(e);
-    if (message.toLowerCase().includes("github cli (gh) was not found")) {
-      toast.warning("GitHub CLI is required for OAuth flow. Opening download page...");
-      openUrl("https://cli.github.com/").catch(() => {});
-    }
-    toast.error("GitHub OAuth failed: " + message);
+    toast.error("GitHub OAuth failed: " + String(e));
   } finally {
     githubOauthBusy.value = false;
+    githubOauthCode.value = "";
+    githubOauthUri.value = "";
   }
 }
 
@@ -1583,20 +1648,174 @@ async function generateAndPushGitlabSelfKey() {
 
 async function saveBitbucketToken() {
   const token = bitbucketTokenInput.value.trim();
+  const username = bitbucketUsernameInput.value.trim();
   if (!token) return;
+
+  const stored = username ? `${username}:${token}` : token;
 
   bitbucketTokenBusy.value = true;
   try {
     await assertGitActionOk(async () => {
-      await git.saveProviderToken("bitbucket", token);
+      await git.saveProviderToken("bitbucket", stored);
       await git.reloadAuthTokens();
     });
     bitbucketTokenInput.value = "";
-    toast.success("Bitbucket token saved.");
+    bitbucketVerifyMessage.value = "";
+    toast.success(
+      username
+        ? "Bitbucket API token saved (username + token for Git)."
+        : "Bitbucket API token saved (used as Bearer token).",
+    );
   } catch (e) {
-    toast.error("Failed to save Bitbucket token: " + String(e));
+    toast.error("Failed to save Bitbucket credential: " + String(e));
   } finally {
     bitbucketTokenBusy.value = false;
+  }
+}
+
+async function verifyBitbucketToken() {
+  const stored = git.providerTokens.value.bitbucket;
+  const typed = bitbucketTokenInput.value.trim();
+  const typedUser = bitbucketUsernameInput.value.trim();
+  const token = stored ? stored : typedUser ? `${typedUser}:${typed}` : typed;
+  if (!token) {
+    toast.error("Save a Bitbucket API token first.");
+    return;
+  }
+
+  bitbucketVerifyBusy.value = true;
+  bitbucketVerifyMessage.value = "";
+  try {
+    const account = await invoke<string>("verify_bitbucket_token", { token });
+    bitbucketVerifyMessage.value = `Credential valid — connected as ${account}.`;
+    toast.success(`Bitbucket credential is valid (${account}).`);
+  } catch (e) {
+    bitbucketVerifyMessage.value = String(e);
+    toast.error("Bitbucket credential check failed: " + String(e));
+  } finally {
+    bitbucketVerifyBusy.value = false;
+  }
+}
+
+function storedBitbucketUsername(): string {
+  const raw = git.providerTokens.value.bitbucket || "";
+  const idx = raw.indexOf(":");
+  if (idx <= 0) return "";
+  const user = raw.slice(0, idx).trim();
+  if (!user || raw.slice(idx + 1).length === 0) return "";
+  return user;
+}
+
+async function refreshBitbucketKeys() {
+  const token = git.providerTokens.value.bitbucket;
+  if (!token) {
+    bitbucketSshKeys.value = [];
+    return;
+  }
+
+  bitbucketKeysBusy.value = true;
+  try {
+    bitbucketSshKeys.value = await invoke<BitbucketSshKey[]>("list_bitbucket_ssh_keys", {
+      token,
+    });
+  } catch (e) {
+    toast.error("Failed to load Bitbucket SSH keys: " + String(e));
+  } finally {
+    bitbucketKeysBusy.value = false;
+  }
+}
+
+async function generateAndAddBitbucketSshKey() {
+  const token = git.providerTokens.value.bitbucket;
+  const email = bitbucketSshEmailInput.value.trim();
+  const keyName = bitbucketSshKeyNameInput.value.trim() || "gitswamp_bitbucket";
+  const title = bitbucketGeneratedKeyTitleInput.value.trim() || "GitSwamp Bitbucket Key";
+
+  if (!token) {
+    toast.error("Save a Bitbucket API token first.");
+    return;
+  }
+  if (!email) {
+    toast.error("Email is required to generate an SSH key.");
+    return;
+  }
+
+  bitbucketSshBusy.value = true;
+  try {
+    const generated = await invoke<[string, string]>("generate_ssh_key", {
+      email,
+      keyName,
+    });
+
+    await invoke("add_bitbucket_ssh_key", {
+      token,
+      title,
+      key: generated[1],
+    });
+
+    await refreshBitbucketKeys();
+    toast.success(`SSH key generated and added to Bitbucket (${generated[0]}).`);
+  } catch (e) {
+    toast.error("Failed to generate/add Bitbucket SSH key: " + String(e));
+  } finally {
+    bitbucketSshBusy.value = false;
+  }
+}
+
+async function addExistingBitbucketSshKey() {
+  const token = git.providerTokens.value.bitbucket;
+  if (!token) {
+    toast.error("Save a Bitbucket API token first.");
+    return;
+  }
+
+  try {
+    const selected = await openDialog({
+      multiple: false,
+      title: "Select existing SSH key",
+      filters: [{ name: "SSH Keys", extensions: ["pub", "key", "pem", "txt"] }],
+    });
+
+    if (!selected || Array.isArray(selected)) {
+      return;
+    }
+
+    bitbucketSshBusy.value = true;
+    const key = await invoke<string>("load_ssh_public_key_from_file", {
+      filePath: selected,
+    });
+
+    await invoke("add_bitbucket_ssh_key", {
+      token,
+      title: bitbucketExistingKeyTitleInput.value.trim() || "GitSwamp Existing Key",
+      key,
+    });
+
+    await refreshBitbucketKeys();
+    toast.success("Existing SSH key added to Bitbucket.");
+  } catch (e) {
+    toast.error("Failed to add existing Bitbucket SSH key: " + String(e));
+  } finally {
+    bitbucketSshBusy.value = false;
+  }
+}
+
+async function deleteBitbucketSshKey(keyId: string) {
+  const token = git.providerTokens.value.bitbucket;
+  if (!token) return;
+
+  bitbucketKeysBusy.value = true;
+  try {
+    await invoke("delete_bitbucket_ssh_key", {
+      token,
+      keyId,
+    });
+    await refreshBitbucketKeys();
+    toast.success("Bitbucket SSH key removed.");
+  } catch (e) {
+    toast.error("Failed to remove Bitbucket SSH key: " + String(e));
+  } finally {
+    bitbucketKeysBusy.value = false;
   }
 }
 
@@ -1608,9 +1827,12 @@ async function deleteBitbucketToken() {
       await git.reloadAuthTokens();
     });
     bitbucketTokenInput.value = "";
-    toast.success("Bitbucket token removed.");
+    bitbucketUsernameInput.value = "";
+    bitbucketVerifyMessage.value = "";
+    bitbucketSshKeys.value = [];
+    toast.success("Bitbucket credential removed.");
   } catch (e) {
-    toast.error("Failed to remove Bitbucket token: " + String(e));
+    toast.error("Failed to remove Bitbucket credential: " + String(e));
   } finally {
     bitbucketTokenBusy.value = false;
   }
@@ -1691,6 +1913,12 @@ interface OrganisationRepoGroup {
 
 function formatGithubKeyMeta(item: GithubSshKey): string {
   const timestamp = item.created_at ? new Date(item.created_at).toLocaleDateString() : "Unknown date";
+  const fp = item.fingerprint || "No fingerprint";
+  return `${fp} • ${timestamp}`;
+}
+
+function formatBitbucketKeyMeta(item: BitbucketSshKey): string {
+  const timestamp = item.created_on ? new Date(item.created_on).toLocaleDateString() : "Unknown date";
   const fp = item.fingerprint || "No fingerprint";
   return `${fp} • ${timestamp}`;
 }
@@ -1794,6 +2022,11 @@ onMounted(() => {
 
   if (gitlabSelfState.value.domain) {
     gitlabSelfDomainInput.value = gitlabSelfState.value.domain;
+  }
+
+  const bitbucketUser = storedBitbucketUsername();
+  if (bitbucketUser) {
+    bitbucketUsernameInput.value = bitbucketUser;
   }
 
   void refreshGitPath(true);
@@ -1968,6 +2201,17 @@ watch(
 );
 
 watch(
+  () => git.providerTokens.value.bitbucket,
+  () => {
+    const bitbucketUser = storedBitbucketUsername();
+    if (bitbucketUser) {
+      bitbucketUsernameInput.value = bitbucketUser;
+    }
+    bitbucketVerifyMessage.value = "";
+  },
+);
+
+watch(
   () => currentGithubToken(),
   () => {
     void refreshGithubUser();
@@ -2123,7 +2367,7 @@ watch(activePlatform, () => {
                   <div>
                     <div class="text-xs font-semibold text-[var(--foreground)]">Account Connection</div>
                     <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5">
-                      OAuth with GitHub CLI browser flow, or token fallback.
+                      Sign in with GitHub in your browser using a one-time device code, or paste a token.
                     </div>
                   </div>
                   <div class="flex items-center gap-2">
@@ -2136,17 +2380,36 @@ watch(activePlatform, () => {
                       <ExternalLink v-else class="w-3.5 h-3.5 mr-1" />
                       Connect via OAuth
                     </AppButton>
-                    <button
-                      class="h-8 px-2.5 rounded border border-[var(--border)] text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)] transition-colors"
-                      @click="openUrl('https://cli.github.com/').catch(() => {})"
-                    >
-                      Install GitHub CLI
-                    </button>
                   </div>
                 </div>
 
                 <div class="text-[11px]" :class="hasGithubToken ? 'text-[#10b981]' : 'text-[#f59e0b]'">
                   {{ hasGithubToken ? `Connected${githubUser ? ` as ${githubUser}` : ''}` : 'Not connected' }}
+                </div>
+
+                <div v-if="githubOauthCode" class="border border-[var(--primary)]/40 bg-[var(--primary)]/10 rounded p-3 space-y-2">
+                  <div class="text-[11px] text-[var(--foreground)]">
+                    Enter this code on GitHub to authorize:
+                  </div>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-mono text-lg tracking-[0.2em] text-[var(--foreground)]">{{ githubOauthCode }}</span>
+                    <button
+                      class="text-[10px] px-2 py-1 rounded border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]"
+                      @click="copyGithubOauthCode"
+                    >
+                      Copy
+                    </button>
+                    <button
+                      class="text-[10px] px-2 py-1 rounded border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]"
+                      @click="openUrl(githubOauthUri).catch(() => {})"
+                    >
+                      Open GitHub
+                    </button>
+                  </div>
+                  <div class="flex items-center gap-2 text-[10px] text-[var(--muted-foreground)]">
+                    <Loader2 class="w-3 h-3 animate-spin" />
+                    Waiting for authorization... this panel closes automatically when done.
+                  </div>
                 </div>
 
                 <div class="flex items-center gap-2">
@@ -2354,26 +2617,165 @@ watch(activePlatform, () => {
               </div>
             </div>
 
-            <div v-else-if="activePlatform === 'bitbucket'" class="space-y-4">
-              <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
-                <div class="text-xs font-semibold text-[var(--foreground)]">Bitbucket Token</div>
-                <div class="text-[11px]" :class="hasBitbucketToken ? 'text-[#10b981]' : 'text-[#f59e0b]'">
-                  {{ hasBitbucketToken ? 'Configured' : 'Not configured' }}
+            <div v-else-if="activePlatform === 'bitbucket'" class="border border-[var(--border)] rounded-lg bg-[var(--popover)]/30 divide-y divide-[var(--border)]">
+
+              <div class="p-3.5 space-y-3 bg-[var(--primary)]/5">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <div class="flex items-center justify-center w-5 h-5 rounded-full bg-[var(--primary)] text-white text-[10px] font-bold">1</div>
+                  <div class="text-xs font-semibold text-[var(--foreground)]">Bitbucket API Token</div>
+                  <div class="ml-auto flex items-center gap-1.5">
+                    <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-[var(--primary)]/15 text-[var(--primary)] font-medium">Primary</span>
+                    <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded" :class="hasBitbucketToken ? 'bg-[#10b981]/10 text-[#10b981]' : 'bg-[#f59e0b]/10 text-[#f59e0b]'">
+                      {{ hasBitbucketToken ? 'Configured' : 'Not set' }}
+                    </span>
+                  </div>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="grid grid-cols-2 gap-2">
+                  <input
+                    v-model="bitbucketUsernameInput"
+                    placeholder="Bitbucket username"
+                    class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
                   <input
                     v-model="bitbucketTokenInput"
                     type="password"
-                    placeholder="Bitbucket app password/token"
-                    class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                    placeholder="API token"
+                    class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
                   />
+                </div>
+                <div class="flex items-center gap-2">
                   <AppButton class="h-8 text-xs bg-[var(--primary)] text-white" :disabled="bitbucketTokenBusy || !bitbucketTokenInput.trim()" @click="saveBitbucketToken">
                     <Loader2 v-if="bitbucketTokenBusy" class="w-3.5 h-3.5 animate-spin" />
                     <template v-else>{{ hasBitbucketToken ? 'Replace' : 'Save' }}</template>
                   </AppButton>
+                  <AppButton
+                    class="h-8 text-xs bg-[var(--secondary)] text-[var(--foreground)] hover:opacity-90"
+                    :disabled="bitbucketVerifyBusy || bitbucketTokenBusy || (!hasBitbucketToken && !bitbucketTokenInput.trim())"
+                    @click="verifyBitbucketToken"
+                  >
+                    <Loader2 v-if="bitbucketVerifyBusy" class="w-3.5 h-3.5 animate-spin" />
+                    <template v-else>Test</template>
+                  </AppButton>
                   <AppButton class="h-8 text-xs bg-[#ef4444]/20 text-[#ef4444]" :disabled="bitbucketTokenBusy || !hasBitbucketToken" @click="deleteBitbucketToken">
                     <Trash2 class="w-3.5 h-3.5" />
                   </AppButton>
+                </div>
+                <div v-if="bitbucketVerifyMessage" class="text-[10px] text-[var(--muted-foreground)] break-words">
+                  {{ bitbucketVerifyMessage }}
+                </div>
+                <div class="text-[10px] text-[var(--muted-foreground)]">
+                  Create a Bitbucket API token under Personal settings →
+                  <span class="font-mono">API tokens</span>. Enter your Bitbucket username with the token
+                  for Git-over-HTTPS (Basic auth), or leave the username empty to send the token as a
+                  Bearer token for the API. A token needs
+                  <span class="font-mono">read:repository:bitbucket</span>,
+                  <span class="font-mono">read:workspace:bitbucket</span>,
+                  <span class="font-mono">read:user:bitbucket</span> and, for SSH keys,
+                  <span class="font-mono">account</span> scopes.
+                </div>
+              </div>
+
+              <div class="p-3.5 space-y-3 bg-[var(--popover)]/30">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <div class="flex items-center justify-center w-5 h-5 rounded-full bg-[var(--secondary)] text-[var(--muted-foreground)] text-[10px] font-bold">2</div>
+                  <div class="text-xs font-semibold text-[var(--foreground)]">SSH Keys</div>
+                  <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[var(--muted-foreground)] font-medium">Fallback</span>
+                  <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded" :class="bitbucketSshKeys.length ? 'bg-[#10b981]/10 text-[#10b981]' : 'bg-[#6b7280]/10 text-[#6b7280]'">
+                    {{ bitbucketSshKeys.length ? `${bitbucketSshKeys.length} key(s)` : 'No keys' }}
+                  </span>
+                  <div class="ml-auto flex items-center gap-2">
+                    <AppButton
+                      class="h-7 text-[11px] bg-[var(--primary)] text-white hover:opacity-90"
+                      :disabled="bitbucketSshBusy || !hasBitbucketToken"
+                      @click="generateAndAddBitbucketSshKey"
+                    >
+                      <Loader2 v-if="bitbucketSshBusy" class="w-3.5 h-3.5 mr-1 animate-spin" />
+                      <KeyRound v-else class="w-3.5 h-3.5 mr-1" />
+                      Generate and Add
+                    </AppButton>
+                    <AppButton
+                      class="h-7 text-[11px] bg-[var(--secondary)] text-[var(--foreground)] hover:opacity-90"
+                      :disabled="bitbucketSshBusy || !hasBitbucketToken"
+                      @click="addExistingBitbucketSshKey"
+                    >
+                      <KeyRound class="w-3.5 h-3.5 mr-1" />
+                      Add Existing
+                    </AppButton>
+                  </div>
+                </div>
+                <p class="text-[10px] text-[var(--muted-foreground)]">
+                  Generate a new SSH key and register it with Bitbucket, or import an existing key. SSH
+                  can be selected as the clone protocol.
+                </p>
+
+                <div class="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Key Generation</div>
+                <div class="grid grid-cols-2 gap-2">
+                  <input
+                    v-model="bitbucketSshEmailInput"
+                    placeholder="Email for generated SSH key"
+                    class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
+                  <input
+                    v-model="bitbucketSshKeyNameInput"
+                    placeholder="Key file name (default gitswamp_bitbucket)"
+                    class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
+                </div>
+                <div class="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Labels on Bitbucket</div>
+                <div class="grid grid-cols-2 gap-2">
+                  <input
+                    v-model="bitbucketGeneratedKeyTitleInput"
+                    placeholder="Label for generated key"
+                    class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
+                  <input
+                    v-model="bitbucketExistingKeyTitleInput"
+                    placeholder="Label for imported existing key"
+                    class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  />
+                </div>
+
+                <div class="text-[10px] text-[var(--muted-foreground)]">
+                  Tip: manage keys manually at
+                  <span class="font-mono">bitbucket.org/account/settings/ssh-keys</span> if the API
+                  method fails. Adding a key requires Account Write/ssh-key scope.
+                </div>
+
+                <div class="border border-[var(--border)] rounded p-2.5 bg-[var(--card)]/50">
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="text-[11px] font-medium text-[var(--foreground)]">Registered Bitbucket SSH Keys</div>
+                    <button
+                      class="text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] inline-flex items-center gap-1"
+                      @click="refreshBitbucketKeys"
+                    >
+                      <RefreshCw class="w-3 h-3" />
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div v-if="bitbucketKeysBusy" class="text-[11px] text-[var(--muted-foreground)] py-2">
+                    Loading keys...
+                  </div>
+                  <div v-else-if="!bitbucketSshKeys.length" class="text-[11px] text-[var(--muted-foreground)] py-2">
+                    No SSH keys found for this account.
+                  </div>
+                  <div v-else class="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                    <div v-for="item in bitbucketSshKeys" :key="item.uuid" class="border border-[var(--border)] rounded p-2">
+                      <div class="flex items-start justify-between gap-2">
+                        <div class="min-w-0">
+                          <div class="text-[11px] font-medium text-[var(--foreground)] truncate">{{ item.label || 'Untitled' }}</div>
+                          <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5 truncate">{{ formatBitbucketKeyMeta(item) }}</div>
+                        </div>
+                        <button
+                          class="text-[#ef4444] hover:text-[#f87171] p-1 rounded hover:bg-[#ef4444]/10"
+                          @click="deleteBitbucketSshKey(item.uuid)"
+                          title="Delete key"
+                        >
+                          <Trash2 class="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

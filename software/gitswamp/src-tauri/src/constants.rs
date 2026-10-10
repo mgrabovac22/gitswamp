@@ -15,8 +15,17 @@ pub const API_GITHUB_SEARCH_REPOS: &str =
     "https://api.github.com/search/repositories?q={}&per_page=100";
 pub const API_GITHUB_USER_KEYS_PATH: &str = "https://api.github.com/user/keys";
 pub const API_GITHUB_USER_PATH: &str = "https://api.github.com/user";
-pub const API_BITBUCKET_LIST_REPOS: &str =
-    "https://api.bitbucket.org/2.0/repositories?role=member&sort=-updated_on&pagelen=50";
+pub const GITHUB_OAUTH_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
+pub const GITHUB_OAUTH_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
+pub const GITHUB_OAUTH_CLIENT_ID: &str = "178c6fc778ccc68e1d6a";
+pub const GITHUB_OAUTH_SCOPES: &str = "repo read:org admin:public_key";
+pub const API_BITBUCKET_WORKSPACES: &str =
+    "https://api.bitbucket.org/2.0/user/workspaces?pagelen=100";
+pub const API_BITBUCKET_WORKSPACE_REPOS_FMT: &str =
+    "https://api.bitbucket.org/2.0/repositories/{}?sort=-updated_on&pagelen=50";
+pub const API_BITBUCKET_USER_PATH: &str = "https://api.bitbucket.org/2.0/user";
+pub const API_BITBUCKET_USER_SSH_KEYS_FMT: &str =
+    "https://api.bitbucket.org/2.0/users/{}/ssh-keys";
 pub const API_GITLAB_BASE_PATH: &str = "/api/v4";
 pub const API_GITLAB_USER_KEYS_PATH: &str = "/api/v4/user/keys";
 pub const API_GITLAB_USER_PATH: &str = "/api/v4/user";
@@ -28,6 +37,7 @@ pub const JSON_ACCEPT_HEADER: &str = "application/json";
 pub const AUTH_USER_GITHUB: &str = "x-access-token";
 pub const AUTH_USER_GITLAB: &str = "oauth2";
 pub const AUTH_USER_BITBUCKET: &str = "x-token-auth";
+pub const AUTH_USER_BITBUCKET_API: &str = "x-bitbucket-api-token-auth";
 
 pub const TEMP_PUSH_REMOTE_AUTH: &str = "temp_push_origin_auth";
 pub const TEMP_PUSH_REMOTE_PLATFORM: &str = "temp_push_remote";

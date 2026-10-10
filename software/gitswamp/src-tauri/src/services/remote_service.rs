@@ -1,13 +1,14 @@
 use std::path::Path;
 
 use crate::constants::{
-    AUTH_USER_BITBUCKET, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST, AZURE_LEGACY_HOST,
+    AUTH_USER_BITBUCKET, AUTH_USER_BITBUCKET_API, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST,
+    AZURE_LEGACY_HOST,
     BITBUCKET_HOST, GITHUB_HOST, GITLAB_HOST, HTTPS_SCHEME, PLATFORM_AZURE, PLATFORM_BITBUCKET,
     PLATFORM_GITHUB, PLATFORM_GITHUB_ENTERPRISE, PLATFORM_GITLAB, PLATFORM_GITLAB_SELF_HOSTED,
     TEMP_PUSH_REMOTE_AUTH, TEMP_PUSH_REMOTE_PLATFORM,
 };
 use crate::repositories::git_repository::GitRepository;
-use crate::services::helpers::urlencoded;
+use crate::services::helpers::{split_bitbucket_credentials, urlencoded};
 use crate::services::stash_service::{StashService, PULL_SAFETY_STASH_PREFIX};
 
 pub struct RemoteService;
@@ -70,6 +71,7 @@ impl RemoteService {
         }
 
         if host.contains(BITBUCKET_HOST) {
+            Self::push_unique_candidate(&mut candidates, AUTH_USER_BITBUCKET_API);
             Self::push_unique_candidate(&mut candidates, AUTH_USER_BITBUCKET);
             Self::push_unique_candidate(&mut candidates, AUTH_USER_GITHUB);
             Self::push_unique_candidate(&mut candidates, AUTH_USER_GITLAB);
@@ -170,12 +172,25 @@ impl RemoteService {
             } else {
                 url
             };
-            let username_candidates =
-                Self::auth_username_candidates(current_url, username_from_url);
+            let bitbucket_split = tok
+                .as_deref()
+                .and_then(|value| split_bitbucket_credentials(current_url, value));
+
+            let mut username_candidates: Vec<String> = Vec::new();
+            if let Some((user, _)) = &bitbucket_split {
+                Self::push_unique_candidate(&mut username_candidates, user);
+            }
+            for candidate in Self::auth_username_candidates(current_url, username_from_url) {
+                Self::push_unique_candidate(&mut username_candidates, &candidate);
+            }
             let default_user = username_candidates
                 .first()
                 .map(|value| value.as_str())
                 .unwrap_or(AUTH_USER_GITLAB);
+            let secret = bitbucket_split
+                .as_ref()
+                .map(|(_, secret)| secret.as_str())
+                .unwrap_or_else(|| tok.as_deref().unwrap_or_default());
 
             if allowed.contains(git2::CredentialType::SSH_KEY) {
                 let ssh_user = username_from_url.unwrap_or("git");
@@ -197,14 +212,14 @@ impl RemoteService {
             }
 
             if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-                if let Some(tok) = &tok {
+                if tok.is_some() {
                     let user = username_candidates
                         .get(https_attempt)
                         .or_else(|| username_candidates.last())
                         .map(|value| value.as_str())
                         .unwrap_or(AUTH_USER_GITLAB);
                     https_attempt = https_attempt.saturating_add(1);
-                    return git2::Cred::userpass_plaintext(user, tok);
+                    return git2::Cred::userpass_plaintext(user, secret);
                 }
             }
 
@@ -482,12 +497,19 @@ impl RemoteService {
         let remote_url = remote.url().unwrap_or_default().to_string();
         if let Some(t) = token {
             if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
-                let users = Self::auth_username_candidates(&remote_url, None);
+                let attempts: Vec<(String, String)> =
+                    match split_bitbucket_credentials(&remote_url, t) {
+                        Some((user, secret)) => vec![(user, secret)],
+                        None => Self::auth_username_candidates(&remote_url, None)
+                            .into_iter()
+                            .map(|user| (user, t.to_string()))
+                            .collect(),
+                    };
                 let mut last_error: Option<String> = None;
 
-                for user in users {
+                for (user, secret) in attempts {
                     let Some(authed_url) =
-                        Self::authenticated_url_with_username(&remote_url, &user, t)
+                        Self::authenticated_url_with_username(&remote_url, &user, &secret)
                     else {
                         continue;
                     };
@@ -505,7 +527,7 @@ impl RemoteService {
                                 )
                             })?;
 
-                    let callbacks = Self::build_remote_callbacks(Some(t), &authed_url);
+                    let callbacks = Self::build_remote_callbacks(Some(&secret), &authed_url);
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 
@@ -586,12 +608,19 @@ impl RemoteService {
         let remote_url = remote_ref.url().unwrap_or_default().to_string();
         if let Some(t) = token {
             if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
-                let users = Self::auth_username_candidates(&remote_url, None);
+                let attempts: Vec<(String, String)> =
+                    match split_bitbucket_credentials(&remote_url, t) {
+                        Some((user, secret)) => vec![(user, secret)],
+                        None => Self::auth_username_candidates(&remote_url, None)
+                            .into_iter()
+                            .map(|user| (user, t.to_string()))
+                            .collect(),
+                    };
                 let mut last_error: Option<String> = None;
 
-                for user in users {
+                for (user, secret) in attempts {
                     let Some(authed_url) =
-                        Self::authenticated_url_with_username(&remote_url, &user, t)
+                        Self::authenticated_url_with_username(&remote_url, &user, &secret)
                     else {
                         continue;
                     };
@@ -609,7 +638,7 @@ impl RemoteService {
                                 )
                             })?;
 
-                    let callbacks = Self::build_remote_callbacks(Some(t), &authed_url);
+                    let callbacks = Self::build_remote_callbacks(Some(&secret), &authed_url);
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 

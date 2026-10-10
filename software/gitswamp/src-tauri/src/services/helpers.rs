@@ -123,6 +123,24 @@ pub fn urlencoded(s: &str) -> String {
     result
 }
 
+pub fn split_bitbucket_credentials(url: &str, token: &str) -> Option<(String, String)> {
+    let url_lower = url.to_lowercase();
+    if url_lower.starts_with("git@") || url_lower.starts_with("ssh://") {
+        return None;
+    }
+    if !url_lower.contains(BITBUCKET_HOST) {
+        return None;
+    }
+
+    let (user, secret) = token.split_once(':')?;
+    let user = user.trim();
+    if user.is_empty() || secret.is_empty() {
+        return None;
+    }
+
+    Some((user.to_string(), secret.to_string()))
+}
+
 pub fn extract_file_diff(diff: &Diff, target_path: &str) -> Result<FileDiff, String> {
     let mut result: Option<FileDiff> = None;
     let num_deltas = diff.deltas().len();

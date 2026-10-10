@@ -1,6 +1,15 @@
 use serde::Serialize;
 
 #[derive(Serialize)]
+pub struct GithubDeviceAuth {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+#[derive(Serialize)]
 pub struct GithubRepo {
     pub full_name: String,
     pub clone_url: String,

@@ -12,6 +12,7 @@ import {
   Star,
   ArrowLeft,
   Key,
+  KeyRound,
 } from "lucide-vue-next";
 import type { AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo } from "@/types";
 import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
@@ -68,7 +69,7 @@ const tokenInstructions: Record<string, string> = {
   "github-enterprise": "Go to your GitHub Enterprise → Settings → Developer settings → Personal access tokens.",
   "gitlab": "Go to GitLab → Preferences → Access Tokens → Create a token with 'read_api' and 'read_repository' scopes.",
   "gitlab-self": "Go to your GitLab instance → Preferences → Access Tokens.",
-  "bitbucket": "Go to Bitbucket → Personal settings → Access tokens/App passwords → Create with read repository scope.",
+  "bitbucket": "Bitbucket API token: Bitbucket → Personal settings → API tokens → Create token with scopes (Account: Read, Repositories: Read). Enter your Bitbucket username with the token, or the token alone.",
   "bitbucket-dc": "Go to your Bitbucket DC → Manage account → HTTP access tokens → Create token.",
   "azure": "Go to Azure DevOps → User settings → Personal access tokens → New Token with 'Code: Read' scope. Host example: dev.azure.com/myorg",
 };
@@ -113,6 +114,11 @@ const bitbucketSearch = ref("");
 const bitbucketRepos = ref<BitbucketRepo[]>([]);
 const bitbucketLoading = ref(false);
 const bitbucketError = ref<string | null>(null);
+const bitbucketUsernameInput = ref("");
+const bitbucketSshMode = ref(false);
+const bitbucketSshUrl = ref("");
+const bitbucketSelectedRepo = ref<BitbucketRepo | null>(null);
+const bitbucketProtocol = ref<"https" | "ssh">("https");
 
 const azureSearch = ref("");
 const azureRepos = ref<AzureRepo[]>([]);
@@ -343,17 +349,41 @@ function selectSource(id: string) {
   activeSource.value = id;
   showTokenInput.value = false;
   tokenInput.value = "";
+  bitbucketSshMode.value = false;
+  bitbucketSshUrl.value = "";
+  bitbucketUsernameInput.value = storedBitbucketUsername();
+  bitbucketProtocol.value = "https";
+  bitbucketSelectedRepo.value = null;
 }
 
 function backToGrid() {
   activeSource.value = null;
   showTokenInput.value = false;
   tokenInput.value = "";
+  bitbucketSshMode.value = false;
+  bitbucketSshUrl.value = "";
+  bitbucketSelectedRepo.value = null;
 }
 
 function startTokenConnect() {
   showTokenInput.value = true;
   tokenInput.value = "";
+  bitbucketSshMode.value = false;
+}
+
+function startBitbucketSshMode() {
+  showTokenInput.value = false;
+  bitbucketSshMode.value = true;
+  bitbucketSshUrl.value = "";
+}
+
+function storedBitbucketUsername(): string {
+  const raw = getProviderToken("bitbucket") || "";
+  const idx = raw.indexOf(":");
+  if (idx <= 0) return "";
+  const user = raw.slice(0, idx).trim();
+  if (!user || raw.slice(idx + 1).length === 0) return "";
+  return user;
 }
 
 async function saveToken() {
@@ -387,6 +417,10 @@ async function saveToken() {
     emit("saveProviderToken", "azure", tokenInput.value.trim());
     emit("saveProviderToken", "azure-domain", normalizedAzureDomain);
     azureDomain.value = normalizedAzureDomain;
+  } else if (activeSource.value === "bitbucket") {
+    const username = bitbucketUsernameInput.value.trim();
+    const secret = tokenInput.value.trim();
+    emit("saveProviderToken", "bitbucket", username ? `${username}:${secret}` : secret);
   } else {
     emit("saveProviderToken", activeSource.value, tokenInput.value.trim());
   }
@@ -532,7 +566,22 @@ async function doBitbucketSearch() {
 }
 
 function selectBitbucketRepo(repo: BitbucketRepo) {
-  cloneUrl.value = repo.clone_url_https;
+  bitbucketSelectedRepo.value = repo;
+  applyBitbucketProtocol();
+}
+
+function applyBitbucketProtocol() {
+  const repo = bitbucketSelectedRepo.value;
+  if (!repo) return;
+  cloneUrl.value =
+    bitbucketProtocol.value === "ssh" && repo.clone_url_ssh
+      ? repo.clone_url_ssh
+      : repo.clone_url_https;
+}
+
+function setBitbucketProtocol(proto: "https" | "ssh") {
+  bitbucketProtocol.value = proto;
+  applyBitbucketProtocol();
 }
 
 function onAzureSearch() {
@@ -964,27 +1013,69 @@ onMounted(() => {
           </template>
 
           <template v-if="isBitbucketMode">
-            <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
+            <div v-if="needsConnection && !showTokenInput && !bitbucketSshMode" class="flex flex-col items-center justify-center py-8 gap-3">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#0052cc]/20">
                 <BitbucketIcon class="w-8 h-8 text-[#0052cc]" />
               </div>
               <div class="text-sm text-[var(--foreground)] font-medium">Connect to Bitbucket</div>
               <p class="text-[10px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed">
-                {{ tokenInstructions.bitbucket }}
+                API token is the primary method. SSH keys can be used as a fallback when you do not have credentials.
               </p>
-              <button @click="startTokenConnect" class="px-4 py-2 bg-[var(--primary)] text-white text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
-                <Key class="w-3.5 h-3.5" />
-                Connect to Bitbucket
-              </button>
+              <div class="flex items-center justify-center gap-2 flex-wrap">
+                <button @click="startTokenConnect" class="px-4 py-2 bg-[var(--primary)] text-white text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
+                  <Key class="w-3.5 h-3.5" />
+                  API Token
+                </button>
+                <span class="text-[9px] text-[var(--muted-foreground)]">or</span>
+                <button @click="startBitbucketSshMode" class="px-4 py-2 bg-[var(--secondary)] text-[var(--foreground)] text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
+                  <KeyRound class="w-3.5 h-3.5" />
+                  SSH Key
+                </button>
+              </div>
+            </div>
+
+            <div v-if="needsConnection && bitbucketSshMode" class="space-y-3">
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">SSH URL</div>
+                <input
+                  v-model="bitbucketSshUrl"
+                  placeholder="git@bitbucket.org:workspace/repo.git"
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  @keyup.enter="bitbucketSshUrl = bitbucketSshUrl.trim(); if (bitbucketSshUrl) cloneUrl = bitbucketSshUrl"
+                  autofocus
+                />
+              </div>
+              <p class="text-[9px] text-[var(--muted-foreground)] px-2">
+                Clone over SSH uses your registered key. Manage keys manually at
+                <span class="font-mono">bitbucket.org/account/settings/ssh-keys</span>.
+              </p>
+              <div class="flex justify-end gap-2 mt-2">
+                <button @click="bitbucketSshMode = false; showTokenInput = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+                <button
+                  @click="cloneUrl = bitbucketSshUrl.trim()"
+                  :disabled="!bitbucketSshUrl.trim()"
+                  class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors"
+                >
+                  Use SSH URL
+                </button>
+              </div>
             </div>
 
             <div v-if="needsConnection && showTokenInput" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
-                  <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</div>
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Username</div>
+                <input
+                  v-model="bitbucketUsernameInput"
+                  placeholder="Bitbucket username"
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                />
+              </div>
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">API Token</div>
                 <input
                   v-model="tokenInput"
                   type="password"
-                  placeholder="Bitbucket access token..."
+                  placeholder="API token"
                   class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
                   @keyup.enter="saveToken"
                   autofocus
@@ -1014,7 +1105,7 @@ onMounted(() => {
 
               <div class="flex items-center gap-2 px-2 flex-shrink-0">
                 <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
-                <span class="text-[10px] text-[#10b981]">Connected to Bitbucket</span>
+                <span class="text-[10px] text-[#10b981]">Connected to Bitbucket (API Token)</span>
               </div>
 
               <div v-if="bitbucketError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ bitbucketError }}</div>
@@ -1029,7 +1120,7 @@ onMounted(() => {
                   @click="selectBitbucketRepo(repo)"
                   :class="[
                     'w-full text-left px-3 py-2.5 border-b border-[var(--border)] hover:bg-[var(--primary)]/10 transition-colors',
-                    cloneUrl === repo.clone_url_https ? 'bg-[var(--primary)]/15' : ''
+                    bitbucketSelectedRepo?.full_name === repo.full_name ? 'bg-[var(--primary)]/15' : ''
                   ]"
                 >
                   <div class="flex items-center gap-2">
@@ -1039,6 +1130,27 @@ onMounted(() => {
                   </div>
                   <p v-if="repo.description" class="text-[10px] text-[var(--muted-foreground)] truncate mt-0.5 pl-5">{{ repo.description }}</p>
                 </button>
+              </div>
+
+              <div v-if="bitbucketSelectedRepo" class="flex items-center gap-3 flex-shrink-0">
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Protocol</div>
+                <div class="flex items-center gap-1 bg-[var(--input-background)] border border-[var(--border)] rounded p-0.5">
+                  <button
+                    @click="setBitbucketProtocol('https')"
+                    :class="bitbucketProtocol === 'https' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                    class="px-3 py-1 text-[10px] font-medium rounded transition-colors"
+                  >
+                    API Token (HTTPS)
+                  </button>
+                  <button
+                    @click="setBitbucketProtocol('ssh')"
+                    :disabled="!bitbucketSelectedRepo.clone_url_ssh"
+                    :class="bitbucketProtocol === 'ssh' ? 'bg-[var(--primary)] text-white' : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'"
+                    class="px-3 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-40"
+                  >
+                    SSH (key) Fallback
+                  </button>
+                </div>
               </div>
 
               <div v-if="cloneUrl" class="flex items-center gap-3 flex-shrink-0">

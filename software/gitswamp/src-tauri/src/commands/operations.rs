@@ -158,6 +158,11 @@ pub fn search_bitbucket_repos(
 }
 
 #[tauri::command]
+pub fn verify_bitbucket_token(token: String) -> Result<String, String> {
+    crate::services::git_service::GitService::verify_bitbucket_token(&token)
+}
+
+#[tauri::command]
 pub fn search_azure_repos(
     domain: String,
     token: String,
@@ -197,6 +202,23 @@ pub fn delete_github_ssh_key(token: String, key_id: u64) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn add_bitbucket_ssh_key(token: String, title: String, key: String) -> Result<(), String> {
+    crate::services::git_service::GitService::add_bitbucket_ssh_key(&token, &title, &key)
+}
+
+#[tauri::command]
+pub fn list_bitbucket_ssh_keys(
+    token: String,
+) -> Result<Vec<crate::models::BitbucketSshKey>, String> {
+    crate::services::git_service::GitService::list_bitbucket_ssh_keys(&token)
+}
+
+#[tauri::command]
+pub fn delete_bitbucket_ssh_key(token: String, key_id: String) -> Result<(), String> {
+    crate::services::git_service::GitService::delete_bitbucket_ssh_key(&token, &key_id)
+}
+
+#[tauri::command]
 pub fn verify_github_token(token: String) -> Result<String, String> {
     crate::services::git_service::GitService::verify_github_token(&token)
 }
@@ -207,8 +229,13 @@ pub fn load_ssh_public_key_from_file(file_path: String) -> Result<String, String
 }
 
 #[tauri::command]
-pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
-    crate::services::git_service::GitService::connect_github_oauth_via_gh_cli()
+pub fn github_oauth_start() -> Result<crate::models::GithubDeviceAuth, String> {
+    crate::services::git_service::GitService::github_oauth_start()
+}
+
+#[tauri::command]
+pub fn github_oauth_poll(device_code: String) -> Result<Option<String>, String> {
+    crate::services::git_service::GitService::github_oauth_poll(&device_code)
 }
 
 #[tauri::command]

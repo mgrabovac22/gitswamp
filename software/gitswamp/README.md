@@ -315,11 +315,11 @@ npm run tauri build
 
 ### Supported Providers
 
-- **GitHub** (`github` key): Personal access tokens with `repo` scope
+- **GitHub** (`github` key): Browser sign-in via OAuth device flow, or personal access tokens with `repo` scope (plus `read:org` and `admin:public_key` for organisation search and SSH key upload)
 - **GitHub Enterprise** (`github-enterprise` key): Custom domain support
 - **GitLab.com** (`gitlab` key): Personal access tokens with `read_api` and `read_repository` scopes
 - **GitLab Self-Hosted** (`gitlab-self` key): Custom instance support
-- **Bitbucket** (`bitbucket` key): App passwords with repository read permissions
+- **Bitbucket** (`bitbucket` key): API tokens (Bitbucket username + API token for Git-over-HTTPS Basic auth, or a plain API token sent as a Bearer token for the REST API). SSH key registration is supported as a fallback for HTTPS
 - **Bitbucket Data Center** (`bitbucket-dc` key): HTTP access tokens
 - **Azure DevOps** (`azure` key): Personal access tokens with code read scope
 

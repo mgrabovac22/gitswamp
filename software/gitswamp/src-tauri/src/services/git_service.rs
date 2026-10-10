@@ -5,7 +5,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
 use crate::constants::{
-    AUTH_USER_BITBUCKET, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST, AZURE_LEGACY_HOST,
+    AUTH_USER_BITBUCKET, AUTH_USER_BITBUCKET_API, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST,
+    AZURE_LEGACY_HOST,
     BITBUCKET_HOST, CONFLICT_END, CONFLICT_MID, CONFLICT_START, DEFAULT_BRANCH,
     DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL, GITHUB_HOST,
 };
@@ -17,7 +18,8 @@ use crate::models::{
 use crate::repositories::git_repository::GitRepository;
 use crate::services::diff_service::DiffService;
 use crate::services::helpers::{
-    ahead_behind, build_ref_map, build_remotes, index_status_label, time_ago, wt_status_label,
+    ahead_behind, build_ref_map, build_remotes, index_status_label, split_bitbucket_credentials,
+    time_ago, wt_status_label,
 };
 use crate::services::integration_service::IntegrationService;
 use crate::services::remote_service::RemoteService;
@@ -2126,11 +2128,13 @@ impl GitService {
 
         if let Some(t) = token {
             let tok = t.to_string();
+            let mut https_attempt = 0usize;
             callbacks.credentials(move |remote_url, username_from_url, allowed| {
                 let remote_url_lower = remote_url.to_lowercase();
+                let is_bitbucket = remote_url_lower.contains(BITBUCKET_HOST);
                 let auth_user = if remote_url_lower.contains(GITHUB_HOST) {
                     AUTH_USER_GITHUB
-                } else if remote_url_lower.contains(BITBUCKET_HOST) {
+                } else if is_bitbucket {
                     AUTH_USER_BITBUCKET
                 } else if remote_url_lower.contains(AZURE_HOST)
                     || remote_url_lower.contains(AZURE_LEGACY_HOST)
@@ -2140,13 +2144,43 @@ impl GitService {
                     AUTH_USER_GITLAB
                 };
 
+                let bitbucket_split = split_bitbucket_credentials(remote_url, &tok);
+                let secret = bitbucket_split
+                    .as_ref()
+                    .map(|(_, secret)| secret.clone())
+                    .unwrap_or_else(|| tok.clone());
+
+                let mut users: Vec<String> = Vec::new();
+                if let Some((user, _)) = &bitbucket_split {
+                    users.push(user.clone());
+                }
+                if is_bitbucket {
+                    users.push(AUTH_USER_BITBUCKET_API.to_string());
+                    users.push(AUTH_USER_BITBUCKET.to_string());
+                }
+                if users.is_empty() {
+                    users.push(
+                        username_from_url
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| auth_user.to_string()),
+                    );
+                }
+
                 if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-                    let user = username_from_url.unwrap_or(auth_user);
-                    return git2::Cred::userpass_plaintext(user, &tok);
+                    let user = users
+                        .get(https_attempt)
+                        .or_else(|| users.last())
+                        .cloned()
+                        .unwrap_or_else(|| auth_user.to_string());
+                    https_attempt = https_attempt.saturating_add(1);
+                    return git2::Cred::userpass_plaintext(&user, &secret);
                 }
                 if allowed.contains(git2::CredentialType::USERNAME) {
-                    let user = username_from_url.unwrap_or(auth_user);
-                    return git2::Cred::username(user);
+                    let user = users.get(https_attempt).or_else(|| users.last()).cloned();
+                    if let Some(user) = user {
+                        return git2::Cred::username(&user);
+                    }
+                    return git2::Cred::username(auth_user);
                 }
                 git2::Cred::default()
             });
@@ -2975,6 +3009,20 @@ impl GitService {
         IntegrationService::delete_github_ssh_key(token, key_id)
     }
 
+    pub fn add_bitbucket_ssh_key(token: &str, title: &str, key: &str) -> Result<(), String> {
+        IntegrationService::add_bitbucket_ssh_key(token, title, key)
+    }
+
+    pub fn list_bitbucket_ssh_keys(
+        token: &str,
+    ) -> Result<Vec<crate::models::BitbucketSshKey>, String> {
+        IntegrationService::list_bitbucket_ssh_keys(token)
+    }
+
+    pub fn delete_bitbucket_ssh_key(token: &str, key_id: &str) -> Result<(), String> {
+        IntegrationService::delete_bitbucket_ssh_key(token, key_id)
+    }
+
     pub fn verify_github_token(token: &str) -> Result<String, String> {
         IntegrationService::verify_github_token(token)
     }
@@ -2983,12 +3031,20 @@ impl GitService {
         IntegrationService::load_ssh_public_key_from_file(file_path)
     }
 
-    pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
-        IntegrationService::connect_github_oauth_via_gh_cli()
+    pub fn github_oauth_start() -> Result<crate::models::GithubDeviceAuth, String> {
+        IntegrationService::github_oauth_start()
+    }
+
+    pub fn github_oauth_poll(device_code: &str) -> Result<Option<String>, String> {
+        IntegrationService::github_oauth_poll(device_code)
     }
 
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
         IntegrationService::verify_gitlab_token(domain, token)
+    }
+
+    pub fn verify_bitbucket_token(token: &str) -> Result<String, String> {
+        IntegrationService::verify_bitbucket_token(token)
     }
 
     pub fn get_available_external_editors() -> Vec<String> {

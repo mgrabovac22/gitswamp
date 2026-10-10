@@ -1,5 +1,6 @@
 pub mod azure;
 pub mod bitbucket;
+pub mod bitbucket_ssh_key;
 pub mod branch;
 pub mod commit;
 pub mod commit_file;
@@ -19,6 +20,7 @@ pub mod tag;
 
 pub use azure::AzureRepo;
 pub use bitbucket::BitbucketRepo;
+pub use bitbucket_ssh_key::BitbucketSshKey;
 pub use branch::BranchInfo;
 pub use commit::CommitInfo;
 pub use commit_file::CommitFileInfo;
@@ -27,7 +29,7 @@ pub use diff::{DiffHunk, DiffLine, FileDiff};
 pub use file_blame_line::FileBlameLine;
 pub use file_status::FileStatusInfo;
 pub use ghost_branch_state::GhostBranchState;
-pub use github::GithubRepo;
+pub use github::{GithubDeviceAuth, GithubRepo};
 pub use github_ssh_key::GithubSshKey;
 pub use gitlab::GitlabRepo;
 pub use lost_commit::LostCommitInfo;

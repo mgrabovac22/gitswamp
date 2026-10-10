@@ -6,13 +6,18 @@ use std::path::{Path, PathBuf};
 use std::os::windows::process::CommandExt;
 
 use crate::constants::{
-    API_AZURE_REPOS_PATH, API_BITBUCKET_LIST_REPOS, API_GITHUB_LIST_REPOS, API_GITHUB_SEARCH_REPOS,
-    API_GITHUB_USER_KEYS_PATH, API_GITHUB_USER_PATH, API_GITLAB_BASE_PATH,
-    API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT, AZURE_HOST, AZURE_LEGACY_HOST,
-    GITHUB_ACCEPT_HEADER, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
+    API_AZURE_REPOS_PATH, API_BITBUCKET_USER_PATH, API_BITBUCKET_USER_SSH_KEYS_FMT,
+    API_BITBUCKET_WORKSPACES, API_BITBUCKET_WORKSPACE_REPOS_FMT, API_GITHUB_LIST_REPOS,
+    API_GITHUB_SEARCH_REPOS, API_GITHUB_USER_KEYS_PATH, API_GITHUB_USER_PATH,
+    API_GITLAB_BASE_PATH, API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT,
+    AZURE_HOST, AZURE_LEGACY_HOST, GITHUB_ACCEPT_HEADER, GITHUB_OAUTH_ACCESS_TOKEN_URL,
+    GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_DEVICE_CODE_URL, GITHUB_OAUTH_SCOPES, HTTPS_SCHEME,
+    JSON_ACCEPT_HEADER,
 };
-use crate::models::{AzureRepo, BitbucketRepo, GithubRepo, GithubSshKey, GitlabRepo};
-use crate::services::helpers::urlencoded;
+use crate::models::{
+    AzureRepo, BitbucketRepo, BitbucketSshKey, GithubDeviceAuth, GithubRepo, GithubSshKey, GitlabRepo,
+};
+use crate::services::helpers::{split_bitbucket_credentials, urlencoded};
 
 #[cfg(windows)]
 use crate::constants::CREATE_NO_WINDOW;
@@ -90,6 +95,41 @@ impl IntegrationService {
         let payload = format!("{}:{}", username, password);
         let encoded = Self::base64_encode(payload.as_bytes());
         format!("Basic {}", encoded)
+    }
+
+    fn bitbucket_auth_header(token: &str) -> String {
+        let secret = match split_bitbucket_credentials(API_BITBUCKET_USER_PATH, token) {
+            Some((_user, secret)) => secret,
+            None => token.trim().to_string(),
+        };
+        format!("Bearer {}", secret.trim())
+    }
+
+    fn bitbucket_ssh_keys_url(account_id: &str) -> String {
+        API_BITBUCKET_USER_SSH_KEYS_FMT.replace("{}", account_id)
+    }
+
+    fn bitbucket_account_id(auth_header: &str) -> Result<String, String> {
+        let resp = ureq::get(API_BITBUCKET_USER_PATH)
+            .set("Authorization", auth_header)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| format!("Bitbucket account lookup failed: {}", e))?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        body["username"]
+            .as_str()
+            .or_else(|| body["uuid"].as_str())
+            .map(|value| value.to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "Bitbucket did not return an account username. The credential may lack the account scope."
+                    .to_string()
+            })
     }
 
     fn azure_api_base_url(domain: &str) -> Result<String, String> {
@@ -282,27 +322,34 @@ impl IntegrationService {
         Ok(repos)
     }
 
-    pub fn search_bitbucket_repos(token: &str, query: &str) -> Result<Vec<BitbucketRepo>, String> {
-        let mut url = API_BITBUCKET_LIST_REPOS.to_string();
-        if !query.trim().is_empty() {
-            url.push_str("&q=name~\"");
-            url.push_str(&urlencoded(query.trim()));
-            url.push('"');
+    fn parse_api_error_message(body: &str) -> String {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(text) = value["error"]["message"].as_str() {
+                return text.to_string();
+            }
+            if let Some(text) = value["message"].as_str() {
+                return text.to_string();
+            }
         }
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            "no response body".to_string()
+        } else {
+            trimmed.chars().take(300).collect()
+        }
+    }
 
-        let resp = ureq::get(&url)
-            .set("Authorization", &format!("Bearer {}", token))
-            .set("Accept", JSON_ACCEPT_HEADER)
-            .set("User-Agent", APP_USER_AGENT)
-            .call()
-            .map_err(|e| format!("Bitbucket API error: {}", e))?;
+    fn bitbucket_token_hint(status: u16) -> &'static str {
+        match status {
+            401 => " The API token was rejected. Enter your Bitbucket username and an API token (Basic auth) for Git, or a bare API token (sent as a Bearer token) for API calls. The token needs the 'read:repository:bitbucket' and 'read:user:bitbucket' scopes.",
+            403 => " The API token is valid but lacks the required scopes/permissions. Add the 'read:repository:bitbucket', 'read:workspace:bitbucket' and 'read:user:bitbucket' (plus 'account' for SSH keys) scopes to your token.",
+            _ => "",
+        }
+    }
 
-        let body: serde_json::Value = resp
-            .into_json()
-            .map_err(|e| format!("JSON parse error: {}", e))?;
-
+    fn parse_bitbucket_repos(body: &serde_json::Value) -> Vec<BitbucketRepo> {
         let items = body["values"].as_array().cloned().unwrap_or_default();
-        let repos = items
+        items
             .iter()
             .filter_map(|item| {
                 let (clone_url_https, clone_url_ssh) = Self::extract_bitbucket_clone_urls(item);
@@ -315,9 +362,165 @@ impl IntegrationService {
                     stars: 0,
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    fn bitbucket_user_workspaces(auth: &str) -> Result<Vec<String>, String> {
+        let resp = match ureq::get(API_BITBUCKET_WORKSPACES)
+            .set("Authorization", auth)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(format!(
+                    "Bitbucket workspace lookup failed (HTTP {}): {}.{}",
+                    status,
+                    Self::parse_api_error_message(&body),
+                    Self::bitbucket_token_hint(status)
+                ));
+            }
+            Err(e) => return Err(format!("Bitbucket workspace lookup failed: {}", e)),
+        };
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        let items = body["values"].as_array().cloned().unwrap_or_default();
+        Ok(items
+            .iter()
+            .filter_map(|ws| {
+                ws["workspace"]["slug"]
+                    .as_str()
+                    .or_else(|| ws["slug"].as_str())
+                    .or_else(|| ws["workspace"]["uuid"].as_str())
+                    .or_else(|| ws["uuid"].as_str())
+                    .map(|slug| slug.to_string())
+            })
+            .collect())
+    }
+
+    fn bitbucket_workspace_repos(
+        auth: &str,
+        workspace: &str,
+        query: &str,
+    ) -> Result<Vec<BitbucketRepo>, String> {
+        let mut url = API_BITBUCKET_WORKSPACE_REPOS_FMT.replace("{}", &urlencoded(workspace));
+        if !query.trim().is_empty() {
+            url.push_str("&q=");
+            url.push_str(&urlencoded(&format!("name~\"{}\"", query.trim())));
+        }
+
+        let resp = match ureq::get(&url)
+            .set("Authorization", auth)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(format!(
+                    "Bitbucket repository lookup failed (HTTP {}): {}.{}",
+                    status,
+                    Self::parse_api_error_message(&body),
+                    Self::bitbucket_token_hint(status)
+                ));
+            }
+            Err(e) => {
+                return Err(format!("Bitbucket repository lookup failed: {}", e));
+            }
+        };
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        Ok(Self::parse_bitbucket_repos(&body))
+    }
+
+    fn bitbucket_personal_workspace(auth: &str) -> Option<String> {
+        let resp = ureq::get(API_BITBUCKET_USER_PATH)
+            .set("Authorization", auth)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .ok()?;
+        let body: serde_json::Value = resp.into_json().ok()?;
+        body["nickname"]
+            .as_str()
+            .or_else(|| body["username"].as_str())
+            .map(|slug| slug.to_string())
+    }
+
+    pub fn search_bitbucket_repos(token: &str, query: &str) -> Result<Vec<BitbucketRepo>, String> {
+        let auth = Self::bitbucket_auth_header(token);
+        let workspaces_result = Self::bitbucket_user_workspaces(&auth);
+
+        let mut workspaces = workspaces_result.clone().unwrap_or_default();
+        if workspaces.is_empty() {
+            if let Some(personal) = Self::bitbucket_personal_workspace(&auth) {
+                workspaces.push(personal);
+            }
+        }
+
+        let mut repos = Vec::new();
+        let mut last_error: Option<String> = None;
+        for workspace in &workspaces {
+            match Self::bitbucket_workspace_repos(&auth, workspace, query) {
+                Ok(mut found) => repos.append(&mut found),
+                Err(e) => last_error = Some(e),
+            }
+        }
+
+        if repos.is_empty() {
+            if let Some(e) = last_error {
+                return Err(e);
+            }
+            if let Err(e) = workspaces_result {
+                return Err(e);
+            }
+        }
 
         Ok(repos)
+    }
+
+    pub fn verify_bitbucket_token(token: &str) -> Result<String, String> {
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err("Bitbucket token is required.".to_string());
+        }
+
+        let resp = match ureq::get(API_BITBUCKET_USER_PATH)
+            .set("Authorization", &Self::bitbucket_auth_header(token_trimmed))
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(format!(
+                    "Bitbucket token check failed (HTTP {}): {}.{}",
+                    status,
+                    Self::parse_api_error_message(&body),
+                    Self::bitbucket_token_hint(status)
+                ));
+            }
+            Err(e) => return Err(format!("Bitbucket token check failed: {}", e)),
+        };
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let account = body["display_name"]
+            .as_str()
+            .or_else(|| body["nickname"].as_str())
+            .or_else(|| body["username"].as_str())
+            .unwrap_or("unknown");
+        Ok(account.to_string())
     }
 
     pub fn search_azure_repos(
@@ -624,6 +827,152 @@ impl IntegrationService {
         }
     }
 
+    pub fn add_bitbucket_ssh_key(token: &str, title: &str, key: &str) -> Result<(), String> {
+        if token.trim().is_empty() {
+            return Err("Bitbucket credential is required to add an SSH key.".to_string());
+        }
+
+        let auth = Self::bitbucket_auth_header(token);
+        let account_id = Self::bitbucket_account_id(&auth)?;
+        let url = Self::bitbucket_ssh_keys_url(&account_id);
+
+        let normalized_key = Self::normalize_ssh_public_key(key)?;
+        let label = if title.trim().is_empty() {
+            "gitswamp"
+        } else {
+            title.trim()
+        };
+
+        let body = serde_json::json!({
+            "key": normalized_key,
+            "label": label,
+        });
+
+        let result = ureq::post(&url)
+            .set("Authorization", &auth)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("Content-Type", "application/json")
+            .set("User-Agent", APP_USER_AGENT)
+            .send_json(&body);
+
+        match result {
+            Ok(resp) => {
+                if resp.status() == 200 || resp.status() == 201 {
+                    Ok(())
+                } else {
+                    Err(format!("Bitbucket returned status {}", resp.status()))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                let body_lower = body.to_lowercase();
+                if code == 403 {
+                    return Err(
+                        "Bitbucket rejected SSH key creation. The API token needs the 'account' scope (Account: Write) and must resolve to your account."
+                            .to_string(),
+                    );
+                }
+                if body_lower.contains("already")
+                    || body_lower.contains("fingerprint")
+                    || code == 409
+                {
+                    return Ok(());
+                }
+                Err(format!(
+                    "Bitbucket error ({}): {}.{}",
+                    code,
+                    Self::parse_api_error_message(&body),
+                    Self::bitbucket_token_hint(code)
+                ))
+            }
+            Err(e) => Err(format!("Failed to add Bitbucket SSH key: {}", e)),
+        }
+    }
+
+    pub fn list_bitbucket_ssh_keys(token: &str) -> Result<Vec<BitbucketSshKey>, String> {
+        if token.trim().is_empty() {
+            return Err("Bitbucket credential is required to list SSH keys.".to_string());
+        }
+
+        let auth = Self::bitbucket_auth_header(token);
+        let account_id = Self::bitbucket_account_id(&auth)?;
+        let url = Self::bitbucket_ssh_keys_url(&account_id);
+
+        let resp = ureq::get(&url)
+            .set("Authorization", &auth)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+            .map_err(|e| match e {
+                ureq::Error::Status(status, _) => {
+                    format!("Bitbucket SSH key list failed (HTTP {})", status)
+                }
+                other => format!("Bitbucket SSH key list failed: {}", other),
+            })?;
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let items = body["values"].as_array().cloned().unwrap_or_default();
+        let keys = items
+            .iter()
+            .filter_map(|item| {
+                Some(BitbucketSshKey {
+                    uuid: item["uuid"].as_str().unwrap_or("").to_string(),
+                    label: item["label"].as_str().unwrap_or("Untitled").to_string(),
+                    key: item["key"].as_str().unwrap_or("").to_string(),
+                    fingerprint: item["fingerprint"].as_str().unwrap_or("").to_string(),
+                    created_on: item["created_on"].as_str().unwrap_or("").to_string(),
+                })
+            })
+            .collect();
+
+        Ok(keys)
+    }
+
+    pub fn delete_bitbucket_ssh_key(token: &str, key_id: &str) -> Result<(), String> {
+        if token.trim().is_empty() {
+            return Err("Bitbucket credential is required to delete an SSH key.".to_string());
+        }
+        if key_id.trim().is_empty() {
+            return Err("A valid Bitbucket SSH key id is required.".to_string());
+        }
+
+        let auth = Self::bitbucket_auth_header(token);
+        let account_id = Self::bitbucket_account_id(&auth)?;
+        let url = format!(
+            "{}/{}",
+            Self::bitbucket_ssh_keys_url(&account_id),
+            key_id.trim()
+        );
+
+        let result = ureq::delete(&url)
+            .set("Authorization", &auth)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call();
+
+        match result {
+            Ok(resp) => {
+                if resp.status() == 204 || resp.status() == 200 || resp.status() == 202 {
+                    Ok(())
+                } else {
+                    Err(format!("Bitbucket returned status {}", resp.status()))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                if body.trim().is_empty() {
+                    Err(format!("Bitbucket returned status {}", code))
+                } else {
+                    Err(format!("Bitbucket error ({}): {}", code, body))
+                }
+            }
+            Err(e) => Err(format!("Failed to delete Bitbucket SSH key: {}", e)),
+        }
+    }
+
     pub fn verify_github_token(token: &str) -> Result<String, String> {
         let token_trimmed = token.trim();
         if token_trimmed.is_empty() {
@@ -687,100 +1036,111 @@ impl IntegrationService {
         Self::normalize_ssh_public_key(&key_text)
     }
 
-    pub fn connect_github_oauth_via_gh_cli() -> Result<String, String> {
-        let gh_binary = Self::find_command_in_path(&["gh.exe", "gh"]).ok_or_else(|| {
-            "GitHub CLI (gh) was not found. Install it to use OAuth sign-in.".to_string()
-        })?;
-
-        let mut login_cmd = std::process::Command::new(&gh_binary);
-        login_cmd.args([
-            "auth",
-            "login",
-            "--hostname",
-            "github.com",
-            "--web",
-            "--git-protocol",
-            "ssh",
-            "--skip-ssh-key",
-            "--scopes",
-            "repo,read:org,admin:public_key",
-        ]);
-
-        #[cfg(windows)]
-        login_cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let login_output = login_cmd
-            .output()
-            .map_err(|e| format!("Failed to start GitHub CLI login: {}", e))?;
-
-        if !login_output.status.success() {
-            let stderr = String::from_utf8_lossy(&login_output.stderr)
-                .trim()
-                .to_string();
-            let stdout = String::from_utf8_lossy(&login_output.stdout)
-                .trim()
-                .to_string();
-            let details = if !stderr.is_empty() { stderr } else { stdout };
-            if details.is_empty() {
-                return Err("GitHub OAuth login failed via GitHub CLI.".to_string());
+    pub fn github_oauth_start() -> Result<GithubDeviceAuth, String> {
+        let resp = match ureq::post(GITHUB_OAUTH_DEVICE_CODE_URL)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .send_form(&[
+                ("client_id", GITHUB_OAUTH_CLIENT_ID),
+                ("scope", GITHUB_OAUTH_SCOPES),
+            ]) {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(format!(
+                    "GitHub device flow could not be started (HTTP {}): {}",
+                    status,
+                    Self::parse_api_error_message(&body)
+                ));
             }
-            return Err(format!(
-                "GitHub OAuth login failed via GitHub CLI: {}",
-                details
-            ));
-        }
-
-        // Best-effort scope refresh in case user already had an existing gh session.
-        let mut refresh_cmd = std::process::Command::new(&gh_binary);
-        refresh_cmd.args([
-            "auth",
-            "refresh",
-            "--hostname",
-            "github.com",
-            "--scopes",
-            "repo,read:org,admin:public_key",
-        ]);
-
-        #[cfg(windows)]
-        refresh_cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let _ = refresh_cmd.output();
-
-        let mut token_cmd = std::process::Command::new(&gh_binary);
-        token_cmd.args(["auth", "token", "--hostname", "github.com"]);
-
-        #[cfg(windows)]
-        token_cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let token_output = token_cmd
-            .output()
-            .map_err(|e| format!("Failed to read token from GitHub CLI: {}", e))?;
-
-        if !token_output.status.success() {
-            let stderr = String::from_utf8_lossy(&token_output.stderr)
-                .trim()
-                .to_string();
-            let stdout = String::from_utf8_lossy(&token_output.stdout)
-                .trim()
-                .to_string();
-            let details = if !stderr.is_empty() { stderr } else { stdout };
-            if details.is_empty() {
-                return Err("GitHub CLI could not return an OAuth token.".to_string());
+            Err(e) => {
+                return Err(format!("GitHub device flow could not be started: {}", e));
             }
-            return Err(format!(
-                "GitHub CLI could not return an OAuth token: {}",
-                details
-            ));
-        }
+        };
 
-        let token = String::from_utf8_lossy(&token_output.stdout)
-            .trim()
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let device_code = body["device_code"].as_str().unwrap_or_default().to_string();
+        let user_code = body["user_code"].as_str().unwrap_or_default().to_string();
+        let verification_uri = body["verification_uri"]
+            .as_str()
+            .unwrap_or("https://github.com/login/device")
             .to_string();
-        if token.is_empty() {
-            return Err("GitHub CLI returned an empty OAuth token.".to_string());
+
+        if device_code.is_empty() || user_code.is_empty() {
+            let reason = body["error"]
+                .as_str()
+                .map(|err| {
+                    body["error_description"]
+                        .as_str()
+                        .map(|desc| format!("{}: {}", err, desc))
+                        .unwrap_or_else(|| err.to_string())
+                })
+                .unwrap_or_else(|| "unexpected response".to_string());
+            return Err(format!(
+                "GitHub device flow could not be started: {}",
+                reason
+            ));
         }
 
-        Ok(token)
+        Ok(GithubDeviceAuth {
+            device_code,
+            user_code,
+            verification_uri,
+            expires_in: body["expires_in"].as_u64().unwrap_or(900),
+            interval: body["interval"].as_u64().unwrap_or(5),
+        })
+    }
+
+    pub fn github_oauth_poll(device_code: &str) -> Result<Option<String>, String> {
+        if device_code.trim().is_empty() {
+            return Err("Missing device code for GitHub OAuth polling.".to_string());
+        }
+
+        let resp = match ureq::post(GITHUB_OAUTH_ACCESS_TOKEN_URL)
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .send_form(&[
+                ("client_id", GITHUB_OAUTH_CLIENT_ID),
+                ("device_code", device_code),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ]) {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(format!(
+                    "GitHub OAuth polling failed (HTTP {}): {}",
+                    status,
+                    Self::parse_api_error_message(&body)
+                ));
+            }
+            Err(e) => return Err(format!("GitHub OAuth polling failed: {}", e)),
+        };
+
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        if let Some(token) = body["access_token"].as_str() {
+            if !token.is_empty() {
+                return Ok(Some(token.to_string()));
+            }
+        }
+
+        match body["error"].as_str() {
+            Some("authorization_pending") | Some("slow_down") => Ok(None),
+            Some("expired_token") => Err(
+                "The GitHub login code expired. Please start the connection again.".to_string(),
+            ),
+            Some("access_denied") => Err("Authorization was denied in the browser.".to_string()),
+            Some(other) => Err(format!(
+                "GitHub OAuth error: {}",
+                body["error_description"].as_str().unwrap_or(other)
+            )),
+            None => Err("Unexpected response while polling GitHub for authorization.".to_string()),
+        }
     }
 
     pub fn verify_gitlab_token(domain: &str, token: &str) -> Result<String, String> {
