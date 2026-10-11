@@ -650,7 +650,7 @@ function handleRefreshState() {
             @unstage="props.git.unstageFile($event)"
             @stage-all="props.git.stageAll()"
             @unstage-all="props.git.unstageAll()"
-            @commit="props.git.commitChanges($event)"
+            @commit="props.git.commitChanges($event.message, $event.allowEmpty)"
             @abort-merge="abortCurrentMerge"
             @amend-commit="handleAmendCommit($event)"
             @discard="scheduleDiscardFile($event)"

@@ -64,11 +64,11 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function commitChanges(message: string) {
+  async function commitChanges(message: string, allowEmpty = false) {
     if (!state.repoPath.value) return;
     const wasMerge = state.repositoryOperation.value?.kind === "merge";
     try {
-      await callTauri("create_commit", { path: state.repoPath.value, message });
+      await callTauri("create_commit", { path: state.repoPath.value, message, allowEmpty });
       await Promise.all([
         refresh.refreshCommits(),
         refresh.refreshStatus(),

@@ -36,6 +36,10 @@ import {
   storeDestructiveUndoEnabled,
 } from "@/shared/config/undoPreferences";
 import {
+  getStoredAllowEmptyCommit,
+  storeAllowEmptyCommit,
+} from "@/shared/config/emptyCommitPreferences";
+import {
   BACKGROUND_MAINTENANCE_EVENT,
   DEFAULT_BACKGROUND_MAINTENANCE_SETTINGS,
   getStoredBackgroundMaintenanceSettings,
@@ -205,6 +209,7 @@ const smartGitignoreWizardEnabled = ref(true);
 const bugAutopsyEnabled = ref(false);
 const identityGuardEnabled = ref(false);
 const destructiveUndoEnabled = ref(true);
+const allowEmptyCommit = ref(false);
 const commitAnalyzerEnabled = ref(true);
 const disableGraphAnimations = ref(false);
 const smoothGraphScroll = ref(false);
@@ -2003,6 +2008,7 @@ onMounted(() => {
   bugAutopsyEnabled.value = getStoredBugAutopsyEnabled();
   identityGuardEnabled.value = getStoredIdentityGuardEnabled();
   destructiveUndoEnabled.value = getStoredDestructiveUndoEnabled();
+  allowEmptyCommit.value = getStoredAllowEmptyCommit();
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
   const backgroundMaintenanceSettings = getStoredBackgroundMaintenanceSettings();
   backgroundHealthRefreshEnabled.value = backgroundMaintenanceSettings.healthRefreshEnabled;
@@ -2130,6 +2136,13 @@ watch(identityGuardEnabled, (value) => {
     return;
   }
   storeIdentityGuardEnabled(value);
+});
+
+watch(allowEmptyCommit, (value) => {
+  if (isHydrating) {
+    return;
+  }
+  storeAllowEmptyCommit(value);
 });
 
 watch([
@@ -3124,6 +3137,16 @@ watch(activePlatform, () => {
                   </div>
                   <button @click="commitAnalyzerEnabled = !commitAnalyzerEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="commitAnalyzerEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="commitAnalyzerEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <div class="text-xs font-medium text-[var(--foreground)]">Allow Empty Commit</div>
+                    <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Let Commit Changes run with nothing staged. Default off.</p>
+                  </div>
+                  <button @click="allowEmptyCommit = !allowEmptyCommit" class="relative w-10 h-5 rounded-full transition-colors" :class="allowEmptyCommit ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
+                    <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="allowEmptyCommit ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
                   </button>
                 </div>
               </div>

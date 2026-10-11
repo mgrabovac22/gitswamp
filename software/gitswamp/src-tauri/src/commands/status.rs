@@ -37,10 +37,16 @@ pub async fn unstage_files(path: String, file_paths: Vec<String>) -> Result<(), 
 }
 
 #[tauri::command]
-pub async fn create_commit(path: String, message: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || GitService::create_commit(&path, &message))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn create_commit(
+    path: String,
+    message: String,
+    allow_empty: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::create_commit_with_options(&path, &message, allow_empty.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

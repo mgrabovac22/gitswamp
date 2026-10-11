@@ -14,7 +14,6 @@ export function storeSmartGitignoreWizardEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(SMART_GITIGNORE_WIZARD_STORAGE_KEY, String(enabled));
   } catch {
-    // Storage can fail in restricted contexts; the in-memory event still keeps the UI responsive.
   }
 
   globalThis.dispatchEvent(new CustomEvent(SMART_GITIGNORE_WIZARD_EVENT, { detail: enabled }));

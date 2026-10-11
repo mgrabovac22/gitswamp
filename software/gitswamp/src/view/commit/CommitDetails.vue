@@ -43,6 +43,10 @@ import {
   COMMIT_ANALYZER_SETTINGS_EVENT,
   getStoredCommitAnalyzerSettings,
 } from "@/shared/config/commitAnalyzerPreferences";
+import {
+  ALLOW_EMPTY_COMMIT_EVENT,
+  getStoredAllowEmptyCommit,
+} from "@/shared/config/emptyCommitPreferences";
 import type { ManualBisectDetailsState } from "@/features/repository/manual-bisect/useManualBisect";
 import type {
   AmendCommitOptions,
@@ -83,7 +87,7 @@ const emit = defineEmits<{
   unstage: [path: string];
   stageAll: [];
   unstageAll: [];
-  commit: [message: string];
+  commit: [payload: { message: string; allowEmpty: boolean }];
   abortMerge: [];
   amendCommit: [options: AmendCommitOptions];
   "update:amendModeRequested": [value: boolean];
@@ -105,6 +109,7 @@ const emit = defineEmits<{
 
 const commitSummary = ref("");
 const commitDescription = ref("");
+const allowEmptyCommit = ref(getStoredAllowEmptyCommit());
 const amendPreviousCommit = ref(false);
 const amendResetAuthor = ref(false);
 const amendSignoff = ref(false);
@@ -537,7 +542,7 @@ const canSubmitCommit = computed(() => {
   if (amendPreviousCommit.value) {
     return !!props.headCommit && amendHasChanges.value;
   }
-  return props.stagedFiles.length > 0;
+  return props.stagedFiles.length > 0 || mergeInProgress.value || allowEmptyCommit.value;
 });
 
 const commitLintIndicator = computed<"none" | "warning" | "error">(() => {
@@ -1049,6 +1054,11 @@ function queueCommitLintAnalysis() {
 function handleCommitAnalyzerSettingsChanged() {
   refreshCommitAnalyzerSettings();
   queueCommitLintAnalysis();
+}
+
+function handleAllowEmptyCommitChanged(event: Event) {
+  const detail = (event as CustomEvent<boolean>).detail;
+  allowEmptyCommit.value = typeof detail === "boolean" ? detail : getStoredAllowEmptyCommit();
 }
 
 function formatDate(timestamp: number) {
@@ -1723,7 +1733,10 @@ function onCommit() {
     return;
   }
 
-  emit("commit", message);
+  emit("commit", {
+    message,
+    allowEmpty: allowEmptyCommit.value && props.stagedFiles.length === 0 && !mergeInProgress.value,
+  });
   commitSummary.value = "";
   commitDescription.value = "";
 }
@@ -1884,6 +1897,7 @@ onMounted(() => {
   globalThis.addEventListener("resize", updateCommitFloatingPanels);
   globalThis.addEventListener("scroll", updateCommitFloatingPanels, true);
   globalThis.addEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
+  globalThis.addEventListener(ALLOW_EMPTY_COMMIT_EVENT, handleAllowEmptyCommitChanged as EventListener);
   updateCompactWorkingLabel();
 });
 
@@ -1985,6 +1999,7 @@ onUnmounted(() => {
   globalThis.removeEventListener("resize", updateCommitFloatingPanels);
   globalThis.removeEventListener("scroll", updateCommitFloatingPanels, true);
   globalThis.removeEventListener(COMMIT_ANALYZER_SETTINGS_EVENT, handleCommitAnalyzerSettingsChanged as EventListener);
+  globalThis.removeEventListener(ALLOW_EMPTY_COMMIT_EVENT, handleAllowEmptyCommitChanged as EventListener);
 });
 </script>
 

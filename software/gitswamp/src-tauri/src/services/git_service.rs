@@ -1632,7 +1632,16 @@ impl GitService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn create_commit(path: &str, message: &str) -> Result<String, String> {
+        Self::create_commit_with_options(path, message, false)
+    }
+
+    pub fn create_commit_with_options(
+        path: &str,
+        message: &str,
+        allow_empty: bool,
+    ) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let is_merge = repo.state() == git2::RepositoryState::Merge;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
@@ -1646,6 +1655,11 @@ impl GitService {
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let head_parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+
+        if !allow_empty && !is_merge && tree_oid == head_parent.tree_id() {
+            return Err("No changes staged for commit.".to_string());
+        }
+
         let mut parent_ids = HashSet::new();
         parent_ids.insert(head_parent.id());
         let mut parents = vec![head_parent];
@@ -3190,6 +3204,35 @@ mod tests {
         let commits = GitService::commits(&path_str, 10).expect("list commits");
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].message, "Initial commit");
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn create_commit_rejects_empty_commit_unless_allowed() {
+        let path = unique_temp_repo_path("empty-commit-guard");
+        std::fs::create_dir_all(&path).expect("create temp repo dir");
+        let path_str = path.to_string_lossy().to_string();
+
+        Repository::init(&path).expect("init repo");
+        GitService::initialize_empty_repo(&path_str).expect("initialize empty repo");
+
+        let before = GitService::repo_info(&path_str)
+            .expect("repo info before")
+            .head_sha;
+
+        let blocked = GitService::create_commit_with_options(&path_str, "empty", false);
+        assert_eq!(
+            blocked.expect_err("empty commit should be rejected"),
+            "No changes staged for commit."
+        );
+
+        let oid = GitService::create_commit_with_options(&path_str, "empty allowed", true)
+            .expect("empty commit should succeed when explicitly allowed");
+        assert_ne!(before, Some(oid));
+
+        let commits = GitService::commits(&path_str, 10).expect("list commits");
+        assert_eq!(commits[0].message, "empty allowed");
 
         let _ = std::fs::remove_dir_all(&path);
     }
