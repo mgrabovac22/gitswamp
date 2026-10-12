@@ -196,9 +196,9 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
       const result = await callTauri<string>("run_git_command", {
         path: state.repoPath.value,
-        args: ["merge", sourceRef],
+        args: ["merge", "--no-ff", "--no-edit", sourceRef],
       });
-      state.terminalOutput.value.push(`$ git checkout ${target}\n$ git merge ${sourceRef}\n` + (result || "(done)"));
+      state.terminalOutput.value.push(`$ git checkout ${target}\n$ git merge --no-ff --no-edit ${sourceRef}\n` + (result || "(done)"));
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
       toast.success(`Merged ${sourceRef} into ${target}`);
