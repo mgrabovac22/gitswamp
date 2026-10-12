@@ -74,6 +74,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
       { id: "conflict-view", label: "Usual Conflict Suspects", keys: "Alt+5" },
       { id: "burnout-view", label: "Burnout Analytics", keys: "Alt+6" },
       { id: "city-view", label: "Repository City", keys: "Alt+7" },
+      { id: "fast-scripts-view", label: "Fast Scripts", keys: "Alt+8" },
     ],
   },
   {

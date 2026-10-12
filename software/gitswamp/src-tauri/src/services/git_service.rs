@@ -1799,6 +1799,10 @@ impl GitService {
         RemoteService::run_shell_command(path, command)
     }
 
+    pub fn run_fast_script(path: &str, script_type: &str, body: &str) -> Result<String, String> {
+        RemoteService::run_fast_script(path, script_type, body)
+    }
+
     pub fn remove_cached_all(path: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;

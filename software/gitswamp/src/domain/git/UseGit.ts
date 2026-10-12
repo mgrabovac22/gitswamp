@@ -356,6 +356,7 @@ export function useGit() {
     searchCommits: refresh.searchCommits,
     clearSearch: refresh.clearSearch,
     runTerminalCommand: terminal.runTerminalCommand,
+    runFastScript: terminal.runFastScript,
     searchGithubRepos: repo.searchGithubRepos,
     refreshGhostBranchState: ghost.refreshGhostBranchState,
     startGhostBranch: ghost.startGhostBranch,

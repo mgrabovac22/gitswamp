@@ -588,6 +588,10 @@ impl RemoteService {
         GitRepository::run_shell_command(path, command)
     }
 
+    pub fn run_fast_script(path: &str, script_type: &str, body: &str) -> Result<String, String> {
+        GitRepository::run_fast_script(path, script_type, body)
+    }
+
     pub fn rename_branch(path: &str, old_name: &str, new_name: &str) -> Result<String, String> {
         GitRepository::git_cli(path, &["branch", "-m", old_name, new_name])
     }

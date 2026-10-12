@@ -25,7 +25,7 @@ import type {
   RemoteUserInfo,
 } from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 interface RemoteCreateOptions {
@@ -44,6 +44,7 @@ const CommitConflictHeatmapPanel = defineAsyncComponent(() => import("@/view/com
 const CommitBurnoutAnalyticsPanel = defineAsyncComponent(() => import("@/view/commit/CommitBurnoutAnalyticsPanel.vue"));
 const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository/RemoteInsightsPanel.vue"));
 const LostFoundPanel = defineAsyncComponent(() => import("@/view/repository/LostFoundPanel.vue"));
+const FastScriptsPanel = defineAsyncComponent(() => import("@/features/repository/fast-scripts/FastScriptsPanel.vue"));
 
 const props = defineProps<{
   git: any;
@@ -126,6 +127,21 @@ const emit = defineEmits<{
   timeMachineBlame: [sha: string];
   createGist: [];
 }>();
+
+function handleRunFastScript(payload: { type: string; body: string; name: string }) {
+  emit("update:showTerminal", true);
+  props.git.runFastScript(payload.type, payload.body, payload.name);
+}
+
+async function handleRunFastScriptSequence(payload: {
+  name: string;
+  steps: { type: string; body: string; name: string }[];
+}) {
+  emit("update:showTerminal", true);
+  for (const step of payload.steps) {
+    await props.git.runFastScript(step.type, step.body, step.name);
+  }
+}
 
 const hasWorkingChanges = computed(
   () => props.git.stagedFiles.value.length > 0 || props.git.unstagedFiles.value.length > 0,
@@ -573,6 +589,15 @@ function handleRefreshState() {
           @refresh="emit('refreshLostFound')"
           @rescue="emit('rescueLostCommit', $event)"
           @open-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: false })"
+        />
+
+        <FastScriptsPanel
+          v-else-if="props.historyViewMode === 'fast-scripts'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          @close="emit('setHistoryView', 'graph')"
+          @run="handleRunFastScript($event)"
+          @run-sequence="handleRunFastScriptSequence($event)"
         />
 
         <RemoteInsightsPanel

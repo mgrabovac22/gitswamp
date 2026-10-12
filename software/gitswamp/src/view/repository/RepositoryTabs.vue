@@ -9,7 +9,7 @@ import type { RepoInfo } from "@/types";
 const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDialog.vue"));
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts";
 
 interface MenuAction {
   id: string;
@@ -256,6 +256,14 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Alt+6",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "burnout"),
+    },
+    {
+      id: "view-fast-scripts",
+      label: "Fast Scripts",
+      description: "Save and run terminal, Python and custom commands with a single click.",
+      shortcut: "Alt+8",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "fast-scripts"),
     },
     {
       id: "open-explorer",

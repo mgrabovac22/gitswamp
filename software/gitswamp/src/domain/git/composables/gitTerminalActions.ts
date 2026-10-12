@@ -760,7 +760,32 @@ export function createTerminalActions(state: GitState, refresh?: TerminalRefresh
     await runGitModeCommand(executableCommand, parsed, normalized.note);
   }
 
+  async function runFastScript(scriptType: string, body: string, label?: string) {
+    if (!state.repoPath.value) {
+      appendOutput("Error: Open a repository before running a script.");
+      return;
+    }
+
+    const trimmed = (body ?? "").trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const display = label?.trim() ? label.trim() : scriptType;
+    try {
+      const result = await callTauri<string>("run_fast_script", {
+        path: state.repoPath.value,
+        scriptType,
+        body: trimmed,
+      });
+      appendOutput(`$ ${display}\n${result || "(done)"}`);
+    } catch (error) {
+      appendOutput(`$ ${display}\nError: ${String(error)}`);
+    }
+  }
+
   return {
     runTerminalCommand,
+    runFastScript,
   };
 }

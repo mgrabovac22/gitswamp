@@ -127,7 +127,7 @@ const {
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -3477,6 +3477,15 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       disabled: !hasRepo,
       run: () => setHistoryViewMode("burnout"),
     },
+    {
+      id: "view-fast-scripts",
+      label: "Fast Scripts",
+      description: "Save and run terminal, Python and custom commands with one click.",
+      shortcut: "Alt 8",
+      keywords: ["scripts", "automation", "terminal", "run", "command"],
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("fast-scripts"),
+    },
     ...(lostCommits.value.length > 0 ? [{
       id: "view-lost-found",
       label: "Lost & Found",
@@ -3505,6 +3514,7 @@ function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
     "5": "conflict-heatmap",
     "6": "burnout",
     "7": "city",
+    "8": "fast-scripts",
   };
 
   const nextMode = viewByKey[key];

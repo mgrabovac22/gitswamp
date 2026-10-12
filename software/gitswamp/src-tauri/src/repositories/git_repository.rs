@@ -167,6 +167,87 @@ impl GitRepository {
         }
     }
 
+    pub fn run_fast_script(path: &str, script_type: &str, body: &str) -> Result<String, String> {
+        if body.trim().is_empty() {
+            return Ok(String::new());
+        }
+
+        let kind = script_type.trim().to_ascii_lowercase();
+
+        if matches!(kind.as_str(), "" | "shell" | "sh" | "bash" | "zsh" | "custom") {
+            return Self::run_shell_command(path, body);
+        }
+
+        let (extension, programs): (&str, &[&str]) = match kind.as_str() {
+            "python" | "python3" | "py" => (
+                "py",
+                if cfg!(windows) {
+                    &["python", "py"][..]
+                } else {
+                    &["python3", "python"][..]
+                },
+            ),
+            "node" | "nodejs" | "javascript" | "js" => ("js", &["node"][..]),
+            "powershell" | "pwsh" | "ps1" => ("ps1", &["pwsh", "powershell"][..]),
+            "cmd" | "batch" | "bat" => ("cmd", &["cmd"][..]),
+            _ => return Self::run_shell_command(path, body),
+        };
+
+        let interpreter_args: &[&str] = match kind.as_str() {
+            "powershell" | "pwsh" | "ps1" => &["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"],
+            "cmd" | "batch" | "bat" => &["/d", "/s", "/c"],
+            _ => &[],
+        };
+
+        let program = programs
+            .iter()
+            .find(|candidate| Self::program_available(candidate))
+            .ok_or_else(|| {
+                format!(
+                    "No interpreter found for '{}' scripts. Install one of: {}",
+                    kind,
+                    programs.join(", ")
+                )
+            })?;
+
+        let script_file = Self::write_temp_script(extension, body)?;
+        let quoted = script_file.replace('"', "\\\"");
+
+        let mut command = String::from(*program);
+        for arg in interpreter_args {
+            command.push(' ');
+            command.push_str(arg);
+        }
+        command.push_str(&format!(" \"{}\"", quoted));
+
+        let result = Self::run_shell_command(path, &command);
+        let _ = std::fs::remove_file(&script_file);
+        result
+    }
+
+    fn program_available(name: &str) -> bool {
+        match std::process::Command::new(name).arg("--version").output() {
+            Ok(_) => true,
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        }
+    }
+
+    fn write_temp_script(extension: &str, body: &str) -> Result<String, String> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let file_name = format!(
+            "gitswamp-script-{}-{}.{}",
+            std::process::id(),
+            stamp,
+            extension
+        );
+        let file_path = std::env::temp_dir().join(file_name);
+        std::fs::write(&file_path, body).map_err(|error| error.to_string())?;
+        Ok(file_path.to_string_lossy().to_string())
+    }
+
     fn path_separator() -> char {
         if cfg!(windows) {
             ';'

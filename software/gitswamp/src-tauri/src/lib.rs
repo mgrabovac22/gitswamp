@@ -33,8 +33,9 @@ use commands::operations::{
     list_github_ssh_keys, load_ssh_public_key_from_file, open_file_with_editor,
     open_path_with_tool, pull, push, push_force, push_to_platform, rebase_abort,
     rebase_branch_onto, rebase_continue, rebase_skip, remove_cached_all, rename_branch,
-    reset_branch_to_remote, reset_to_commit, revert_commit, run_git_command, run_shell_command,
-    search_azure_repos, search_bitbucket_repos, search_github_repos, search_gitlab_repos,
+    reset_branch_to_remote, reset_to_commit, revert_commit, run_fast_script, run_git_command,
+    run_shell_command, search_azure_repos, search_bitbucket_repos, search_github_repos,
+    search_gitlab_repos,
     set_upstream, verify_bitbucket_token, verify_github_token, verify_gitlab_token, write_text_file,
 };
 use commands::repository::get_repo_info;
@@ -100,6 +101,7 @@ pub fn run() {
             get_lost_commits,
             run_git_command,
             run_shell_command,
+            run_fast_script,
             write_text_file,
             remove_cached_all,
             discard_file,
