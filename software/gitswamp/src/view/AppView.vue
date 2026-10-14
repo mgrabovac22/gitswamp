@@ -184,7 +184,7 @@ const timeMachineFocusSha = ref<string | null>(null);
 const showCloneDialog = ref(false);
 const showInitDialog = ref(false);
 const showTerminal = ref(false);
-const terminalAllowAll = ref(safeStorageGet("gitswamp-terminal-allow-all") === "true");
+const terminalAllowAll = ref(safeStorageGet("gitswamp-terminal-allow-all") !== "false");
 const activeRemoteAction = ref<"pull" | "push" | "fetch" | null>(null);
 const showBranchDialog = ref(false);
 const showGhostMaterializeDialog = ref(false);
