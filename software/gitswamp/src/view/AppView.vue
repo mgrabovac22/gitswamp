@@ -186,6 +186,8 @@ const showInitDialog = ref(false);
 const showTerminal = ref(false);
 const terminalAllowAll = ref(safeStorageGet("gitswamp-terminal-allow-all") !== "false");
 const activeRemoteAction = ref<"pull" | "push" | "fetch" | null>(null);
+const graphIsolationActive = ref(false);
+const graphIsolationBranch = ref("");
 const showBranchDialog = ref(false);
 const showGhostMaterializeDialog = ref(false);
 const ghostMaterializeName = ref("");
@@ -3766,6 +3768,7 @@ onMounted(() => {
   globalThis.addEventListener(BUG_AUTOPSY_EVENT, handleBugAutopsyChanged);
   globalThis.addEventListener(IDENTITY_GUARD_EVENT, handleIdentityGuardChanged);
   globalThis.addEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
+  globalThis.addEventListener("gitswamp-graph-isolation-changed", onGraphIsolationChanged as EventListener);
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", handleVisibilityChanged);
   }
@@ -3806,6 +3809,7 @@ onUnmounted(() => {
   globalThis.removeEventListener(BUG_AUTOPSY_EVENT, handleBugAutopsyChanged);
   globalThis.removeEventListener(IDENTITY_GUARD_EVENT, handleIdentityGuardChanged);
   globalThis.removeEventListener(BACKGROUND_MAINTENANCE_EVENT, handleBackgroundMaintenanceSettingsChanged as EventListener);
+  globalThis.removeEventListener("gitswamp-graph-isolation-changed", onGraphIsolationChanged as EventListener);
   if (typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", handleVisibilityChanged);
   }
@@ -4763,24 +4767,34 @@ async function handleRebaseConflictAbort() {
 }
 
 async function handleCheckoutRemoteBranch(name: string) {
-  const localBranch = git.localBranches.value.find(b => b.name === name);
-  if (localBranch) {
-    scheduleDestructiveAction({
-      message: `Reset "${name}" to remote in 5 seconds.`,
-      detail: "Click Undo to keep the current local branch state.",
-      run: () => git.resetBranchToRemote(name),
-    });
-  } else {
+  const branchName = normalizeBranchName(name);
+  if (!branchName) return;
+
+  if (!git.localBranches.value.some((branch) => branch.name === branchName)) {
     try {
-      await git.createBranch(name, "origin/" + name);
-      await git.checkoutBranch(name);
+      await git.createBranch(branchName, `origin/${branchName}`);
     } catch {
-      await git.checkoutBranch(name);
+      // The local branch may already exist or the remote ref lookup failed.
+      // Fall through so the checkout can still switch branches.
+      git.error.value = null;
     }
   }
-  if (!git.error.value) {
-    toast.success(`Remote branch "${name}" checked out`);
-  }
+
+  await git.checkoutBranch(branchName);
+}
+
+function onGraphIsolationChanged(event: Event) {
+  const detail = (event as CustomEvent<{ repoPath?: string; active?: boolean; branch?: string }>).detail;
+  if (!detail) return;
+  if (detail.repoPath && git.repoPath.value && detail.repoPath !== git.repoPath.value) return;
+  graphIsolationActive.value = !!detail.active;
+  graphIsolationBranch.value = detail.branch || "";
+}
+
+function exitGraphIsolation() {
+  globalThis.dispatchEvent(new CustomEvent("gitswamp-exit-graph-isolation", {
+    detail: { repoPath: git.repoPath.value },
+  }));
 }
 
 function handleCreateBranch() {
@@ -5065,9 +5079,12 @@ function submitCreateTag() {
         :rpg-profile="gitRpgProfile"
         :rpg-loading="gitRpgLoading"
         :identity-guard="identityGuardHeaderStatus"
+        :graph-isolation-active="graphIsolationActive"
+        :graph-isolation-branch="graphIsolationBranch"
         @pull="handlePull"
         @push="handlePush"
         @fetch="handleFetch"
+        @exit-graph-isolation="exitGraphIsolation"
         @branch="handleCreateBranch"
         @ghost-branch="handleStartGhostBranch"
         @materialize-ghost-branch="handleOpenGhostMaterializeDialog"
