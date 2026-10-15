@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::os::windows::process::CommandExt;
 
 use crate::constants::{
-    API_AZURE_REPOS_PATH, API_BITBUCKET_USER_PATH, API_BITBUCKET_USER_SSH_KEYS_FMT,
-    API_BITBUCKET_WORKSPACES, API_BITBUCKET_WORKSPACE_REPOS_FMT, API_GITHUB_LIST_REPOS,
-    API_GITHUB_SEARCH_REPOS, API_GITHUB_USER_KEYS_PATH, API_GITHUB_USER_PATH,
+    API_AZURE_REPOS_PATH, API_BITBUCKET_DC_PATH, API_BITBUCKET_USER_PATH,
+    API_BITBUCKET_USER_SSH_KEYS_FMT, API_BITBUCKET_WORKSPACES, API_BITBUCKET_WORKSPACE_REPOS_FMT,
+    API_GITHUB_ENTERPRISE_PATH, API_GITHUB_USER_KEYS_PATH, API_GITHUB_USER_PATH,
     API_GITLAB_BASE_PATH, API_GITLAB_USER_KEYS_PATH, API_GITLAB_USER_PATH, APP_USER_AGENT,
-    AZURE_HOST, AZURE_LEGACY_HOST, GITHUB_ACCEPT_HEADER, GITHUB_OAUTH_ACCESS_TOKEN_URL,
-    GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_DEVICE_CODE_URL, GITHUB_OAUTH_SCOPES, HTTPS_SCHEME,
-    JSON_ACCEPT_HEADER,
+    AZURE_HOST, AZURE_LEGACY_HOST, GITHUB_ACCEPT_HEADER, GITHUB_API_BASE,
+    GITHUB_OAUTH_ACCESS_TOKEN_URL, GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_DEVICE_CODE_URL,
+    GITHUB_OAUTH_SCOPES, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
 };
 use crate::models::{
     AzureRepo, BitbucketRepo, BitbucketSshKey, GithubDeviceAuth, GithubRepo, GithubSshKey, GitlabRepo,
@@ -132,6 +132,41 @@ impl IntegrationService {
             })
     }
 
+    fn normalize_self_hosted_host(domain: &str, label: &str) -> Result<String, String> {
+        let trimmed = domain.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            return Err(format!("{} host domain is required (for example: git.example.com)", label));
+        }
+
+        let without_scheme = trimmed
+            .strip_prefix("https://")
+            .or_else(|| trimmed.strip_prefix("http://"))
+            .unwrap_or(trimmed);
+
+        let host = without_scheme
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+
+        if host.is_empty() {
+            return Err(format!("{} host domain is required (for example: git.example.com)", label));
+        }
+
+        Ok(host)
+    }
+
+    fn github_enterprise_base_url(domain: &str) -> Result<String, String> {
+        let host = Self::normalize_self_hosted_host(domain, "GitHub Enterprise")?;
+        Ok(format!("{}{}{}", HTTPS_SCHEME, host, API_GITHUB_ENTERPRISE_PATH))
+    }
+
+    fn bitbucket_dc_base_url(domain: &str) -> Result<String, String> {
+        let host = Self::normalize_self_hosted_host(domain, "Bitbucket Data Center")?;
+        Ok(format!("{}{}{}", HTTPS_SCHEME, host, API_BITBUCKET_DC_PATH))
+    }
+
     fn azure_api_base_url(domain: &str) -> Result<String, String> {
         let trimmed = domain.trim().trim_end_matches('/');
         if trimmed.is_empty() {
@@ -201,12 +236,9 @@ impl IntegrationService {
         (https_url, ssh_url)
     }
 
-    pub fn search_github_repos(
-        token: &str,
-        query: &str,
-        include_public: bool,
-    ) -> Result<Vec<GithubRepo>, String> {
-        let viewer_resp = ureq::get(API_GITHUB_USER_PATH)
+    fn github_user_login(base_url: &str, token: &str) -> Result<String, String> {
+        let url = format!("{}/user", base_url);
+        let viewer_resp = ureq::get(&url)
             .set("Authorization", &format!("Bearer {}", token))
             .set("Accept", GITHUB_ACCEPT_HEADER)
             .set("User-Agent", APP_USER_AGENT)
@@ -215,12 +247,22 @@ impl IntegrationService {
         let viewer_body: serde_json::Value = viewer_resp
             .into_json()
             .map_err(|e| format!("JSON parse error: {}", e))?;
-        let viewer_login = viewer_body["login"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        Ok(viewer_body["login"].as_str().unwrap_or_default().to_string())
+    }
 
-        let accessible_resp = ureq::get(API_GITHUB_LIST_REPOS)
+    fn search_github_repos_with_base(
+        base_url: &str,
+        token: &str,
+        query: &str,
+        include_public: bool,
+    ) -> Result<Vec<GithubRepo>, String> {
+        let viewer_login = Self::github_user_login(base_url, token)?;
+
+        let list_url = format!(
+            "{}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
+            base_url
+        );
+        let accessible_resp = ureq::get(&list_url)
             .set("Authorization", &format!("Bearer {}", token))
             .set("Accept", GITHUB_ACCEPT_HEADER)
             .set("User-Agent", APP_USER_AGENT)
@@ -243,7 +285,11 @@ impl IntegrationService {
         }
 
         if include_public && !query.trim().is_empty() {
-            let public_url = API_GITHUB_SEARCH_REPOS.replace("{}", &urlencoded(query.trim()));
+            let public_url = format!(
+                "{}/search/repositories?q={}&per_page=100",
+                base_url,
+                urlencoded(query.trim())
+            );
             let public_resp = ureq::get(&public_url)
                 .set("Authorization", &format!("Bearer {}", token))
                 .set("Accept", GITHUB_ACCEPT_HEADER)
@@ -272,6 +318,29 @@ impl IntegrationService {
                 .then_with(|| left.full_name.cmp(&right.full_name))
         });
         Ok(repos)
+    }
+
+    pub fn search_github_repos(
+        token: &str,
+        query: &str,
+        include_public: bool,
+    ) -> Result<Vec<GithubRepo>, String> {
+        Self::search_github_repos_with_base(GITHUB_API_BASE, token, query, include_public)
+    }
+
+    pub fn search_github_enterprise_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+        include_public: bool,
+    ) -> Result<Vec<GithubRepo>, String> {
+        let base_url = Self::github_enterprise_base_url(domain)?;
+        Self::search_github_repos_with_base(&base_url, token, query, include_public)
+    }
+
+    pub fn verify_github_enterprise_token(domain: &str, token: &str) -> Result<String, String> {
+        let base_url = Self::github_enterprise_base_url(domain)?;
+        Self::github_user_login(&base_url, token)
     }
 
     pub fn search_gitlab_repos(
@@ -521,6 +590,154 @@ impl IntegrationService {
             .or_else(|| body["username"].as_str())
             .unwrap_or("unknown");
         Ok(account.to_string())
+    }
+
+    fn bitbucket_dc_auth_header(token: &str) -> String {
+        format!("Bearer {}", token.trim())
+    }
+
+    fn extract_bitbucket_dc_clone_urls(item: &serde_json::Value) -> (Option<String>, Option<String>) {
+        let mut https_url: Option<String> = None;
+        let mut ssh_url: Option<String> = None;
+
+        if let Some(clones) = item["links"]["clone"].as_array() {
+            for clone in clones {
+                let clone_name = clone["name"].as_str().unwrap_or_default().to_lowercase();
+                let href = clone["href"].as_str().unwrap_or_default().to_string();
+                if href.trim().is_empty() {
+                    continue;
+                }
+
+                if clone_name.starts_with("http") && https_url.is_none() {
+                    https_url = Some(href);
+                } else if clone_name == "ssh" && ssh_url.is_none() {
+                    ssh_url = Some(href);
+                }
+            }
+        }
+
+        (https_url, ssh_url)
+    }
+
+    fn map_bitbucket_dc_repo(item: &serde_json::Value) -> Option<BitbucketRepo> {
+        let slug = item["slug"].as_str()?;
+        let project_key = item["project"]["key"].as_str().unwrap_or_default();
+        let full_name = if project_key.is_empty() {
+            slug.to_string()
+        } else {
+            format!("{}/{}", project_key, slug)
+        };
+
+        let (clone_url_https, clone_url_ssh) = Self::extract_bitbucket_dc_clone_urls(item);
+
+        Some(BitbucketRepo {
+            full_name,
+            clone_url_ssh: clone_url_ssh.unwrap_or_default(),
+            clone_url_https: clone_url_https?,
+            description: item["description"].as_str().unwrap_or("").to_string(),
+            is_private: !item["public"].as_bool().unwrap_or(false),
+            stars: 0,
+        })
+    }
+
+    pub fn verify_bitbucket_dc_token(domain: &str, token: &str) -> Result<String, String> {
+        let base_url = Self::bitbucket_dc_base_url(domain)?;
+        let url = format!("{}/repos?limit=1", base_url);
+
+        let resp = match ureq::get(&url)
+            .set("Authorization", &Self::bitbucket_dc_auth_header(token))
+            .set("Accept", JSON_ACCEPT_HEADER)
+            .set("User-Agent", APP_USER_AGENT)
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(format!(
+                    "Bitbucket Data Center token check failed (HTTP {}): {}",
+                    status,
+                    Self::parse_api_error_message(&body)
+                ));
+            }
+            Err(e) => return Err(format!("Bitbucket Data Center token check failed: {}", e)),
+        };
+
+        let username = resp.header("X-AUSERNAME").unwrap_or_default().to_string();
+        Ok(if username.is_empty() {
+            "connected".to_string()
+        } else {
+            username
+        })
+    }
+
+    pub fn search_bitbucket_dc_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Vec<BitbucketRepo>, String> {
+        let base_url = Self::bitbucket_dc_base_url(domain)?;
+        let auth = Self::bitbucket_dc_auth_header(token);
+
+        let mut repos = Vec::new();
+        let mut start: Option<u64> = None;
+        const MAX_PAGES: usize = 10;
+
+        for _ in 0..MAX_PAGES {
+            let mut url = format!("{}/repos?limit=100", base_url);
+            if !query.trim().is_empty() {
+                url.push_str("&name=");
+                url.push_str(&urlencoded(query.trim()));
+            }
+            if let Some(start_at) = start {
+                url.push_str(&format!("&start={}", start_at));
+            }
+
+            let resp = match ureq::get(&url)
+                .set("Authorization", &auth)
+                .set("Accept", JSON_ACCEPT_HEADER)
+                .set("User-Agent", APP_USER_AGENT)
+                .call()
+            {
+                Ok(resp) => resp,
+                Err(ureq::Error::Status(status, resp)) => {
+                    let body = resp.into_string().unwrap_or_default();
+                    return Err(format!(
+                        "Bitbucket Data Center repository lookup failed (HTTP {}): {}",
+                        status,
+                        Self::parse_api_error_message(&body)
+                    ));
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Bitbucket Data Center repository lookup failed: {}",
+                        e
+                    ));
+                }
+            };
+
+            let body: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| format!("JSON parse error: {}", e))?;
+
+            if let Some(items) = body["values"].as_array() {
+                for item in items {
+                    if let Some(repo) = Self::map_bitbucket_dc_repo(item) {
+                        repos.push(repo);
+                    }
+                }
+            }
+
+            if body["isLastPage"].as_bool().unwrap_or(true) {
+                break;
+            }
+
+            match body["nextPageStart"].as_u64() {
+                Some(next) => start = Some(next),
+                None => break,
+            }
+        }
+
+        Ok(repos)
     }
 
     pub fn search_azure_repos(

@@ -2982,6 +2982,19 @@ impl GitService {
         IntegrationService::search_github_repos(token, query, include_public)
     }
 
+    pub fn search_github_enterprise_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+        include_public: bool,
+    ) -> Result<Vec<GithubRepo>, String> {
+        IntegrationService::search_github_enterprise_repos(domain, token, query, include_public)
+    }
+
+    pub fn verify_github_enterprise_token(domain: &str, token: &str) -> Result<String, String> {
+        IntegrationService::verify_github_enterprise_token(domain, token)
+    }
+
     pub fn search_gitlab_repos(
         domain: &str,
         token: &str,
@@ -2992,6 +3005,14 @@ impl GitService {
 
     pub fn search_bitbucket_repos(token: &str, query: &str) -> Result<Vec<BitbucketRepo>, String> {
         IntegrationService::search_bitbucket_repos(token, query)
+    }
+
+    pub fn search_bitbucket_dc_repos(
+        domain: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Vec<BitbucketRepo>, String> {
+        IntegrationService::search_bitbucket_dc_repos(domain, token, query)
     }
 
     pub fn search_azure_repos(
@@ -3065,7 +3086,9 @@ impl GitService {
         IntegrationService::verify_bitbucket_token(token)
     }
 
-    pub fn get_available_external_editors() -> Vec<String> {
+    pub fn verify_bitbucket_dc_token(domain: &str, token: &str) -> Result<String, String> {
+        IntegrationService::verify_bitbucket_dc_token(domain, token)
+    }    pub fn get_available_external_editors() -> Vec<String> {
         IntegrationService::available_external_editors()
     }
 
