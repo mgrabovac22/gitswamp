@@ -6,8 +6,7 @@ use git2::{BranchType, Repository, Sort, StatusOptions};
 
 use crate::constants::{
     AUTH_USER_BITBUCKET, AUTH_USER_BITBUCKET_API, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST,
-    AZURE_LEGACY_HOST,
-    BITBUCKET_HOST, CONFLICT_END, CONFLICT_MID, CONFLICT_START, DEFAULT_BRANCH,
+    AZURE_LEGACY_HOST, BITBUCKET_HOST, CONFLICT_END, CONFLICT_MID, CONFLICT_START, DEFAULT_BRANCH,
     DEFAULT_COMMIT_AUTHOR, DEFAULT_COMMIT_EMAIL, GITHUB_HOST,
 };
 use crate::models::{
@@ -3088,7 +3087,8 @@ impl GitService {
 
     pub fn verify_bitbucket_dc_token(domain: &str, token: &str) -> Result<String, String> {
         IntegrationService::verify_bitbucket_dc_token(domain, token)
-    }    pub fn get_available_external_editors() -> Vec<String> {
+    }
+    pub fn get_available_external_editors() -> Vec<String> {
         IntegrationService::available_external_editors()
     }
 

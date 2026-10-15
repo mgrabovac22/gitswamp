@@ -195,10 +195,7 @@ impl StashService {
         Ok(format!("Dropped stash@{{{}}}", index))
     }
 
-    fn stash_oid_for_index(
-        repo: &mut git2::Repository,
-        index: usize,
-    ) -> Result<git2::Oid, String> {
+    fn stash_oid_for_index(repo: &mut git2::Repository, index: usize) -> Result<git2::Oid, String> {
         let mut stash_oid: Option<git2::Oid> = None;
         repo.stash_foreach(|idx, _name, oid| {
             if idx == index {

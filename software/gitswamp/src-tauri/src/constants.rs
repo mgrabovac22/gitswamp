@@ -24,8 +24,7 @@ pub const API_BITBUCKET_WORKSPACES: &str =
 pub const API_BITBUCKET_WORKSPACE_REPOS_FMT: &str =
     "https://api.bitbucket.org/2.0/repositories/{}?sort=-updated_on&pagelen=50";
 pub const API_BITBUCKET_USER_PATH: &str = "https://api.bitbucket.org/2.0/user";
-pub const API_BITBUCKET_USER_SSH_KEYS_FMT: &str =
-    "https://api.bitbucket.org/2.0/users/{}/ssh-keys";
+pub const API_BITBUCKET_USER_SSH_KEYS_FMT: &str = "https://api.bitbucket.org/2.0/users/{}/ssh-keys";
 pub const API_GITLAB_BASE_PATH: &str = "/api/v4";
 pub const API_GITLAB_USER_KEYS_PATH: &str = "/api/v4/user/keys";
 pub const API_GITLAB_USER_PATH: &str = "/api/v4/user";

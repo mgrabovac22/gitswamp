@@ -174,7 +174,10 @@ impl GitRepository {
 
         let kind = script_type.trim().to_ascii_lowercase();
 
-        if matches!(kind.as_str(), "" | "shell" | "sh" | "bash" | "zsh" | "custom") {
+        if matches!(
+            kind.as_str(),
+            "" | "shell" | "sh" | "bash" | "zsh" | "custom"
+        ) {
             return Self::run_shell_command(path, body);
         }
 

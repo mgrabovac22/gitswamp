@@ -15,7 +15,8 @@ use crate::constants::{
     GITHUB_OAUTH_SCOPES, HTTPS_SCHEME, JSON_ACCEPT_HEADER,
 };
 use crate::models::{
-    AzureRepo, BitbucketRepo, BitbucketSshKey, GithubDeviceAuth, GithubRepo, GithubSshKey, GitlabRepo,
+    AzureRepo, BitbucketRepo, BitbucketSshKey, GithubDeviceAuth, GithubRepo, GithubSshKey,
+    GitlabRepo,
 };
 use crate::services::helpers::{split_bitbucket_credentials, urlencoded};
 
@@ -135,7 +136,10 @@ impl IntegrationService {
     fn normalize_self_hosted_host(domain: &str, label: &str) -> Result<String, String> {
         let trimmed = domain.trim().trim_end_matches('/');
         if trimmed.is_empty() {
-            return Err(format!("{} host domain is required (for example: git.example.com)", label));
+            return Err(format!(
+                "{} host domain is required (for example: git.example.com)",
+                label
+            ));
         }
 
         let without_scheme = trimmed
@@ -151,7 +155,10 @@ impl IntegrationService {
             .to_lowercase();
 
         if host.is_empty() {
-            return Err(format!("{} host domain is required (for example: git.example.com)", label));
+            return Err(format!(
+                "{} host domain is required (for example: git.example.com)",
+                label
+            ));
         }
 
         Ok(host)
@@ -159,7 +166,10 @@ impl IntegrationService {
 
     fn github_enterprise_base_url(domain: &str) -> Result<String, String> {
         let host = Self::normalize_self_hosted_host(domain, "GitHub Enterprise")?;
-        Ok(format!("{}{}{}", HTTPS_SCHEME, host, API_GITHUB_ENTERPRISE_PATH))
+        Ok(format!(
+            "{}{}{}",
+            HTTPS_SCHEME, host, API_GITHUB_ENTERPRISE_PATH
+        ))
     }
 
     fn bitbucket_dc_base_url(domain: &str) -> Result<String, String> {
@@ -247,7 +257,10 @@ impl IntegrationService {
         let viewer_body: serde_json::Value = viewer_resp
             .into_json()
             .map_err(|e| format!("JSON parse error: {}", e))?;
-        Ok(viewer_body["login"].as_str().unwrap_or_default().to_string())
+        Ok(viewer_body["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
     }
 
     fn search_github_repos_with_base(
@@ -596,7 +609,9 @@ impl IntegrationService {
         format!("Bearer {}", token.trim())
     }
 
-    fn extract_bitbucket_dc_clone_urls(item: &serde_json::Value) -> (Option<String>, Option<String>) {
+    fn extract_bitbucket_dc_clone_urls(
+        item: &serde_json::Value,
+    ) -> (Option<String>, Option<String>) {
         let mut https_url: Option<String> = None;
         let mut ssh_url: Option<String> = None;
 
@@ -1348,9 +1363,9 @@ impl IntegrationService {
 
         match body["error"].as_str() {
             Some("authorization_pending") | Some("slow_down") => Ok(None),
-            Some("expired_token") => Err(
-                "The GitHub login code expired. Please start the connection again.".to_string(),
-            ),
+            Some("expired_token") => {
+                Err("The GitHub login code expired. Please start the connection again.".to_string())
+            }
             Some("access_denied") => Err("Authorization was denied in the browser.".to_string()),
             Some(other) => Err(format!(
                 "GitHub OAuth error: {}",

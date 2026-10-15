@@ -23,6 +23,7 @@ import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoable
 import { clearDiffViewerCaches } from "@/shared/config/diffViewCache";
 import { handleRepositoryTabShortcut } from "@/features/repository/tabs/repositoryTabShortcuts";
 import { useRepositoryTabs } from "@/features/repository/tabs/useRepositoryTabs";
+import { dispatchHttpClientCommand, type HttpClientCommand } from "@/features/repository/http-client/httpClientCommands";
 import { useRecentRepositories } from "@/features/repository/recent/useRecentRepositories";
 import { useAppLogs } from "@/features/shell/useAppLogs";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
@@ -127,7 +128,7 @@ const {
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -2861,6 +2862,11 @@ function toggleTerminalPanel() {
   appendLog("user", `Terminal ${showTerminal.value ? "opened" : "closed"}.`);
 }
 
+function runHttpCommand(command: HttpClientCommand) {
+  setHistoryViewMode("http-client");
+  dispatchHttpClientCommand(command, git.repoPath.value ?? "");
+}
+
 function setHistoryViewMode(mode: HistoryViewMode) {
   historyViewMode.value = mode;
 
@@ -3456,10 +3462,52 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       run: () => setHistoryViewMode("graph"),
     },
     {
+      id: "view-productivity",
+      label: "Productivity Arena",
+      description: "Show commit activity and productivity analytics.",
+      shortcut: "Alt 2",
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("productivity"),
+    },
+    {
+      id: "view-conflict-heatmap",
+      label: "Usual Conflict Suspects",
+      description: "Highlight merge hotspots and risky conflict areas.",
+      shortcut: "Alt 3",
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("conflict-heatmap"),
+    },
+    {
+      id: "view-time-machine",
+      label: "Time Machine",
+      description: "Navigate history frames and inspect repository state.",
+      shortcut: "Alt 4",
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("time-machine"),
+    },
+    {
+      id: "view-fast-scripts",
+      label: "Fast Scripts",
+      description: "Save and run terminal, Python and custom commands with one click.",
+      shortcut: "Alt 5",
+      keywords: ["scripts", "automation", "terminal", "run", "command"],
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("fast-scripts"),
+    },
+    {
+      id: "view-http-client",
+      label: "API Pulse",
+      description: "Compose and send HTTP requests with collections, environments and a cookie jar.",
+      shortcut: "Alt 6",
+      keywords: ["http", "rest", "api", "request", "postman", "curl"],
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("http-client"),
+    },
+    {
       id: "view-galaxy",
       label: "Galaxy view",
       description: "Open the interactive commit galaxy.",
-      shortcut: "Alt 2",
+      shortcut: "Alt 7",
       disabled: !hasRepo,
       run: () => setHistoryViewMode("galaxy"),
     },
@@ -3467,7 +3515,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "view-city",
       label: "Repository City",
       description: "Explore files, hotspots and contributor activity as an interactive city.",
-      shortcut: "Alt 7",
+      shortcut: "Alt 8",
       disabled: !hasRepo,
       run: () => setHistoryViewMode("city"),
     },
@@ -3475,18 +3523,57 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       id: "view-burnout",
       label: "Burnout Analytics",
       description: "Show contributor focus, after-hours rhythm and ownership pressure.",
-      shortcut: "Alt 6",
+      shortcut: "Alt 9",
       disabled: !hasRepo,
       run: () => setHistoryViewMode("burnout"),
     },
     {
-      id: "view-fast-scripts",
-      label: "Fast Scripts",
-      description: "Save and run terminal, Python and custom commands with one click.",
-      shortcut: "Alt 8",
-      keywords: ["scripts", "automation", "terminal", "run", "command"],
+      id: "http-add-header",
+      label: "HTTP: Add Header",
+      description: "Add a header row to the active HTTP request.",
+      keywords: ["http", "header", "request"],
       disabled: !hasRepo,
-      run: () => setHistoryViewMode("fast-scripts"),
+      run: () => runHttpCommand("add-header"),
+    },
+    {
+      id: "http-open-cookie-manager",
+      label: "HTTP: Open Cookie Manager",
+      description: "Inspect and edit cookies for the active environment.",
+      keywords: ["http", "cookie", "jar"],
+      disabled: !hasRepo,
+      run: () => runHttpCommand("open-cookie-manager"),
+    },
+    {
+      id: "http-clear-domain-cookies",
+      label: "HTTP: Clear Cookies For Domain",
+      description: "Remove stored cookies for the active request's domain.",
+      keywords: ["http", "cookie", "clear", "domain"],
+      disabled: !hasRepo,
+      run: () => runHttpCommand("clear-domain-cookies"),
+    },
+    {
+      id: "http-copy-curl",
+      label: "HTTP: Copy As cURL",
+      description: "Copy the active HTTP request as a cURL command including cookies.",
+      keywords: ["http", "curl", "copy"],
+      disabled: !hasRepo,
+      run: () => runHttpCommand("copy-curl"),
+    },
+    {
+      id: "http-run-active",
+      label: "HTTP: Run Active Request",
+      description: "Send the active HTTP request and capture any extracted variables.",
+      keywords: ["http", "run", "execute", "request"],
+      disabled: !hasRepo,
+      run: () => runHttpCommand("run-active"),
+    },
+    {
+      id: "http-run-all",
+      label: "HTTP: Run All Sequentially",
+      description: "Execute every collection and request in order, sharing captured variables.",
+      keywords: ["http", "run", "sequential", "collection", "execute"],
+      disabled: !hasRepo,
+      run: () => runHttpCommand("run-all"),
     },
     ...(lostCommits.value.length > 0 ? [{
       id: "view-lost-found",
@@ -3510,13 +3597,14 @@ function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
 
   const viewByKey: Partial<Record<string, HistoryViewMode>> = {
     "1": "graph",
-    "2": "galaxy",
-    "3": "productivity",
+    "2": "productivity",
+    "3": "conflict-heatmap",
     "4": "time-machine",
-    "5": "conflict-heatmap",
-    "6": "burnout",
-    "7": "city",
-    "8": "fast-scripts",
+    "5": "fast-scripts",
+    "6": "http-client",
+    "7": "galaxy",
+    "8": "city",
+    "9": "burnout",
   };
 
   const nextMode = viewByKey[key];

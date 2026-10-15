@@ -87,6 +87,7 @@ Temporary experimental workflow allowing you to:
 
 ### User Experience
 - **Command Palette**: Ctrl+K command launcher for common actions and views
+- **API Pulse**: Postman-style request collections, sequential runs, simulated tests and JSON import/export (see [API Pulse](#API Pulse))
 - **Terminal Integration**: Integrated terminal panel with git command execution and destructive-command safety prompts
 - **Smart .gitignore Wizard**: Enabled by default for generated/private untracked files
 - **Undoable Destructive Actions**: Discard-style UI actions use a short undo toast before execution
@@ -305,11 +306,21 @@ npm run tauri build
 | `Ctrl+Shift+L` | Toggle logs |
 | `Ctrl+,` | Open settings |
 | `Alt+1` | Graph view |
-| `Alt+2` | Galaxy view |
-| `Alt+3` | Productivity Arena |
+| `Alt+2` | Productivity Arena |
+| `Alt+3` | Usual Conflict Suspects |
 | `Alt+4` | Time Machine |
-| `Alt+5` | Usual Conflict Suspects |
-| `Alt+6` | Burnout Analytics |
+| `Alt+5` | Fast Scripts |
+| `Alt+6` | API Pulse |
+| `Alt+7` | Galaxy view |
+| `Alt+8` | Repository City |
+| `Alt+9` | Burnout Analytics |
+| `Enter` (URL bar) | Send the active HTTP request |
+
+## API Pulse
+
+A Postman-style REST client that lives in the central view area of a repository tab. It supports repository-scoped and global collections, `{{variable}}` interpolation, shared header documents, cookie management, sequential runs, simulated load profiles and JSON import/export. Requests are executed by the Rust backend and all data is persisted per repository and globally.
+
+See the [API Pulse guide](../..API Pulsetation/DOCUMENTATION_37_APIPULSE.md) for the full reference (collections, runs, simulated tests, statistics, the response viewer and export/import).
 
 ## Authentication & Token Management
 

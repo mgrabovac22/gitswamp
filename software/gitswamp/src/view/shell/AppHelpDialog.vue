@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { BookOpen, HelpCircle, Keyboard, Search, Shield, X } from "lucide-vue-next";
+import { BookOpen, HelpCircle, Keyboard, Search, Send, Shield, X } from "lucide-vue-next";
 import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
 import { GIT_RPG_ROLES } from "@/features/repository/rpg/gitRpgProfiler";
 import {
@@ -24,11 +24,13 @@ const sections: readonly { id: AppHelpSection; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "shortcuts", label: "Keyboard Shortcuts" },
   { id: "roles", label: "Git RPG Roles" },
+  { id: "http-client", label: "API Pulse" },
 ];
 
 const dialogTitle = computed(() => {
   if (activeSection.value === "shortcuts") return "Keyboard Shortcuts";
   if (activeSection.value === "roles") return "Git RPG Roles";
+  if (activeSection.value === "http-client") return "API Pulse";
   return "GitSwamp Help";
 });
 
@@ -82,7 +84,8 @@ watch(
           >
             <BookOpen v-if="section.id === 'overview'" class="h-3.5 w-3.5" />
             <Keyboard v-else-if="section.id === 'shortcuts'" class="h-3.5 w-3.5" />
-            <Shield v-else class="h-3.5 w-3.5" />
+            <Shield v-else-if="section.id === 'roles'" class="h-3.5 w-3.5" />
+            <Send v-else class="h-3.5 w-3.5" />
             <span>{{ section.label }}</span>
           </button>
         </nav>
@@ -159,6 +162,56 @@ watch(
               <p v-if="visibleShortcutGroups.length === 0" class="py-12 text-center text-[11px] text-[var(--muted-foreground)]">
                 No shortcuts match this filter.
               </p>
+            </div>
+
+            <div v-else-if="activeSection === 'http-client'" class="space-y-5">
+              <section>
+                <h4 class="mb-2 text-xs font-semibold uppercase text-[var(--foreground)]">Getting Around</h4>
+                <ul class="space-y-1.5 text-[11px] leading-5 text-[var(--muted-foreground)]">
+                  <li>Open the view with <span class="font-mono text-[var(--foreground)]">Alt+6</span> or the <span class="font-mono text-[var(--foreground)]">API Pulse</span> command palette entry.</li>
+                  <li>The left rail holds collections, request history and environments. The center column is the request editor, the run results and the simulated test results.</li>
+                  <li>The right panel shows collection stats, history and environment variables, plus a single <span class="font-mono text-[var(--foreground)]">Details</span> button that opens the full run report.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 class="mb-2 text-xs font-semibold uppercase text-[var(--foreground)]">Collections and Requests</h4>
+                <ul class="space-y-1.5 text-[11px] leading-5 text-[var(--muted-foreground)]">
+                  <li>Create repo scoped collections (visible only for this repository) or global ones (shared everywhere).</li>
+                  <li>Rename requests inline with the pencil icon, reorder them with the arrows and drag rows onto another collection to move them.</li>
+                  <li>Deleting a collection always asks for confirmation first.</li>
+                  <li>Each collection shows a small run summary at the bottom of its request list after its first run.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 class="mb-2 text-xs font-semibold uppercase text-[var(--foreground)]">Headers, Cookies and Variables</h4>
+                <ul class="space-y-1.5 text-[11px] leading-5 text-[var(--muted-foreground)]">
+                  <li>Header precedence is request own headers, then the collection chain, then shared header documents from <span class="font-mono text-[var(--foreground)]">Header sets...</span>.</li>
+                  <li>Shared header documents can be attached to several requests, imported and exported as JSON.</li>
+                  <li>Use <code class="font-mono text-[var(--foreground)]" v-text="'{{name}}'"></code> to reference session or environment variables. Extractors capture values from a response so later requests in a run can reuse them.</li>
+                  <li>The cookie manager is per domain and persists across requests.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 class="mb-2 text-xs font-semibold uppercase text-[var(--foreground)]">Runs and Simulated Tests</h4>
+                <ul class="space-y-1.5 text-[11px] leading-5 text-[var(--muted-foreground)]">
+                  <li><span class="font-mono text-[var(--foreground)]">Run all</span> and the collection play button execute requests sequentially. Every request can repeat with its own iteration count and delay.</li>
+                  <li>Run results open in the center view as a list of steps with overview, assertions, headers and body tabs. Nothing opens as a modal.</li>
+                  <li>Simulated tests probe a request once and simulate smoke, sanity, latency, load, spike, stress, soak and regression profiles. Extracted values sit at the bottom left of that view.</li>
+                  <li>Click a profile to replace the RESULTS column with its editor: basic settings in the center, the advanced latency budget on the right. <span class="font-mono text-[var(--foreground)]">Save</span> applies and returns to RESULTS; the results detail pane explains every metric, including what p95 means.</li>
+                  <li>Collections and requests keep their run stats, and recent runs survive an application restart. Full reference: <span class="font-mono text-[var(--foreground)]">documentation/DOCUMENTATION_37_APIPULSE.md</span>.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 class="mb-2 text-xs font-semibold uppercase text-[var(--foreground)]">Export and Import</h4>
+                <p class="text-[11px] leading-5 text-[var(--muted-foreground)]">
+                  Everything can be exported as one JSON bundle (whole workspace, a single collection or a single request) and imported again with identifiers remapped,
+                  so importing never overwrites existing data.
+                </p>
+              </section>
             </div>
 
             <div v-else class="space-y-3">

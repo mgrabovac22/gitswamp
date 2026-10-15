@@ -21,7 +21,7 @@ pub async fn clone_repo(
             folder_name.as_deref(),
             token.as_deref(),
             |progress| {
-            let _ = app_handle.emit(CLONE_PROGRESS_EVENT, &progress);
+                let _ = app_handle.emit(CLONE_PROGRESS_EVENT, &progress);
             },
         )
     })

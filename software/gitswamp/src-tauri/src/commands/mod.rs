@@ -1,3 +1,4 @@
+pub mod appdata;
 pub mod branches;
 pub mod clone_init;
 pub mod commit_files;
@@ -6,6 +7,7 @@ pub mod conflicts;
 pub mod credentials;
 pub mod diff;
 pub mod ghost;
+pub mod http;
 pub mod logs;
 pub mod operations;
 pub mod repository;

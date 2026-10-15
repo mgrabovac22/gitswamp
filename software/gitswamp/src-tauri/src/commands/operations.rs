@@ -58,11 +58,7 @@ pub fn run_shell_command(path: String, command: String) -> Result<String, String
 }
 
 #[tauri::command]
-pub fn run_fast_script(
-    path: String,
-    script_type: String,
-    body: String,
-) -> Result<String, String> {
+pub fn run_fast_script(path: String, script_type: String, body: String) -> Result<String, String> {
     GitService::run_fast_script(&path, &script_type, &body)
 }
 
@@ -70,6 +66,15 @@ pub fn run_fast_script(
 pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::write(&path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn read_text_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?

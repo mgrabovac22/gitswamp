@@ -9,7 +9,7 @@ import type { RepoInfo } from "@/types";
 const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDialog.vue"));
 
 type MenuSection = "file" | "edit" | "view" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client";
 
 interface MenuAction {
   id: string;
@@ -210,28 +210,20 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       run: () => emit("setHistoryView", "graph"),
     },
     {
-      id: "view-galaxy",
-      label: "Galaxy View",
-      description: "Explore commits and branches as an interactive canvas galaxy.",
-      shortcut: "Alt+2",
-      disabled: !hasActiveRepo.value,
-      run: () => emit("setHistoryView", "galaxy"),
-    },
-    {
-      id: "view-city",
-      label: "Repository City",
-      description: "Navigate folders, file hotspots and branch activity as a city.",
-      shortcut: "Alt+7",
-      disabled: !hasActiveRepo.value,
-      run: () => emit("setHistoryView", "city"),
-    },
-    {
       id: "view-productivity",
       label: "Productivity Arena",
       description: "Show commit activity and productivity analytics.",
-      shortcut: "Alt+3",
+      shortcut: "Alt+2",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "productivity"),
+    },
+    {
+      id: "view-conflict-heatmap",
+      label: "Usual Conflict Suspects",
+      description: "Highlight merge hotspots and risky conflict areas.",
+      shortcut: "Alt+3",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "conflict-heatmap"),
     },
     {
       id: "view-time-machine",
@@ -242,28 +234,44 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       run: () => emit("setHistoryView", "time-machine"),
     },
     {
-      id: "view-conflict-heatmap",
-      label: "Usual Conflict Suspects",
-      description: "Highlight merge hotspots and risky conflict areas.",
+      id: "view-fast-scripts",
+      label: "Fast Scripts",
+      description: "Save and run terminal, Python and custom commands with a single click.",
       shortcut: "Alt+5",
       disabled: !hasActiveRepo.value,
-      run: () => emit("setHistoryView", "conflict-heatmap"),
+      run: () => emit("setHistoryView", "fast-scripts"),
+    },
+    {
+      id: "view-http-client",
+      label: "API Pulse",
+      description: "Compose and send HTTP requests with collections, environments and a cookie jar.",
+      shortcut: "Alt+6",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "http-client"),
+    },
+    {
+      id: "view-galaxy",
+      label: "Galaxy View",
+      description: "Explore commits and branches as an interactive canvas galaxy.",
+      shortcut: "Alt+7",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "galaxy"),
+    },
+    {
+      id: "view-city",
+      label: "Repository City",
+      description: "Navigate folders, file hotspots and branch activity as a city.",
+      shortcut: "Alt+8",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "city"),
     },
     {
       id: "view-burnout",
       label: "Burnout Analytics",
       description: "Show contributor focus, after-hours rhythm and hot-file ownership pressure.",
-      shortcut: "Alt+6",
+      shortcut: "Alt+9",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "burnout"),
-    },
-    {
-      id: "view-fast-scripts",
-      label: "Fast Scripts",
-      description: "Save and run terminal, Python and custom commands with a single click.",
-      shortcut: "Alt+8",
-      disabled: !hasActiveRepo.value,
-      run: () => emit("setHistoryView", "fast-scripts"),
     },
     {
       id: "open-explorer",
@@ -329,6 +337,12 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       label: "Git RPG Roles",
       description: "Browse role shields and the commit patterns behind them.",
       run: () => openHelpPanel("roles"),
+    },
+    {
+      id: "help-http-client",
+      label: "API Pulse Guide",
+      description: "Collections, runs, simulated tests and variable extractors explained.",
+      run: () => openHelpPanel("http-client"),
     },
     {
       id: "help-about",
