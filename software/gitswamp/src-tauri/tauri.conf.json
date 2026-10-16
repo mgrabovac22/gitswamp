@@ -37,7 +37,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDMDdDNTQzRDlFMjNDNzgKUldSNFBPTFpROFVITEJqaW5zVmg3cVlTVStvbzFnVWN0VWs1RGp3dy91M0lIRkhZa0RDRFBUK0MK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDMDdGNUJGRDFDMzYwRTIKUldUaVlNUFJ2L1VIVEM0Tm1oaTQ2UktPeGc1R2p6MCtqZURvY05GRzRmZkwzOWhPMGc3elFEL2wK",
       "endpoints": [
         "https://github.com/mgrabovac22/gitswamp/releases/latest/download/latest.json"
       ],
