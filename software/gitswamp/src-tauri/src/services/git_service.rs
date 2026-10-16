@@ -1756,16 +1756,37 @@ impl GitService {
 
     pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
-        let (object, reference) = repo
-            .revparse_ext(branch_name)
-            .map_err(|e| e.message().to_string())?;
+        let trimmed = branch_name.trim();
+        let mut found = None;
+        let candidates = build_candidates(trimmed);
+        for cand in &candidates {
+            if let Ok((obj, refn)) = repo.revparse_ext(cand) {
+                found = Some((obj, refn));
+                break;
+            }
+        }
+        let (object, reference) = found.ok_or_else(|| "revspec not found".to_string())?;
 
         repo.checkout_tree(&object, None)
             .map_err(|e| e.message().to_string())?;
 
-        if let Some(reference) = reference {
-            repo.set_head(reference.name().unwrap_or(""))
-                .map_err(|e| e.message().to_string())?;
+        if let Some(reference) = &reference {
+            if let Some(ref_name) = reference.name() {
+                if ref_name.starts_with("refs/remotes/") {
+                    if let Ok(commit) = repo.find_commit(object.id()) {
+                        let local_name = local_branch_name_from_ref(trimmed, ref_name);
+                        let _ = repo.branch(&local_name, &commit, false);
+                        repo.set_head(format!("refs/heads/{}", local_name).as_str())
+                            .map_err(|e| e.message().to_string())?;
+                        return Ok(());
+                    }
+                }
+                repo.set_head(ref_name)
+                    .map_err(|e| e.message().to_string())?;
+            } else {
+                repo.set_head_detached(object.id())
+                    .map_err(|e| e.message().to_string())?;
+            }
         } else {
             repo.set_head_detached(object.id())
                 .map_err(|e| e.message().to_string())?;
@@ -1773,7 +1794,6 @@ impl GitService {
 
         Ok(())
     }
-
     pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
         RemoteService::pull(path, token, auto_stash)
     }
@@ -3179,6 +3199,47 @@ impl GitService {
     }
 }
 
+
+fn build_candidates(input: &str) -> Vec<String> {
+    let trimmed = input.trim();
+    let mut c = Vec::new();
+    if !trimmed.is_empty() {
+        c.push(trimmed.to_string());
+    }
+    if trimmed.contains('/') {
+        if let Some(pos) = trimmed.rfind('/') {
+            let local = &trimmed[pos + 1..];
+            if !local.is_empty() {
+                let s = local.to_string();
+                if !c.contains(&s) {
+                    c.push(s);
+                }
+            }
+        }
+    } else if !trimmed.is_empty() {
+        let s = format!("origin/{}", trimmed);
+        if !c.contains(&s) {
+            c.push(s);
+        }
+    }
+    c
+}
+
+fn local_branch_name_from_ref(input: &str, ref_name: &str) -> String {
+    if let Some(pos) = input.rfind('/') {
+        let local = &input[pos + 1..];
+        if !local.is_empty() {
+            return local.to_string();
+        }
+    }
+    if let Some(pos) = ref_name.rfind('/') {
+        let local = &ref_name[pos + 1..];
+        if !local.is_empty() {
+            return local.to_string();
+        }
+    }
+    input.to_string()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
