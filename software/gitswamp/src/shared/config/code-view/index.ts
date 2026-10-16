@@ -64,6 +64,17 @@ export function highlightCodeLine(line: string, filePath: string): string {
   }
 }
 
+export function highlightCode(code: string, language: string | null): string {
+  try {
+    if (language && hljs.getLanguage(language)) {
+      return hljs.highlight(code, { language, ignoreIllegals: true }).value;
+    }
+    return hljs.highlightAuto(code).value;
+  } catch {
+    return escapeHtml(code);
+  }
+}
+
 export function splitFilePath(filePath: string): { fileName: string; directory: string } {
   const normalized = filePath.split("\\").join("/");
   const parts = normalized.split("/").filter(Boolean);

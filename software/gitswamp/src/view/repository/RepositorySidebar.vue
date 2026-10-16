@@ -17,6 +17,7 @@ import {
   LifeBuoy,
 } from "lucide-vue-next";
 import RepositorySidebarSection from "./RepositorySidebarSection.vue";
+import AppUpdatePanel from "@/features/updater/AppUpdatePanel.vue";
 import type { BranchInfo, StashInfo, TagInfo, IssueInfo, PullRequestInfo, GistInfo, LostCommitInfo } from "@/types";
 
 const props = defineProps<{
@@ -374,7 +375,7 @@ function issueStateClass(issue: IssueInfo): string {
         <button
           v-for="branch in filteredBranches(remoteBranches)"
           :key="branch.name"
-          @click="emit('checkoutRemote', branch.name)"
+          @click="emit('checkoutRemote', normalizeBranchName(branch.name))"
           class="w-full flex items-center justify-start gap-2 px-4 py-1 pl-10 text-left text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
         >
           <span class="truncate flex-1 text-left">{{ branch.name }}</span>
@@ -652,5 +653,7 @@ function issueStateClass(issue: IssueInfo): string {
         </button>
       </div>
     </div>
+
+    <AppUpdatePanel />
   </div>
 </template>

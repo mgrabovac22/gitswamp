@@ -1,4 +1,4 @@
-export type AppHelpSection = "overview" | "shortcuts" | "roles";
+export type AppHelpSection = "overview" | "shortcuts" | "roles" | "http-client";
 
 export interface KeyboardShortcutDefinition {
   id: string;
@@ -68,13 +68,22 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
     shortcuts: [
       { id: "terminal", label: "Toggle terminal panel", keys: "Ctrl+`" },
       { id: "graph-view", label: "Graph view", keys: "Alt+1" },
-      { id: "galaxy-view", label: "Galaxy view", keys: "Alt+2" },
-      { id: "productivity-view", label: "Productivity Arena", keys: "Alt+3" },
+      { id: "productivity-view", label: "Productivity Arena", keys: "Alt+2" },
+      { id: "conflict-view", label: "Usual Conflict Suspects", keys: "Alt+3" },
       { id: "time-machine-view", label: "Time Machine", keys: "Alt+4" },
-      { id: "conflict-view", label: "Usual Conflict Suspects", keys: "Alt+5" },
-      { id: "burnout-view", label: "Burnout Analytics", keys: "Alt+6" },
-      { id: "city-view", label: "Repository City", keys: "Alt+7" },
-      { id: "fast-scripts-view", label: "Fast Scripts", keys: "Alt+8" },
+      { id: "fast-scripts-view", label: "Fast Scripts", keys: "Alt+5" },
+      { id: "http-client-view", label: "API Pulse", keys: "Alt+6" },
+      { id: "galaxy-view", label: "Galaxy view", keys: "Alt+7" },
+      { id: "city-view", label: "Repository City", keys: "Alt+8" },
+      { id: "burnout-view", label: "Burnout Analytics", keys: "Alt+9" },
+    ],
+  },
+  {
+    id: "http-client",
+    label: "API Pulse",
+    shortcuts: [
+      { id: "http-open", label: "Open API Pulse", keys: "Alt+6" },
+      { id: "http-send", label: "Send active request", keys: "Enter in URL bar" },
     ],
   },
   {

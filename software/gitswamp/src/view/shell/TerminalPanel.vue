@@ -591,6 +591,9 @@ function onContainerClick(event: MouseEvent) {
   if (target?.closest("button, input, select, option, label, textarea")) {
     return;
   }
+  if (outputRef.value?.contains(target)) {
+    return;
+  }
   focusInput();
 }
 
@@ -671,17 +674,17 @@ onMounted(() => {
       <span class="text-[10px] text-[var(--muted-foreground)] ml-1">Shortcuts: ↑/↓ history, Ctrl+R reverse search, Ctrl+L clear, !! repeat</span>
     </div>
 
-    <div ref="outputRef" class="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs min-h-0">
-      <div v-if="output.length === 0" class="text-[var(--muted-foreground)] py-2">
+    <div ref="outputRef" class="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs min-h-0 select-text cursor-text user-select-text">
+      <div v-if="output.length === 0" class="text-[var(--muted-foreground)] py-2 select-text">
         {{ props.allowAllCommands ? 'Type any shell command (e.g., dir, npm run build, git status). Built-ins: help, clear, !!, tools, open <tool>' : 'Type a git command (e.g., git status, git log --oneline -5). Aliases: st, br, co, sw, lg, last. Built-ins: tools, open <tool>' }}
       </div>
       <div
         v-for="(line, i) in output"
         :key="i"
-        class="whitespace-pre-wrap mb-2"
+        class="whitespace-pre-wrap mb-2 select-text"
       >
         <template v-for="(part, _j) in line.split('\n')" :key="_j">
-          <div :class="part.startsWith('$') ? 'text-[var(--primary)] font-medium' : part.startsWith('Error:') ? 'text-[#ef4444]' : 'text-[var(--foreground)]'">
+          <div class="select-text" :class="part.startsWith('$') ? 'text-[var(--primary)] font-medium' : part.startsWith('Error:') ? 'text-[#ef4444]' : 'text-[var(--foreground)]'">
             {{ part }}
           </div>
         </template>

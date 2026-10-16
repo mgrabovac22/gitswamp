@@ -9,6 +9,7 @@ import {
   Download,
   ShieldAlert,
   UserCircle2,
+  GitBranch,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -29,6 +30,8 @@ const props = defineProps<{
   };
   rpgProfile?: GitRpgProfile | null;
   rpgLoading?: boolean;
+  graphIsolationActive?: boolean;
+  graphIsolationBranch?: string;
   identityGuard?: {
     enabled: boolean;
     mismatch: boolean;
@@ -41,6 +44,7 @@ const emit = defineEmits<{
   pull: [];
   push: [];
   fetch: [];
+  exitGraphIsolation: [];
   branch: [];
   ghostBranch: [];
   materializeGhostBranch: [];
@@ -129,6 +133,19 @@ onUnmounted(() => {
           <Loader2 v-if="loading && activeAction === 'fetch'" class="w-3.5 h-3.5 animate-spin" />
           <RefreshCw v-else class="w-3.5 h-3.5" />
           Fetch
+        </AppButton>
+        <AppButton
+          v-if="graphIsolationActive"
+          variant="ghost"
+          size="sm"
+          class="h-8 text-[#f59e0b] hover:bg-[#f59e0b]/10 hover:text-[#fbbf24] gap-1.5 transition-all text-xs ring-1 ring-[#f59e0b]/40"
+          :title="graphIsolationBranch
+            ? `Isolated to '${graphIsolationBranch}'. Click to show all branches again.`
+            : 'Branch isolation is active. Click to show all branches again.'"
+          @click="emit('exitGraphIsolation')"
+        >
+          <GitBranch class="w-3.5 h-3.5" />
+          Show all branches
         </AppButton>
       </div>
     </div>

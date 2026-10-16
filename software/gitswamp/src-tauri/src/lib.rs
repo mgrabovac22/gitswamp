@@ -4,6 +4,7 @@ mod models;
 mod repositories;
 mod services;
 
+use commands::appdata::{get_app_state_path, read_app_state, write_app_state};
 use commands::branches::{checkout_branch, create_branch, delete_branch, get_branches};
 use commands::clone_init::{clone_repo, init_repo, initialize_empty_repo, search_commits};
 use commands::commit_files::get_commit_files;
@@ -23,6 +24,7 @@ use commands::diff::{
 use commands::ghost::{
     discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch,
 };
+use commands::http::http_send_request;
 use commands::logs::{append_app_log, get_app_log_path};
 use commands::operations::{
     add_bitbucket_ssh_key, add_github_ssh_key, add_gitlab_ssh_key, check_origin, checkout_commit,
@@ -31,12 +33,13 @@ use commands::operations::{
     generate_ssh_key, get_available_external_editors, get_available_external_tools, get_git_path,
     get_lost_commits, github_oauth_poll, github_oauth_start, list_bitbucket_ssh_keys,
     list_github_ssh_keys, load_ssh_public_key_from_file, open_file_with_editor,
-    open_path_with_tool, pull, push, push_force, push_to_platform, rebase_abort,
+    open_path_with_tool, pull, push, push_force, push_to_platform, read_text_file, rebase_abort,
     rebase_branch_onto, rebase_continue, rebase_skip, remove_cached_all, rename_branch,
     reset_branch_to_remote, reset_to_commit, revert_commit, run_fast_script, run_git_command,
-    run_shell_command, search_azure_repos, search_bitbucket_repos, search_github_repos,
-    search_gitlab_repos,
-    set_upstream, verify_bitbucket_token, verify_github_token, verify_gitlab_token, write_text_file,
+    run_shell_command, search_azure_repos, search_bitbucket_dc_repos, search_bitbucket_repos,
+    search_github_enterprise_repos, search_github_repos, search_gitlab_repos, set_upstream,
+    verify_bitbucket_dc_token, verify_bitbucket_token, verify_github_enterprise_token,
+    verify_github_token, verify_gitlab_token, write_text_file,
 };
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
@@ -46,6 +49,7 @@ use commands::status::{
     restore_pull_safety_stash, stage_file, stage_files, unstage_file, unstage_files,
 };
 use commands::tags::get_tags;
+use commands::updates::{check_for_update, install_update, PendingUpdate};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -60,6 +64,12 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            app.manage(PendingUpdate::default());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_repo_info,
             get_commits,
@@ -103,6 +113,7 @@ pub fn run() {
             run_shell_command,
             run_fast_script,
             write_text_file,
+            read_text_file,
             remove_cached_all,
             discard_file,
             discard_files,
@@ -121,9 +132,13 @@ pub fn run() {
             create_tag_at,
             delete_tag,
             search_github_repos,
+            search_github_enterprise_repos,
+            verify_github_enterprise_token,
             search_gitlab_repos,
             search_bitbucket_repos,
+            search_bitbucket_dc_repos,
             verify_bitbucket_token,
+            verify_bitbucket_dc_token,
             search_azure_repos,
             generate_ssh_key,
             add_gitlab_ssh_key,
@@ -174,6 +189,12 @@ pub fn run() {
             has_conflict_markers,
             append_app_log,
             get_app_log_path,
+            read_app_state,
+            write_app_state,
+            get_app_state_path,
+            http_send_request,
+            check_for_update,
+            install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -58,11 +58,7 @@ pub fn run_shell_command(path: String, command: String) -> Result<String, String
 }
 
 #[tauri::command]
-pub fn run_fast_script(
-    path: String,
-    script_type: String,
-    body: String,
-) -> Result<String, String> {
+pub fn run_fast_script(path: String, script_type: String, body: String) -> Result<String, String> {
     GitService::run_fast_script(&path, &script_type, &body)
 }
 
@@ -70,6 +66,15 @@ pub fn run_fast_script(
 pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::write(&path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn read_text_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -141,43 +146,120 @@ pub fn delete_tag(path: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn search_github_repos(
+pub async fn search_github_repos(
     token: String,
     query: String,
     include_public: bool,
 ) -> Result<Vec<crate::models::GithubRepo>, String> {
-    crate::services::git_service::GitService::search_github_repos(&token, &query, include_public)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::search_github_repos(
+            &token,
+            &query,
+            include_public,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn search_gitlab_repos(
+pub async fn search_github_enterprise_repos(
+    domain: String,
+    token: String,
+    query: String,
+    include_public: bool,
+) -> Result<Vec<crate::models::GithubRepo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::search_github_enterprise_repos(
+            &domain,
+            &token,
+            &query,
+            include_public,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn verify_github_enterprise_token(
+    domain: String,
+    token: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::verify_github_enterprise_token(&domain, &token)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn search_gitlab_repos(
     domain: String,
     token: String,
     query: String,
 ) -> Result<Vec<crate::models::GitlabRepo>, String> {
-    crate::services::git_service::GitService::search_gitlab_repos(&domain, &token, &query)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::search_gitlab_repos(&domain, &token, &query)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn search_bitbucket_repos(
+pub async fn search_bitbucket_repos(
     token: String,
     query: String,
 ) -> Result<Vec<crate::models::BitbucketRepo>, String> {
-    crate::services::git_service::GitService::search_bitbucket_repos(&token, &query)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::search_bitbucket_repos(&token, &query)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn verify_bitbucket_token(token: String) -> Result<String, String> {
-    crate::services::git_service::GitService::verify_bitbucket_token(&token)
+pub async fn search_bitbucket_dc_repos(
+    domain: String,
+    token: String,
+    query: String,
+) -> Result<Vec<crate::models::BitbucketRepo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::search_bitbucket_dc_repos(&domain, &token, &query)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn search_azure_repos(
+pub async fn verify_bitbucket_token(token: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::verify_bitbucket_token(&token)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn verify_bitbucket_dc_token(domain: String, token: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::verify_bitbucket_dc_token(&domain, &token)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn search_azure_repos(
     domain: String,
     token: String,
     query: String,
 ) -> Result<Vec<crate::models::AzureRepo>, String> {
-    crate::services::git_service::GitService::search_azure_repos(&domain, &token, &query)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::search_azure_repos(&domain, &token, &query)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -228,8 +310,12 @@ pub fn delete_bitbucket_ssh_key(token: String, key_id: String) -> Result<(), Str
 }
 
 #[tauri::command]
-pub fn verify_github_token(token: String) -> Result<String, String> {
-    crate::services::git_service::GitService::verify_github_token(&token)
+pub async fn verify_github_token(token: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::verify_github_token(&token)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -248,8 +334,12 @@ pub fn github_oauth_poll(device_code: String) -> Result<Option<String>, String> 
 }
 
 #[tauri::command]
-pub fn verify_gitlab_token(domain: String, token: String) -> Result<String, String> {
-    crate::services::git_service::GitService::verify_gitlab_token(&domain, &token)
+pub async fn verify_gitlab_token(domain: String, token: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::git_service::GitService::verify_gitlab_token(&domain, &token)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

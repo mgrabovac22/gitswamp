@@ -89,13 +89,46 @@ const cloneError = ref<string | null>(null);
 const tokenInput = ref("");
 const showTokenInput = ref(false);
 const gitlabDomain = ref(""); // For self-hosted GitLab
+const githubEnterpriseDomain = ref(""); // For GitHub Enterprise Server
 const azureDomain = ref("");
+const bitbucketDcDomain = ref(""); // For Bitbucket Data Center
 
 const githubSearch = ref("");
 const githubRepos = ref<GithubRepo[]>([]);
 const githubLoading = ref(false);
 const githubError = ref<string | null>(null);
+let githubReposProvider: string | null = null;
+let bitbucketReposProvider: string | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+const SEARCH_DEBOUNCE_MS = 350;
+const REPO_CACHE_TTL_MS = 60_000;
+
+type RepoCacheEntry = { at: number; repos: unknown[] };
+const repoSearchCache = new Map<string, RepoCacheEntry>();
+let searchSeq = 0;
+
+function repoCacheKey(provider: string, domain: string, query: string, extra = ""): string {
+  return `${provider}|${domain.trim().toLowerCase()}|${query.trim().toLowerCase()}|${extra}`;
+}
+
+function invalidateInFlightSearch(): void {
+  searchSeq += 1;
+}
+
+function readRepoCache<T>(key: string): T[] | null {
+  const entry = repoSearchCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > REPO_CACHE_TTL_MS) {
+    repoSearchCache.delete(key);
+    return null;
+  }
+  return entry.repos as T[];
+}
+
+function writeRepoCache(key: string, repos: unknown[]): void {
+  repoSearchCache.set(key, { at: Date.now(), repos });
+}
 
 type GithubRepoSection = {
   key: string;
@@ -307,12 +340,22 @@ function getStoredAzureDomain(): string {
 function getProviderToken(provider: string): string | null {
   if (provider === "github") return props.token || props.providerTokens?.github || null;
   const stored = props.providerTokens?.[provider] || null;
-  if (provider === "gitlab-self" && stored) {
+  if (
+    stored &&
+    (provider === "gitlab-self" || provider === "github-enterprise" || provider === "bitbucket-dc")
+  ) {
     const separatorIndex = stored.indexOf("|");
     if (separatorIndex > 0) {
       const rawDomain = stored.slice(0, separatorIndex).trim();
       const token = stored.slice(separatorIndex + 1).trim();
-      gitlabDomain.value = normalizeHostInput(rawDomain);
+      const normalizedDomain = normalizeHostInput(rawDomain);
+      if (provider === "gitlab-self") {
+        gitlabDomain.value = normalizedDomain;
+      } else if (provider === "github-enterprise") {
+        githubEnterpriseDomain.value = normalizedDomain;
+      } else {
+        bitbucketDcDomain.value = normalizedDomain;
+      }
       return token || null;
     }
   }
@@ -325,6 +368,12 @@ function isProviderConnected(provider: string): boolean {
   if (provider === "gitlab-self") {
     return !!normalizeHostInput(gitlabDomain.value);
   }
+  if (provider === "github-enterprise") {
+    return !!normalizeHostInput(githubEnterpriseDomain.value);
+  }
+  if (provider === "bitbucket-dc") {
+    return !!normalizeHostInput(bitbucketDcDomain.value);
+  }
   if (provider === "azure") {
     return !!normalizeAzureDomainInput(azureDomain.value || getStoredAzureDomain());
   }
@@ -334,9 +383,11 @@ function isProviderConnected(provider: string): boolean {
 function isProviderFullySupported(provider: string): boolean {
   return provider === "url"
     || provider === "github"
+    || provider === "github-enterprise"
     || provider === "gitlab"
     || provider === "gitlab-self"
     || provider === "bitbucket"
+    || provider === "bitbucket-dc"
     || provider === "azure";
 }
 
@@ -417,6 +468,42 @@ async function saveToken() {
     emit("saveProviderToken", "azure", tokenInput.value.trim());
     emit("saveProviderToken", "azure-domain", normalizedAzureDomain);
     azureDomain.value = normalizedAzureDomain;
+  } else if (activeSource.value === "github-enterprise") {
+    const normalizedDomain = normalizeHostInput(githubEnterpriseDomain.value);
+    if (!normalizedDomain) {
+      githubError.value = "Valid GitHub Enterprise domain is required (e.g. github.example.com)";
+      return;
+    }
+
+    try {
+      await invoke<string>("verify_github_enterprise_token", {
+        domain: normalizedDomain,
+        token: tokenInput.value.trim(),
+      });
+      githubEnterpriseDomain.value = normalizedDomain;
+      emit("saveProviderToken", "github-enterprise", `${normalizedDomain}|${tokenInput.value.trim()}`);
+    } catch (e) {
+      githubError.value = `Token verification failed: ${e}`;
+      return;
+    }
+  } else if (activeSource.value === "bitbucket-dc") {
+    const normalizedDomain = normalizeHostInput(bitbucketDcDomain.value);
+    if (!normalizedDomain) {
+      bitbucketError.value = "Valid Bitbucket Data Center domain is required (e.g. bitbucket.example.com)";
+      return;
+    }
+
+    try {
+      await invoke<string>("verify_bitbucket_dc_token", {
+        domain: normalizedDomain,
+        token: tokenInput.value.trim(),
+      });
+      bitbucketDcDomain.value = normalizedDomain;
+      emit("saveProviderToken", "bitbucket-dc", `${normalizedDomain}|${tokenInput.value.trim()}`);
+    } catch (e) {
+      bitbucketError.value = `Token verification failed: ${e}`;
+      return;
+    }
   } else if (activeSource.value === "bitbucket") {
     const username = bitbucketUsernameInput.value.trim();
     const secret = tokenInput.value.trim();
@@ -470,40 +557,111 @@ function selectRepo(repo: GithubRepo) {
   cloneUrl.value = repo.clone_url;
 }
 
-function onGithubSearch() {
+type RepoLoaderOptions<T> = {
+  provider: string;
+  domain: string;
+  query: string;
+  extra?: string;
+  loading: { value: boolean };
+  error: { value: string | null };
+  target: { value: T[] };
+  fetcher: () => Promise<T[]>;
+};
+
+async function loadRepos<T>(options: RepoLoaderOptions<T>): Promise<void> {
+  const cacheKey = repoCacheKey(
+    options.provider,
+    options.domain,
+    options.query,
+    options.extra ?? ""
+  );
+
+  const cached = readRepoCache<T>(cacheKey);
+  const seq = ++searchSeq;
+  if (cached) {
+    options.target.value = cached;
+    options.error.value = null;
+    options.loading.value = false;
+    return;
+  }
+
+  options.loading.value = true;
+  options.error.value = null;
+  try {
+    const repos = await options.fetcher();
+    if (seq !== searchSeq) return;
+    writeRepoCache(cacheKey, repos);
+    options.target.value = repos;
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    options.error.value = String(e);
+    options.target.value = [];
+  } finally {
+    if (seq === searchSeq) {
+      options.loading.value = false;
+    }
+  }
+}
+
+function debounceSearch(run: () => void) {
   if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    doGithubSearch();
-  }, 1000);
+  searchTimer = setTimeout(run, SEARCH_DEBOUNCE_MS);
+}
+
+function onGithubSearch() {
+  debounceSearch(() => {
+    void doGithubSearch();
+  });
 }
 
 async function doGithubSearch() {
-  const token = getProviderToken("github");
+  const provider = activeSource.value === "github-enterprise" ? "github-enterprise" : "github";
+  const token = getProviderToken(provider);
   if (!token) {
-    githubError.value = "No GitHub token. Add one in Settings first.";
+    githubError.value = provider === "github-enterprise"
+      ? "GitHub Enterprise token required"
+      : "No GitHub token. Add one in Settings first.";
     return;
   }
-  githubLoading.value = true;
-  githubError.value = null;
-  try {
-    githubRepos.value = await invoke<GithubRepo[]>("search_github_repos", {
-      token,
-      query: githubSearch.value,
-      includePublic: browseAllPublicRepos.value,
-    });
-  } catch (e) {
-    githubError.value = String(e);
-    githubRepos.value = [];
-  } finally {
-    githubLoading.value = false;
+
+  const domain = provider === "github-enterprise" ? normalizeHostInput(githubEnterpriseDomain.value) : "";
+  if (provider === "github-enterprise") {
+    if (!domain) {
+      githubError.value = "GitHub Enterprise domain required";
+      return;
+    }
+    githubEnterpriseDomain.value = domain;
   }
+  githubReposProvider = provider;
+
+  await loadRepos<GithubRepo>({
+    provider,
+    domain,
+    query: githubSearch.value,
+    extra: String(browseAllPublicRepos.value),
+    loading: githubLoading,
+    error: githubError,
+    target: githubRepos,
+    fetcher: () =>
+      provider === "github-enterprise"
+        ? invoke<GithubRepo[]>("search_github_enterprise_repos", {
+            domain,
+            token,
+            query: githubSearch.value,
+            includePublic: browseAllPublicRepos.value,
+          })
+        : invoke<GithubRepo[]>("search_github_repos", {
+            token,
+            query: githubSearch.value,
+            includePublic: browseAllPublicRepos.value,
+          }),
+  });
 }
 
 function onGitlabSearch() {
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    doGitlabSearch();
-  }, 1000);
+  debounceSearch(() => {
+    void doGitlabSearch();
+  });
 }
 
 async function doGitlabSearch() {
@@ -516,20 +674,20 @@ async function doGitlabSearch() {
   }
 
   gitlabDomain.value = normalizedDomain;
-  gitlabLoading.value = true;
-  gitlabError.value = null;
-  try {
-    gitlabRepos.value = await invoke<GitlabRepo[]>("search_gitlab_repos", {
-      domain: normalizedDomain,
-      token: token,
-      query: gitlabSearch.value,
-    });
-  } catch (e) {
-    gitlabError.value = String(e);
-    gitlabRepos.value = [];
-  } finally {
-    gitlabLoading.value = false;
-  }
+  await loadRepos<GitlabRepo>({
+    provider: source,
+    domain: normalizedDomain,
+    query: gitlabSearch.value,
+    loading: gitlabLoading,
+    error: gitlabError,
+    target: gitlabRepos,
+    fetcher: () =>
+      invoke<GitlabRepo[]>("search_gitlab_repos", {
+        domain: normalizedDomain,
+        token,
+        query: gitlabSearch.value,
+      }),
+  });
 }
 
 function selectGitlabRepo(repo: GitlabRepo) {
@@ -537,32 +695,50 @@ function selectGitlabRepo(repo: GitlabRepo) {
 }
 
 function onBitbucketSearch() {
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
+  debounceSearch(() => {
     void doBitbucketSearch();
-  }, 1000);
+  });
 }
 
 async function doBitbucketSearch() {
-  const token = getProviderToken("bitbucket");
+  const provider = activeSource.value === "bitbucket-dc" ? "bitbucket-dc" : "bitbucket";
+  const token = getProviderToken(provider);
   if (!token) {
-    bitbucketError.value = "Bitbucket token required";
+    bitbucketError.value = provider === "bitbucket-dc"
+      ? "Bitbucket Data Center token required"
+      : "Bitbucket token required";
     return;
   }
 
-  bitbucketLoading.value = true;
-  bitbucketError.value = null;
-  try {
-    bitbucketRepos.value = await invoke<BitbucketRepo[]>("search_bitbucket_repos", {
-      token,
-      query: bitbucketSearch.value,
-    });
-  } catch (e) {
-    bitbucketError.value = String(e);
-    bitbucketRepos.value = [];
-  } finally {
-    bitbucketLoading.value = false;
+  const domain = provider === "bitbucket-dc" ? normalizeHostInput(bitbucketDcDomain.value) : "";
+  if (provider === "bitbucket-dc") {
+    if (!domain) {
+      bitbucketError.value = "Bitbucket Data Center domain required";
+      return;
+    }
+    bitbucketDcDomain.value = domain;
   }
+  bitbucketReposProvider = provider;
+
+  await loadRepos<BitbucketRepo>({
+    provider,
+    domain,
+    query: bitbucketSearch.value,
+    loading: bitbucketLoading,
+    error: bitbucketError,
+    target: bitbucketRepos,
+    fetcher: () =>
+      provider === "bitbucket-dc"
+        ? invoke<BitbucketRepo[]>("search_bitbucket_dc_repos", {
+            domain,
+            token,
+            query: bitbucketSearch.value,
+          })
+        : invoke<BitbucketRepo[]>("search_bitbucket_repos", {
+            token,
+            query: bitbucketSearch.value,
+          }),
+  });
 }
 
 function selectBitbucketRepo(repo: BitbucketRepo) {
@@ -585,10 +761,9 @@ function setBitbucketProtocol(proto: "https" | "ssh") {
 }
 
 function onAzureSearch() {
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
+  debounceSearch(() => {
     void doAzureSearch();
-  }, 1000);
+  });
 }
 
 async function doAzureSearch() {
@@ -600,20 +775,20 @@ async function doAzureSearch() {
   }
 
   azureDomain.value = domain;
-  azureLoading.value = true;
-  azureError.value = null;
-  try {
-    azureRepos.value = await invoke<AzureRepo[]>("search_azure_repos", {
-      domain,
-      token,
-      query: azureSearch.value,
-    });
-  } catch (e) {
-    azureError.value = String(e);
-    azureRepos.value = [];
-  } finally {
-    azureLoading.value = false;
-  }
+  await loadRepos<AzureRepo>({
+    provider: "azure",
+    domain,
+    query: azureSearch.value,
+    loading: azureLoading,
+    error: azureError,
+    target: azureRepos,
+    fetcher: () =>
+      invoke<AzureRepo[]>("search_azure_repos", {
+        domain,
+        token,
+        query: azureSearch.value,
+      }),
+  });
 }
 
 function selectAzureRepo(repo: AzureRepo) {
@@ -621,7 +796,11 @@ function selectAzureRepo(repo: AzureRepo) {
 }
 
 function maybeFetchGithubRepos(src: string | null): void {
-  if (src === "github" && githubRepos.value.length === 0 && isProviderConnected("github")) {
+  if (
+    (src === "github" || src === "github-enterprise") &&
+    githubRepos.value.length === 0 &&
+    isProviderConnected(src)
+  ) {
     void doGithubSearch();
   }
 }
@@ -630,7 +809,7 @@ function maybeFetchProviderRepos(src: string | null): void {
   if ((src === "gitlab" || src === "gitlab-self") && !needsConnection.value && gitlabRepos.value.length === 0) {
     void doGitlabSearch();
   }
-  if (src === "bitbucket" && !needsConnection.value && bitbucketRepos.value.length === 0) {
+  if ((src === "bitbucket" || src === "bitbucket-dc") && !needsConnection.value && bitbucketRepos.value.length === 0) {
     void doBitbucketSearch();
   }
   if (src === "azure" && !needsConnection.value && azureRepos.value.length === 0) {
@@ -638,13 +817,48 @@ function maybeFetchProviderRepos(src: string | null): void {
   }
 }
 
-function syncActiveSource(src: string | null, visible: boolean): void {
-  if (visible && src === "github" && isProviderConnected("github") && githubRepos.value.length === 0) {
-    void doGithubSearch();
+function syncActiveSource(src: string | null): void {
+  if (src === "github-enterprise" && !githubEnterpriseDomain.value) {
+    const stored = props.providerTokens?.["github-enterprise"] || "";
+    githubEnterpriseDomain.value = normalizeHostInput(stored.split("|")[0] || "");
+  }
+
+  if (src === "bitbucket-dc" && !bitbucketDcDomain.value) {
+    const stored = props.providerTokens?.["bitbucket-dc"] || "";
+    bitbucketDcDomain.value = normalizeHostInput(stored.split("|")[0] || "");
   }
 
   if (src === "azure" && !azureDomain.value) {
     azureDomain.value = getStoredAzureDomain();
+  }
+
+  invalidateInFlightSearch();
+
+  if (src === "github" || src === "github-enterprise") {
+    if (githubReposProvider && githubReposProvider !== src) {
+      githubRepos.value = [];
+      githubSearch.value = "";
+      githubError.value = null;
+    }
+  } else {
+    githubRepos.value = [];
+    githubSearch.value = "";
+    githubError.value = null;
+    githubReposProvider = null;
+  }
+
+  if (src === "bitbucket" || src === "bitbucket-dc") {
+    if (bitbucketReposProvider && bitbucketReposProvider !== src) {
+      bitbucketRepos.value = [];
+      bitbucketSearch.value = "";
+      bitbucketError.value = null;
+      bitbucketSelectedRepo.value = null;
+    }
+  } else {
+    bitbucketRepos.value = [];
+    bitbucketSearch.value = "";
+    bitbucketError.value = null;
+    bitbucketReposProvider = null;
   }
 
   maybeFetchGithubRepos(src);
@@ -655,12 +869,6 @@ function syncActiveSource(src: string | null, visible: boolean): void {
     gitlabSearch.value = "";
     gitlabPublicKey.value = "";
     gitlabSshKeyGenerated.value = false;
-  }
-
-  if (src !== "bitbucket") {
-    bitbucketRepos.value = [];
-    bitbucketSearch.value = "";
-    bitbucketError.value = null;
   }
 
   if (src !== "azure") {
@@ -707,12 +915,15 @@ async function generateSshKey() {
   }
 }
 
-watch([activeSource, () => props.visible], ([src, visible]) => {
-  syncActiveSource(src, visible);
+watch([activeSource, () => props.visible], ([src]) => {
+  syncActiveSource(src);
 }, { immediate: true });
 
 watch([githubSearch, browseAllPublicRepos], () => {
-  if (activeSource.value === "github" && isProviderConnected("github")) {
+  if (
+    (activeSource.value === "github" || activeSource.value === "github-enterprise") &&
+    isProviderConnected(activeSource.value!)
+  ) {
     onGithubSearch();
   }
 });
@@ -725,27 +936,33 @@ watch(clonePath, (value) => {
 });
 
 watch(needsConnection, (needs) => {
-  if (!needs && (activeSource.value === "gitlab" || activeSource.value === "gitlab-self") && gitlabRepos.value.length === 0) {
+  if (needs) return;
+  if ((activeSource.value === "gitlab" || activeSource.value === "gitlab-self") && gitlabRepos.value.length === 0) {
     doGitlabSearch();
   }
-  if (!needs && activeSource.value === "bitbucket" && bitbucketRepos.value.length === 0) {
+  if ((activeSource.value === "bitbucket" || activeSource.value === "bitbucket-dc") && bitbucketRepos.value.length === 0) {
     doBitbucketSearch();
   }
-  if (!needs && activeSource.value === "azure" && azureRepos.value.length === 0) {
+  if (activeSource.value === "azure" && azureRepos.value.length === 0) {
     doAzureSearch();
+  }
+  if (
+    (activeSource.value === "github" || activeSource.value === "github-enterprise") &&
+    githubRepos.value.length === 0
+  ) {
+    doGithubSearch();
   }
 });
 
 const isUrlMode = computed(() => activeSource.value === "url");
-const isGithubMode = computed(() => activeSource.value === "github");
+const isGithubMode = computed(() => activeSource.value === "github" || activeSource.value === "github-enterprise");
+const isGithubEnterpriseMode = computed(() => activeSource.value === "github-enterprise");
 const isGitlabMode = computed(() => activeSource.value === "gitlab" || activeSource.value === "gitlab-self");
 const isGitlabSelfMode = computed(() => activeSource.value === "gitlab-self");
-const isBitbucketMode = computed(() => activeSource.value === "bitbucket");
+const isBitbucketMode = computed(() => activeSource.value === "bitbucket" || activeSource.value === "bitbucket-dc");
+const isBitbucketDcMode = computed(() => activeSource.value === "bitbucket-dc");
 const isAzureMode = computed(() => activeSource.value === "azure");
 const gitlabConnectionName = computed(() => (isGitlabSelfMode.value ? gitlabDomain.value : "gitlab.com"));
-
-const unimplementedProviders = new Set(["github-enterprise", "bitbucket-dc"]);
-const isUnimplemented = computed(() => !!activeSource.value && unimplementedProviders.has(activeSource.value));
 
 onMounted(() => {
   void setDefaultClonePath();
@@ -830,6 +1047,54 @@ onMounted(() => {
           </div>
 
           <template v-if="isGithubMode">
+            <div v-if="isGithubEnterpriseMode && needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
+              <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#6e7681]/20">
+                <Github class="w-8 h-8 text-[#6e7681]" />
+              </div>
+              <div class="text-sm text-[var(--foreground)] font-medium">Connect to GitHub Enterprise</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed">
+                Enter your GitHub Enterprise Server domain and a personal access token
+              </p>
+              <button @click="startTokenConnect" class="px-4 py-2 bg-[var(--primary)] text-white text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
+                <Key class="w-3.5 h-3.5" />
+                Connect to GitHub Enterprise
+              </button>
+            </div>
+
+            <div v-if="isGithubEnterpriseMode && needsConnection && showTokenInput" class="space-y-3">
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Domain</div>
+                <input
+                  v-model="githubEnterpriseDomain"
+                  placeholder="github.example.com"
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  autofocus
+                />
+              </div>
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Token</div>
+                <input
+                  v-model="tokenInput"
+                  type="password"
+                  placeholder="Personal access token..."
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  @keyup.enter="saveToken"
+                />
+              </div>
+              <div v-if="githubError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ githubError }}</div>
+              <div class="flex justify-end gap-2 mt-2">
+                <button @click="showTokenInput = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+                <button @click="saveToken" :disabled="!tokenInput.trim() || !githubEnterpriseDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Connect</button>
+              </div>
+              <p class="text-[9px] text-[var(--muted-foreground)] px-2">{{ tokenInstructions['github-enterprise'] }}</p>
+            </div>
+
+            <template v-if="!isGithubEnterpriseMode || !needsConnection">
+            <div v-if="isGithubEnterpriseMode" class="flex items-center gap-2 px-2 flex-shrink-0">
+              <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
+              <span class="text-[10px] text-[#10b981]">Connected to {{ githubEnterpriseDomain }}</span>
+            </div>
+
             <div class="flex items-center gap-3 flex-shrink-0">
                 <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Search</div>
               <div class="flex-1 relative">
@@ -847,7 +1112,7 @@ onMounted(() => {
             <div v-if="githubError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ githubError }}</div>
 
             <div class="flex-1 overflow-y-auto min-h-0 border border-[var(--border)] rounded-lg bg-[var(--background)]">
-              <div v-if="!isProviderConnected('github')" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)] p-4 text-center">
+              <div v-if="!isProviderConnected(isGithubEnterpriseMode ? 'github-enterprise' : 'github')" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)] p-4 text-center">
                 No GitHub token configured.<br/>Go to Settings and add a Personal Access Token first.
               </div>
               <div v-else-if="!githubRepoSections.length && !githubLoading" class="flex items-center justify-center h-full text-xs text-[var(--muted-foreground)]">
@@ -887,6 +1152,7 @@ onMounted(() => {
                 {{ cloneUrl }}
               </div>
             </div>
+            </template>
           </template>
 
           <template v-if="isGitlabMode">
@@ -1013,7 +1279,49 @@ onMounted(() => {
           </template>
 
           <template v-if="isBitbucketMode">
-            <div v-if="needsConnection && !showTokenInput && !bitbucketSshMode" class="flex flex-col items-center justify-center py-8 gap-3">
+            <div v-if="isBitbucketDcMode && needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
+              <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#2684ff]/20">
+                <BitbucketIcon class="w-8 h-8 text-[#2684ff]" />
+              </div>
+              <div class="text-sm text-[var(--foreground)] font-medium">Connect to Bitbucket Data Center</div>
+              <p class="text-[10px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed">
+                Enter your Bitbucket Data Center host and an HTTP access token
+              </p>
+              <button @click="startTokenConnect" class="px-4 py-2 bg-[var(--primary)] text-white text-xs font-medium rounded-lg hover:opacity-90 transition-colors flex items-center gap-2">
+                <Key class="w-3.5 h-3.5" />
+                Connect to Bitbucket DC
+              </button>
+            </div>
+
+            <div v-if="isBitbucketDcMode && needsConnection && showTokenInput" class="space-y-3">
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Domain</div>
+                <input
+                  v-model="bitbucketDcDomain"
+                  placeholder="bitbucket.example.com"
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  autofocus
+                />
+              </div>
+              <div class="flex items-center gap-3 flex-shrink-0">
+                <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">HTTP Token</div>
+                <input
+                  v-model="tokenInput"
+                  type="password"
+                  placeholder="HTTP access token"
+                  class="flex-1 px-3 py-1.5 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
+                  @keyup.enter="saveToken"
+                />
+              </div>
+              <div v-if="bitbucketError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ bitbucketError }}</div>
+              <div class="flex justify-end gap-2 mt-2">
+                <button @click="showTokenInput = false" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
+                <button @click="saveToken" :disabled="!tokenInput.trim() || !bitbucketDcDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Connect</button>
+              </div>
+              <p class="text-[9px] text-[var(--muted-foreground)] px-2">{{ tokenInstructions['bitbucket-dc'] }}</p>
+            </div>
+
+            <div v-if="!isBitbucketDcMode && needsConnection && !showTokenInput && !bitbucketSshMode" class="flex flex-col items-center justify-center py-8 gap-3">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#0052cc]/20">
                 <BitbucketIcon class="w-8 h-8 text-[#0052cc]" />
               </div>
@@ -1034,7 +1342,7 @@ onMounted(() => {
               </div>
             </div>
 
-            <div v-if="needsConnection && bitbucketSshMode" class="space-y-3">
+            <div v-if="!isBitbucketDcMode && needsConnection && bitbucketSshMode" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
                 <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">SSH URL</div>
                 <input
@@ -1061,7 +1369,7 @@ onMounted(() => {
               </div>
             </div>
 
-            <div v-if="needsConnection && showTokenInput" class="space-y-3">
+            <div v-if="!isBitbucketDcMode && needsConnection && showTokenInput" class="space-y-3">
               <div class="flex items-center gap-3 flex-shrink-0">
                 <div class="text-xs text-[var(--muted-foreground)] w-20 text-right flex-shrink-0">Username</div>
                 <input
@@ -1105,7 +1413,9 @@ onMounted(() => {
 
               <div class="flex items-center gap-2 px-2 flex-shrink-0">
                 <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
-                <span class="text-[10px] text-[#10b981]">Connected to Bitbucket (API Token)</span>
+                <span class="text-[10px] text-[#10b981]">
+                  {{ isBitbucketDcMode ? `Connected to ${bitbucketDcDomain}` : 'Connected to Bitbucket (API Token)' }}
+                </span>
               </div>
 
               <div v-if="bitbucketError" class="text-[10px] text-[#ef4444] px-2 flex-shrink-0">{{ bitbucketError }}</div>
@@ -1257,26 +1567,7 @@ onMounted(() => {
             </template>
           </template>
 
-          <template v-if="isUnimplemented">
-            <div class="flex flex-col items-center justify-center py-12 gap-4">
-              <div class="w-20 h-20 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '15' }">
-                <component :is="sources.find(s => s.id === activeSource)?.icon" class="w-10 h-10" :style="{ color: sources.find(s => s.id === activeSource)?.color }" />
-              </div>
-              <div class="text-lg text-[var(--foreground)] font-semibold">{{ providerNames[activeSource!] }}</div>
-              <div class="px-4 py-2 bg-[var(--primary)]/10 text-[var(--primary)] text-xs font-medium rounded-full border border-[var(--primary)]/30">
-                Coming Soon
-              </div>
-              <p class="text-[11px] text-[var(--muted-foreground)] text-center max-w-xs leading-relaxed mt-2">
-                Support for {{ providerNames[activeSource!] }} is being developed.<br/>
-                In the meantime, you can use <strong>Clone with URL</strong> to clone any repository.
-              </p>
-              <button @click="selectSource('url')" class="mt-2 px-4 py-2 bg-[var(--secondary)] text-[var(--foreground)] text-xs font-medium rounded-lg hover:bg-[var(--secondary)]/80 transition-colors">
-                Use URL Instead
-              </button>
-            </div>
-          </template>
-
-          <template v-if="!isUrlMode && !isGithubMode && !isGitlabMode && !isBitbucketMode && !isAzureMode && !isUnimplemented && activeSource">
+          <template v-if="!isUrlMode && !isGithubMode && !isGitlabMode && !isBitbucketMode && !isAzureMode && activeSource">
             <div v-if="needsConnection && !showTokenInput" class="flex flex-col items-center justify-center py-8 gap-4">
               <div class="w-16 h-16 rounded-2xl flex items-center justify-center" :style="{ backgroundColor: sources.find(s => s.id === activeSource)?.color + '20' }">
                 <component :is="sources.find(s => s.id === activeSource)?.icon" class="w-8 h-8" :style="{ color: sources.find(s => s.id === activeSource)?.color }" />

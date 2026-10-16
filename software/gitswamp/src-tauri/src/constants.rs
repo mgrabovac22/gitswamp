@@ -10,9 +10,9 @@ pub const BITBUCKET_HOST: &str = "bitbucket.org";
 pub const AZURE_HOST: &str = "dev.azure.com";
 pub const AZURE_LEGACY_HOST: &str = "visualstudio.com";
 
-pub const API_GITHUB_LIST_REPOS: &str = "https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member";
-pub const API_GITHUB_SEARCH_REPOS: &str =
-    "https://api.github.com/search/repositories?q={}&per_page=100";
+pub const GITHUB_API_BASE: &str = "https://api.github.com";
+pub const API_GITHUB_ENTERPRISE_PATH: &str = "/api/v3";
+pub const API_BITBUCKET_DC_PATH: &str = "/rest/api/1.0";
 pub const API_GITHUB_USER_KEYS_PATH: &str = "https://api.github.com/user/keys";
 pub const API_GITHUB_USER_PATH: &str = "https://api.github.com/user";
 pub const GITHUB_OAUTH_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
@@ -24,8 +24,7 @@ pub const API_BITBUCKET_WORKSPACES: &str =
 pub const API_BITBUCKET_WORKSPACE_REPOS_FMT: &str =
     "https://api.bitbucket.org/2.0/repositories/{}?sort=-updated_on&pagelen=50";
 pub const API_BITBUCKET_USER_PATH: &str = "https://api.bitbucket.org/2.0/user";
-pub const API_BITBUCKET_USER_SSH_KEYS_FMT: &str =
-    "https://api.bitbucket.org/2.0/users/{}/ssh-keys";
+pub const API_BITBUCKET_USER_SSH_KEYS_FMT: &str = "https://api.bitbucket.org/2.0/users/{}/ssh-keys";
 pub const API_GITLAB_BASE_PATH: &str = "/api/v4";
 pub const API_GITLAB_USER_KEYS_PATH: &str = "/api/v4/user/keys";
 pub const API_GITLAB_USER_PATH: &str = "/api/v4/user";

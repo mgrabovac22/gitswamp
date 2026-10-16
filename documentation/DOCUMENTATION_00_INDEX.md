@@ -49,6 +49,8 @@ This documentation is organized into the following modules:
 - **[15_ADVANCED_FEATURES.md](./DOCUMENTATION_15_ADVANCED_FEATURES.md)** - Stashing, tagging, conflict resolution
 - **[36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md)** - Productivity, Time Machine, Conflict Suspects, Burnout Analytics, code ownership, and scoring algorithms
   - Also see [04_FRONTEND_OVERVIEW.md](./DOCUMENTATION_04_FRONTEND_OVERVIEW.md) and [11_CORE_FEATURES.md](./DOCUMENTATION_11_CORE_FEATURES.md) for module placement and UI structure
+- **[37_APIPULSE.md](./DOCUMENTATION_37_APIPULSE.md)** - APIPulse HTTP/REST client: collections, environments, runs, simulated tests, and the response viewer
+- **[38_AUTO_UPDATER.md](./DOCUMENTATION_38_AUTO_UPDATER.md)** - Auto-updater: signing keys, build/publish steps, `latest.json`, and the upload checklist for GitHub releases
 
 ### 6. Integration & APIs
 - **[16_GITHUB_INTEGRATION.md](./DOCUMENTATION_16_GITHUB_INTEGRATION.md)** - GitHub API integration

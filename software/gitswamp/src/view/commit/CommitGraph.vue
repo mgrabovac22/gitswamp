@@ -452,6 +452,27 @@ function isolateSpecificBranch(branchName: string) {
   isolateCurrentBranch.value = true;
 }
 
+function exitIsolation() {
+  isolateCurrentBranch.value = false;
+  isolatedBranchName.value = "";
+}
+
+function broadcastIsolationState() {
+  globalThis.dispatchEvent(new CustomEvent("gitswamp-graph-isolation-changed", {
+    detail: {
+      repoPath: props.repoPath,
+      active: isolateCurrentBranch.value,
+      branch: isolationBranchName.value,
+    },
+  }));
+}
+
+function onExitGraphIsolation(event: Event) {
+  const detail = (event as CustomEvent<{ repoPath?: string }>).detail;
+  if (detail?.repoPath && detail.repoPath !== props.repoPath) return;
+  exitIsolation();
+}
+
 function isSearchMatch(sha: string): boolean {
   return searchMatchSet.value.has(sha);
 }
@@ -1331,6 +1352,8 @@ watch(isolatedBranchName, (value) => {
   localStorage.setItem(GRAPH_ISOLATE_BRANCH_STORAGE_KEY, value);
 });
 
+watch([isolateCurrentBranch, isolatedBranchName, () => props.repoPath], broadcastIsolationState);
+
 function onDocClick() { closeCtx(); }
 onMounted(() => {
   try {
@@ -1376,8 +1399,10 @@ onMounted(() => {
   globalThis.addEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
   globalThis.addEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
   globalThis.addEventListener("gitswamp-focus-head-commit", onFocusHeadCommit as EventListener);
+  globalThis.addEventListener("gitswamp-exit-graph-isolation", onExitGraphIsolation as EventListener);
   globalThis.addEventListener("resize", updateCompactWorkingLabel);
   updateCompactWorkingLabel();
+  broadcastIsolationState();
   if (scrollContainer.value) {
     viewportHeight.value = scrollContainer.value.clientHeight;
     restoreGraphScrollTop(pendingRepoScrollTop.value ?? 0);
@@ -1394,7 +1419,11 @@ onUnmounted(() => {
   globalThis.removeEventListener("gitswamp-focus-commit-search", onFocusSearchShortcut as EventListener);
   globalThis.removeEventListener("gitswamp-focus-selected-commit", onFocusSelectedCommitShortcut as EventListener);
   globalThis.removeEventListener("gitswamp-focus-head-commit", onFocusHeadCommit as EventListener);
+  globalThis.removeEventListener("gitswamp-exit-graph-isolation", onExitGraphIsolation as EventListener);
   globalThis.removeEventListener("resize", updateCompactWorkingLabel);
+  globalThis.dispatchEvent(new CustomEvent("gitswamp-graph-isolation-changed", {
+    detail: { repoPath: props.repoPath, active: false, branch: "" },
+  }));
 });
 </script>
 

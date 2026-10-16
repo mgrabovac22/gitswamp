@@ -25,7 +25,7 @@ import type {
   RemoteUserInfo,
 } from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 interface RemoteCreateOptions {
@@ -45,6 +45,7 @@ const CommitBurnoutAnalyticsPanel = defineAsyncComponent(() => import("@/view/co
 const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository/RemoteInsightsPanel.vue"));
 const LostFoundPanel = defineAsyncComponent(() => import("@/view/repository/LostFoundPanel.vue"));
 const FastScriptsPanel = defineAsyncComponent(() => import("@/features/repository/fast-scripts/FastScriptsPanel.vue"));
+const HttpClientPanel = defineAsyncComponent(() => import("@/features/repository/http-client/components/HttpClientPanel.vue"));
 
 const props = defineProps<{
   git: any;
@@ -598,6 +599,13 @@ function handleRefreshState() {
           @close="emit('setHistoryView', 'graph')"
           @run="handleRunFastScript($event)"
           @run-sequence="handleRunFastScriptSequence($event)"
+        />
+
+        <HttpClientPanel
+          v-else-if="props.historyViewMode === 'http-client'"
+          class="flex-1"
+          :repo-path="props.git.repoPath.value"
+          @close="emit('setHistoryView', 'graph')"
         />
 
         <RemoteInsightsPanel
