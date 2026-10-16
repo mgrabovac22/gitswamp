@@ -348,7 +348,78 @@ impl GitService {
             .find_commit(target_oid)
             .map_err(|e| e.message().to_string())?;
 
-        repo.branch(branch_name, &target_commit, false)
+        let mut local_branch = repo
+            .branch(branch_name, &target_commit, false)
+            .map_err(|e| e.message().to_string())?;
+        local_branch
+            .set_upstream(Some(&format!("origin/{}", branch_name)))
+            .map_err(|e| e.message().to_string())?;
+        Ok(())
+    }
+
+    fn checkout_local_branch(repo: &Repository, branch_name: &str) -> Result<(), String> {
+        let branch_name = branch_name.trim();
+        if branch_name.is_empty() {
+            return Err("Branch name cannot be empty.".to_string());
+        }
+
+        let ref_name = format!("refs/heads/{}", branch_name);
+        let reference = repo
+            .find_reference(&ref_name)
+            .map_err(|_| format!("Local branch '{}' was not found.", branch_name))?;
+        let object = reference
+            .peel(git2::ObjectType::Commit)
+            .map_err(|e| e.message().to_string())?;
+
+        repo.checkout_tree(&object, None)
+            .map_err(|e| e.message().to_string())?;
+        repo.set_head(&ref_name)
+            .map_err(|e| e.message().to_string())?;
+        Ok(())
+    }
+
+    fn checkout_remote_branch(
+        repo: &Repository,
+        remote_name: &str,
+        branch_name: &str,
+    ) -> Result<(), String> {
+        let remote_name = remote_name.trim();
+        let branch_name = branch_name.trim();
+        if remote_name.is_empty() || branch_name.is_empty() || branch_name == "HEAD" {
+            return Err("Remote branch name is invalid.".to_string());
+        }
+
+        if repo.find_branch(branch_name, BranchType::Local).is_ok() {
+            return Self::checkout_local_branch(repo, branch_name);
+        }
+
+        let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
+        let remote_reference = repo.find_reference(&remote_ref_name).map_err(|_| {
+            format!(
+                "Remote branch '{}/{}' was not found.",
+                remote_name, branch_name
+            )
+        })?;
+        let target_oid = remote_reference.target().ok_or_else(|| {
+            format!(
+                "Remote branch '{}/{}' has no target commit.",
+                remote_name, branch_name
+            )
+        })?;
+        let target_commit = repo
+            .find_commit(target_oid)
+            .map_err(|e| e.message().to_string())?;
+
+        repo.checkout_tree(target_commit.as_object(), None)
+            .map_err(|e| e.message().to_string())?;
+
+        let mut local_branch = repo
+            .branch(branch_name, &target_commit, false)
+            .map_err(|e| e.message().to_string())?;
+        local_branch
+            .set_upstream(Some(&format!("{}/{}", remote_name, branch_name)))
+            .map_err(|e| e.message().to_string())?;
+        repo.set_head(&format!("refs/heads/{}", branch_name))
             .map_err(|e| e.message().to_string())?;
         Ok(())
     }
@@ -1756,24 +1827,27 @@ impl GitService {
 
     pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
-        let (object, reference) = repo
-            .revparse_ext(branch_name)
-            .map_err(|e| e.message().to_string())?;
-
-        repo.checkout_tree(&object, None)
-            .map_err(|e| e.message().to_string())?;
-
-        if let Some(reference) = reference {
-            repo.set_head(reference.name().unwrap_or(""))
-                .map_err(|e| e.message().to_string())?;
-        } else {
-            repo.set_head_detached(object.id())
-                .map_err(|e| e.message().to_string())?;
+        let trimmed = branch_name.trim();
+        if trimmed.is_empty() {
+            return Err("Branch name cannot be empty.".to_string());
         }
 
-        Ok(())
-    }
+        if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
+            return Self::checkout_local_branch(&repo, local_name);
+        }
 
+        if let Some(remote_ref) = trimmed.strip_prefix("refs/remotes/") {
+            let (remote_name, remote_branch) = remote_ref
+                .split_once('/')
+                .ok_or_else(|| "Remote branch reference is invalid.".to_string())?;
+            return Self::checkout_remote_branch(&repo, remote_name, remote_branch);
+        }
+
+        // A branch checkout deliberately resolves only local branches. Tags and
+        // arbitrary revisions use the explicit commit checkout path and cannot
+        // accidentally place the user in detached HEAD state.
+        Self::checkout_local_branch(&repo, trimmed)
+    }
     pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
         RemoteService::pull(path, token, auto_stash)
     }
@@ -3260,6 +3334,54 @@ mod tests {
 
         let commits = GitService::commits(&path_str, 10).expect("list commits");
         assert_eq!(commits[0].message, "empty allowed");
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn checkout_remote_branch_tracks_it_when_a_same_named_tag_exists() {
+        let path = unique_temp_repo_path("remote-branch-tag-collision");
+        std::fs::create_dir_all(&path).expect("create temp repo dir");
+        let path_str = path.to_string_lossy().to_string();
+
+        Repository::init(&path).expect("init repo");
+        GitService::initialize_empty_repo(&path_str).expect("initialize empty repo");
+
+        let repo = Repository::open(&path).expect("open repository");
+        let commit = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("head commit");
+        repo.reference(
+            "refs/remotes/origin/feature/release",
+            commit.id(),
+            true,
+            "test remote branch",
+        )
+        .expect("create remote branch");
+        repo.tag_lightweight("feature/release", commit.as_object(), false)
+            .expect("create same-named tag");
+        drop(repo);
+
+        GitService::checkout_branch(&path_str, "refs/remotes/origin/feature/release")
+            .expect("checkout remote branch");
+
+        let repo = Repository::open(&path).expect("reopen repository");
+        let head = repo.head().expect("branch head");
+        assert!(head.is_branch());
+        assert_eq!(head.name(), Some("refs/heads/feature/release"));
+        let branch = repo
+            .find_branch("feature/release", BranchType::Local)
+            .expect("local tracking branch");
+        assert_eq!(
+            branch
+                .upstream()
+                .expect("upstream branch")
+                .name()
+                .expect("upstream name"),
+            Some("origin/feature/release")
+        );
 
         let _ = std::fs::remove_dir_all(&path);
     }

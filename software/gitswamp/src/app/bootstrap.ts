@@ -1,4 +1,6 @@
 import { createApp } from "vue"
+import { isTauri } from "@tauri-apps/api/core"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 
 import AppView from "@/view/AppView.vue"
 
@@ -30,16 +32,30 @@ function dismissBootSplash() {
   }, 320)
 }
 
+async function revealNativeWindow() {
+  if (!isTauri()) return
+
+  try {
+    const window = getCurrentWindow()
+    await window.show()
+    await window.setFocus()
+  } catch {
+    // The browser development server has no native Tauri window to reveal.
+  }
+}
+
 export function mountApp() {
   try {
     createApp(AppView).mount("#app")
   } catch (error) {
+    void revealNativeWindow()
     dismissBootSplash()
     renderStartupError(error)
     return
   }
 
   globalThis.requestAnimationFrame(() => {
+    void revealNativeWindow()
     globalThis.requestAnimationFrame(() => {
       dismissBootSplash()
     })

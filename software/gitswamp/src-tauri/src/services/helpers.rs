@@ -236,6 +236,12 @@ pub fn build_ref_map(repo: &Repository) -> HashMap<String, Vec<String>> {
     let mut ref_map: HashMap<String, Vec<String>> = HashMap::new();
     if let Ok(refs) = repo.references() {
         for reference in refs.flatten() {
+            if reference
+                .name()
+                .is_some_and(|name| name.starts_with("refs/tags/"))
+            {
+                continue;
+            }
             if let (Some(target), Some(name)) = (reference.target(), reference.shorthand()) {
                 ref_map
                     .entry(target.to_string())
