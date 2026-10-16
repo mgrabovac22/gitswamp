@@ -4861,17 +4861,7 @@ async function handleCheckoutRemoteBranch(name: string) {
   const branchName = normalizeBranchName(name);
   if (!branchName) return;
 
-  if (!git.localBranches.value.some((branch) => branch.name === branchName)) {
-    try {
-      await git.createBranch(branchName, `origin/${branchName}`);
-    } catch {
-      // The local branch may already exist or the remote ref lookup failed.
-      // Fall through so the checkout can still switch branches.
-      git.error.value = null;
-    }
-  }
-
-  await git.checkoutBranch(branchName);
+  await git.checkoutBranch(`refs/remotes/origin/${branchName}`);
 }
 
 function onGraphIsolationChanged(event: Event) {
