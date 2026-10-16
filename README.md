@@ -40,6 +40,7 @@ This comprehensive documentation package contains the active GitSwamp documentat
 - **[Development Setup](./documentation/DOCUMENTATION_19_DEVELOPMENT_SETUP.md)** - Setup and build instructions
 - **[Security](./documentation/DOCUMENTATION_25_SECURITY.md)** - Security considerations and best practices
 - **[User Guide](./documentation/DOCUMENTATION_31_USER_GUIDE.md)** - End-user documentation
+- **[Auto-Updater](./documentation/DOCUMENTATION_38_AUTO_UPDATER.md)** - Signing keys, build/sign/publish steps, `latest.json`, and the release upload checklist
 
 ## Document Structure
 

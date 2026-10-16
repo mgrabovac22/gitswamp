@@ -17,6 +17,7 @@ import {
   LifeBuoy,
 } from "lucide-vue-next";
 import RepositorySidebarSection from "./RepositorySidebarSection.vue";
+import AppUpdatePanel from "@/features/updater/AppUpdatePanel.vue";
 import type { BranchInfo, StashInfo, TagInfo, IssueInfo, PullRequestInfo, GistInfo, LostCommitInfo } from "@/types";
 
 const props = defineProps<{
@@ -652,5 +653,7 @@ function issueStateClass(issue: IssueInfo): string {
         </button>
       </div>
     </div>
+
+    <AppUpdatePanel />
   </div>
 </template>

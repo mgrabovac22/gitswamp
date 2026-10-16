@@ -26,6 +26,7 @@ import { useRepositoryTabs } from "@/features/repository/tabs/useRepositoryTabs"
 import { dispatchHttpClientCommand, type HttpClientCommand } from "@/features/repository/http-client/httpClientCommands";
 import { useRecentRepositories } from "@/features/repository/recent/useRecentRepositories";
 import { useAppLogs } from "@/features/shell/useAppLogs";
+import { checkForAppUpdate } from "@/features/updater/useAppUpdate";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import {
   SMART_GITIGNORE_WIZARD_EVENT,
@@ -3861,6 +3862,8 @@ onMounted(() => {
     document.addEventListener("visibilitychange", handleVisibilityChanged);
   }
   appendLog("app", "Application started.");
+
+  checkForAppUpdate();
 
   const restoreSession = shouldRestoreSession();
 

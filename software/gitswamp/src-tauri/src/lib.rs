@@ -49,6 +49,7 @@ use commands::status::{
     restore_pull_safety_stash, stage_file, stage_files, unstage_file, unstage_files,
 };
 use commands::tags::get_tags;
+use commands::updates::{check_for_update, install_update, PendingUpdate};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -63,6 +64,12 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            app.manage(PendingUpdate::default());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_repo_info,
             get_commits,
@@ -186,6 +193,8 @@ pub fn run() {
             write_app_state,
             get_app_state_path,
             http_send_request,
+            check_for_update,
+            install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
