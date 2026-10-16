@@ -57,7 +57,7 @@ jobs:
             artifact: linux-x86_64
             tauri_args: ""
           - name: macOS Intel
-            runner: macos-13
+            runner: macos-15-intel
             artifact: darwin-x86_64
             tauri_args: --target x86_64-apple-darwin
           - name: macOS Apple Silicon
