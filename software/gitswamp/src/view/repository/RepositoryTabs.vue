@@ -5,10 +5,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import type { AppHelpSection } from "@/features/shell/keyboardShortcuts";
 import type { RepoInfo } from "@/types";
+import type { ToolId } from "@/features/toolbox/toolboxStorage";
 
 const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDialog.vue"));
+const ToolsDialog = defineAsyncComponent(() => import("@/features/toolbox/ToolsDialog.vue"));
 
-type MenuSection = "file" | "edit" | "view" | "options" | "help";
+type MenuSection = "file" | "edit" | "view" | "tools" | "options" | "help";
 type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client";
 
 interface MenuAction {
@@ -52,6 +54,8 @@ const menuPanel = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 const showHelpPanel = ref(false);
 const helpPanelSection = ref<AppHelpSection>("shortcuts");
+const showToolsPanel = ref(false);
+const toolsPanelTool = ref<ToolId>("regex");
 const showAboutPanel = ref(false);
 const activeSection = ref<MenuSection>("file");
 const menuPanelStyle = ref<Record<string, string>>({});
@@ -61,6 +65,7 @@ const sectionLabels: { id: MenuSection; label: string }[] = [
   { id: "file", label: "File" },
   { id: "edit", label: "Edit" },
   { id: "view", label: "View" },
+  { id: "tools", label: "Tools" },
   { id: "options", label: "Options" },
   { id: "help", label: "Help" },
 ];
@@ -105,6 +110,12 @@ function updateMenuPosition() {
 function openHelpPanel(section: AppHelpSection = "shortcuts") {
   helpPanelSection.value = section;
   showHelpPanel.value = true;
+  closeMenu();
+}
+
+function openToolsPanel(tool: ToolId = "regex") {
+  toolsPanelTool.value = tool;
+  showToolsPanel.value = true;
   closeMenu();
 }
 
@@ -280,6 +291,104 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Alt+O",
       disabled: !hasActiveRepo.value,
       run: () => emit("openInExplorer"),
+    },
+  ],
+  tools: [
+    {
+      id: "tool-regex",
+      label: "Regex Builder",
+      description: "Build regular expressions from simple steps, rank them and test live.",
+      run: () => openToolsPanel("regex"),
+    },
+    {
+      id: "tool-json",
+      label: "JSON Toolkit",
+      description: "Format, minify, sort, validate and query JSON documents.",
+      run: () => openToolsPanel("json"),
+    },
+    {
+      id: "tool-schema",
+      label: "JSON to TypeScript",
+      description: "Turn a JSON sample into ready-to-use TypeScript interfaces.",
+      run: () => openToolsPanel("schema"),
+    },
+    {
+      id: "tool-url",
+      label: "URL Workshop",
+      description: "Inspect URLs, edit query parameters and encode or decode text.",
+      run: () => openToolsPanel("url"),
+    },
+    {
+      id: "tool-text",
+      label: "Text Toolkit",
+      description: "Change case, sort or dedupe lines and count characters.",
+      run: () => openToolsPanel("text"),
+    },
+    {
+      id: "tool-diff",
+      label: "Diff Checker",
+      description: "Compare two blocks of text line by line.",
+      run: () => openToolsPanel("diff"),
+    },
+    {
+      id: "tool-hash",
+      label: "Hash Generator",
+      description: "Compute MD5, SHA-1, SHA-256, SHA-384 and SHA-512.",
+      run: () => openToolsPanel("hash"),
+    },
+    {
+      id: "tool-jwt",
+      label: "JWT Decoder",
+      description: "Inspect a token's header, payload and expiry.",
+      run: () => openToolsPanel("jwt"),
+    },
+    {
+      id: "tool-cron",
+      label: "Cron Builder",
+      description: "Build and explain cron schedules with next run times.",
+      run: () => openToolsPanel("cron"),
+    },
+    {
+      id: "tool-ids",
+      label: "ID & Time",
+      description: "Generate UUIDs and tokens and convert between timestamps.",
+      run: () => openToolsPanel("ids"),
+    },
+    {
+      id: "tool-color",
+      label: "Color Converter",
+      description: "Convert between hex, RGB and HSL and check contrast ratios.",
+      run: () => openToolsPanel("color"),
+    },
+    {
+      id: "tool-base",
+      label: "Number Base",
+      description: "Convert numbers between binary, octal, decimal and hex.",
+      run: () => openToolsPanel("base"),
+    },
+    {
+      id: "tool-csv",
+      label: "CSV / JSON",
+      description: "Convert CSV to JSON and JSON back to CSV.",
+      run: () => openToolsPanel("csv"),
+    },
+    {
+      id: "tool-slug",
+      label: "Slugifier",
+      description: "Turn titles and filenames into clean URL slugs.",
+      run: () => openToolsPanel("slug"),
+    },
+    {
+      id: "tool-html",
+      label: "HTML Entities",
+      description: "Escape and unescape HTML special characters.",
+      run: () => openToolsPanel("html"),
+    },
+    {
+      id: "tool-similar",
+      label: "String Similarity",
+      description: "Measure edit distance and similarity between two strings.",
+      run: () => openToolsPanel("similar"),
     },
   ],
   options: [
@@ -524,6 +633,12 @@ onUnmounted(() => {
     :open="showHelpPanel"
     :initial-section="helpPanelSection"
     @close="showHelpPanel = false"
+  />
+
+  <ToolsDialog
+    :open="showToolsPanel"
+    :initial-tool="toolsPanelTool"
+    @close="showToolsPanel = false"
   />
 
   <Teleport to="body">
