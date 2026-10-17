@@ -78,6 +78,11 @@ for (const file of walk(sourceDir).sort()) {
     continue;
   }
 
+  if (lower.endsWith(".deb")) {
+    copyInstaller(file);
+    continue;
+  }
+
   const platform = updaterPlatform(file);
   if (!platform || seenPlatforms.has(platform)) continue;
 

@@ -782,8 +782,11 @@ Platform keys (Tauri v2):
 | `darwin-aarch64` | `*.app.tar.gz` (Apple Silicon) |
 
 Only the platforms present in `platforms` can update. The release workflow requires signed
-Windows, Linux and both macOS updater artifacts. The standalone `.AppImage` and `.dmg` files
-are also published for first-time/manual installation; they are not the updater payloads.
+Windows, Linux and both macOS updater artifacts. The standalone `.AppImage`, `.deb`, and `.dmg`
+files are also published for first-time/manual installation; they are not the updater payloads.
+Linux `.deb` installations must be updated by installing the newer `.deb` manually. The Tauri
+updater can replace an AppImage, but it cannot safely replace a distribution package managed by
+the system package manager.
 
 #### Create it automatically (recommended)
 

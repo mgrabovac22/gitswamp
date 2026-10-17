@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 
 export interface AppUpdateInfo {
@@ -51,7 +52,7 @@ function setBytes(value: number) {
   downloaded.value = value;
 }
 
-async function check(): Promise<void> {
+async function check(force = false): Promise<void> {
   if (status.value === "checking" || status.value === "installing") return;
   status.value = "checking";
   errorMessage.value = "";
@@ -61,7 +62,7 @@ async function check(): Promise<void> {
       status.value = "none";
       return;
     }
-    if (safeStorageGet(DISMISS_STORAGE_KEY) === result.tag) {
+    if (!force && safeStorageGet(DISMISS_STORAGE_KEY) === result.tag) {
       status.value = "none";
       return;
     }
@@ -114,6 +115,11 @@ function dismiss(): void {
   status.value = "none";
 }
 
+async function openReleasePage(): Promise<void> {
+  if (!info.value?.htmlUrl) return;
+  await openUrl(info.value.htmlUrl);
+}
+
 export function useAppUpdate() {
   return {
     status,
@@ -126,9 +132,14 @@ export function useAppUpdate() {
     check,
     install,
     dismiss,
+    openReleasePage,
   };
 }
 
 export function checkForAppUpdate(): Promise<void> {
   return check();
+}
+
+export function checkForAppUpdateManually(): Promise<void> {
+  return check(true);
 }
