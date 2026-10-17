@@ -37,6 +37,8 @@ export function isRemoteBehindPushError(message: string): boolean {
     m.includes("failed to push some refs") ||
     m.includes("fetch first") ||
     m.includes("tip of your current branch is behind") ||
+    m.includes("remote rejected") ||
+    m.includes("hook declined") ||
     (m.includes("rejected") && m.includes("push"))
   );
 }

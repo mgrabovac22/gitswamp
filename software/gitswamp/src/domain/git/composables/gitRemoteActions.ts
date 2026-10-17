@@ -43,11 +43,15 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
   async function autoFetchAfterPush() {
     if (!state.repoPath.value) return;
     const repoPath = state.repoPath.value;
-    const fetchResult = await callTauri<string>("fetch_all", {
-      path: repoPath,
-      token: getTokenForUrl(state, getOriginUrl(state)),
-    });
-    state.terminalOutput.value.push("$ git fetch --all --prune\n" + fetchResult);
+    try {
+      const fetchResult = await callTauri<string>("fetch_all", {
+        path: repoPath,
+        token: getTokenForUrl(state, getOriginUrl(state)),
+      });
+      state.terminalOutput.value.push("$ git fetch --all --prune\n" + fetchResult);
+    } catch (error) {
+      state.terminalOutput.value.push("$ git fetch --all --prune\nError: " + String(error));
+    }
     await refreshRemoteRefs(repoPath, true, true);
   }
 
@@ -141,11 +145,11 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       const errorMsg = String(e);
 
       if (isRemoteBehindPushError(errorMsg)) {
-        state.terminalOutput.value.push("$ git push\nPush rejected (non-fast-forward).");
+        state.terminalOutput.value.push("$ git push\nPush rejected by the remote.\n" + errorMsg);
         state.error.value = errorMsg;
         toast.action(
           "warning",
-          "Push rejected (non-fast-forward). Force push this branch?",
+          "Remote rejected the push. Force push this branch?",
           [
             { label: "Force Push", style: "danger", onClick: () => void forcePushCurrentBranch() },
             { label: "Cancel", style: "neutral", onClick: () => {} },

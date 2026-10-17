@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, type Component } from "vue";
-import { Regex, Braces, Link2, Fingerprint, Hash, Type, Columns2, CalendarClock, ShieldCheck, FileCode2, Wrench, Search, X, Palette, Binary, Table, CaseSensitive, Ruler, Code } from "lucide-vue-next";
+import { Regex, Braces, Link2, Fingerprint, Hash, Type, Columns2, CalendarClock, ShieldCheck, FileCode2, Wrench, Search, X, Palette, Binary, Table, CaseSensitive, Ruler, Code, PackageCheck } from "lucide-vue-next";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import type { ToolId } from "./toolboxStorage";
 import RegexBuilderTool from "./tools/RegexBuilderTool.vue";
@@ -19,6 +19,7 @@ import CsvJsonTool from "./tools/CsvJsonTool.vue";
 import SlugTool from "./tools/SlugTool.vue";
 import HtmlEntitiesTool from "./tools/HtmlEntitiesTool.vue";
 import LevenshteinTool from "./tools/LevenshteinTool.vue";
+import SemverTool from "./tools/SemverTool.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -58,6 +59,7 @@ const TOOLS: ToolEntry[] = [
   { id: "slug", label: "Slugifier", description: "Turn titles and filenames into clean URL slugs.", keywords: "slug urlify slugify filename title seo kebab anchor", icon: CaseSensitive, component: SlugTool },
   { id: "html", label: "HTML Entities", description: "Escape and unescape HTML special characters.", keywords: "html escape unescape entities encode decode brackets amp", icon: Code, component: HtmlEntitiesTool },
   { id: "similar", label: "String Similarity", description: "Measure edit distance and similarity between two strings.", keywords: "string similarity levenshtein distance fuzzy match compare diff", icon: Ruler, component: LevenshteinTool },
+  { id: "semver", label: "Semver & Release", description: "Compare versions and calculate the next major, minor or patch release.", keywords: "semver semantic version version release bump major minor patch npm tag", icon: PackageCheck, component: SemverTool },
 ];
 
 const activeTool = ref<ToolId>(props.initialTool);

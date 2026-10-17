@@ -44,6 +44,29 @@ impl RemoteService {
         Ok(refspecs)
     }
 
+    fn update_local_tracking_ref(
+        repo: &git2::Repository,
+        remote_name: &str,
+        branch_name: &str,
+        commit_id: git2::Oid,
+    ) -> Result<(), String> {
+        let tracking_ref = format!("refs/remotes/{}/{}", remote_name, branch_name);
+        repo.reference(
+            &tracking_ref,
+            commit_id,
+            true,
+            "update local tracking ref after push",
+        )
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "Push succeeded, but local tracking ref '{}' could not be updated: {}",
+                tracking_ref,
+                error.message()
+            )
+        })
+    }
+
     fn push_unique_candidate(candidates: &mut Vec<String>, candidate: &str) {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -165,6 +188,15 @@ impl RemoteService {
         let mut ssh_attempt = 0usize;
 
         let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.push_update_reference(|refname, status| {
+            if let Some(status) = status {
+                return Err(git2::Error::from_str(&format!(
+                    "Remote rejected '{}' : {}",
+                    refname, status
+                )));
+            }
+            Ok(())
+        });
         callbacks.credentials(move |url, username_from_url, allowed| {
             let current_url = if url.is_empty() {
                 configured_url.as_str()
@@ -482,6 +514,9 @@ impl RemoteService {
         let repo = GitRepository::open(path)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let branch_name = head.shorthand().unwrap_or("main").to_string();
+        let commit_id = head
+            .target()
+            .ok_or_else(|| "Cannot push a branch without a commit.".to_string())?;
         let refspec = if force {
             format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
         } else {
@@ -539,6 +574,12 @@ impl RemoteService {
                     match temp_remote.push(&push_refspecs, Some(&mut push_opts)) {
                         Ok(_) => {
                             let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                            Self::update_local_tracking_ref(
+                                &repo,
+                                "origin",
+                                &branch_name,
+                                commit_id,
+                            )?;
                             return Ok(if force {
                                 "Force push complete. Tags pushed too.".to_string()
                             } else {
@@ -571,6 +612,8 @@ impl RemoteService {
         remote
             .push(&push_refspecs, Some(&mut push_opts))
             .map_err(|e| e.message().to_string())?;
+
+        Self::update_local_tracking_ref(&repo, "origin", &branch_name, commit_id)?;
 
         Ok(if force {
             "Force push complete. Tags pushed too.".to_string()
@@ -1005,6 +1048,39 @@ mod tests {
             .expect("origin should exist")
             .push(&[&refspec], None)
             .expect("HEAD should push");
+    }
+
+    #[test]
+    fn push_updates_local_tracking_ref_after_reset_and_force_push() {
+        let workspace = TestWorkspace::new("push-tracking-ref");
+        let repo_path = workspace.child("repo");
+        let repo = Repository::init(&repo_path).expect("repository should initialize");
+        configure_identity(&repo, "Test User", "test@example.com");
+        let signature =
+            Signature::now("Test User", "test@example.com").expect("signature should be valid");
+
+        write_file(&repo_path, "history.txt", "first\n");
+        let first_commit = commit_all(&repo, "First commit", &signature);
+        repo.reference(
+            "refs/remotes/origin/main",
+            first_commit,
+            true,
+            "seed tracking ref",
+        )
+        .expect("tracking ref should be created");
+
+        write_file(&repo_path, "history.txt", "second\n");
+        let second_commit = commit_all(&repo, "Second commit", &signature);
+        RemoteService::update_local_tracking_ref(&repo, "origin", "main", second_commit)
+            .expect("tracking ref should follow the pushed commit");
+
+        let tracking_commit = repo
+            .find_reference("refs/remotes/origin/main")
+            .expect("tracking ref should exist")
+            .target()
+            .expect("tracking ref should point to a commit");
+        assert_eq!(tracking_commit, second_commit);
+        assert_ne!(tracking_commit, first_commit);
     }
 
     #[test]

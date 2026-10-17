@@ -16,7 +16,8 @@ export type ToolId =
   | "csv"
   | "slug"
   | "html"
-  | "similar";
+  | "similar"
+  | "semver";
 
 export type SnippetToolId = Exclude<ToolId, "regex">;
 
@@ -54,6 +55,7 @@ const KEYS: Record<ToolId, string> = {
   slug: "gitswamp-toolbox-slug-history",
   html: "gitswamp-toolbox-html-history",
   similar: "gitswamp-toolbox-similar-history",
+  semver: "gitswamp-toolbox-semver-history",
 };
 
 export function generateToolboxId(prefix = "tb"): string {
