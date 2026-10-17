@@ -67,6 +67,19 @@ impl RemoteService {
         })
     }
 
+    fn local_tracking_ref_is_at_commit(
+        repo: &git2::Repository,
+        remote_name: &str,
+        branch_name: &str,
+        commit_id: git2::Oid,
+    ) -> bool {
+        let tracking_ref = format!("refs/remotes/{}/{}", remote_name, branch_name);
+        repo.find_reference(&tracking_ref)
+            .ok()
+            .and_then(|reference| reference.target())
+            == Some(commit_id)
+    }
+
     fn push_unique_candidate(candidates: &mut Vec<String>, candidate: &str) {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -517,6 +530,13 @@ impl RemoteService {
         let commit_id = head
             .target()
             .ok_or_else(|| "Cannot push a branch without a commit.".to_string())?;
+        if force && Self::local_tracking_ref_is_at_commit(&repo, "origin", &branch_name, commit_id)
+        {
+            return Ok(
+                "Already up to date. No force push was needed because the remote has this commit."
+                    .to_string(),
+            );
+        }
         let refspec = if force {
             format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
         } else {
@@ -1081,6 +1101,33 @@ mod tests {
             .expect("tracking ref should point to a commit");
         assert_eq!(tracking_commit, second_commit);
         assert_ne!(tracking_commit, first_commit);
+    }
+
+    #[test]
+    fn force_push_is_skipped_when_tracking_ref_is_already_at_head() {
+        let workspace = TestWorkspace::new("force-push-up-to-date");
+        let repo_path = workspace.child("repo");
+        let repo = Repository::init(&repo_path).expect("repository should initialize");
+        configure_identity(&repo, "Test User", "test@example.com");
+        let signature =
+            Signature::now("Test User", "test@example.com").expect("signature should be valid");
+
+        write_file(&repo_path, "history.txt", "first\n");
+        let commit_id = commit_all(&repo, "First commit", &signature);
+        repo.reference(
+            "refs/remotes/origin/main",
+            commit_id,
+            true,
+            "seed tracking ref",
+        )
+        .expect("tracking ref should be created");
+
+        assert!(RemoteService::local_tracking_ref_is_at_commit(
+            &repo,
+            "origin",
+            "main",
+            commit_id
+        ));
     }
 
     #[test]
