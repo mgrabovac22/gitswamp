@@ -48,7 +48,7 @@ export function getOriginUrl(state: GitState): string | undefined {
 }
 
 export function getTokenParam(state: GitState): string | null {
-  return state.githubToken.value || null;
+  return state.providerTokens.value.github || state.githubToken.value || null;
 }
 
 function parseRemoteHost(url: string): { host: string; hostWithPort: string } | null {
