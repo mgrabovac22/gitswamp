@@ -114,6 +114,21 @@ function main() {
     process.exit(1);
   }
 
+  const requiredPlatforms = [
+    "windows-x86_64",
+    "linux-x86_64",
+    "darwin-x86_64",
+    "darwin-aarch64",
+  ];
+  const missingPlatforms = requiredPlatforms.filter((platform) => !platforms[platform]);
+  if (missingPlatforms.length > 0) {
+    console.error(
+      `Missing signed updater artifacts for: ${missingPlatforms.join(", ")}. ` +
+        "The release must contain Windows, Linux and both macOS architectures.",
+    );
+    process.exit(1);
+  }
+
   const manifest = {
     version,
     notes,

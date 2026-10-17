@@ -53,20 +53,28 @@ const seenPlatforms = new Set();
 const seenInstallers = new Set();
 const copied = [];
 
+function copyInstaller(file) {
+  const installerName = basename(file);
+  if (seenInstallers.has(installerName)) return;
+  copyFileSync(file, join(outputDir, installerName));
+  const signature = `${file}.sig`;
+  if (existsSync(signature)) {
+    copyFileSync(signature, join(outputDir, `${installerName}.sig`));
+  }
+  seenInstallers.add(installerName);
+}
+
 for (const file of walk(sourceDir).sort()) {
   if (file.endsWith(".sig")) continue;
 
   const lower = file.toLowerCase();
   if (lower.endsWith(".appimage") && !lower.endsWith(".appimage.tar.gz")) {
-    const installerName = basename(file);
-    if (!seenInstallers.has(installerName)) {
-      copyFileSync(file, join(outputDir, installerName));
-      const signature = `${file}.sig`;
-      if (existsSync(signature)) {
-        copyFileSync(signature, join(outputDir, `${installerName}.sig`));
-      }
-      seenInstallers.add(installerName);
-    }
+    copyInstaller(file);
+    continue;
+  }
+
+  if (lower.endsWith(".dmg")) {
+    copyInstaller(file);
     continue;
   }
 

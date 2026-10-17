@@ -88,7 +88,7 @@ These live in `src-tauri/src/commands/updates.rs` (constants), `tauri.conf.json`
       "endpoints": [
         "https://github.com/mgrabovac22/gitswamp/releases/latest/download/latest.json"
       ],
-      "windows": { "installMode": "passive" }
+      "windows": { "installMode": "quiet" }
     }
   },
   "bundle": { "createUpdaterArtifacts": true }
@@ -774,15 +774,16 @@ Platform keys (Tauri v2):
 
 | Key | Artifact |
 | --- | --- |
-| `linux-x86_64` | `*.AppImage` |
-| `linux-aarch64` | `*.AppImage` (arm64) |
+| `linux-x86_64` | `*.AppImage.tar.gz` |
+| `linux-aarch64` | `*.AppImage.tar.gz` (arm64) |
 | `windows-x86_64` | `*-setup.exe` (NSIS) or `*.msi` |
 | `windows-aarch64` | `*-setup.exe` (arm64) |
 | `darwin-x86_64` | `*.app.tar.gz` (Intel) |
 | `darwin-aarch64` | `*.app.tar.gz` (Apple Silicon) |
 
-Only the platforms present in `platforms` can update. A macOS-only `latest.json` will not
-update Windows/Linux, and vice versa (§13.3).
+Only the platforms present in `platforms` can update. The release workflow requires signed
+Windows, Linux and both macOS updater artifacts. The standalone `.AppImage` and `.dmg` files
+are also published for first-time/manual installation; they are not the updater payloads.
 
 #### Create it automatically (recommended)
 
