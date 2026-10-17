@@ -542,8 +542,6 @@ impl RemoteService {
         } else {
             format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
         };
-        let tag_refspecs = Self::local_tag_refspecs(&repo)?;
-
         let mut remote = repo
             .find_remote("origin")
             .map_err(|e| format!("No remote 'origin': {}", e.message()))?;
@@ -585,13 +583,7 @@ impl RemoteService {
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 
-                    let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
-                    push_refspecs.push(refspec.as_str());
-                    for tag_refspec in &tag_refspecs {
-                        push_refspecs.push(tag_refspec.as_str());
-                    }
-
-                    match temp_remote.push(&push_refspecs, Some(&mut push_opts)) {
+                    match temp_remote.push(&[refspec.as_str()], Some(&mut push_opts)) {
                         Ok(_) => {
                             let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                             Self::update_local_tracking_ref(
@@ -601,9 +593,9 @@ impl RemoteService {
                                 commit_id,
                             )?;
                             return Ok(if force {
-                                "Force push complete. Tags pushed too.".to_string()
+                                "Force push complete.".to_string()
                             } else {
-                                "Push complete. Tags pushed too.".to_string()
+                                "Push complete.".to_string()
                             });
                         }
                         Err(err) => {
@@ -623,22 +615,16 @@ impl RemoteService {
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
-        let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
-        push_refspecs.push(refspec.as_str());
-        for tag_refspec in &tag_refspecs {
-            push_refspecs.push(tag_refspec.as_str());
-        }
-
         remote
-            .push(&push_refspecs, Some(&mut push_opts))
+            .push(&[refspec.as_str()], Some(&mut push_opts))
             .map_err(|e| e.message().to_string())?;
 
         Self::update_local_tracking_ref(&repo, "origin", &branch_name, commit_id)?;
 
         Ok(if force {
-            "Force push complete. Tags pushed too.".to_string()
+            "Force push complete.".to_string()
         } else {
-            "Push complete. Tags pushed too.".to_string()
+            "Push complete.".to_string()
         })
     }
 
