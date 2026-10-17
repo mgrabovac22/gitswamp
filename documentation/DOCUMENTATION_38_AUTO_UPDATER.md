@@ -149,13 +149,14 @@ build produces no `.sig` files and `latest.json` cannot be generated.
 
 ## 5. Updater artifacts (what the bundler produces)
 
-With `createUpdaterArtifacts: true`, the **artifact itself is signed** (no extra wrapper
-archive). Default locations are under `src-tauri/target/release/bundle/`.
+With `createUpdaterArtifacts: true`, Tauri signs the updater artifact. Linux uses an
+`AppImage.tar.gz` updater archive, while Windows and macOS use their platform-specific
+updater artifacts. Default locations are under `src-tauri/target/release/bundle/`.
 
 | Platform | Bundle folder | Updater artifact | Signature |
 | --- | --- | --- | --- |
-| Linux (x64) | `bundle/appimage/` | `GitSwamp_<version>_amd64.AppImage` | `GitSwamp_<version>_amd64.AppImage.sig` |
-| Linux (arm64) | `bundle/appimage/` | `GitSwamp_<version>_aarch64.AppImage` | `…aarch64.AppImage.sig` |
+| Linux (x64) | `bundle/appimage/` | `GitSwamp_<version>_amd64.AppImage.tar.gz` | `GitSwamp_<version>_amd64.AppImage.tar.gz.sig` |
+| Linux (arm64) | `bundle/appimage/` | `GitSwamp_<version>_aarch64.AppImage.tar.gz` | `…aarch64.AppImage.tar.gz.sig` |
 | Windows (x64) | `bundle/nsis/` | `GitSwamp_<version>_x64-setup.exe` | `GitSwamp_<version>_x64-setup.exe.sig` |
 | Windows (arm64) | `bundle/nsis/` | `GitSwamp_<version>_arm64-setup.exe` | `…arm64-setup.exe.sig` |
 | macOS (Intel) | `bundle/macos/` | `GitSwamp.app.tar.gz` → **rename to** `GitSwamp_<version>_x64.app.tar.gz` | `…_x64.app.tar.gz.sig` |
@@ -163,10 +164,10 @@ archive). Default locations are under `src-tauri/target/release/bundle/`.
 
 Notes:
 
-- **Linux auto-update requires the AppImage.** A `.deb`/`.rpm` install cannot be updated
-  by an AppImage manifest entry (and vice-versa). Publish and document the AppImage as the
-  update channel. (`.deb`/`.rpm` are also signed now, but GitSwamp's manifest maps Linux to
-  the AppImage.)
+- **Linux auto-update requires the AppImage.** A `.deb`/`.rpm` installation cannot be
+  replaced by the AppImage updater because the running installation format controls how
+  Tauri installs the update. Install the published `.AppImage` once; later updates use
+  the signed `.AppImage.tar.gz` updater artifact and replace that AppImage in place.
 - **Windows uses the NSIS `-setup.exe`.** Do not rely on the `.msi` for updates.
 - **macOS tarballs have identical names for both architectures**, so you must rename each
   one to include `_x64` or `_aarch64` before uploading, otherwise the two collide and the
@@ -220,8 +221,8 @@ Example output:
   "pub_date": "2026-10-16T13:06:34.506Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "<contents of GitSwamp_0.5.0_amd64.AppImage.sig>",
-      "url": "https://github.com/mgrabovac22/gitswamp/releases/download/v0.5.0/GitSwamp_0.5.0_amd64.AppImage"
+      "signature": "<contents of GitSwamp_0.5.0_amd64.AppImage.tar.gz.sig>",
+      "url": "https://github.com/mgrabovac22/gitswamp/releases/download/v0.5.0/GitSwamp_0.5.0_amd64.AppImage.tar.gz"
     },
     "windows-x86_64": {
       "signature": "<contents of …-setup.exe.sig>",
@@ -249,7 +250,7 @@ Upload the updater artifact **and its `.sig`** for every platform you built, plu
 
 Checklist:
 
-- [ ] `GitSwamp_<version>_amd64.AppImage` + `GitSwamp_<version>_amd64.AppImage.sig` (Linux)
+- [ ] `GitSwamp_<version>_amd64.AppImage.tar.gz` + `GitSwamp_<version>_amd64.AppImage.tar.gz.sig` (Linux updater)
 - [ ] `GitSwamp_<version>_x64-setup.exe` + `GitSwamp_<version>_x64-setup.exe.sig` (Windows)
 - [ ] `GitSwamp_<version>_x64.app.tar.gz` + `.sig` (macOS Intel, after rename)
 - [ ] `GitSwamp_<version>_aarch64.app.tar.gz` + `.sig` (macOS ARM, after rename)
@@ -701,11 +702,12 @@ build manually (§13) or via CI (§14).
 #### The `.sig` files
 
 When you build with `createUpdaterArtifacts: true` **and** the private key available, Tauri
-writes a `<artifact>.sig` file next to each updater artifact:
+writes a `<artifact>.sig` file next to each updater artifact. On Linux, the updater
+artifact is the `.AppImage.tar.gz` archive, not the standalone `.AppImage` bundle:
 
 | Artifact | Signature file |
 | --- | --- |
-| `GitSwamp_0.5.0_amd64.AppImage` | `GitSwamp_0.5.0_amd64.AppImage.sig` |
+| `GitSwamp_0.5.0_amd64.AppImage.tar.gz` | `GitSwamp_0.5.0_amd64.AppImage.tar.gz.sig` |
 | `GitSwamp_0.5.0_x64-setup.exe` | `GitSwamp_0.5.0_x64-setup.exe.sig` |
 | `GitSwamp_0.5.0_aarch64.app.tar.gz` | `GitSwamp_0.5.0_aarch64.app.tar.gz.sig` |
 
@@ -739,7 +741,7 @@ Required shape:
   "platforms": {
     "linux-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6...",
-      "url": "https://github.com/mgrabovac22/gitswamp/releases/download/v0.5.0/GitSwamp_0.5.0_amd64.AppImage"
+      "url": "https://github.com/mgrabovac22/gitswamp/releases/download/v0.5.0/GitSwamp_0.5.0_amd64.AppImage.tar.gz"
     },
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6...",
@@ -818,4 +820,3 @@ Common mistakes that break updates:
 - Asset filename differing from the URL (e.g. spaces/encoding) → 404. The helper URL-encodes
   names; keep the uploaded name identical.
 - A missing platform entry → that OS silently sees no update.
-

@@ -99,7 +99,10 @@ async function install(): Promise<void> {
       // On Windows the installer exits the app before relaunch resolves.
     }
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    errorMessage.value = message.includes("InvalidUpdaterFormat")
+      ? "Linux automatic updates work only when GitSwamp is running from an AppImage. Install the latest AppImage once, then future updates will install automatically."
+      : message;
     status.value = "available";
   }
 }

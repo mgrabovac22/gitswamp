@@ -52,7 +52,7 @@ function platformFor(file) {
     /aarch64|arm64/.test(lower) || /aarch64-apple-darwin/.test(full);
   const isUniversal = /universal/.test(lower) || /universal-apple-darwin/.test(full);
 
-  if (lower.endsWith(".appimage")) {
+  if (lower.endsWith(".appimage.tar.gz")) {
     return isArm ? "linux-aarch64" : "linux-x86_64";
   }
   if (lower.endsWith(".app.tar.gz")) {

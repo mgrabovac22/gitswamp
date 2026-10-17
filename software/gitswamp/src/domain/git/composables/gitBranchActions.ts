@@ -92,7 +92,12 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       state.loading.value = true;
       await callTauri("checkout_branch", { path: state.repoPath.value, branchName });
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
-      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      await Promise.all([
+        refresh.refreshCommits(),
+        refresh.refreshStatus(),
+        refresh.refreshBranches(),
+        refresh.refreshRepoInfo(),
+      ]);
       toast.success(`Checked out branch "${branchName}"`);
       return true;
     } catch (e) {

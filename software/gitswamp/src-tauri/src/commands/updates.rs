@@ -193,7 +193,7 @@ pub async fn install_update(
     };
 
     let mut started = false;
-    update
+    let result = update
         .download_and_install(
             |chunk_length, content_length| {
                 if !started {
@@ -208,8 +208,16 @@ pub async fn install_update(
                 let _ = on_event.send(DownloadEvent::Finished);
             },
         )
-        .await
-        .map_err(|e| format!("Update install failed: {}", e))?;
+        .await;
+
+    if let Err(error) = result {
+        let mut slot = pending
+            .0
+            .lock()
+            .map_err(|e| format!("Pending update lock failed: {}", e))?;
+        *slot = Some(update);
+        return Err(format!("Update install failed: {}", error));
+    }
 
     Ok(())
 }
@@ -289,4 +297,3 @@ mod tests {
         );
     }
 }
-

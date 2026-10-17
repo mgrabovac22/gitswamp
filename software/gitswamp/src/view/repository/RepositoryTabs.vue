@@ -6,6 +6,7 @@ import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import type { AppHelpSection } from "@/features/shell/keyboardShortcuts";
 import type { RepoInfo } from "@/types";
 import type { ToolId } from "@/features/toolbox/toolboxStorage";
+import { APP_VERSION } from "@/constants/app";
 
 const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDialog.vue"));
 const ToolsDialog = defineAsyncComponent(() => import("@/features/toolbox/ToolsDialog.vue"));
@@ -59,8 +60,6 @@ const toolsPanelTool = ref<ToolId>("regex");
 const showAboutPanel = ref(false);
 const activeSection = ref<MenuSection>("file");
 const menuPanelStyle = ref<Record<string, string>>({});
-const APP_VERSION = "0.3.0";
-
 const sectionLabels: { id: MenuSection; label: string }[] = [
   { id: "file", label: "File" },
   { id: "edit", label: "Edit" },

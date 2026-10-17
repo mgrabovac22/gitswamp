@@ -1,12 +1,19 @@
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 const host = process.env.TAURI_DEV_HOST;
 const tauriPlatform = process.env.TAURI_ENV_PLATFORM;
 const runtimeBuildTarget = tauriPlatform === "windows" ? "chrome105" : "safari13";
+const packageJson = JSON.parse(readFileSync(path.resolve(__dirname, "./package.json"), "utf8")) as {
+  version: string;
+};
 
 export default defineConfig(async () => ({
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version),
+  },
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
@@ -49,4 +56,3 @@ export default defineConfig(async () => ({
     },
   },
 }));
-

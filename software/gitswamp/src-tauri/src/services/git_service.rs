@@ -3348,20 +3348,27 @@ mod tests {
         GitService::initialize_empty_repo(&path_str).expect("initialize empty repo");
 
         let repo = Repository::open(&path).expect("open repository");
+        repo.remote("origin", "https://example.com/test.git")
+            .expect("create origin remote");
         let commit = repo
             .head()
             .expect("head")
             .peel_to_commit()
             .expect("head commit");
+        let commit_id = commit.id();
+        drop(commit);
         repo.reference(
             "refs/remotes/origin/feature/release",
-            commit.id(),
+            commit_id,
             true,
             "test remote branch",
         )
         .expect("create remote branch");
-        repo.tag_lightweight("feature/release", commit.as_object(), false)
-            .expect("create same-named tag");
+        {
+            let tag_commit = repo.find_commit(commit_id).expect("tag commit");
+            repo.tag_lightweight("feature/release", tag_commit.as_object(), false)
+                .expect("create same-named tag");
+        }
         drop(repo);
 
         GitService::checkout_branch(&path_str, "refs/remotes/origin/feature/release")

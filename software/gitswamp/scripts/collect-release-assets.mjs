@@ -22,7 +22,7 @@ function updaterPlatform(file) {
   const lower = file.toLowerCase();
   const isArm = /aarch64|arm64/.test(lower);
 
-  if (lower.endsWith(".appimage")) return isArm ? "linux-aarch64" : "linux-x86_64";
+  if (lower.endsWith(".appimage.tar.gz")) return isArm ? "linux-aarch64" : "linux-x86_64";
   if (lower.endsWith(".app.tar.gz")) return isArm ? "darwin-aarch64" : "darwin-x86_64";
   if (lower.endsWith("-setup.exe")) return isArm ? "windows-aarch64" : "windows-x86_64";
   return null;
@@ -33,8 +33,8 @@ function releaseAssetName(file, platform) {
   if (name.toLowerCase().endsWith(".app.tar.gz")) {
     return `${name.slice(0, -".app.tar.gz".length)}_${platform}.app.tar.gz`;
   }
-  if (name.toLowerCase().endsWith(".appimage")) {
-    return `${name.slice(0, -".AppImage".length)}_${platform}.AppImage`;
+  if (name.toLowerCase().endsWith(".appimage.tar.gz")) {
+    return `${name.slice(0, -".AppImage.tar.gz".length)}_${platform}.AppImage.tar.gz`;
   }
   if (name.toLowerCase().endsWith("-setup.exe")) {
     return `${name.slice(0, -"-setup.exe".length)}_${platform}-setup.exe`;
@@ -50,10 +50,25 @@ rmSync(outputDir, { recursive: true, force: true });
 mkdirSync(outputDir, { recursive: true });
 
 const seenPlatforms = new Set();
+const seenInstallers = new Set();
 const copied = [];
 
 for (const file of walk(sourceDir).sort()) {
   if (file.endsWith(".sig")) continue;
+
+  const lower = file.toLowerCase();
+  if (lower.endsWith(".appimage") && !lower.endsWith(".appimage.tar.gz")) {
+    const installerName = basename(file);
+    if (!seenInstallers.has(installerName)) {
+      copyFileSync(file, join(outputDir, installerName));
+      const signature = `${file}.sig`;
+      if (existsSync(signature)) {
+        copyFileSync(signature, join(outputDir, `${installerName}.sig`));
+      }
+      seenInstallers.add(installerName);
+    }
+    continue;
+  }
 
   const platform = updaterPlatform(file);
   if (!platform || seenPlatforms.has(platform)) continue;
