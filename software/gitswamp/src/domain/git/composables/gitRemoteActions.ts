@@ -2,7 +2,13 @@ import type { RepoInfo } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
 
 import { callTauri } from "./gitCall";
-import { getOriginUrl, getTokenForUrl, isAuthenticationError, isRemoteBehindPushError } from "./gitHelpers";
+import {
+  getOriginUrl,
+  getTokenForUrl,
+  isAuthenticationError,
+  isRemoteBehindPushError,
+  isRepositoryRulePushError,
+} from "./gitHelpers";
 import type { GitState } from "./gitState";
 
 type RefreshDeps = {
@@ -144,7 +150,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     } catch (e) {
       const errorMsg = String(e);
 
-      if (isRemoteBehindPushError(errorMsg)) {
+      if (isRemoteBehindPushError(errorMsg) && !isRepositoryRulePushError(errorMsg)) {
         state.terminalOutput.value.push("$ git push\nPush rejected by the remote.\n" + errorMsg);
         state.error.value = errorMsg;
         toast.action(

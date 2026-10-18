@@ -105,6 +105,28 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build ${{ matrix.tauri_args }}
 
+      - name: Create signed Linux updater archive
+        if: runner.os == 'Linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          appimage="$(find src-tauri/target -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage" || {
+            echo "No AppImage was produced by the Tauri build." >&2
+            exit 1
+          }
+          appimage_dir="$(dirname "$appimage")"
+          appimage_name="$(basename "$appimage")"
+          archive="${appimage}.tar.gz"
+          tar -czf "$archive" -C "$appimage_dir" "$appimage_name"
+          npm run tauri -- signer sign "$archive"
+          test -f "$archive.sig" || {
+            echo "No signature was produced for $archive." >&2
+            exit 1
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

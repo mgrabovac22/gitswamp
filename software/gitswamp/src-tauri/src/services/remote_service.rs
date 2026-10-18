@@ -67,6 +67,19 @@ impl RemoteService {
         })
     }
 
+    fn local_tracking_ref_is_at_commit(
+        repo: &git2::Repository,
+        remote_name: &str,
+        branch_name: &str,
+        commit_id: git2::Oid,
+    ) -> bool {
+        let tracking_ref = format!("refs/remotes/{}/{}", remote_name, branch_name);
+        repo.find_reference(&tracking_ref)
+            .ok()
+            .and_then(|reference| reference.target())
+            == Some(commit_id)
+    }
+
     fn push_unique_candidate(candidates: &mut Vec<String>, candidate: &str) {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -517,13 +530,18 @@ impl RemoteService {
         let commit_id = head
             .target()
             .ok_or_else(|| "Cannot push a branch without a commit.".to_string())?;
+        if force && Self::local_tracking_ref_is_at_commit(&repo, "origin", &branch_name, commit_id)
+        {
+            return Ok(
+                "Already up to date. No force push was needed because the remote has this commit."
+                    .to_string(),
+            );
+        }
         let refspec = if force {
             format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
         } else {
             format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
         };
-        let tag_refspecs = Self::local_tag_refspecs(&repo)?;
-
         let mut remote = repo
             .find_remote("origin")
             .map_err(|e| format!("No remote 'origin': {}", e.message()))?;
@@ -565,13 +583,7 @@ impl RemoteService {
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 
-                    let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
-                    push_refspecs.push(refspec.as_str());
-                    for tag_refspec in &tag_refspecs {
-                        push_refspecs.push(tag_refspec.as_str());
-                    }
-
-                    match temp_remote.push(&push_refspecs, Some(&mut push_opts)) {
+                    match temp_remote.push(&[refspec.as_str()], Some(&mut push_opts)) {
                         Ok(_) => {
                             let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                             Self::update_local_tracking_ref(
@@ -581,9 +593,9 @@ impl RemoteService {
                                 commit_id,
                             )?;
                             return Ok(if force {
-                                "Force push complete. Tags pushed too.".to_string()
+                                "Force push complete.".to_string()
                             } else {
-                                "Push complete. Tags pushed too.".to_string()
+                                "Push complete.".to_string()
                             });
                         }
                         Err(err) => {
@@ -603,22 +615,16 @@ impl RemoteService {
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
-        let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
-        push_refspecs.push(refspec.as_str());
-        for tag_refspec in &tag_refspecs {
-            push_refspecs.push(tag_refspec.as_str());
-        }
-
         remote
-            .push(&push_refspecs, Some(&mut push_opts))
+            .push(&[refspec.as_str()], Some(&mut push_opts))
             .map_err(|e| e.message().to_string())?;
 
         Self::update_local_tracking_ref(&repo, "origin", &branch_name, commit_id)?;
 
         Ok(if force {
-            "Force push complete. Tags pushed too.".to_string()
+            "Force push complete.".to_string()
         } else {
-            "Push complete. Tags pushed too.".to_string()
+            "Push complete.".to_string()
         })
     }
 
@@ -1081,6 +1087,33 @@ mod tests {
             .expect("tracking ref should point to a commit");
         assert_eq!(tracking_commit, second_commit);
         assert_ne!(tracking_commit, first_commit);
+    }
+
+    #[test]
+    fn force_push_is_skipped_when_tracking_ref_is_already_at_head() {
+        let workspace = TestWorkspace::new("force-push-up-to-date");
+        let repo_path = workspace.child("repo");
+        let repo = Repository::init(&repo_path).expect("repository should initialize");
+        configure_identity(&repo, "Test User", "test@example.com");
+        let signature =
+            Signature::now("Test User", "test@example.com").expect("signature should be valid");
+
+        write_file(&repo_path, "history.txt", "first\n");
+        let commit_id = commit_all(&repo, "First commit", &signature);
+        repo.reference(
+            "refs/remotes/origin/main",
+            commit_id,
+            true,
+            "seed tracking ref",
+        )
+        .expect("tracking ref should be created");
+
+        assert!(RemoteService::local_tracking_ref_is_at_commit(
+            &repo,
+            "origin",
+            "main",
+            commit_id
+        ));
     }
 
     #[test]

@@ -43,12 +43,23 @@ export function isRemoteBehindPushError(message: string): boolean {
   );
 }
 
+export function isRepositoryRulePushError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("repository rule violation") ||
+    m.includes("repository rule violations") ||
+    m.includes("protected ref") ||
+    m.includes("changes must be made through a pull request") ||
+    m.includes("push declined due to repository rule")
+  );
+}
+
 export function getOriginUrl(state: GitState): string | undefined {
   return state.repoInfo.value?.remotes?.find((r) => r.name === "origin")?.url;
 }
 
 export function getTokenParam(state: GitState): string | null {
-  return state.githubToken.value || null;
+  return state.providerTokens.value.github || state.githubToken.value || null;
 }
 
 function parseRemoteHost(url: string): { host: string; hostWithPort: string } | null {

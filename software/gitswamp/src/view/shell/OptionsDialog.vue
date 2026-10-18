@@ -48,6 +48,7 @@ import {
 } from "@/shared/config/backgroundMaintenancePreferences";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
+import { useAppUpdate } from "@/features/updater/useAppUpdate";
 import AppButton from "@/shared/ui/AppButton.vue";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
@@ -73,7 +74,7 @@ import {
   Users,
   X,
 } from "lucide-vue-next";
-type OptionsSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
+type OptionsSection = "integrations" | "git" | "preferences" | "advanced" | "organisations" | "updates";
 type IntegrationPlatform = "github" | "gitlab" | "bitbucket" | "azure";
 type FontSizePreference = "tiny" | "small" | "medium" | "largest" | "huge" | "xlarge" | "xxlarge" | "xxxlarge" | "xxxxlarge";
 type OrganisationProvider = "github" | "gitlab" | "bitbucket" | "azure";
@@ -181,6 +182,10 @@ const emit = defineEmits<{
 
 const git = useGit();
 const toast = useToast();
+const appUpdate = useAppUpdate();
+const updateStatus = appUpdate.status;
+const updateInfo = appUpdate.info;
+const updateError = appUpdate.errorMessage;
 
 const activeSection = ref<OptionsSection>(props.initialSection || "integrations");
 const activePlatform = ref<IntegrationPlatform>("github");
@@ -2329,6 +2334,19 @@ watch(activePlatform, () => {
               Organisations
             </div>
           </button>
+
+          <button
+            class="w-full text-left px-2.5 py-2 rounded text-xs font-medium transition-colors mt-1"
+            :class="activeSection === 'updates'
+              ? 'bg-[var(--primary)]/15 text-[var(--foreground)]'
+              : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]'"
+            @click="activeSection = 'updates'"
+          >
+            <div class="flex items-center gap-2">
+              <RefreshCw class="w-3.5 h-3.5" />
+              Updates
+            </div>
+          </button>
         </div>
 
         <div class="flex-1 overflow-y-auto p-5" ref="optionsScrollRef">
@@ -3676,6 +3694,65 @@ watch(activePlatform, () => {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          </template>
+
+          <template v-else-if="activeSection === 'updates'">
+            <div class="space-y-4">
+              <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2 text-xs font-semibold text-[var(--foreground)]">
+                      <RefreshCw class="w-3.5 h-3.5" />
+                      Application updates
+                    </div>
+                    <p class="mt-1 text-[10px] leading-relaxed text-[var(--muted-foreground)]">
+                      Check manually for a newer GitSwamp release. Linux automatic replacement works
+                      when the app is running from an AppImage; a .deb installation must be updated manually.
+                    </p>
+                  </div>
+                </div>
+
+                <div v-if="updateStatus === 'available' && updateInfo" class="rounded border border-[var(--primary)]/30 bg-[var(--primary)]/10 p-2.5">
+                  <div class="text-[11px] font-medium text-[var(--foreground)]">
+                    Update available: v{{ updateInfo.version }}
+                  </div>
+                  <div class="mt-2 flex gap-2">
+                    <AppButton size="sm" @click="appUpdate.install">Install update</AppButton>
+                    <AppButton size="sm" variant="secondary" @click="appUpdate.openReleasePage">Open release</AppButton>
+                  </div>
+                </div>
+                <div v-else-if="updateStatus === 'none'" class="text-[10px] text-[var(--muted-foreground)]">
+                  GitSwamp is up to date.
+                </div>
+                <div v-else-if="updateStatus === 'error'" class="text-[10px] text-[var(--destructive)]">
+                  {{ updateError }}
+                </div>
+
+                <div class="flex gap-2">
+                  <AppButton
+                    size="sm"
+                    :disabled="updateStatus === 'checking' || updateStatus === 'installing'"
+                    @click="appUpdate.check(true)"
+                  >
+                    <Loader2 v-if="updateStatus === 'checking'" class="w-3 h-3 animate-spin" />
+                    <RefreshCw v-else class="w-3 h-3" />
+                    {{ updateStatus === 'checking' ? 'Checking…' : 'Check for updates' }}
+                  </AppButton>
+                  <AppButton
+                    v-if="updateInfo"
+                    size="sm"
+                    variant="secondary"
+                    @click="appUpdate.openReleasePage"
+                  >
+                    <ExternalLink class="w-3 h-3" />
+                    Manual download
+                  </AppButton>
+                </div>
+                <p v-if="updateStatus === 'available' && updateError" class="text-[10px] text-[var(--destructive)]">
+                  {{ updateError }}
+                </p>
               </div>
             </div>
           </template>
