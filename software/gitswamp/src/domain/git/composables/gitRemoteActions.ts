@@ -150,6 +150,14 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     } catch (e) {
       const errorMsg = String(e);
 
+      if (errorMsg.includes("PUSH_PARTIAL_TAGS:")) {
+        state.error.value = errorMsg;
+        state.terminalOutput.value.push("$ git push\n" + errorMsg);
+        await autoFetchAfterPush();
+        toast.warning("Branch push completed, but one or more tags were rejected by the remote rules.");
+        return;
+      }
+
       if (isRemoteBehindPushError(errorMsg) && !isRepositoryRulePushError(errorMsg)) {
         state.terminalOutput.value.push("$ git push\nPush rejected by the remote.\n" + errorMsg);
         state.error.value = errorMsg;
