@@ -542,6 +542,7 @@ impl RemoteService {
         } else {
             format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
         };
+        let tag_refspecs = Self::local_tag_refspecs(&repo)?;
         let mut remote = repo
             .find_remote("origin")
             .map_err(|e| format!("No remote 'origin': {}", e.message()))?;
@@ -583,7 +584,11 @@ impl RemoteService {
                     let mut push_opts = git2::PushOptions::new();
                     push_opts.remote_callbacks(callbacks);
 
-                    match temp_remote.push(&[refspec.as_str()], Some(&mut push_opts)) {
+                    let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
+                    push_refspecs.push(refspec.as_str());
+                    push_refspecs.extend(tag_refspecs.iter().map(String::as_str));
+
+                    match temp_remote.push(&push_refspecs, Some(&mut push_opts)) {
                         Ok(_) => {
                             let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                             Self::update_local_tracking_ref(
@@ -593,9 +598,9 @@ impl RemoteService {
                                 commit_id,
                             )?;
                             return Ok(if force {
-                                "Force push complete.".to_string()
+                                "Force push complete. Tags pushed too.".to_string()
                             } else {
-                                "Push complete.".to_string()
+                                "Push complete. Tags pushed too.".to_string()
                             });
                         }
                         Err(err) => {
@@ -615,16 +620,20 @@ impl RemoteService {
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
+        let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
+        push_refspecs.push(refspec.as_str());
+        push_refspecs.extend(tag_refspecs.iter().map(String::as_str));
+
         remote
-            .push(&[refspec.as_str()], Some(&mut push_opts))
+            .push(&push_refspecs, Some(&mut push_opts))
             .map_err(|e| e.message().to_string())?;
 
         Self::update_local_tracking_ref(&repo, "origin", &branch_name, commit_id)?;
 
         Ok(if force {
-            "Force push complete.".to_string()
+            "Force push complete. Tags pushed too.".to_string()
         } else {
-            "Push complete.".to_string()
+            "Push complete. Tags pushed too.".to_string()
         })
     }
 
@@ -1114,6 +1123,42 @@ mod tests {
             "main",
             commit_id
         ));
+    }
+
+    #[test]
+    fn push_includes_local_tags() {
+        let workspace = TestWorkspace::new("push-tags");
+        let repo_path = workspace.child("repo");
+        let bare_path = workspace.child("remote.git");
+        let repo = Repository::init(&repo_path).expect("repository should initialize");
+        let bare = Repository::init_bare(&bare_path).expect("bare repository should initialize");
+        configure_identity(&repo, "Test User", "test@example.com");
+        let signature =
+            Signature::now("Test User", "test@example.com").expect("signature should be valid");
+        repo.remote(
+            "origin",
+            bare_path
+                .to_str()
+                .expect("bare repository path should be valid"),
+        )
+        .expect("origin should be configured");
+
+        write_file(&repo_path, "tagged.txt", "tagged\n");
+        let commit_id = commit_all(&repo, "Tagged commit", &signature);
+        let commit = repo.find_commit(commit_id).expect("commit should exist");
+        repo.tag_lightweight("release-test", commit.as_object(), false)
+            .expect("tag should be created");
+        drop(commit);
+
+        RemoteService::push(repo_path.to_str().expect("repo path should be valid"), None)
+            .expect("push should include the local tag");
+
+        assert_eq!(
+            bare.find_reference("refs/tags/release-test")
+                .expect("remote tag should exist")
+                .target(),
+            Some(commit_id)
+        );
     }
 
     #[test]

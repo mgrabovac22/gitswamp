@@ -687,16 +687,13 @@ export function useCommitGraphLayout(
     return laneX(wcLane.value);
   }
 
-  const tagNameSet = computed(() => new Set((props.tags ?? []).map(t => t.name)));
-
   function commitTags(commit: CommitInfo): TagInfo[] {
     const tags = props.tags ?? [];
     return tags.filter(t => t.sha === commit.sha);
   }
 
   function branchRefs(commit: CommitInfo): string[] {
-    const tags = tagNameSet.value;
-    const refs = refsWithoutHead(commit).filter(r => !tags.has(r));
+    const refs = refsWithoutHead(commit);
     if (hasDetachedHeadRef(commit, props.currentBranch)) {
       return ["HEAD", ...refs];
     }
