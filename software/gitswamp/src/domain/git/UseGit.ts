@@ -78,6 +78,7 @@ const remote = createRemoteActions(
     refreshBranches: refresh.refreshBranches,
     refreshTags: refresh.refreshTags,
     refreshStashes: refresh.refreshStashes,
+    refreshRepoInfo: refresh.refreshRepoInfo,
   },
   toast,
 );
