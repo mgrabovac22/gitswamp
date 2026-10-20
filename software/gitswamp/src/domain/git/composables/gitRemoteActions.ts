@@ -17,12 +17,13 @@ type RefreshDeps = {
   refreshBranches: () => Promise<void>;
   refreshTags: () => Promise<void>;
   refreshStashes: () => Promise<void>;
+  refreshRepoInfo: () => Promise<void>;
 };
 
 export type PullOutcome = "success" | "worktree-dirty" | "operation-stash-retained" | "stash-restore-failed" | "error";
 
 export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
-  async function refreshRemoteRefs(repoPath: string, includeStatus = false, includeRepoInfo = false) {
+  async function refreshRemoteRefs(repoPath: string, includeStatus = false) {
     if (state.repoPath.value !== repoPath) return;
 
     try {
@@ -30,17 +31,11 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
         refresh.refreshBranches(),
         refresh.refreshCommits(),
         refresh.refreshTags(),
+        refresh.refreshRepoInfo(),
       ];
 
-      if (includeStatus) {
-        tasks.push(refresh.refreshStatus());
-      }
-
-      await Promise.all(tasks);
-
-      if (includeRepoInfo && state.repoPath.value === repoPath) {
-        state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: repoPath });
-      }
+      if (includeStatus) tasks.push(refresh.refreshStatus());
+      await Promise.allSettled(tasks);
     } catch {
       // Best-effort local refresh after remote operations; keep the original remote error visible.
     }
@@ -58,7 +53,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     } catch (error) {
       state.terminalOutput.value.push("$ git fetch --all --prune\nError: " + String(error));
     }
-    await refreshRemoteRefs(repoPath, true, true);
+    await refreshRemoteRefs(repoPath, true);
   }
 
   async function forcePushCurrentBranch() {
@@ -101,7 +96,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
         autoStash,
       });
       state.terminalOutput.value.push(`$ git pull${autoStash ? " --autostash" : ""}\n` + result);
-      await refreshRemoteRefs(repoPath, true, true);
+      await refreshRemoteRefs(repoPath, true);
       toast.success(autoStash ? "Pull completed and local changes are safe" : "Pull completed successfully");
       state.error.value = null;
       return "success";
@@ -109,7 +104,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       const errorMsg = String(e);
       state.error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
       state.terminalOutput.value.push("$ git pull\nError: " + e);
-      await refreshRemoteRefs(repoPath, true, true);
+      await refreshRemoteRefs(repoPath, true);
       if (errorMsg.startsWith("PULL_SUCCEEDED_STASH_RESTORE_FAILED:")
         || errorMsg.startsWith("PULL_FAILED_STASH_RETAINED:")) {
         await refresh.refreshStashes().catch(() => {});
@@ -149,6 +144,14 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       state.error.value = null;
     } catch (e) {
       const errorMsg = String(e);
+
+      if (errorMsg.includes("PUSH_PARTIAL_TAGS:")) {
+        state.error.value = errorMsg;
+        state.terminalOutput.value.push("$ git push\n" + errorMsg);
+        await autoFetchAfterPush();
+        toast.warning("Branch push completed, but one or more tags were rejected by the remote rules.");
+        return;
+      }
 
       if (isRemoteBehindPushError(errorMsg) && !isRepositoryRulePushError(errorMsg)) {
         state.terminalOutput.value.push("$ git push\nPush rejected by the remote.\n" + errorMsg);
@@ -320,7 +323,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       const result = await callTauri<string>("push_to_platform", {
         path: state.repoPath.value,
         platform: backendPlatform,
-        token,
+        providerToken: token,
         repoName,
       });
 

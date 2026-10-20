@@ -530,7 +530,10 @@ impl RemoteService {
         let commit_id = head
             .target()
             .ok_or_else(|| "Cannot push a branch without a commit.".to_string())?;
-        if force && Self::local_tracking_ref_is_at_commit(&repo, "origin", &branch_name, commit_id)
+        let tag_refspecs = Self::local_tag_refspecs(&repo)?;
+        if force
+            && Self::local_tracking_ref_is_at_commit(&repo, "origin", &branch_name, commit_id)
+            && tag_refspecs.is_empty()
         {
             return Ok(
                 "Already up to date. No force push was needed because the remote has this commit."
@@ -585,17 +588,34 @@ impl RemoteService {
 
                     match temp_remote.push(&[refspec.as_str()], Some(&mut push_opts)) {
                         Ok(_) => {
-                            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                             Self::update_local_tracking_ref(
                                 &repo,
                                 "origin",
                                 &branch_name,
                                 commit_id,
                             )?;
+                            if !tag_refspecs.is_empty() {
+                                let tag_callbacks =
+                                    Self::build_remote_callbacks(Some(&secret), &authed_url);
+                                let mut tag_push_opts = git2::PushOptions::new();
+                                tag_push_opts.remote_callbacks(tag_callbacks);
+                                if let Err(err) = temp_remote.push(
+                                    &tag_refspecs.iter().map(String::as_str).collect::<Vec<_>>(),
+                                    Some(&mut tag_push_opts),
+                                ) {
+                                    let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
+                                    return Err(format!(
+                                        "PUSH_PARTIAL_TAGS: Branch push completed, but {} tag(s) could not be pushed: {}",
+                                        tag_refspecs.len(),
+                                        err.message()
+                                    ));
+                                }
+                            }
+                            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_AUTH);
                             return Ok(if force {
-                                "Force push complete.".to_string()
+                                "Force push complete. Tags pushed too.".to_string()
                             } else {
-                                "Push complete.".to_string()
+                                "Push complete. Tags pushed too.".to_string()
                             });
                         }
                         Err(err) => {
@@ -620,11 +640,28 @@ impl RemoteService {
             .map_err(|e| e.message().to_string())?;
 
         Self::update_local_tracking_ref(&repo, "origin", &branch_name, commit_id)?;
+        if !tag_refspecs.is_empty() {
+            let tag_callbacks = Self::build_remote_callbacks(token, &remote_url);
+            let mut tag_push_opts = git2::PushOptions::new();
+            tag_push_opts.remote_callbacks(tag_callbacks);
+            remote
+                .push(
+                    &tag_refspecs.iter().map(String::as_str).collect::<Vec<_>>(),
+                    Some(&mut tag_push_opts),
+                )
+                .map_err(|error| {
+                    format!(
+                        "PUSH_PARTIAL_TAGS: Branch push completed, but {} tag(s) could not be pushed: {}",
+                        tag_refspecs.len(),
+                        error.message()
+                    )
+                })?;
+        }
 
         Ok(if force {
-            "Force push complete.".to_string()
+            "Force push complete. Tags pushed too.".to_string()
         } else {
-            "Push complete.".to_string()
+            "Push complete. Tags pushed too.".to_string()
         })
     }
 
@@ -1109,11 +1146,44 @@ mod tests {
         .expect("tracking ref should be created");
 
         assert!(RemoteService::local_tracking_ref_is_at_commit(
-            &repo,
-            "origin",
-            "main",
-            commit_id
+            &repo, "origin", "main", commit_id
         ));
+    }
+
+    #[test]
+    fn push_includes_local_tags() {
+        let workspace = TestWorkspace::new("push-tags");
+        let repo_path = workspace.child("repo");
+        let bare_path = workspace.child("remote.git");
+        let repo = Repository::init(&repo_path).expect("repository should initialize");
+        let bare = Repository::init_bare(&bare_path).expect("bare repository should initialize");
+        configure_identity(&repo, "Test User", "test@example.com");
+        let signature =
+            Signature::now("Test User", "test@example.com").expect("signature should be valid");
+        repo.remote(
+            "origin",
+            bare_path
+                .to_str()
+                .expect("bare repository path should be valid"),
+        )
+        .expect("origin should be configured");
+
+        write_file(&repo_path, "tagged.txt", "tagged\n");
+        let commit_id = commit_all(&repo, "Tagged commit", &signature);
+        let commit = repo.find_commit(commit_id).expect("commit should exist");
+        repo.tag_lightweight("release-test", commit.as_object(), false)
+            .expect("tag should be created");
+        drop(commit);
+
+        RemoteService::push(repo_path.to_str().expect("repo path should be valid"), None)
+            .expect("push should include the local tag");
+
+        assert_eq!(
+            bare.find_reference("refs/tags/release-test")
+                .expect("remote tag should exist")
+                .target(),
+            Some(commit_id)
+        );
     }
 
     #[test]

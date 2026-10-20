@@ -389,10 +389,6 @@ impl GitService {
             return Err("Remote branch name is invalid.".to_string());
         }
 
-        if repo.find_branch(branch_name, BranchType::Local).is_ok() {
-            return Self::checkout_local_branch(repo, branch_name);
-        }
-
         let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
         let remote_reference = repo.find_reference(&remote_ref_name).map_err(|_| {
             format!(
@@ -409,6 +405,27 @@ impl GitService {
         let target_commit = repo
             .find_commit(target_oid)
             .map_err(|e| e.message().to_string())?;
+
+        if repo.find_branch(branch_name, BranchType::Local).is_ok() {
+            let local_reference = repo
+                .find_reference(&format!("refs/heads/{}", branch_name))
+                .map_err(|e| e.message().to_string())?;
+            let local_oid = local_reference
+                .target()
+                .ok_or_else(|| format!("Local branch '{}' has no target commit.", branch_name))?;
+
+            Self::checkout_local_branch(repo, branch_name)?;
+
+            if local_oid != target_oid
+                && repo
+                    .graph_descendant_of(target_oid, local_oid)
+                    .map_err(|e| e.message().to_string())?
+            {
+                repo.reset(target_commit.as_object(), git2::ResetType::Hard, None)
+                    .map_err(|e| e.message().to_string())?;
+            }
+            return Ok(());
+        }
 
         repo.checkout_tree(target_commit.as_object(), None)
             .map_err(|e| e.message().to_string())?;
@@ -3339,6 +3356,49 @@ mod tests {
     }
 
     #[test]
+    fn commits_keep_local_and_remote_branches_when_their_names_match_a_tag() {
+        let path = unique_temp_repo_path("commit-refs-tag-collision");
+        std::fs::create_dir_all(&path).expect("create temp repo dir");
+        let path_str = path.to_string_lossy().to_string();
+
+        Repository::init(&path).expect("init repo");
+        GitService::initialize_empty_repo(&path_str).expect("initialize empty repo");
+
+        let repo = Repository::open(&path).expect("open repository");
+        let commit = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("head commit");
+        let commit_id = commit.id();
+        repo.branch("release", &commit, false)
+            .expect("create local branch");
+        repo.reference(
+            "refs/remotes/origin/release",
+            commit_id,
+            true,
+            "create remote branch",
+        )
+        .expect("create remote branch");
+        repo.tag_lightweight("release", commit.as_object(), false)
+            .expect("create same-named tag");
+        drop(commit);
+        drop(repo);
+
+        let refs = GitService::commits(&path_str, 10)
+            .expect("list commits")
+            .into_iter()
+            .find(|item| item.sha == commit_id.to_string())
+            .expect("commit with refs should be listed")
+            .refs;
+
+        assert!(refs.iter().any(|item| item == "release"));
+        assert!(refs.iter().any(|item| item == "origin/release"));
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
     fn checkout_remote_branch_tracks_it_when_a_same_named_tag_exists() {
         let path = unique_temp_repo_path("remote-branch-tag-collision");
         std::fs::create_dir_all(&path).expect("create temp repo dir");
@@ -3388,6 +3448,76 @@ mod tests {
                 .name()
                 .expect("upstream name"),
             Some("origin/feature/release")
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn checkout_remote_branch_fast_forwards_existing_local_branch() {
+        let path = unique_temp_repo_path("remote-branch-fast-forward");
+        std::fs::create_dir_all(&path).expect("create temp repo dir");
+        let path_str = path.to_string_lossy().to_string();
+
+        Repository::init(&path).expect("init repo");
+        GitService::initialize_empty_repo(&path_str).expect("initialize empty repo");
+
+        let repo = Repository::open(&path).expect("open repository");
+        repo.remote("origin", "https://example.com/test.git")
+            .expect("create origin remote");
+        let signature = repo.signature().expect("repository signature");
+        let first_commit = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("head commit");
+        std::fs::write(path.join("remote.txt"), "remote\n").expect("write remote file");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(std::path::Path::new("remote.txt"))
+            .expect("stage remote file");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let second_commit = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "Remote commit",
+                &tree,
+                &[&first_commit],
+            )
+            .expect("create remote commit");
+        drop(first_commit);
+        std::fs::remove_file(path.join("remote.txt")).expect("remove remote-only worktree file");
+        repo.reference(
+            "refs/remotes/origin/main",
+            second_commit,
+            true,
+            "test remote branch",
+        )
+        .expect("create remote branch");
+        drop(tree);
+        drop(repo);
+
+        GitService::checkout_branch(&path_str, "refs/remotes/origin/main")
+            .expect("checkout remote branch");
+
+        let repo = Repository::open(&path).expect("reopen repository");
+        assert_eq!(
+            repo.head()
+                .expect("head")
+                .peel_to_commit()
+                .expect("head commit")
+                .id(),
+            second_commit
+        );
+        assert_eq!(
+            repo.find_branch("main", BranchType::Local)
+                .expect("local branch")
+                .get()
+                .target(),
+            Some(second_commit)
         );
 
         let _ = std::fs::remove_dir_all(&path);
