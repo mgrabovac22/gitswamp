@@ -1,6 +1,6 @@
 # GitSwamp Documentation
 
-Complete software documentation for the GitSwamp Git client application built with Tauri, Vue 3, and Rust.
+Complete software documentation for the GitSwamp Git client application built with Tauri, Vue 3, and Rust. Visit the site: [Gitswamp - git with teeth!](https://mgrabovac22.github.io/gitswamp)
 
 ![ezgif com-crop](https://github.com/user-attachments/assets/112574b3-0546-47ae-807b-809de74ca31b)
 
