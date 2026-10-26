@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://mgrabovac22.github.io/gitswamp/sitemap.xml

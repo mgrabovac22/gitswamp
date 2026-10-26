@@ -1,0 +1,17 @@
+{
+  "name": "GitSwamp",
+  "short_name": "GitSwamp",
+  "description": "Open-source desktop Git client with visual history, micro-staging and a terminal safety layer.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#050b07",
+  "theme_color": "#050b07",
+  "icons": [
+    {
+      "src": "assets/logo.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

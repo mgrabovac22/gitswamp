@@ -1,0 +1,836 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GitSwamp an open-Source Git Client for Windows, macOS &amp; Linux</title>
+  <meta name="description" content="GitSwamp is a free, open-source Git client for Windows, macOS and Linux with visual history, micro-staging and remote integrations.">
+  <meta name="keywords" content="GitSwamp, Git client, desktop Git GUI, open source Git client, Git for Windows, Git for macOS, Git for Linux, visual Git history, commit graph, micro-staging, GitHub client, GitLab client, Tauri Git app, Android Git client, free Git GUI">
+  <meta name="author" content="GitSwamp contributors">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta name="googlebot" content="index, follow, max-image-preview:large, max-snippet:-1">
+  <meta name="theme-color" content="#050b07">
+  <meta name="color-scheme" content="dark">
+  <meta name="application-name" content="GitSwamp">
+  <meta name="apple-mobile-web-app-title" content="GitSwamp">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="canonical" href="https://mgrabovac22.github.io/gitswamp/">
+  <link rel="sitemap" type="application/xml" href="sitemap.xml">
+  <link rel="icon" href="assets/logo.png" type="image/png">
+  <link rel="apple-touch-icon" href="assets/logo.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:site_name" content="GitSwamp">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mgrabovac22.github.io/gitswamp/">
+  <meta property="og:title" content="GitSwamp - Git with teeth. Open-source desktop Git client">
+  <meta property="og:description" content="Visual commit graphs, galaxy history, micro-staging and a terminal safety layer. Free and open source for Windows, macOS, Linux and Android test builds.">
+  <meta property="og:image" content="https://mgrabovac22.github.io/gitswamp/assets/og-image.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="GitSwamp desktop Git client on a dark swamp-green background">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="GitSwamp - Git with teeth.">
+  <meta name="twitter:description" content="A fast, local-first desktop Git client with galaxy history, micro-staging and remote integrations. Free and open source.">
+  <meta name="twitter:image" content="https://mgrabovac22.github.io/gitswamp/assets/og-image.png">
+  <meta name="twitter:image:alt" content="GitSwamp desktop Git client">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://api.github.com" crossorigin>
+  <link rel="dns-prefetch" href="https://github.com">
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js")</script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://mgrabovac22.github.io/gitswamp/#website",
+        "url": "https://mgrabovac22.github.io/gitswamp/",
+        "name": "GitSwamp",
+        "description": "Free, open-source desktop Git client with visual history, micro-staging and remote integrations.",
+        "inLanguage": "en",
+        "publisher": { "@id": "https://mgrabovac22.github.io/gitswamp/#organization" }
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://mgrabovac22.github.io/gitswamp/#organization",
+        "name": "GitSwamp",
+        "url": "https://github.com/mgrabovac22/gitswamp",
+        "logo": "https://mgrabovac22.github.io/gitswamp/assets/logo.png",
+        "sameAs": ["https://github.com/mgrabovac22/gitswamp"]
+      },
+      {
+        "@type": "SoftwareApplication",
+        "@id": "https://mgrabovac22.github.io/gitswamp/#application",
+        "name": "GitSwamp",
+        "alternateName": "GitSwamp Desktop",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Git client",
+        "operatingSystem": "Windows, macOS, Linux, Android",
+        "softwareVersion": "0.4.11",
+        "url": "https://mgrabovac22.github.io/gitswamp/",
+        "downloadUrl": "https://github.com/mgrabovac22/gitswamp/releases/latest",
+        "codeRepository": "https://github.com/mgrabovac22/gitswamp",
+        "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+        "image": "https://mgrabovac22.github.io/gitswamp/assets/og-image.png",
+        "screenshot": "https://mgrabovac22.github.io/gitswamp/assets/screens/workspace.webp",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock"
+        },
+        "featureList": [
+          "Visual commit graph",
+          "Galaxy history view",
+          "Time Machine history playback",
+          "Hunk-level micro-staging",
+          "Three-way merge conflict resolver",
+          "GitHub and GitLab integrations",
+          "Bitbucket and Azure DevOps support",
+          "Integrated terminal with command safety",
+          "Command palette",
+          "Repository analytics and burnout insights",
+          "Ghost branches",
+          "Signed automatic updates",
+          "Local-first and telemetry-free",
+          "Native Android test build"
+        ],
+        "author": { "@id": "https://mgrabovac22.github.io/gitswamp/#organization" }
+      },
+      {
+        "@type": "FAQPage",
+        "@id": "https://mgrabovac22.github.io/gitswamp/#faq",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is GitSwamp free and open source?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. GitSwamp is free to download and licensed under AGPL-3.0. The complete source code is available on GitHub." }
+          },
+          {
+            "@type": "Question",
+            "name": "Which operating systems does GitSwamp support?",
+            "acceptedAnswer": { "@type": "Answer", "text": "GitSwamp ships native builds for Windows x64, macOS Apple Silicon, macOS Intel and Linux. Linux is available as a Debian package and a universal AppImage. An Android test APK is also available." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does GitSwamp work offline?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. GitSwamp is local-first: repositories, history, diffs and working-tree changes are handled on your device. Network access is only used when you fetch, pull, push or call a provider API." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does GitSwamp collect telemetry?",
+            "acceptedAnswer": { "@type": "Answer", "text": "No. GitSwamp does not include telemetry, advertising or a cloud account requirement." }
+          },
+          {
+            "@type": "Question",
+            "name": "How do GitSwamp updates work?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Desktop downloads always point to the latest GitHub release. Installed builds use Tauri's signed updater manifest to verify and install new versions." }
+          },
+          {
+            "@type": "Question",
+            "name": "Is there a GitSwamp mobile version?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. GitSwamp Mobile is a native Android companion built with Kotlin, Jetpack Compose and JGit. A test APK is available on this page for Android 8.0 and newer." }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-windows" viewBox="0 0 24 24"><path d="M3 4.7 10.8 3.6v7.8H3V4.7Zm8.7-1.24L21 2.1v9.3h-9.3V3.46ZM3 12.5h7.8v7.9L3 19.3v-6.8Zm8.7 0H21v9.4l-9.3-1.33V12.5Z"/></symbol>
+    <symbol id="i-apple" viewBox="0 0 24 24"><path d="M16.7 12.8c0-2.3 1.2-4 3.6-5.1-1.3-1.9-3.3-3-5.8-3.2-1.6-.2-3.3.9-4 1.2-.7.3-1.9.3-2.6 0-.7-.3-2.2-1.4-4-1.2C1.2 4.8-1 8.3 0 12.6c1 4.4 4.4 8.9 7.6 8.9 1.6 0 2.4-.8 4-.8s2.5.8 4 .8c3.4 0 6.1-4.1 7-6.5-2.7-1.1-3.9-2.6-3.9-5.6Z" transform="translate(1.5 -1.2) scale(.9)"/><path d="M14.2 2.2c1.4-1.5 2.7-2.1 4.3-2.2.2 1.8-.5 3.4-1.6 4.6-1.1 1.2-2.7 1.9-4.2 1.8-.2-1.7.5-3.1 1.5-4.2Z" transform="translate(1.2 .4) scale(.9)"/></symbol>
+    <symbol id="i-linux" viewBox="0 0 24 24"><path d="M12 2c-2.4 0-4 1.9-4 4.4 0 1.4.4 2.3-.6 3.8-1.2 1.8-2.8 3.5-3.4 5.4-.5 1.6.1 3.2 1.4 3.9.9.5 1.8.4 2.4 1.1.8 1 2.3 1.4 4.2 1.4s3.4-.4 4.2-1.4c.6-.7 1.5-.6 2.4-1.1 1.3-.7 1.9-2.3 1.4-3.9-.6-1.9-2.2-3.6-3.4-5.4-1-1.5-.6-2.4-.6-3.8C16 3.9 14.4 2 12 2Zm-1.7 4.2c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1Zm3.4 0c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1ZM10 9h4l-.7 1.4h-2.6L10 9Zm2 2.6c1.7 0 3.2.8 3.8 2 .3.6.1 1.3-.4 1.7-.7.5-2 .9-3.4.9s-2.7-.4-3.4-.9c-.5-.4-.7-1.1-.4-1.7.6-1.2 2.1-2 3.8-2Z"/></symbol>
+    <symbol id="i-android" viewBox="0 0 24 24"><path d="M7.3 8.8h9.4c.8 0 1.3.6 1.3 1.4v7.2c0 .9-.7 1.6-1.6 1.6h-.7v2c0 .6-.5 1.1-1.1 1.1s-1.1-.5-1.1-1.1v-2h-1.7v2c0 .6-.5 1.1-1.1 1.1s-1.1-.5-1.1-1.1v-2H8.8v2c0 .6-.5 1.1-1.1 1.1s-1.1-.5-1.1-1.1v-2h-.7c-.9 0-1.6-.7-1.6-1.6v-7.2c0-.8.5-1.4 1.3-1.4Zm-1.5-1.6L4.6 5.8c-.2-.4-.1-.8.3-1 .4-.2.8-.1 1 .3l1.2 1.4c1.1-.5 2.3-.8 3.5-.8s2.4.3 3.5.8l1.2-1.4c.2-.4.6-.5 1-.3.4.2.5.6.3 1l-1.2 1.4c1.7.8 2.8 2.3 3.1 4.1H4.3c.3-1.8 1.4-3.3 3.1-4.1Zm2.8 2.3a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6Zm6.4 0a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6Z"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 .8a11.3 11.3 0 0 0-3.6 22c.6.1.8-.3.8-.6v-2.1c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.3.9.1-.7.4-1.2.8-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A11.3 11.3 0 0 0 12 .8Z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2.4 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.4Z"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h13m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="5" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="7" cy="19" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 7.2v9.6M17 10.2c0 2.3-2 3.2-4.2 3.2H9.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m7 9 3 3-3 3m5.5 0H17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2 14 9l7 3-7 3-2 7-2-7-7-3 7-3 2-7Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v5.5c0 4.6-3.4 8-8 9.5-4.6-1.5-8-4.9-8-9.5V6l8-3Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m8.5 11.8 2.3 2.3 4.7-4.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <div class="scroll-progress" id="scrollProgress"></div>
+  <div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+  <div class="noise" aria-hidden="true"></div>
+
+  <header class="site-header" id="siteHeader">
+    <div class="container nav-wrap">
+      <a class="brand" href="#top" aria-label="GitSwamp home">
+        <span class="brand-mark"><img src="assets/logo.png" alt="" width="36" height="36"></span>
+        <span class="brand-word">GitSwamp</span>
+        <span class="brand-tag">desktop</span>
+      </a>
+      <nav class="nav-links" id="navLinks" aria-label="Main navigation">
+        <a href="#features">Features</a>
+        <a href="#about">About</a>
+        <a href="#screens">Screens</a>
+        <a href="#mobile">Mobile</a>
+        <a href="#download">Download</a>
+        <a class="nav-github" href="https://github.com/mgrabovac22/gitswamp" target="_blank" rel="noreferrer">
+          <svg class="icon"><use href="#i-github"></use></svg>
+          <span>GitHub</span>
+          <span class="star-pill"><svg class="icon"><use href="#i-star"></use></svg><span id="starCount">—</span></span>
+        </a>
+      </nav>
+      <button class="menu-btn" id="menuButton" aria-label="Open menu" aria-expanded="false" aria-controls="navLinks">
+        <span></span><span></span>
+      </button>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-bg" aria-hidden="true">
+        <div class="orb orb-a"></div>
+        <div class="orb orb-b"></div>
+        <div class="orb orb-c"></div>
+        <div class="hero-grid"></div>
+        <div class="topo"></div>
+      </div>
+
+      <div class="container hero-inner">
+        <div class="hero-copy">
+          <div class="eyebrow reveal">
+            <span class="live-dot"></span>
+            <span>Open source · local-first · built with Tauri</span>
+          </div>
+          <h1 class="hero-title reveal" style="--delay: 70ms">
+            <span class="title-line">Git</span>
+            <span class="title-line title-accent">with <em>teeth.</em></span>
+          </h1>
+          <p class="hero-lede reveal" style="--delay: 140ms">
+            A desktop Git client that turns your repository into a living map.
+            Stage by hunk, read the whole history, and move faster without
+            handing your code to the cloud.
+          </p>
+
+          <div class="hero-actions reveal" style="--delay: 210ms">
+            <div class="download-split" id="downloadSplit">
+              <a class="btn btn-primary download-main" id="primaryDownload" href="https://github.com/mgrabovac22/gitswamp/releases/latest">
+                <span class="btn-os"><svg class="icon" id="primaryIcon"><use href="#i-download"></use></svg></span>
+                <span class="btn-copy">
+                  <span id="primaryLabel">Get GitSwamp</span>
+                  <span id="primarySub">latest release</span>
+                </span>
+              </a>
+              <button class="btn btn-primary download-caret" id="downloadToggle" type="button" aria-label="Show all download options" aria-haspopup="true" aria-expanded="false" aria-controls="downloadMenu">
+                <svg class="icon"><use href="#i-chevron"></use></svg>
+              </button>
+              <div class="download-menu" id="downloadMenu" hidden>
+                <div class="download-menu-head">
+                  <span>Choose your build</span>
+                  <span class="mono" data-release-version>latest</span>
+                </div>
+                <div class="download-options" id="downloadOptions">
+                  <span class="menu-loading">Reading latest release…</span>
+                </div>
+                <a class="release-link" href="https://github.com/mgrabovac22/gitswamp/releases" target="_blank" rel="noreferrer">
+                  All releases <svg class="icon"><use href="#i-arrow"></use></svg>
+                </a>
+              </div>
+            </div>
+            <a class="btn btn-ghost" href="#features">
+              See what's inside
+              <svg class="icon"><use href="#i-arrow"></use></svg>
+            </a>
+          </div>
+
+          <div class="hero-meta reveal" style="--delay: 280ms">
+            <span class="meta-item"><span class="status-dot"></span><span data-release-version>latest</span> release</span>
+            <span class="meta-sep"></span>
+            <span class="meta-item" id="detectedPlatform">Detecting your OS…</span>
+            <span class="meta-sep"></span>
+            <span class="meta-item">Windows · macOS · Linux · Android</span>
+          </div>
+        </div>
+
+        <div class="hero-visual reveal" style="--delay: 160ms">
+          <div class="stage" id="stage">
+            <div class="stage-aura" aria-hidden="true"></div>
+            <div class="stage-ring ring-one" aria-hidden="true"></div>
+            <div class="stage-ring ring-two" aria-hidden="true"></div>
+
+            <div class="app-window" id="appWindow">
+              <div class="app-bezel"></div>
+              <img src="assets/screens/workspace.webp" width="1919" height="1034" alt="GitSwamp repository workspace with commit graph, branches and diff panel" fetchpriority="high">
+              <div class="window-glare" aria-hidden="true"></div>
+              <div class="window-scan" aria-hidden="true"></div>
+            </div>
+
+            <div class="float-card float-commit" aria-hidden="true">
+              <div class="float-top"><span class="mono">feat/galaxy</span><span class="float-pill">updated</span></div>
+              <div class="commit-line"><span class="commit-dot"></span><span>feat: orbit branch layout</span></div>
+              <div class="commit-stats"><span class="add">+128</span><span class="del">−42</span><span class="mono">just now</span></div>
+              <div class="mini-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+
+            <div class="float-card float-palette" aria-hidden="true">
+              <div class="palette-head"><span>Command palette</span><kbd>⌘</kbd><kbd>K</kbd></div>
+              <div class="palette-row active"><span class="p-icon"></span>Stage all changes<span class="mono">↵</span></div>
+              <div class="palette-row"><span class="p-icon"></span>Open galaxy view<span class="mono">⌥2</span></div>
+              <div class="palette-row"><span class="p-icon"></span>Create safety stash<span class="mono">⌥S</span></div>
+            </div>
+
+            <div class="float-card float-pulse" aria-hidden="true">
+              <span class="mono">repo pulse</span>
+              <span class="pulse-value">94<span>%</span></span>
+              <svg class="pulse-line" viewBox="0 0 120 34" preserveAspectRatio="none">
+                <path d="M1 28 12 24 22 27 33 16 45 20 57 12 68 18 80 8 92 13 104 5 119 9" fill="none" stroke="currentColor" stroke-width="2"/>
+              </svg>
+              <span class="pulse-note">healthy rhythm</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="scroll-cue" aria-hidden="true">
+        <span class="mono">scroll to explore</span>
+        <span class="scroll-line"></span>
+      </div>
+    </section>
+
+    <div class="marquee" aria-hidden="true">
+      <div class="marquee-track">
+        <span>micro-staging</span><i></i><span>galaxy view</span><i></i><span>command palette</span><i></i><span>local git engine</span><i></i><span>terminal safety</span><i></i><span>zero telemetry</span><i></i>
+        <span>micro-staging</span><i></i><span>galaxy view</span><i></i><span>command palette</span><i></i><span>local git engine</span><i></i><span>terminal safety</span><i></i><span>zero telemetry</span><i></i>
+      </div>
+    </div>
+
+    <section class="section stats-section">
+      <div class="container stat-grid">
+        <div class="stat reveal"><span class="stat-value" data-count="102">102</span><span class="stat-label">native commands</span></div>
+        <div class="stat reveal" style="--delay: 70ms"><span class="stat-value" data-count="4">4</span><span class="stat-label">platform builds</span></div>
+        <div class="stat reveal" style="--delay: 140ms"><span class="stat-value" data-count="0">0</span><span class="stat-label">telemetry calls</span></div>
+        <div class="stat reveal" style="--delay: 210ms"><span class="stat-value">100<span class="unit">%</span></span><span class="stat-label">local-first</span></div>
+      </div>
+    </section>
+
+    <section class="section features-section" id="features">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-kicker reveal"><span class="kicker-index">01</span> The good stuff</div>
+          <h2 class="section-title reveal" style="--delay: 60ms">Not another<br><em>Git GUI.</em></h2>
+          <p class="section-lede reveal" style="--delay: 110ms">GitSwamp is built for the messy middle: the hotfix at 23:40, the merge with five conflicts, the branch nobody remembers. It gives you the map, not just the buttons.</p>
+        </div>
+
+        <div class="bento">
+          <article class="bento-card card-galaxy reveal">
+            <div class="card-copy">
+              <span class="card-tag"><svg class="icon"><use href="#i-spark"></use></svg> History intelligence</span>
+              <h3>See the whole galaxy.</h3>
+              <p>Branches, merges and lost commits become a navigable 3D map. Zoom out for the story. Zoom in for the exact change.</p>
+            </div>
+            <div class="galaxy-art" aria-hidden="true">
+              <div class="galaxy-core"></div>
+              <div class="orbit orbit-a"><i></i><i></i><i></i></div>
+              <div class="orbit orbit-b"><i></i><i></i><i></i><i></i></div>
+              <div class="orbit orbit-c"><i></i><i></i></div>
+              <div class="galaxy-label label-a">main</div>
+              <div class="galaxy-label label-b">feat/ui</div>
+              <div class="galaxy-label label-c">hotfix</div>
+            </div>
+          </article>
+
+          <article class="bento-card card-diff reveal" style="--delay: 80ms">
+            <div class="card-copy">
+              <span class="card-tag"><svg class="icon"><use href="#i-branch"></use></svg> Micro-staging</span>
+              <h3>Stage the line,<br>not the file.</h3>
+              <p>Pick apart a diff hunk by hunk. Commit only what belongs in the commit.</p>
+            </div>
+            <div class="diff-art" aria-hidden="true">
+              <div class="diff-head"><span>src/orbit.ts</span><span class="mono">+18 −4</span></div>
+              <div class="diff-line ctx"><b>12</b><span>const nodes = buildGraph(commits)</span></div>
+              <div class="diff-line removed"><b>13</b><span>const layout = flat(nodes)</span><span class="hunk-btn">stage</span></div>
+              <div class="diff-line added"><b>14</b><span>const layout = orbit(nodes)</span><span class="hunk-btn">stage</span></div>
+              <div class="diff-line added"><b>15</b><span>layout.enableDepth({ axis: 'z' })</span></div>
+              <div class="diff-line ctx"><b>16</b><span>return layout.render()</span></div>
+            </div>
+          </article>
+
+          <article class="bento-card card-palette reveal" style="--delay: 140ms">
+            <div class="card-copy">
+              <span class="card-tag"><svg class="icon"><use href="#i-terminal"></use></svg> Command palette</span>
+              <h3>Every action<br>one keystroke away.</h3>
+            </div>
+            <div class="palette-art" aria-hidden="true" data-palette-demo>
+              <div class="palette-search"><span class="search-dot"></span><span class="palette-query" data-palette-query>stage all</span><span class="palette-caret"></span><kbd>esc</kbd></div>
+              <div class="palette-item active" data-palette-item data-query="stage all"><span class="palette-label">Stage all changes</span><span class="palette-meta">4 files</span><kbd>Ctrl ⇧ S</kbd></div>
+              <div class="palette-item" data-palette-item data-query="merge"><span class="palette-label">Merge branch…</span><span class="palette-meta">feat/galaxy</span><kbd>↵</kbd></div>
+              <div class="palette-item" data-palette-item data-query="time machine"><span class="palette-label">View: Time Machine</span><span class="palette-meta">history</span><kbd>Alt 4</kbd></div>
+              <div class="palette-item" data-palette-item data-query="api pulse"><span class="palette-label">View: API Pulse</span><span class="palette-meta">HTTP client</span><kbd>Alt 6</kbd></div>
+            </div>
+          </article>
+
+          <article class="bento-card card-safety reveal" style="--delay: 100ms">
+            <div class="card-copy">
+              <span class="card-tag"><svg class="icon"><use href="#i-shield"></use></svg> Safety layer</span>
+              <h3>Destructive<br>without the dread.</h3>
+              <p>Every risky command is previewed. Create a safety stash before the terminal bites back.</p>
+            </div>
+            <div class="safety-art" aria-hidden="true">
+              <div class="safety-alert"><span class="danger-dot"></span><span class="mono">git reset --hard origin/main</span></div>
+              <div class="safety-actions"><span class="safe-btn">Create safety stash</span><span class="cancel-btn">Cancel</span></div>
+              <div class="safety-note"><svg class="icon"><use href="#i-check"></use></svg> Stash created · a1f92c4</div>
+            </div>
+          </article>
+
+          <article class="bento-card card-fast reveal" style="--delay: 160ms">
+            <div class="card-copy">
+              <span class="card-tag"><svg class="icon"><use href="#i-download"></use></svg> Native shell</span>
+              <h3>Small. Fast. Yours.</h3>
+              <p>A tiny Tauri shell around a Rust Git engine. No Electron weight. No account. No cloud middleman.</p>
+            </div>
+            <div class="fast-art" aria-hidden="true">
+              <div class="fast-ring"><span>~9<span>MB</span></span></div>
+              <div class="fast-chips"><span>Tauri 2</span><span>Rust</span><span>Vue 3</span><span>libgit2</span></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="feature-index" id="feature-index">
+          <div class="feature-index-head reveal">
+            <div>
+              <span class="feature-index-kicker mono">The full arsenal / 102 native commands</span>
+              <h3>Not a demo.<br><em>A workshop.</em></h3>
+            </div>
+            <p>Every workflow below ships in the desktop app. No paid tiers, no feature vault, no “contact sales” for the useful part.</p>
+          </div>
+
+          <div class="feature-groups">
+            <article class="feature-group reveal">
+              <div class="feature-group-top"><span class="feature-group-num mono">01</span><svg class="icon"><use href="#i-branch"></use></svg></div>
+              <h4>Repository &amp; sync</h4>
+              <ul>
+                <li>Open, initialize and clone repositories</li>
+                <li>Clone from GitHub, GitLab, Bitbucket, Azure DevOps and Gitea</li>
+                <li>HTTPS and SSH remotes, including self-hosted servers</li>
+                <li>Multi-repository tabs with recent repo history</li>
+                <li>Fetch, pull and push with progress and cancellation</li>
+                <li>Remote pruning, upstream tracking and credential prompts</li>
+                <li>Create, checkout, rename, delete and track branches</li>
+                <li>Start dashboard with authored PRs and assigned issues</li>
+                <li>Open in VS Code, Android Studio, IntelliJ or folder explorer</li>
+                <li>Create a GitHub Gist from the current repository</li>
+              </ul>
+            </article>
+
+            <article class="feature-group reveal" style="--delay: 60ms">
+              <div class="feature-group-top"><span class="feature-group-num mono">02</span><svg class="icon"><use href="#i-spark"></use></svg></div>
+              <h4>History &amp; intelligence</h4>
+              <ul>
+                <li>Lane-based commit graph with refs, tags and avatars</li>
+                <li>Galaxy view: spiral, layered and constellation layouts</li>
+                <li>Repository City: history as districts and hot buildings</li>
+                <li>Time Machine: scrub and inspect any historical frame</li>
+                <li>Productivity Arena: rhythm, balance and stability signals</li>
+                <li>Burnout Analytics: after-hours load and hot-file ownership</li>
+                <li>Usual Conflict Suspects and merge preflight risk</li>
+                <li>Pickaxe search across history with git log -S</li>
+                <li>Commit search by message, author or email</li>
+                <li>Commit details, parents, refs, stats and file tree</li>
+              </ul>
+            </article>
+
+            <article class="feature-group reveal" style="--delay: 120ms">
+              <div class="feature-group-top"><span class="feature-group-num mono">03</span><svg class="icon"><use href="#i-terminal"></use></svg></div>
+              <h4>Changes &amp; commits</h4>
+              <ul>
+                <li>Working-tree status with staged, unstaged and conflict groups</li>
+                <li>Stage, unstage and discard individual files</li>
+                <li>Hunk-level micro-staging with editable patches</li>
+                <li>Working-directory and commit diffs with syntax highlighting</li>
+                <li>Edit files directly from the diff viewer</li>
+                <li>File Journey: trace one file through its history</li>
+                <li>Smart .gitignore wizard for generated and private files</li>
+                <li>Visual commit builder and full commit message editor</li>
+                <li>Repository-local author identity setup</li>
+                <li>Five-second undo window for destructive actions</li>
+              </ul>
+            </article>
+
+            <article class="feature-group reveal" style="--delay: 40ms">
+              <div class="feature-group-top"><span class="feature-group-num mono">04</span><svg class="icon"><use href="#i-shield"></use></svg></div>
+              <h4>Power tools &amp; safety</h4>
+              <ul>
+                <li>Command palette across every action and view</li>
+                <li>Terminal safety previews for destructive Git commands</li>
+                <li>Integrated terminal with quick command shelf</li>
+                <li>Ghost branches: experiment, materialize or discard</li>
+                <li>Fast Scripts for repeatable repository tasks</li>
+                <li>Cherry-pick, revert, reset and detached-HEAD checkout</li>
+                <li>Branch rebase and merge conflict resolver</li>
+                <li>Stashes, safety stashes and release-note generation</li>
+                <li>Keyboard shortcuts and in-app help</li>
+                <li>Background maintenance preferences</li>
+              </ul>
+            </article>
+
+            <article class="feature-group reveal" style="--delay: 100ms">
+              <div class="feature-group-top"><span class="feature-group-num mono">05</span><svg class="icon"><use href="#i-github"></use></svg></div>
+              <h4>Integrations &amp; toolbox</h4>
+              <ul>
+                <li>GitHub, GitLab, Bitbucket and Azure DevOps integrations</li>
+                <li>Pull requests, issues, reviews and provider actions</li>
+                <li>API Pulse: collections, environments and request history</li>
+                <li>Response bodies, headers, cookies, timeline and tests</li>
+                <li>Load profiles: smoke, sanity, latency, stress, soak and more</li>
+                <li>Regex Builder and JSON Toolkit</li>
+                <li>JSON to TypeScript, URL Workshop and Text Toolkit</li>
+                <li>Diff Checker, Hash Generator and JWT Decoder</li>
+                <li>Cron Builder, ID &amp; Time, Color Converter and Number Base</li>
+                <li>CSV / JSON, Slugifier, HTML Entities and String Similarity</li>
+              </ul>
+            </article>
+
+            <article class="feature-group reveal" style="--delay: 160ms">
+              <div class="feature-group-top"><span class="feature-group-num mono">06</span><svg class="icon"><use href="#i-android"></use></svg></div>
+              <h4>Platforms &amp; mobile</h4>
+              <ul>
+                <li>Native builds for Windows, macOS Apple Silicon, macOS Intel and Linux</li>
+                <li>Tauri 2 shell, Rust engine, Vue 3 interface and libgit2</li>
+                <li>Signed automatic updates from the release manifest</li>
+                <li>Local-first storage with no account or telemetry</li>
+                <li>Android companion built with Kotlin, Compose and JGit</li>
+                <li>Mobile clone, open, init and recent repository browsing</li>
+                <li>Mobile commit graph, commit details and file diffs</li>
+                <li>Mobile staged/unstaged changes, commit and branch switching</li>
+                <li>HTTPS fetch, pull and push with Android Keystore token vault</li>
+                <li>Adaptive phone and tablet UI with no WebView</li>
+              </ul>
+            </article>
+          </div>
+
+          <div class="feature-stream reveal" aria-hidden="true">
+            <div class="feature-stream-label mono">Also inside</div>
+            <div class="feature-stream-window">
+              <div class="feature-stream-track">
+                <div class="feature-stream-set"><span>Pickaxe search</span><i></i><span>File Journey</span><i></i><span>Ghost branches</span><i></i><span>Merge preflight</span><i></i><span>Release notes</span><i></i><span>Fast Scripts</span><i></i><span>API Pulse</span><i></i><span>Git RPG roles</span><i></i><span>Signed updates</span><i></i><span>Keyboard-first</span><i></i><span>No telemetry</span><i></i><span>AGPL-3.0</span><i></i></div>
+                <div class="feature-stream-set"><span>Pickaxe search</span><i></i><span>File Journey</span><i></i><span>Ghost branches</span><i></i><span>Merge preflight</span><i></i><span>Release notes</span><i></i><span>Fast Scripts</span><i></i><span>API Pulse</span><i></i><span>Git RPG roles</span><i></i><span>Signed updates</span><i></i><span>Keyboard-first</span><i></i><span>No telemetry</span><i></i><span>AGPL-3.0</span><i></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section about-section" id="about">
+      <div class="container about-grid">
+        <div class="about-copy">
+          <div class="section-kicker reveal"><span class="kicker-index">02</span> About the swamp</div>
+          <h2 class="section-title reveal" style="--delay: 60ms">Built for people who<br><em>live in Git.</em></h2>
+          <p class="about-lede reveal" style="--delay: 110ms">GitSwamp started with a simple annoyance: desktop Git clients either hide too much or make the hard parts harder. So we built the client we wanted - visual enough to understand the whole repo, local enough to trust with it.</p>
+          <div class="manifesto reveal" style="--delay: 160ms">
+            <div class="manifesto-item">
+              <span class="manifesto-num">01</span>
+              <div><h3>Local by default</h3><p>Your repository stays on your machine. No sync service, no telemetry, no account required.</p></div>
+            </div>
+            <div class="manifesto-item">
+              <span class="manifesto-num">02</span>
+              <div><h3>Native by design</h3><p>Tauri and Rust keep the app small and the operations immediate. It feels like it belongs on your desktop.</p></div>
+            </div>
+            <div class="manifesto-item">
+              <span class="manifesto-num">03</span>
+              <div><h3>Open to the roots</h3><p>AGPL-3.0 licensed. Fork it, audit it, break it, improve it. The swamp belongs to everyone.</p></div>
+            </div>
+          </div>
+          <div class="stack-row reveal" style="--delay: 210ms">
+            <span>Tauri 2</span><span>Rust</span><span>Vue 3</span><span>TypeScript</span><span>libgit2</span>
+          </div>
+        </div>
+        <div class="about-visual reveal" style="--delay: 120ms">
+          <div class="live-demo">
+            <div class="live-demo-head"><span class="mono">live capture / gitswamp.app</span><span class="live-pill"><span></span>REC</span></div>
+            <img src="assets/screens/demo.gif" width="450" height="246" alt="Animated capture of GitSwamp in use" loading="lazy">
+            <div class="live-demo-foot"><span>Real app. Real commits.</span><span class="mono">no mockup</span></div>
+          </div>
+          <div class="about-card float-quote">
+            <span class="quote-mark">“</span>
+            <p>The first Git client that makes a 400-commit repo feel like a place, not a log.</p>
+            <span class="quote-by">— someone with too many branches</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section screens-section" id="screens">
+      <div class="container">
+        <div class="section-head split-head">
+          <div>
+            <div class="section-kicker reveal"><span class="kicker-index">03</span> The tour</div>
+            <h2 class="section-title reveal" style="--delay: 60ms">Every screen.<br><em>Zero filler.</em></h2>
+          </div>
+          <p class="section-lede reveal" style="--delay: 100ms">A few corners of the swamp. Drag sideways to explore the workspace, galaxy view, diff tools and insight panels.</p>
+        </div>
+      </div>
+      <div class="screens-rail" id="screensRail">
+        <figure class="screen-card reveal">
+          <img src="assets/screens/workspace.webp" width="1919" height="1034" alt="GitSwamp workspace" loading="lazy">
+          <figcaption><span class="mono">01 / workspace</span><span>Branches, commits, diffs and tabs in one view.</span></figcaption>
+        </figure>
+        <figure class="screen-card reveal" style="--delay: 80ms">
+          <img src="assets/screens/galaxy.webp" width="1919" height="1033" alt="GitSwamp galaxy view" loading="lazy">
+          <figcaption><span class="mono">02 / galaxy</span><span>History as a navigable map.</span></figcaption>
+        </figure>
+        <figure class="screen-card reveal" style="--delay: 160ms">
+          <img src="assets/screens/insights.webp" width="1919" height="1032" alt="GitSwamp repository insights" loading="lazy">
+          <figcaption><span class="mono">03 / insights</span><span>Repository pulse and conflict signals.</span></figcaption>
+        </figure>
+        <figure class="screen-card reveal" style="--delay: 240ms">
+          <img src="assets/screens/diff.webp" width="1919" height="1031" alt="GitSwamp diff viewer" loading="lazy">
+          <figcaption><span class="mono">04 / diff</span><span>Read changes at the speed of thought.</span></figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section mobile-section" id="mobile">
+      <div class="mobile-bg" aria-hidden="true"><div class="mobile-orb"></div><div class="mobile-grid-lines"></div></div>
+      <div class="container mobile-grid">
+        <div class="mobile-copy">
+          <div class="section-kicker reveal"><span class="kicker-index">04</span> Mobile test build</div>
+          <h2 class="section-title reveal" style="--delay: 60ms">The swamp,<br><em>in your pocket.</em></h2>
+          <p class="mobile-lede reveal" style="--delay: 100ms">GitSwamp Mobile is a native Android companion built with Kotlin, Jetpack Compose and JGit. Open or clone a repository, read the graph, review diffs, commit and sync - without a WebView or a cloud account.</p>
+          <div class="mobile-points reveal" style="--delay: 140ms">
+            <span><svg class="icon"><use href="#i-check"></use></svg>Commit graph</span>
+            <span><svg class="icon"><use href="#i-check"></use></svg>File diffs</span>
+            <span><svg class="icon"><use href="#i-check"></use></svg>Stage &amp; commit</span>
+            <span><svg class="icon"><use href="#i-check"></use></svg>Branch switching</span>
+            <span><svg class="icon"><use href="#i-check"></use></svg>HTTPS sync</span>
+            <span><svg class="icon"><use href="#i-check"></use></svg>Keystore tokens</span>
+          </div>
+          <div class="mobile-actions reveal" style="--delay: 180ms">
+            <a class="btn btn-primary mobile-download" id="mobileDownload" href="assets/downloads/GitSwamp-Mobile-test.apk" download="GitSwamp-Mobile-test.apk" type="application/vnd.android.package-archive">
+              <span class="btn-os"><svg class="icon"><use href="#i-android"></use></svg></span>
+              <span class="btn-copy"><span>Download test APK</span><span>v0.1.0 · 21 MB · Android 8.0+</span></span>
+              <svg class="icon main-arrow"><use href="#i-arrow"></use></svg>
+            </a>
+            <a class="btn btn-ghost" href="https://github.com/mgrabovac22/gitswamp/blob/main/software/gitswamp-mobile/README.md" target="_blank" rel="noreferrer">
+              Mobile notes
+              <svg class="icon"><use href="#i-arrow"></use></svg>
+            </a>
+          </div>
+          <div class="mobile-test-note reveal" style="--delay: 220ms">
+            <svg class="icon"><use href="#i-shield"></use></svg>
+            <div>
+              <strong>Debug-signed test build · v0.1.0.</strong> Android will ask you to allow installs from your browser or file manager. This build can run beside a future signed release. Production signing and public distribution are not final yet.
+              <details class="mobile-hash">
+                <summary>SHA-256 checksum</summary>
+                <code>eb869695cd5427d4e220504fb792ec0a6e561a083c2b7a56e93ae65803d1615a</code>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <div class="mobile-visual reveal" style="--delay: 120ms">
+          <div class="phone-glow" aria-hidden="true"></div>
+          <div class="phone-shell">
+            <span class="phone-speaker"></span>
+            <div class="phone-screen" aria-hidden="true">
+              <div class="phone-status"><span>9:41</span><span>5G&nbsp;&nbsp;100%</span></div>
+              <div class="phone-head">
+                <span class="phone-logo"><img src="assets/logo.png" alt="" width="26" height="26"></span>
+                <div class="phone-repo"><strong>gitswamp</strong><span>main · clean</span></div>
+                <span class="phone-more">•••</span>
+              </div>
+              <div class="phone-title"><span>Recent commits</span><span class="mono">128</span></div>
+              <div class="phone-commits">
+                <div class="phone-commit is-active">
+                  <span class="phone-node node-a"></span>
+                  <div class="phone-commit-copy"><strong>feat: orbit branch layout</strong><span>mgrabovac · 2m</span></div>
+                  <span class="phone-sha">a1f92c4</span>
+                </div>
+                <div class="phone-commit">
+                  <span class="phone-node node-b"></span>
+                  <div class="phone-commit-copy"><strong>fix: keep lane depth stable</strong><span>mgrabovac · 18m</span></div>
+                  <span class="phone-sha">7d2be10</span>
+                </div>
+                <div class="phone-commit">
+                  <span class="phone-node node-c"></span>
+                  <div class="phone-commit-copy"><strong>chore: prune remote refs</strong><span>mgrabovac · 1h</span></div>
+                  <span class="phone-sha">c91a44e</span>
+                </div>
+              </div>
+              <div class="phone-diff-card">
+                <div class="phone-diff-head"><span>src/orbit.ts</span><span class="mono">+12 −3</span></div>
+                <div class="phone-diff-line added">+ const layout = orbit(nodes)</div>
+                <div class="phone-diff-line removed">− const layout = flat(nodes)</div>
+                <div class="phone-diff-line ctx">  layout.enableDepth()</div>
+              </div>
+              <div class="phone-tabbar">
+                <span class="active"><i></i>History</span>
+                <span><i></i>Changes</span>
+                <span><i></i>Files</span>
+                <span><i></i>Branches</span>
+              </div>
+            </div>
+          </div>
+          <div class="mobile-float mobile-float-a" aria-hidden="true">
+            <svg class="icon"><use href="#i-android"></use></svg>
+            <div><strong>Native Android</strong><span>Kotlin · Compose · JGit</span></div>
+          </div>
+          <div class="mobile-float mobile-float-b" aria-hidden="true">
+            <span class="mobile-apk mono">APK</span>
+            <div><strong>21 MB</strong><span>Android 8.0+</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section download-section" id="download">
+      <div class="download-bg" aria-hidden="true"><div class="download-orb"></div></div>
+      <div class="container">
+        <div class="download-head">
+          <div class="section-kicker reveal"><span class="kicker-index">05</span> Get the app</div>
+          <h2 class="section-title download-title reveal" style="--delay: 60ms">Take it for<br><em>a walk.</em></h2>
+          <p class="section-lede reveal" style="--delay: 110ms">Free, open source, and signed. Pick your platform - we'll hand you the latest build straight from the release shelf.</p>
+        </div>
+
+        <div class="download-layout">
+          <div class="download-panel reveal">
+            <div class="release-status">
+              <span class="release-dot"></span>
+              <span class="mono">latest stable</span>
+              <span class="release-version" data-release-version>loading…</span>
+            </div>
+            <a class="btn btn-primary download-main big-main" id="secondaryDownload" href="https://github.com/mgrabovac22/gitswamp/releases/latest">
+              <span class="btn-os"><svg class="icon" id="secondaryIcon"><use href="#i-download"></use></svg></span>
+              <span class="btn-copy">
+                <span id="secondaryLabel">Get the latest build</span>
+                <span id="secondarySub">for your operating system</span>
+              </span>
+              <svg class="icon main-arrow"><use href="#i-arrow"></use></svg>
+            </a>
+            <div class="install-command">
+              <div class="install-head"><span class="mono">after download</span><span id="installFile" class="install-file">waiting for release…</span></div>
+              <div class="command-row">
+                <code id="installCommand">Open the downloaded file to install GitSwamp.</code>
+                <button class="copy-btn" id="copyCommand" type="button" aria-label="Copy install command"><svg class="icon"><use href="#i-copy"></use></svg><span>Copy</span></button>
+              </div>
+            </div>
+            <p class="download-note">Browsers can't auto-run installers. Your download starts instantly; open the file to finish.</p>
+          </div>
+
+          <div class="platform-grid reveal" style="--delay: 100ms">
+            <a class="platform-card" data-platform="windows" href="https://github.com/mgrabovac22/gitswamp/releases/latest">
+              <span class="platform-icon"><svg class="icon"><use href="#i-windows"></use></svg></span>
+              <span class="platform-copy"><strong>Windows</strong><span>installer · x64</span></span>
+              <span class="platform-size" data-size>—</span>
+              <span class="card-badge">your os</span>
+              <svg class="icon platform-arrow"><use href="#i-arrow"></use></svg>
+            </a>
+            <a class="platform-card" data-platform="mac-arm" href="https://github.com/mgrabovac22/gitswamp/releases/latest">
+              <span class="platform-icon"><svg class="icon"><use href="#i-apple"></use></svg></span>
+              <span class="platform-copy"><strong>macOS</strong><span>Apple Silicon · arm64</span></span>
+              <span class="platform-size" data-size>—</span>
+              <span class="card-badge">your os</span>
+              <svg class="icon platform-arrow"><use href="#i-arrow"></use></svg>
+            </a>
+            <a class="platform-card" data-platform="mac-intel" href="https://github.com/mgrabovac22/gitswamp/releases/latest">
+              <span class="platform-icon"><svg class="icon"><use href="#i-apple"></use></svg></span>
+              <span class="platform-copy"><strong>macOS</strong><span>Intel · x64</span></span>
+              <span class="platform-size" data-size>—</span>
+              <span class="card-badge">your os</span>
+              <svg class="icon platform-arrow"><use href="#i-arrow"></use></svg>
+            </a>
+            <a class="platform-card" data-platform="linux" href="https://github.com/mgrabovac22/gitswamp/releases/latest">
+              <span class="platform-icon"><svg class="icon"><use href="#i-linux"></use></svg></span>
+              <span class="platform-copy"><strong>Linux</strong><span>Debian package · amd64</span></span>
+              <span class="platform-size" data-size>—</span>
+              <span class="card-badge">your os</span>
+              <svg class="icon platform-arrow"><use href="#i-arrow"></use></svg>
+            </a>
+            <a class="platform-card platform-alt" data-platform="linux-appimage" href="https://github.com/mgrabovac22/gitswamp/releases/latest">
+              <span class="platform-icon"><svg class="icon"><use href="#i-linux"></use></svg></span>
+              <span class="platform-copy"><strong>Linux</strong><span>universal AppImage</span></span>
+              <span class="platform-size" data-size>—</span>
+              <svg class="icon platform-arrow"><use href="#i-arrow"></use></svg>
+            </a>
+          </div>
+        </div>
+
+        <div class="download-bottom reveal" style="--delay: 160ms">
+          <span>AGPL-3.0 licensed · no account · auto-updates</span>
+          <a href="#mobile"><svg class="icon"><use href="#i-android"></use></svg> Android test APK</a>
+          <a href="https://github.com/mgrabovac22/gitswamp" target="_blank" rel="noreferrer">View source on GitHub <svg class="icon"><use href="#i-arrow"></use></svg></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section faq-section" id="faq">
+      <div class="container">
+        <div class="section-head split-head">
+          <div>
+            <div class="section-kicker reveal"><span class="kicker-index">06</span> Straight answers</div>
+            <h2 class="section-title reveal" style="--delay: 60ms">Questions from<br><em>the swamp.</em></h2>
+          </div>
+          <p class="section-lede reveal" style="--delay: 100ms">The short version: it is free, local, open source, and it does not need an account. Here is the longer version.</p>
+        </div>
+        <div class="faq-grid">
+          <details class="faq-item reveal">
+            <summary><span>Is GitSwamp free and open source?</span><span class="faq-plus" aria-hidden="true">+</span></summary>
+            <p>Yes. GitSwamp is free to download and licensed under AGPL-3.0. The complete source code is available on GitHub.</p>
+          </details>
+          <details class="faq-item reveal" style="--delay: 40ms">
+            <summary><span>Which operating systems are supported?</span><span class="faq-plus" aria-hidden="true">+</span></summary>
+            <p>Native desktop builds are available for Windows x64, macOS Apple Silicon, macOS Intel and Linux. Linux ships as a Debian package and a universal AppImage. The Android companion is available as a test APK on this page.</p>
+          </details>
+          <details class="faq-item reveal" style="--delay: 80ms">
+            <summary><span>Does GitSwamp work offline?</span><span class="faq-plus" aria-hidden="true">+</span></summary>
+            <p>Yes. Repositories, history, diffs and working-tree changes are handled on your device. Network access is only used when you fetch, pull, push or call a provider API.</p>
+          </details>
+          <details class="faq-item reveal" style="--delay: 120ms">
+            <summary><span>Does GitSwamp collect telemetry?</span><span class="faq-plus" aria-hidden="true">+</span></summary>
+            <p>No. GitSwamp does not include telemetry, advertising or a cloud account requirement. Remote provider tokens stay on your machine.</p>
+          </details>
+          <details class="faq-item reveal" style="--delay: 160ms">
+            <summary><span>How do updates work?</span><span class="faq-plus" aria-hidden="true">+</span></summary>
+            <p>Download buttons always point to the latest GitHub release. Installed desktop builds use Tauri's signed updater manifest to verify and install new versions.</p>
+          </details>
+          <details class="faq-item reveal" style="--delay: 200ms">
+            <summary><span>Is there a mobile version?</span><span class="faq-plus" aria-hidden="true">+</span></summary>
+            <p>Yes. GitSwamp Mobile is a native Android companion built with Kotlin, Jetpack Compose and JGit. The current APK is a debug-signed test build for Android 8.0 and newer.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="#top">
+          <span class="brand-mark"><img src="assets/logo.png" alt="" width="30" height="30"></span>
+          <span class="brand-word">GitSwamp</span>
+        </a>
+        <p>Git with teeth. Built in the swamp, for people who ship.</p>
+        <span class="mono footer-version"><span data-release-version>latest</span> · AGPL-3.0</span>
+      </div>
+      <div class="footer-links">
+        <div><span class="mono">product</span><a href="#features">Features</a><a href="#screens">Screens</a><a href="#mobile">Mobile</a><a href="#download">Download</a></div>
+        <div><span class="mono">project</span><a href="https://github.com/mgrabovac22/gitswamp" target="_blank" rel="noreferrer">GitHub</a><a href="https://github.com/mgrabovac22/gitswamp/issues" target="_blank" rel="noreferrer">Issues</a><a href="https://github.com/mgrabovac22/gitswamp/blob/main/LICENSE" target="_blank" rel="noreferrer">License</a></div>
+        <div><span class="mono">docs</span><a href="#faq">FAQ</a><a href="https://github.com/mgrabovac22/gitswamp/blob/main/documentation/DOCUMENTATION_31_USER_GUIDE.md" target="_blank" rel="noreferrer">User guide</a><a href="https://github.com/mgrabovac22/gitswamp/blob/main/documentation/DOCUMENTATION_19_DEVELOPMENT_SETUP.md" target="_blank" rel="noreferrer">Development</a><a href="https://github.com/mgrabovac22/gitswamp/releases" target="_blank" rel="noreferrer">Changelog</a></div>
+      </div>
+    </div>
+    <div class="container footer-base"><span>© <span id="year"></span> GitSwamp</span><span class="footer-love">made with Rust, Vue & questionable late-night commits</span></div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <div class="toast-icon"><svg class="icon"><use href="#i-download"></use></svg></div>
+    <div class="toast-copy"><strong id="toastTitle">Download started</strong><span id="toastBody">Open the file to install GitSwamp.</span></div>
+    <button class="toast-close" id="toastClose" type="button" aria-label="Dismiss"><svg class="icon"><use href="#i-close"></use></svg></button>
+  </div>
+</body>
+</html>
