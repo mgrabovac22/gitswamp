@@ -2256,7 +2256,7 @@ kbd {
 .platform-copy span {
   font-family: var(--mono);
   font-size: 0.51rem;
-  color: var(--muted-2);
+  color: var(--muted-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
