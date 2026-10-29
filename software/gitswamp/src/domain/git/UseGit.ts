@@ -1,4 +1,7 @@
 import { useToast } from "@/shared/notifications/useToast";
+import { computed, watch } from "vue";
+import { createDestructiveScheduler } from "@/shared/notifications/destructiveScheduler";
+import { getStoredDestructiveUndoEnabled } from "@/shared/config/undoPreferences";
 
 import { createBranchActions } from "./composables/gitBranchActions";
 import { createGhostActions } from "./composables/gitGhostActions";
@@ -15,6 +18,28 @@ import { createWatcherActions } from "./composables/gitWatcherActions";
 
 const toast = useToast();
 const state = createGitState();
+const destructiveContext = computed(() => JSON.stringify([
+  state.repoPath.value, state.currentBranch.value, state.repoInfo.value?.head_sha,
+  state.repositoryOperation.value?.kind, state.repositoryOperation.value?.message,
+  state.ghostBranchState.value, state.stashes.value.map(stash => [stash.index, stash.stash_sha]),
+  state.tags.value.map(tag => [tag.name, tag.sha]),
+  state.fileStatuses.value.map(file => [file.path, file.status, file.staged, file.conflicted, file.file_size_bytes]),
+]));
+const abortScheduler = createDestructiveScheduler(() => destructiveContext.value, toast,
+  getStoredDestructiveUndoEnabled, () => !state.loading.value);
+watch(destructiveContext, abortScheduler.cancelPendingActions, { flush: "sync" });
+
+function scheduleAbortOperation(kind: "merge" | "cherry-pick", afterAbort?: () => void) {
+  if (state.repositoryOperation.value?.kind !== kind) return;
+  abortScheduler.scheduleDestructiveAction({
+    message: `Abort ${kind} in 5 seconds.`,
+    detail: "Conflict resolutions will be cancelled. Click Undo to keep the operation active.",
+    run: async () => {
+      const aborted = kind === "merge" ? await branches.abortMerge(true) : await branches.abortCherryPick();
+      if (aborted) afterAbort?.();
+    },
+  });
+}
 
 const refresh = createRefreshActions(state);
 const watcher = createWatcherActions(state, {
@@ -39,6 +64,8 @@ const status = createStatusActions(
   state,
   {
     refreshStatus: refresh.refreshStatus,
+    requestAbortOperation: scheduleAbortOperation,
+    getDestructiveContext: () => destructiveContext.value,
     requestStatusValidation: refresh.requestStatusValidation,
     refreshCommits: refresh.refreshCommits,
     refreshBranches: refresh.refreshBranches,
@@ -234,6 +261,10 @@ async function checkoutCommitWithGhostGuard(sha: string) {
 async function deleteBranchWithGhostGuard(name: string) {
   const ghostBranch = normalizeBranchName(state.ghostBranchState.value.ghost_branch || "");
   const targetBranch = normalizeBranchName(name);
+  if (targetBranch === normalizeBranchName(state.currentBranch.value)) {
+    toast.warning(`Cannot delete the current branch "${name}". Check out another branch first.`);
+    return false;
+  }
 
   if (state.ghostBranchState.value.active && ghostBranch && targetBranch === ghostBranch) {
     const proceed = await confirmAndExitGhostMode(`deleting branch "${name}"`);
@@ -244,7 +275,7 @@ async function deleteBranchWithGhostGuard(name: string) {
     return;
   }
 
-  await branches.deleteBranch(name);
+  return branches.deleteBranch(name);
 }
 
 void tokens.loadSavedToken();
@@ -320,6 +351,9 @@ export function useGit() {
     renameBranch: branches.renameBranch,
     mergeBranchIntoCurrent: branches.mergeBranchIntoCurrent,
     abortMerge: branches.abortMerge,
+    scheduleAbortOperation,
+    destructiveContext,
+    abortCherryPick: branches.abortCherryPick,
     rebaseBranchOnto: branches.rebaseBranchOnto,
     rebaseContinue: branches.rebaseContinue,
     rebaseSkip: branches.rebaseSkip,

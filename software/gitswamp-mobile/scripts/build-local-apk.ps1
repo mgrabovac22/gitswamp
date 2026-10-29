@@ -12,7 +12,14 @@ $signingDirectory = Join-Path $projectRoot "signing"
 $keystore = Join-Path $signingDirectory "gitswamp-mobile-local.keystore"
 $passwordFile = Join-Path $signingDirectory "keystore-password.txt"
 $alignedApk = Join-Path $distDirectory "aligned-local.apk"
-$sdkRoot = Join-Path $projectRoot ".android-sdk"
+$sdkRoot = @(
+    $env:ANDROID_HOME
+    $env:ANDROID_SDK_ROOT
+    (Join-Path $env:LOCALAPPDATA "Android\Sdk")
+    (Join-Path $projectRoot ".android-sdk")
+) | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ "build-tools")) } | Select-Object -First 1
+if (-not $sdkRoot) { throw "Android SDK not found. Set ANDROID_HOME to your installed SDK." }
+$env:ANDROID_HOME = $sdkRoot
 $buildTools = Get-ChildItem (Join-Path $sdkRoot "build-tools") -Directory | Sort-Object Name -Descending | Select-Object -First 1
 $keytool = Join-Path $env:JAVA_HOME "bin\keytool.exe"
 $zipalign = Join-Path $buildTools.FullName "zipalign.exe"

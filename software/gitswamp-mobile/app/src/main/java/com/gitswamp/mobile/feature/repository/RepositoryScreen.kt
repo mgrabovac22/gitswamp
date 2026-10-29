@@ -118,7 +118,7 @@ private fun RepositoryScreen(
         }
     }
 
-    state.diffSelection?.let { DiffViewer(it.diff, actions::closeDiff) }
+    state.diffSelection?.let { DiffViewer(it.diff, actions::closeDiff, onBack) }
     state.filePreview?.let { FilePreviewDialog(it, actions::closeFilePreview) }
     state.credentialRequest?.let { request ->
         CredentialsDialog(request, actions::dismissCredentials, actions::submitCredentials)
@@ -213,6 +213,11 @@ private fun RepositoryTopBar(
     var showRemoteMenu by remember { mutableStateOf(false) }
     Column {
         TopAppBar(
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back to dashboard")
+                }
+            },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     GitSwampLogo(Modifier.size(32.dp))
@@ -225,9 +230,6 @@ private fun RepositoryTopBar(
                 }
             },
             actions = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back to repositories")
-                }
                 RemoteIconButton(RemoteAction.Fetch, state.activeRemoteAction, snapshot?.remoteUrl != null, actions::runRemoteAction)
                 Box {
                     IconButton(onClick = { showRemoteMenu = true }) {

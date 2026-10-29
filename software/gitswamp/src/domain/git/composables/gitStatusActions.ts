@@ -6,6 +6,8 @@ import type { GitState } from "./gitState";
 import { markFilesStaged, markFilesUnstaged, removeUnstagedFiles } from "./gitStatusOptimisticUpdates";
 
 type RefreshDeps = {
+  requestAbortOperation: (kind: "merge" | "cherry-pick") => void;
+  getDestructiveContext: () => string;
   refreshStatus: () => Promise<void>;
   requestStatusValidation: () => void;
   refreshCommits: () => Promise<void>;
@@ -15,6 +17,21 @@ type RefreshDeps = {
 };
 
 export function createStatusActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
+
+  function guardMergeDiscard(): boolean {
+    const kind = state.repositoryOperation.value?.kind;
+    if (kind !== "merge" && kind !== "cherry-pick") return false;
+    const repoPath = state.repoPath.value;
+    const context = refresh.getDestructiveContext();
+    toast.action("warning", `A ${kind} is still in progress. Abort it instead of discarding its files?`, [
+      { label: `Abort ${kind}`, style: "danger", onClick: () => {
+        if (state.repoPath.value !== repoPath || context !== refresh.getDestructiveContext() || state.repositoryOperation.value?.kind !== kind || state.loading.value) return;
+        refresh.requestAbortOperation(kind);
+      } },
+      { label: "Keep working", style: "neutral", onClick: () => {} },
+    ], 20000, `Aborting cancels ${kind} changes and conflict resolutions. No files will be discarded unless you choose to abort.`);
+    return true;
+  }
 
   async function stageFile(filePath: string) {
     if (!state.repoPath.value) return;
@@ -160,6 +177,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
 
   async function discardFile(filePath: string) {
     if (!state.repoPath.value) return;
+    if (guardMergeDiscard()) return;
     try {
       await callTauri("discard_file", { path: state.repoPath.value, filePath });
       removeUnstagedFiles(state, [filePath]);
@@ -171,6 +189,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
 
   async function discardAll() {
     if (!state.repoPath.value) return;
+    if (guardMergeDiscard()) return;
     try {
       const filePaths = state.unstagedFiles.value.map((f) => f.path);
       if (!filePaths.length) return;
@@ -182,11 +201,26 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function resolveAllConflicts() {
+  function resolveAllConflicts() {
     if (!state.repoPath.value || !state.hasConflicts.value) return;
+    const repoPath = state.repoPath.value;
+    toast.action("warning", `Resolve all ${state.conflictFiles.value.length} conflicted files?`, [
+      { label: "Keep modified", style: "primary", onClick: () => {
+        if (state.repoPath.value === repoPath) return applyAllConflictResolutions("ours");
+      } },
+      { label: "Keep base", style: "neutral", onClick: () => {
+        if (state.repoPath.value === repoPath) return applyAllConflictResolutions("theirs");
+      } },
+      { label: "Cancel", style: "neutral", onClick: () => {} },
+    ], 0, "Applies the selected version to every conflicted file and stages the result. Resolve individual files to choose different versions.");
+  }
+
+  async function applyAllConflictResolutions(strategy: "ours" | "theirs") {
+    if (!state.repoPath.value || !state.hasConflicts.value) return;
+    if (state.loading.value) return;
     try {
       state.loading.value = true;
-      await callTauri("resolve_all_conflicts", { path: state.repoPath.value, strategy: "ours" });
+      await callTauri("resolve_all_conflicts", { path: state.repoPath.value, strategy });
       await refresh.refreshStatus();
       toast.success("All conflicts resolved");
     } catch (e) {

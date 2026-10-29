@@ -215,7 +215,7 @@ const {
   beginResize,
 } = useResizableWorkspace(() => props.showTerminal);
 
-const { scheduleDestructiveAction } = useUndoableDestructiveAction();
+const { scheduleDestructiveAction } = useUndoableDestructiveAction(() => props.git.destructiveContext.value, () => !props.git.loading.value);
 const {
   session: manualBisectSession,
   busy: manualBisectBusy,
@@ -255,6 +255,10 @@ function fileNameFromPath(path: string): string {
 }
 
 function scheduleDeleteBranch(name: string) {
+  if (name === props.git.currentBranch.value) {
+    void props.git.deleteBranch(name);
+    return;
+  }
   scheduleDestructiveAction({
     message: `Delete branch "${name}" in 5 seconds.`,
     detail: "Click Undo to keep the branch.",
@@ -271,6 +275,10 @@ function scheduleDeleteRemoteBranch(name: string) {
 }
 
 function scheduleDeleteBranchAndRemote(name: string) {
+  if (name === props.git.currentBranch.value) {
+    void props.git.deleteBranch(name);
+    return;
+  }
   scheduleDestructiveAction({
     message: `Delete local and remote branch "${name}" in 5 seconds.`,
     detail: "Click Undo to keep both branch refs.",
@@ -321,6 +329,10 @@ function scheduleStashDrop(index: number) {
 }
 
 function scheduleDiscardFile(path: string) {
+  if (["merge", "cherry-pick"].includes(props.git.repositoryOperation.value?.kind)) {
+    void props.git.discardFile(path);
+    return;
+  }
   scheduleDestructiveAction({
     message: `Discard "${fileNameFromPath(path)}" in 5 seconds.`,
     detail: "Only unstaged working-tree changes are discarded. Click Undo to cancel.",
@@ -329,6 +341,10 @@ function scheduleDiscardFile(path: string) {
 }
 
 function scheduleDiscardAll() {
+  if (["merge", "cherry-pick"].includes(props.git.repositoryOperation.value?.kind)) {
+    void props.git.discardAll();
+    return;
+  }
   scheduleDestructiveAction({
     message: "Discard all unstaged changes in 5 seconds.",
     detail: "Staged changes stay staged. Click Undo to cancel.",
@@ -337,7 +353,7 @@ function scheduleDiscardAll() {
 }
 
 async function abortCurrentMerge() {
-  await props.git.abortMerge(true);
+  props.git.scheduleAbortOperation("merge");
 }
 
 async function handleJumpToSearchResult(sha: string) {
@@ -666,6 +682,7 @@ function handleRefreshState() {
             :head-commit-published="headCommitPublished"
             :operation-busy="props.git.loading.value"
             :repository-operation="repositoryOperation"
+            :destructive-context="props.git.destructiveContext.value"
             :staged-files="props.git.stagedFiles.value"
             :unstaged-files="props.git.unstagedFiles.value"
             :conflict-files="props.git.conflictFiles.value"
@@ -685,6 +702,7 @@ function handleRefreshState() {
             @unstage-all="props.git.unstageAll()"
             @commit="props.git.commitChanges($event.message, $event.allowEmpty)"
             @abort-merge="abortCurrentMerge"
+            @abort-cherry-pick="props.git.scheduleAbortOperation('cherry-pick')"
             @amend-commit="handleAmendCommit($event)"
             @discard="scheduleDiscardFile($event)"
             @discard-all="scheduleDiscardAll"

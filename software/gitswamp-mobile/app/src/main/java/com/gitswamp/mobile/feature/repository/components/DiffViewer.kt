@@ -3,6 +3,7 @@ package com.gitswamp.mobile.feature.repository.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -22,6 +24,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,8 +47,16 @@ import com.gitswamp.mobile.core.model.FileDiff
 fun DiffViewer(
     diff: FileDiff,
     onClose: () -> Unit,
+    onDashboard: () -> Unit,
 ) {
     val horizontalScroll = rememberScrollState()
+    val measurer = rememberTextMeasurer()
+    val style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFontFamily)
+    val lineWidth = remember(diff, style) {
+        val longest = diff.lines.maxByOrNull { it.text.replace("\t", "    ").length }?.text.orEmpty()
+        measurer.measure(AnnotatedString(longest.replace("\t", "    ")), style = style, softWrap = false).size.width
+    }
+    val contentWidth = with(LocalDensity.current) { lineWidth.toDp() } + 116.dp
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -59,6 +73,7 @@ fun DiffViewer(
                         Text(diff.path, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, contentDescription = "Close diff") }
+                    IconButton(onClick = onDashboard) { Icon(Icons.Outlined.Home, contentDescription = "Back to dashboard") }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 if (diff.binary) {
@@ -74,10 +89,15 @@ fun DiffViewer(
                             modifier = Modifier.padding(10.dp),
                         )
                     }
-                    LazyColumn(Modifier.fillMaxSize().background(Color(0xFF0D1117))) {
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                      val width = maxOf(maxWidth, contentWidth)
+                      Box(Modifier.fillMaxSize().horizontalScroll(horizontalScroll)) {
+                       LazyColumn(Modifier.width(width).fillMaxSize().background(Color(0xFF0D1117))) {
                         itemsIndexed(diff.lines, key = { index, _ -> index }) { _, line ->
-                            DiffLineRow(line, horizontalScroll)
+                            DiffLineRow(line)
                         }
+                       }
+                      }
                     }
                 }
             }
@@ -86,7 +106,7 @@ fun DiffViewer(
 }
 
 @Composable
-private fun DiffLineRow(line: DiffLine, scroll: androidx.compose.foundation.ScrollState) {
+private fun DiffLineRow(line: DiffLine) {
     val background = when (line.kind) {
         DiffLineKind.Added -> SwampColors.DiffAddedBackground
         DiffLineKind.Deleted -> SwampColors.DiffDeletedBackground
@@ -100,7 +120,7 @@ private fun DiffLineRow(line: DiffLine, scroll: androidx.compose.foundation.Scro
         DiffLineKind.Context -> Color(0xFFC9D1D9)
     }
     Row(
-        Modifier.fillMaxWidth().background(background).horizontalScroll(scroll).padding(vertical = 2.dp),
+        Modifier.fillMaxWidth().background(background).padding(vertical = 2.dp),
     ) {
         Text(
             line.oldLine?.toString().orEmpty(),
@@ -128,7 +148,7 @@ private fun DiffLineRow(line: DiffLine, scroll: androidx.compose.foundation.Scro
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
-            line.text,
+            line.text.replace("\t", "    "),
             color = foreground,
             fontFamily = MonoFontFamily,
             style = MaterialTheme.typography.bodySmall,

@@ -49,11 +49,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
@@ -68,7 +70,12 @@ import com.gitswamp.mobile.core.designsystem.SwampColors
 import com.gitswamp.mobile.core.designsystem.SwampPrimaryButton
 import com.gitswamp.mobile.core.designsystem.SwampSecondaryButton
 import com.gitswamp.mobile.core.model.CloneRequest
+import com.gitswamp.mobile.core.git.GithubRepository
+import com.gitswamp.mobile.core.git.GithubDeviceAuth
 import com.gitswamp.mobile.core.model.RecentRepository
+import com.gitswamp.mobile.core.storage.TokenVault
+import com.gitswamp.mobile.feature.repository.components.CredentialsDialog
+import com.gitswamp.mobile.feature.repository.CredentialRequest
 import java.time.Duration
 import java.time.Instant
 
@@ -79,6 +86,14 @@ fun HomeScreen(
     onOpenRepository: (String) -> Unit,
     onBrowse: () -> Unit,
     onClone: (CloneRequest) -> Unit,
+    onBrowseGithub: () -> Unit,
+    onLoadGithub: () -> Unit,
+    onReconnectGithub: () -> Unit,
+    onDismissGithub: () -> Unit,
+    onCloneGithub: (GithubRepository, String) -> Unit,
+    onRetryClone: () -> Unit,
+    onAuthorizeClone: (String, String, Boolean) -> Unit,
+    onDismissCloneAuthentication: () -> Unit,
     onInit: (String) -> Unit,
     onRemoveRecent: (String) -> Unit,
     onClearRecent: () -> Unit,
@@ -164,6 +179,7 @@ fun HomeScreen(
     if (showClone) {
         CloneRepositoryDialog(
             busy = state.busy,
+            onBrowseGithub = { showClone = false; onBrowseGithub() },
             onDismiss = { if (!state.busy) showClone = false },
             onClone = {
                 showClone = false
@@ -183,10 +199,23 @@ fun HomeScreen(
     if (state.cloneProgress != null) {
         CloneProgressDialog(state.cloneProgress.task, state.cloneProgress.completed, state.cloneProgress.total)
     }
+    if (state.repositoryPickerOpen) {
+        GithubRepositoryPicker(state, onDismissGithub, onLoadGithub, onReconnectGithub, onCloneGithub)
+    }
+    state.cloneAuthentication?.let { pending ->
+        CredentialsDialog(
+            request = CredentialRequest(null, pending.request.url),
+            onDismiss = onDismissCloneAuthentication,
+            onSubmit = onAuthorizeClone,
+            title = "Repository access",
+            submitLabel = if (GithubDeviceAuth.supports(pending.request.url)) "Show repositories" else "Authorize and clone",
+        )
+    }
     if (state.message != null) {
         AlertDialog(
             onDismissRequest = onDismissMessage,
-            confirmButton = { TextButton(onClick = onDismissMessage) { Text("Close") } },
+            confirmButton = { TextButton(onClick = if (state.canRetryClone) onRetryClone else onDismissMessage) { Text(if (state.canRetryClone) "Retry clone" else "Close") } },
+            dismissButton = { if (state.canRetryClone) TextButton(onClick = onDismissMessage) { Text("Cancel") } },
             title = { Text("Git operation failed") },
             text = { Text(state.message) },
         )
@@ -332,6 +361,7 @@ private fun RecentRepositoryRow(
 @Composable
 private fun CloneRepositoryDialog(
     busy: Boolean,
+    onBrowseGithub: () -> Unit,
     onDismiss: () -> Unit,
     onClone: (CloneRequest) -> Unit,
 ) {
@@ -340,6 +370,14 @@ private fun CloneRepositoryDialog(
     var username by remember { mutableStateOf("git") }
     var token by remember { mutableStateOf("") }
     var rememberToken by remember { mutableStateOf(true) }
+    var showToken by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val vault = remember(context) { TokenVault(context) }
+    val savedCredential = remember(url, token) { vault.read(url) }
+    LaunchedEffect(url) {
+        token = ""
+        username = "git"
+    }
     val inferredName = url.trimEnd('/').substringAfterLast('/').substringAfterLast(':').removeSuffix(".git")
     val valid = url.isNotBlank() && (name.ifBlank { inferredName }).isNotBlank()
 
@@ -347,7 +385,12 @@ private fun CloneRepositoryDialog(
         onDismissRequest = onDismiss,
         title = { Text("Clone repository") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                TextButton(onClick = onBrowseGithub, enabled = !busy) {
+                    Icon(Icons.Outlined.Source, contentDescription = null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("GitHub repositories")
+                }
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it },
@@ -364,25 +407,35 @@ private fun CloneRepositoryDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = token,
-                    onValueChange = { token = it },
-                    label = { Text("Personal access token (optional)") },
-                    leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(rememberToken, { rememberToken = it })
-                    Text("Remember encrypted token on this device", style = MaterialTheme.typography.bodySmall)
+                if (savedCredential != null) {
+                    Text("Saved credentials will be used.", style = MaterialTheme.typography.bodySmall)
+                }
+                TextButton(onClick = { showToken = !showToken }) {
+                    Icon(Icons.Outlined.Lock, contentDescription = null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (showToken) "Hide access token" else "Access token (optional)")
+                }
+                if (showToken) {
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        label = { Text("Username") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = token,
+                        onValueChange = { token = it },
+                        label = { Text("Personal access token (optional)") },
+                        leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(rememberToken, { rememberToken = it })
+                        Text("Remember encrypted token on this device", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         },

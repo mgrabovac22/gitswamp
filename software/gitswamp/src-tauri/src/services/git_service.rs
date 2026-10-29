@@ -407,22 +407,39 @@ impl GitService {
             .map_err(|e| e.message().to_string())?;
 
         if repo.find_branch(branch_name, BranchType::Local).is_ok() {
-            let local_reference = repo
+            let mut local_reference = repo
                 .find_reference(&format!("refs/heads/{}", branch_name))
                 .map_err(|e| e.message().to_string())?;
             let local_oid = local_reference
                 .target()
                 .ok_or_else(|| format!("Local branch '{}' has no target commit.", branch_name))?;
 
-            Self::checkout_local_branch(repo, branch_name)?;
+            if local_oid != target_oid && !repo.graph_descendant_of(target_oid, local_oid).map_err(|e| e.message().to_string())? {
+                return Err(format!("Local branch '{}' contains commits not on '{}/{}'. Remote checkout will not reset or discard them. Push your local commits, check out the local branch, or inspect the remote commit explicitly. No files were changed.", branch_name, remote_name, branch_name));
+            }
 
             if local_oid != target_oid
                 && repo
                     .graph_descendant_of(target_oid, local_oid)
                     .map_err(|e| e.message().to_string())?
             {
-                repo.reset(target_commit.as_object(), git2::ResetType::Hard, None)
+                let mut options = StatusOptions::new();
+                options.include_untracked(true).recurse_untracked_dirs(true);
+                if repo.state() != git2::RepositoryState::Clean
+                    || !repo.statuses(Some(&mut options)).map_err(|e| e.message().to_string())?.is_empty()
+                {
+                    return Err("Remote checkout would update the local branch. Commit or stash your local changes first; no changes were discarded.".to_string());
+                }
+                let mut checkout = git2::build::CheckoutBuilder::new();
+                checkout.safe();
+                repo.checkout_tree(target_commit.as_object(), Some(&mut checkout))
                     .map_err(|e| e.message().to_string())?;
+                local_reference.set_target(target_oid, "checkout: safe remote fast-forward")
+                    .map_err(|e| e.message().to_string())?;
+                repo.set_head(&format!("refs/heads/{}", branch_name))
+                    .map_err(|e| e.message().to_string())?;
+            } else {
+                Self::checkout_local_branch(repo, branch_name)?;
             }
             return Ok(());
         }
@@ -1731,6 +1748,7 @@ impl GitService {
     ) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let is_merge = repo.state() == git2::RepositoryState::Merge;
+        let is_cherry_pick = repo.state() == git2::RepositoryState::CherryPick;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
         if index.has_conflicts() {
             return Err("Resolve all conflicts before committing.".to_string());
@@ -1781,7 +1799,7 @@ impl GitService {
             .commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
             .map_err(|e| e.message().to_string())?;
 
-        if is_merge {
+        if is_merge || is_cherry_pick {
             repo.cleanup_state().map_err(|e| e.message().to_string())?;
         }
 
@@ -1928,6 +1946,16 @@ impl GitService {
             .map_err(|e| e.message().to_string())?;
         repo.cleanup_state().map_err(|e| e.message().to_string())?;
         Ok("Cherry-pick complete.".to_string())
+    }
+
+    pub fn abort_cherry_pick(path: &str) -> Result<String, String> {
+        let repo = GitRepository::open(path)?;
+        if !matches!(repo.state(), git2::RepositoryState::CherryPick | git2::RepositoryState::CherryPickSequence) {
+            return Err("No cherry-pick is currently in progress.".to_string());
+        }
+        drop(repo);
+        RemoteService::run_git_command(path, &["cherry-pick", "--abort"])?;
+        Ok("Cherry-pick aborted.".to_string())
     }
 
     pub fn revert_commit(path: &str, sha: &str) -> Result<String, String> {
@@ -3459,7 +3487,8 @@ mod tests {
         std::fs::create_dir_all(&path).expect("create temp repo dir");
         let path_str = path.to_string_lossy().to_string();
 
-        Repository::init(&path).expect("init repo");
+        Repository::init(&path).expect("init repo")
+            .set_head("refs/heads/main").expect("select main");
         GitService::initialize_empty_repo(&path_str).expect("initialize empty repo");
 
         let repo = Repository::open(&path).expect("open repository");
@@ -3503,6 +3532,8 @@ mod tests {
         GitService::checkout_branch(&path_str, "refs/remotes/origin/main")
             .expect("checkout remote branch");
 
+        assert_eq!(std::fs::read_to_string(path.join("remote.txt")).expect("remote file").replace("\r\n", "\n"), "remote\n");
+
         let repo = Repository::open(&path).expect("reopen repository");
         assert_eq!(
             repo.head()
@@ -3521,5 +3552,134 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn cherry_pick_conflicts_can_be_aborted_or_completed() {
+        for mode in ["conflict", "resolved", "discarded", "commit"] {
+            let path = unique_temp_repo_path(&format!("cherry-pick-{}", mode));
+            std::fs::create_dir_all(&path).unwrap();
+            let path_str = path.to_string_lossy().to_string();
+            Repository::init(&path).unwrap().set_head("refs/heads/main").unwrap();
+            GitService::initialize_empty_repo(&path_str).unwrap();
+            let commit_file = |content: &str| {
+                std::fs::write(path.join("notes.txt"), content).unwrap();
+                GitService::stage_file(&path_str, "notes.txt").unwrap();
+                GitService::create_commit_with_options(&path_str, content.trim(), false).unwrap()
+            };
+            commit_file("base\n");
+            GitService::create_branch(&path_str, "feature", None).unwrap();
+            GitService::checkout_branch(&path_str, "feature").unwrap();
+            let incoming = commit_file("incoming\n");
+            GitService::checkout_branch(&path_str, "main").unwrap();
+            let before = commit_file("local\n");
+            assert!(GitService::cherry_pick(&path_str, &incoming).unwrap_err().contains("conflicts"));
+            std::fs::write(path.join("keep.txt"), "unrelated work\n").unwrap();
+            if mode != "conflict" {
+                GitService::resolve_conflict_file(&path_str, "notes.txt", "theirs").unwrap();
+            }
+            if mode == "discarded" {
+                GitRepository::git_cli(&path_str, &["restore", "--staged", "--worktree", "--", "notes.txt"]).unwrap();
+            }
+            if mode == "commit" {
+                GitService::create_commit_with_options(&path_str, "Resolved cherry-pick", false).unwrap();
+            } else {
+                GitService::abort_cherry_pick(&path_str).unwrap();
+                assert_eq!(Repository::open(&path).unwrap().head().unwrap().target().unwrap().to_string(), before);
+                assert_eq!(std::fs::read_to_string(path.join("notes.txt")).unwrap().replace("\r\n", "\n"), "local\n");
+            }
+            let repo = Repository::open(&path).unwrap();
+            assert_eq!(repo.state(), git2::RepositoryState::Clean, "{}", mode);
+            assert!(!repo.index().unwrap().has_conflicts());
+            assert_eq!(std::fs::read_to_string(path.join("keep.txt")).unwrap(), "unrelated work\n");
+            assert!(GitService::abort_cherry_pick(&path_str).unwrap_err().contains("No cherry-pick"));
+            drop(repo);
+            GitService::checkout_branch(&path_str, "feature").expect("checkout must no longer be blocked");
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+
+    #[test]
+    fn remote_behind_local_merge_never_reports_a_successful_checkout() {
+        let path = unique_temp_repo_path("pokusaj-remote-behind");
+        let repo = if let Ok(source) = std::env::var("GITSWAMP_TEST_SOURCE") {
+            Repository::clone(&source, &path).expect("clone pokusaj into isolated test repository")
+        } else {
+            std::fs::create_dir_all(&path).unwrap();
+            let repo = Repository::init(&path).unwrap();
+            GitService::initialize_empty_repo(&path.to_string_lossy()).unwrap();
+            repo
+        };
+        let path_str = path.to_string_lossy().to_string();
+        let base = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("local-only-test", &base, false).unwrap();
+        GitService::checkout_branch(&path_str, "local-only-test").unwrap();
+        repo.reference("refs/remotes/origin/local-only-test", base.id(), true, "test remote behind").unwrap();
+        std::fs::write(path.join("checkout-scenario.txt"), "committed\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("checkout-scenario.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("GitSwamp test", "test@example.com").unwrap();
+        let side = repo.commit(None, &signature, &signature, "test side branch", &tree, &[&base]).unwrap();
+        let side_commit = repo.find_commit(side).unwrap();
+        let merged = repo.commit(Some("HEAD"), &signature, &signature, "test local merge", &tree, &[&base, &side_commit]).unwrap();
+        std::fs::write(path.join("checkout-scenario.txt"), "staged work\n").unwrap();
+        GitService::stage_file(&path_str, "checkout-scenario.txt").unwrap();
+        std::fs::write(path.join("checkout-scenario.txt"), "unstaged work\n").unwrap();
+        let before_index = std::fs::read(repo.path().join("index")).unwrap();
+        let error = GitService::checkout_branch(&path_str, "refs/remotes/origin/local-only-test").unwrap_err();
+        assert!(error.contains("contains commits not on"), "{}", error);
+        assert_eq!(repo.head().unwrap().target(), Some(merged));
+        assert_eq!(std::fs::read_to_string(path.join("checkout-scenario.txt")).unwrap(), "unstaged work\n");
+        assert_eq!(std::fs::read(repo.path().join("index")).unwrap(), before_index);
+        drop(side_commit); drop(tree); drop(index); drop(base); drop(repo);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn remote_fast_forward_preserves_all_local_changes() {
+        for kind in ["unstaged", "staged", "untracked"] {
+            let path = unique_temp_repo_path(&format!("remote-preserves-{}", kind));
+            std::fs::create_dir_all(&path).unwrap();
+            let path_str = path.to_string_lossy().to_string();
+            let repo = Repository::init(&path).unwrap();
+            repo.set_head("refs/heads/main").unwrap();
+            GitService::initialize_empty_repo(&path_str).unwrap();
+            let signature = repo.signature().unwrap();
+            let initial = repo.head().unwrap().peel_to_commit().unwrap();
+            std::fs::write(path.join("local.txt"), "base\n").unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("local.txt")).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let base = repo.commit(Some("HEAD"), &signature, &signature, "base", &tree, &[&initial]).unwrap();
+            let parent = repo.find_commit(base).unwrap();
+            std::fs::write(path.join("local.txt"), "incoming\n").unwrap();
+            index.add_path(Path::new("local.txt")).unwrap();
+            let remote_tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let remote = repo.commit(None, &signature, &signature, "remote", &remote_tree, &[&parent]).unwrap();
+            repo.reference("refs/remotes/origin/main", remote, true, "test").unwrap();
+            std::fs::write(path.join("local.txt"), "base\n").unwrap();
+            let dirty_path = if kind == "untracked" { "new.txt" } else { "local.txt" };
+            std::fs::write(path.join(dirty_path), "my local work\n").unwrap();
+            if kind == "staged" {
+                index.add_path(Path::new(dirty_path)).unwrap();
+                index.write().unwrap();
+            }
+            let index_before = std::fs::read(repo.path().join("index")).unwrap();
+            let error = GitService::checkout_branch(&path_str, "refs/remotes/origin/main").unwrap_err();
+            assert!(error.contains("Commit or stash"), "{}", error);
+            assert_eq!(std::fs::read_to_string(path.join(dirty_path)).unwrap(), "my local work\n");
+            assert_eq!(repo.head().unwrap().target(), Some(base));
+            assert_eq!(std::fs::read(repo.path().join("index")).unwrap(), index_before);
+            drop(remote_tree);
+            drop(parent);
+            drop(tree);
+            drop(initial);
+            drop(index);
+            drop(repo);
+            let _ = std::fs::remove_dir_all(&path);
+        }
     }
 }

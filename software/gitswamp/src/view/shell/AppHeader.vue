@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   UserCircle2,
   GitBranch,
+  CircleX,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -32,6 +33,8 @@ const props = defineProps<{
   rpgLoading?: boolean;
   graphIsolationActive?: boolean;
   graphIsolationBranch?: string;
+  mergeActive?: boolean;
+  cherryPickActive?: boolean;
   identityGuard?: {
     enabled: boolean;
     mismatch: boolean;
@@ -45,6 +48,8 @@ const emit = defineEmits<{
   push: [];
   fetch: [];
   exitGraphIsolation: [];
+  abortMerge: [];
+  abortCherryPick: [];
   branch: [];
   ghostBranch: [];
   materializeGhostBranch: [];
@@ -84,8 +89,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative z-[40] h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex items-center justify-between px-2 shadow-lg flex-shrink-0">
-    <div class="flex items-center gap-2">
+  <div class="relative z-[40] min-h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 px-2 py-1 shadow-lg flex-shrink-0">
+    <div class="flex flex-wrap items-center gap-2 min-w-0">
       <div class="flex items-center gap-1.5">
         <div class="w-12 h-8 flex items-center justify-center">
           <img :src="headerIcon" alt="GitSwamp icon" class="w-full h-full object-contain" />
@@ -100,7 +105,7 @@ onUnmounted(() => {
 
       <div class="w-px h-6 bg-[var(--foreground)]/10" />
 
-      <div class="flex items-center gap-1">
+      <div class="flex flex-wrap items-center gap-1">
         <AppButton
           variant="ghost"
           size="sm"
@@ -147,10 +152,22 @@ onUnmounted(() => {
           <GitBranch class="w-3.5 h-3.5" />
           Show all branches
         </AppButton>
+        <AppButton
+          v-if="mergeActive || cherryPickActive"
+          variant="ghost"
+          size="sm"
+          class="h-8 shrink-0 whitespace-nowrap text-[var(--destructive)] gap-1.5 text-xs ring-1 ring-[var(--destructive)]/40"
+          :disabled="loading"
+          :title="cherryPickActive ? 'Cancel the active cherry-pick' : 'Cancel the active merge'"
+          @click="cherryPickActive ? emit('abortCherryPick') : emit('abortMerge')"
+        >
+          <CircleX class="w-3.5 h-3.5" />
+          {{ cherryPickActive ? 'Abort cherry-pick' : 'Abort merge' }}
+        </AppButton>
       </div>
     </div>
 
-    <div class="flex items-center gap-1">
+    <div class="flex flex-wrap items-center gap-1 ml-auto">
       <span
         v-if="originConflictRisk && originConflictRisk.level !== 'none'"
         class="px-2 py-0.5 rounded-full text-[10px] font-semibold border"

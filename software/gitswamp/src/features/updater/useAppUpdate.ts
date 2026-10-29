@@ -1,10 +1,12 @@
 import { computed, ref } from "vue";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, openPath } from "@tauri-apps/plugin-opener";
+import { useToast } from "@/shared/notifications/useToast";
 import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 
 export interface AppUpdateInfo {
+  debInstallation?: boolean;
   tag: string;
   version: string;
   currentVersion: string;
@@ -101,9 +103,19 @@ async function install(): Promise<void> {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    errorMessage.value = message.includes("InvalidUpdaterFormat")
-      ? "Linux automatic updates work only when GitSwamp is running from an AppImage. Install the latest AppImage once, then future updates will install automatically."
-      : message;
+    if (info.value?.debInstallation) {
+      try {
+        const path = await invoke<string>("download_deb_update");
+        errorMessage.value = `The latest .deb was downloaded to ${path}. Install the package.`;
+        useToast().action("info", "Latest Debian package downloaded", [
+          { label: "Open .deb", style: "primary", onClick: () => openPath(path) },
+        ], 0, path);
+      } catch (fallbackError) {
+        errorMessage.value = `${message}\nDebian download failed: ${String(fallbackError)}`;
+      }
+    } else {
+      errorMessage.value = message;
+    }
     status.value = "available";
   }
 }

@@ -5,6 +5,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.gitswamp.mobile.core.git.GitRepository
+import com.gitswamp.mobile.core.git.CloneCredential
+import com.gitswamp.mobile.core.git.CloneResult
+import com.gitswamp.mobile.core.git.CloneWorkflow
+import com.gitswamp.mobile.core.git.GithubDeviceAuth
+import com.gitswamp.mobile.core.git.GithubRepositories
+import com.gitswamp.mobile.core.git.GithubRepository
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import com.gitswamp.mobile.core.model.CloneProgress
 import com.gitswamp.mobile.core.model.CloneRequest
 import com.gitswamp.mobile.core.model.RecentRepository
@@ -24,7 +32,14 @@ data class HomeUiState(
     val recentRepositories: List<RecentRepository> = emptyList(),
     val busy: Boolean = false,
     val cloneProgress: CloneProgress? = null,
+    val cloneAuthentication: CloneResult.AuthenticationRequired? = null,
     val message: String? = null,
+    val canRetryClone: Boolean = false,
+    val repositoryPickerOpen: Boolean = false,
+    val githubRepositories: List<GithubRepository> = emptyList(),
+    val repositoriesLoading: Boolean = false,
+    val repositoriesHasMore: Boolean = true,
+    val repositoriesError: String? = null,
     val useSystemTheme: Boolean = false,
     val autoFetchOnOpen: Boolean = false,
     val commitPageSize: Int = 200,
@@ -46,6 +61,16 @@ class HomeViewModel(
 
     private val eventChannel = Channel<HomeEvent>(Channel.BUFFERED)
     val events = eventChannel.receiveAsFlow()
+    private var failedClone: CloneRequest? = null
+    private var catalogCredential: CloneCredential? = null
+    private var catalogRequest: CloneRequest? = null
+    private var catalogPage = 1
+    private var catalogJob: Job? = null
+    private val cloneWorkflow = CloneWorkflow(
+        readCredential = { url -> tokenVault.read(url)?.let { CloneCredential(it.username, it.token) } },
+        saveCredential = { url, credential -> tokenVault.save(url, credential.username, credential.token) },
+        cloneRepository = { request, progress -> git.clone(request, pathResolver.workspaceRoot, progress) },
+    )
 
     fun openRecent(path: String) = openFile(File(path))
 
@@ -79,21 +104,107 @@ class HomeViewModel(
     fun clone(request: CloneRequest) {
         if (_state.value.busy) return
         viewModelScope.launch {
-            _state.value = _state.value.copy(busy = true, cloneProgress = CloneProgress("Preparing repository", 0, 0), message = null)
+            failedClone = null
+            _state.value = _state.value.copy(busy = true, cloneProgress = CloneProgress("Preparing repository", 0, 0), cloneAuthentication = null, message = null, canRetryClone = false)
             runCatching {
-                git.clone(request, pathResolver.workspaceRoot) { progress ->
+                cloneWorkflow.clone(request) { progress ->
                     _state.value = _state.value.copy(cloneProgress = progress)
                 }
-            }.onSuccess { directory ->
-                if (request.rememberToken && request.token.isNotBlank()) {
-                    tokenVault.save(request.url, request.username, request.token)
+            }.onSuccess { result ->
+                when (result) {
+                    is CloneResult.Success -> {
+                        _state.value = _state.value.copy(busy = false, cloneProgress = null)
+                        openFile(result.directory)
+                    }
+                    is CloneResult.AuthenticationRequired -> {
+                        _state.value = _state.value.copy(busy = false, cloneProgress = null, cloneAuthentication = result)
+                    }
                 }
-                _state.value = _state.value.copy(busy = false, cloneProgress = null)
-                openFile(directory)
             }.onFailure {
-                _state.value = _state.value.copy(busy = false, cloneProgress = null, message = it.message ?: "Clone failed.")
+                if (it is CancellationException) throw it
+                val network = CloneWorkflow.isNetworkFailure(it)
+                failedClone = if (network) request else null
+                _state.value = _state.value.copy(busy = false, cloneProgress = null, canRetryClone = network,
+                    message = if (network) "The phone cannot reach the repository host. Check Wi-Fi, mobile data, VPN or Private DNS, then retry. Your authorization is retained." else it.message ?: "Clone failed.")
             }
         }
+    }
+
+    fun retryClone() { failedClone?.let(::clone) }
+
+    fun authorizeClone(username: String, token: String, remember: Boolean) {
+        val pending = _state.value.cloneAuthentication ?: return
+        if (_state.value.busy || token.isBlank()) return
+        val request = pending.request.copy(username = username.trim(), token = token, rememberToken = remember)
+        if (GithubDeviceAuth.supports(request.url)) {
+            if (remember) tokenVault.save(request.url, request.username, token)
+            openGithubRepositories(request)
+        } else clone(request)
+    }
+
+    fun browseGithubRepositories() {
+        if (_state.value.busy) return
+        val url = "https://github.com"
+        val credential = tokenVault.read(url)
+        val request = CloneRequest(url, "", credential?.username ?: "git", credential?.token.orEmpty(), true)
+        if (credential == null) {
+            _state.value = _state.value.copy(cloneAuthentication = CloneResult.AuthenticationRequired(request))
+        } else openGithubRepositories(request)
+    }
+
+    private fun openGithubRepositories(request: CloneRequest) {
+        catalogJob?.cancel()
+        failedClone = null
+        catalogCredential = CloneCredential(request.username, request.token)
+        catalogRequest = request.copy(token = "")
+        catalogPage = 1
+        _state.value = _state.value.copy(cloneAuthentication = null, repositoryPickerOpen = true,
+            githubRepositories = emptyList(), repositoriesLoading = false, repositoriesHasMore = true, repositoriesError = null, message = null, canRetryClone = false)
+        loadGithubRepositories()
+    }
+
+    fun loadGithubRepositories() {
+        val credential = catalogCredential ?: return
+        if (!_state.value.repositoryPickerOpen || _state.value.repositoriesLoading || !_state.value.repositoriesHasMore) return
+        _state.value = _state.value.copy(repositoriesLoading = true, repositoriesError = null)
+        catalogJob = viewModelScope.launch {
+            try {
+                val page = GithubRepositories.fetch(credential.token, catalogPage)
+                _state.value = _state.value.copy(githubRepositories = (_state.value.githubRepositories + page.repositories).distinctBy { it.id },
+                    repositoriesLoading = false, repositoriesHasMore = page.hasMore)
+                catalogPage++
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(repositoriesLoading = false, repositoriesError =
+                    if (CloneWorkflow.isNetworkFailure(error)) "Cannot reach GitHub. Your connection is saved; retry loading repositories."
+                    else error.message ?: "Could not load repositories.")
+            }
+        }
+    }
+
+    fun cloneGithubRepository(repository: GithubRepository, destination: String) {
+        val credential = catalogCredential ?: return
+        val request = catalogRequest ?: return
+        if (_state.value.busy || _state.value.githubRepositories.none { it.id == repository.id && it.cloneUrl == repository.cloneUrl }) return
+        dismissGithubRepositories()
+        clone(CloneRequest(repository.cloneUrl, destination.trim().ifBlank { repository.name }, credential.username, credential.token, request.rememberToken))
+    }
+
+    fun reconnectGithub() {
+        val request = catalogRequest ?: return
+        dismissGithubRepositories()
+        _state.value = _state.value.copy(cloneAuthentication = CloneResult.AuthenticationRequired(request))
+    }
+
+    fun dismissGithubRepositories() {
+        catalogJob?.cancel()
+        catalogCredential = null
+        catalogRequest = null
+        _state.value = _state.value.copy(repositoryPickerOpen = false, githubRepositories = emptyList(), repositoriesLoading = false)
+    }
+
+    fun dismissCloneAuthentication() {
+        _state.value = _state.value.copy(cloneAuthentication = null)
     }
 
     fun init(name: String) {
@@ -139,7 +250,8 @@ class HomeViewModel(
     }
 
     fun clearMessage() {
-        _state.value = _state.value.copy(message = null)
+        failedClone = null
+        _state.value = _state.value.copy(message = null, canRetryClone = false)
     }
 
     private fun openFile(file: File) {

@@ -44,12 +44,12 @@ use commands::operations::{
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
 use commands::status::{
-    abort_merge, add_gitkeep, amend_commit, create_commit, discard_file, discard_files,
+    abort_cherry_pick, abort_merge, add_gitkeep, amend_commit, create_commit, discard_file, discard_files,
     get_empty_directories, get_status, resolve_all_conflicts, resolve_conflict_file,
     restore_pull_safety_stash, stage_file, stage_files, unstage_file, unstage_files,
 };
 use commands::tags::get_tags;
-use commands::updates::{check_for_update, install_update, PendingUpdate};
+use commands::updates::{check_for_update, download_deb_update, install_update, PendingUpdate};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -72,6 +72,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_repo_info,
+            download_deb_update,
             get_commits,
             get_author_deletion_stats,
             get_commit_tree_paths,
@@ -90,6 +91,7 @@ pub fn run() {
             unstage_files,
             create_commit,
             abort_merge,
+            abort_cherry_pick,
             restore_pull_safety_stash,
             amend_commit,
             pull,

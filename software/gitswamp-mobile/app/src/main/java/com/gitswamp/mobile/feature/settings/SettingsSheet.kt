@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import com.gitswamp.mobile.core.designsystem.InlineNotice
 import com.gitswamp.mobile.core.designsystem.SwampColors
 import com.gitswamp.mobile.feature.home.HomeUiState
+import com.gitswamp.mobile.BuildConfig
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +40,7 @@ fun SettingsSheet(
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 28.dp)) {
             Text("Mobile settings", style = MaterialTheme.typography.titleLarge)
+            Text("GitSwamp ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
             Text(
                 "Small defaults keep repository switching responsive on phones.",

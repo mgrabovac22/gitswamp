@@ -130,13 +130,21 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
   }
 
   async function deleteBranch(name: string) {
-    if (!state.repoPath.value) return;
+    if (!state.repoPath.value) return false;
+    if (name.replace(/^refs\/heads\//, "") === state.repoInfo.value?.current_branch) {
+      toast.warning(`Cannot delete the current branch "${name}". Check out another branch first.`);
+      return false;
+    }
     try {
       state.loading.value = true;
       await callTauri("delete_branch", { path: state.repoPath.value, name });
       await Promise.all([refresh.refreshBranches(), refresh.refreshCommits()]);
+      toast.success(`Deleted branch "${name}"`);
+      return true;
     } catch (e) {
       state.error.value = String(e);
+      toast.error("Delete branch failed: " + String(e));
+      return false;
     } finally {
       state.loading.value = false;
     }
@@ -275,6 +283,32 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
+  async function abortCherryPick(): Promise<boolean> {
+    if (!state.repoPath.value || state.loading.value) return false;
+    if (state.repositoryOperation.value?.kind !== "cherry-pick") {
+      toast.info("No cherry-pick is currently in progress.");
+      return false;
+    }
+    const repoPath = state.repoPath.value;
+    const loadingToast = toast.loading("Aborting cherry-pick...");
+    state.loading.value = true;
+    try {
+      const result = await callTauri<string>("abort_cherry_pick", { path: repoPath });
+      state.terminalOutput.value.push("$ git cherry-pick --abort\n" + result);
+      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches(), refresh.refreshRepoInfo()]);
+      toast.success("Cherry-pick aborted.");
+      return true;
+    } catch (error) {
+      state.error.value = String(error);
+      await Promise.all([refresh.refreshStatus(), refresh.refreshRepoInfo()]);
+      toast.error("Abort cherry-pick failed: " + String(error));
+      return false;
+    } finally {
+      state.loading.value = false;
+      toast.remove(loadingToast);
+    }
+  }
+
   async function rebaseBranchOnto(
     sourceBranch: string,
     sourceRemote = false,
@@ -398,6 +432,7 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
     renameBranch,
     mergeBranchIntoCurrent,
     abortMerge,
+    abortCherryPick,
     rebaseBranchOnto,
     rebaseContinue,
     rebaseSkip,

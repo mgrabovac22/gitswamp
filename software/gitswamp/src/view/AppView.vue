@@ -89,7 +89,7 @@ import type {
 const git = useGit();
 const toast = useToast();
 const PickaxeSearchPanel = defineAsyncComponent(() => import("@/features/repository/pickaxe/PickaxeSearchPanel.vue"));
-const { scheduleDestructiveAction } = useUndoableDestructiveAction();
+const { scheduleDestructiveAction } = useUndoableDestructiveAction(() => git.destructiveContext.value, () => !git.loading.value);
 const {
   generalFontSize,
   commitNumeric,
@@ -2795,6 +2795,7 @@ async function handlePull(autoStash = false) {
         onSelectConflicts();
         detailsPanelCollapsed.value = false;
         const pullRepoPath = git.repoPath.value;
+        const pullContext = git.destructiveContext.value;
         toast.action(
           "warning",
           "Pull paused at merge conflicts. Your previous local changes are safe in a GitSwamp safety stash.",
@@ -2804,12 +2805,11 @@ async function handlePull(autoStash = false) {
               label: "Abort Pull",
               style: "neutral",
               onClick: async () => {
-                if (git.repoPath.value !== pullRepoPath) {
+                if (git.repoPath.value !== pullRepoPath || git.destructiveContext.value !== pullContext) {
                   toast.info("Repository changed. Pull recovery was cancelled.");
                   return;
                 }
-                const aborted = await git.abortMerge(true);
-                if (aborted) onSelectWorkingChanges();
+                git.scheduleAbortOperation("merge", onSelectWorkingChanges);
               },
             },
           ],
@@ -3210,7 +3210,52 @@ async function checkoutBranchFromPalette(name: string) {
   toast.success(`Checked out ${name}`);
 }
 
+function confirmAbortCherryPick() {
+  const path = git.repoPath.value;
+  const context = git.destructiveContext.value;
+  toast.action("warning", "Abort the active cherry-pick?", [
+    { label: "Abort cherry-pick", style: "danger", onClick: () => {
+      if (git.repoPath.value === path && git.destructiveContext.value === context) git.scheduleAbortOperation("cherry-pick");
+    } },
+    { label: "Keep cherry-picking", style: "neutral", onClick: () => {} },
+  ], 20000, "Cherry-pick changes and conflict resolutions will be cancelled. The branch returns to its pre-cherry-pick state.");
+}
+
+function confirmAbortMerge() {
+  const path = git.repoPath.value;
+  const context = git.destructiveContext.value;
+  toast.action("warning", "Abort the active merge?", [
+    { label: "Abort merge", style: "danger", onClick: () => {
+      if (git.repoPath.value === path && git.destructiveContext.value === context) git.scheduleAbortOperation("merge");
+    } },
+    { label: "Keep merging", style: "neutral", onClick: () => {} },
+  ], 20000, "Merge resolutions will be cancelled. Pre-pull local changes will be restored when available.");
+}
+
+watch(() => [git.repositoryOperation.value?.kind, git.hasConflicts.value] as const, ([kind, conflicts], previous) => {
+  if (kind === "cherry-pick" && !conflicts && (previous?.[0] !== "cherry-pick" || previous?.[1])) {
+    toast.action("info", "Conflicts are resolved, but the cherry-pick is still active.", [
+      { label: "Review changes", style: "primary", onClick: onSelectWorkingChanges },
+      { label: "Abort cherry-pick", style: "danger", onClick: confirmAbortCherryPick },
+    ], 20000, "Commit the resolved changes to complete the cherry-pick, or abort it using the header button.");
+  }
+  if (kind === "merge" && !conflicts && (previous?.[0] !== "merge" || previous?.[1])) {
+    toast.action("info", "Conflicts are resolved, but the merge is still active.", [
+      { label: "Review merge", style: "primary", onClick: onSelectWorkingChanges },
+      { label: "Abort merge", style: "danger", onClick: confirmAbortMerge },
+    ], 20000, "Review and commit the staged changes to finish the merge, or abort it using the header button.");
+  }
+});
+
 function confirmDiscardUnstagedFromPalette() {
+  if (git.repositoryOperation.value?.kind === "cherry-pick") {
+    confirmAbortCherryPick();
+    return;
+  }
+  if (git.repositoryOperation.value?.kind === "merge") {
+    confirmAbortMerge();
+    return;
+  }
   const count = git.unstagedFiles.value.length;
   if (count === 0) {
     toast.info("No unstaged changes to discard.");
@@ -4734,7 +4779,7 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
               "Merge is waiting for conflict resolution.",
               [
                 { label: "Review Conflicts", style: "primary", onClick: onSelectConflicts },
-                { label: "Abort Merge", style: "neutral", onClick: () => void git.abortMerge(true) },
+                { label: "Abort Merge", style: "neutral", onClick: confirmAbortMerge },
               ],
               24000,
               "After every conflict is resolved and staged, the prepared merge message can be edited before completing the merge.",
@@ -4993,7 +5038,7 @@ async function submitRenameBranch() {
 }
 
 async function handleDeleteBranchAndRemote(name: string) {
-  await git.deleteBranch(name);
+  if (!await git.deleteBranch(name)) return;
   await git.deleteRemoteBranch(name);
 }
 
@@ -5162,6 +5207,10 @@ function submitCreateTag() {
         :identity-guard="identityGuardHeaderStatus"
         :graph-isolation-active="graphIsolationActive"
         :graph-isolation-branch="graphIsolationBranch"
+        :merge-active="git.repositoryOperation.value?.kind === 'merge'"
+        :cherry-pick-active="git.repositoryOperation.value?.kind === 'cherry-pick'"
+        @abort-cherry-pick="confirmAbortCherryPick"
+        @abort-merge="confirmAbortMerge"
         @pull="handlePull"
         @push="handlePush"
         @fetch="handleFetch"

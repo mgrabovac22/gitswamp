@@ -14,24 +14,35 @@ type RefreshDeps = {
 export function createHistoryActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
   async function cherryPick(sha: string) {
     if (!state.repoPath.value) return;
+    if (state.repositoryOperation.value) {
+      toast.warning(`Complete or abort the active ${state.repositoryOperation.value.kind} first.`);
+      return;
+    }
     if (state.hasConflicts.value) {
       toast.error("Cannot cherry-pick while conflicts exist. Resolve conflicts first.");
       return;
     }
+    const repoPath = state.repoPath.value;
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading("Loading: cherry-pick in progress...");
       state.loading.value = true;
-      const result = await callTauri<string>("cherry_pick", { path: state.repoPath.value, sha });
+      const result = await callTauri<string>("cherry_pick", { path: repoPath, sha });
       state.terminalOutput.value.push("$ git cherry-pick " + sha.substring(0, 7) + "\n" + (result || "(done)"));
-      await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git cherry-pick\nError: " + e);
+      toast.warning("Cherry-pick stopped: " + String(e));
     } finally {
-      state.loading.value = false;
-      if (loadingToastId !== null) {
-        toast.remove(loadingToastId);
+      try {
+        await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+        const info = await callTauri<RepoInfo>("get_repo_info", { path: repoPath });
+        if (state.repoPath.value === repoPath) state.repoInfo.value = info;
+      } catch (error) {
+        toast.error("Could not refresh cherry-pick state: " + String(error));
+      } finally {
+        state.loading.value = false;
+        if (loadingToastId !== null) toast.remove(loadingToastId);
       }
     }
   }

@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
+import com.gitswamp.mobile.core.git.GithubDeviceAuth
 import java.net.URI
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -18,27 +19,67 @@ class TokenVault(context: Context) {
 
     fun save(remoteUrl: String, username: String, token: String) {
         if (token.isBlank()) return
+        preferences.edit {
+            putString(tokenKey(remoteUrl), encrypt(token))
+            putString(userKey(remoteUrl), username)
+        }
+    }
+
+    private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
-        val encoded = Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP)
+        val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        return Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP)
+    }
+
+    private fun decrypt(encoded: String): String {
+        val payload = Base64.decode(encoded, Base64.NO_WRAP)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, payload.copyOfRange(0, IV_SIZE)))
+        return cipher.doFinal(payload.copyOfRange(IV_SIZE, payload.size)).toString(Charsets.UTF_8)
+    }
+
+    fun saveGithubSession(remoteUrl: String, code: GithubDeviceAuth.DeviceCode) {
+        val encoded = encrypt(code.deviceCode)
         preferences.edit {
-            putString(tokenKey(remoteUrl), encoded)
-            putString(userKey(remoteUrl), username)
+            putString("github-session-url", remoteUrl)
+            putString("github-session-code", encoded)
+            putString("github-session-user-code", code.userCode)
+            putLong("github-session-expires", code.expiresAtMillis)
+            putLong("github-session-interval", code.interval)
+        }
+    }
+
+    fun readGithubSession(remoteUrl: String): GithubDeviceAuth.DeviceCode? {
+        if (preferences.getString("github-session-url", null) != remoteUrl) return null
+        val expiry = preferences.getLong("github-session-expires", 0)
+        if (expiry <= System.currentTimeMillis()) {
+            clearGithubSession(remoteUrl)
+            return null
+        }
+        return runCatching {
+            GithubDeviceAuth.DeviceCode(
+                deviceCode = decrypt(preferences.getString("github-session-code", null) ?: return null),
+                userCode = preferences.getString("github-session-user-code", null) ?: return null,
+                expiresIn = (expiry - System.currentTimeMillis()) / 1000,
+                interval = preferences.getLong("github-session-interval", 5), expiresAtMillis = expiry,
+            )
+        }.getOrNull()
+    }
+
+    fun clearGithubSession(remoteUrl: String) {
+        if (preferences.getString("github-session-url", null) != remoteUrl) return
+        preferences.edit {
+            for (key in listOf("url", "code", "user-code", "expires", "interval")) remove("github-session-$key")
         }
     }
 
     fun read(remoteUrl: String): StoredCredential? {
         val encoded = preferences.getString(tokenKey(remoteUrl), null) ?: return null
         return runCatching {
-            val payload = Base64.decode(encoded, Base64.NO_WRAP)
-            val iv = payload.copyOfRange(0, IV_SIZE)
-            val encrypted = payload.copyOfRange(IV_SIZE, payload.size)
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
             StoredCredential(
                 username = preferences.getString(userKey(remoteUrl), DEFAULT_USER) ?: DEFAULT_USER,
-                token = cipher.doFinal(encrypted).toString(Charsets.UTF_8),
+                token = decrypt(encoded),
             )
         }.getOrNull()
     }

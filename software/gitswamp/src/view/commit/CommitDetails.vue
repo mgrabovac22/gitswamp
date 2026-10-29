@@ -66,6 +66,7 @@ const props = defineProps<{
   headCommitPublished?: boolean;
   operationBusy?: boolean;
   repositoryOperation?: RepositoryOperationInfo | null;
+  destructiveContext?: string;
   amendModeRequested?: boolean;
   stagedFiles: FileStatusInfo[];
   unstagedFiles: FileStatusInfo[];
@@ -89,6 +90,7 @@ const emit = defineEmits<{
   unstageAll: [];
   commit: [payload: { message: string; allowEmpty: boolean }];
   abortMerge: [];
+  abortCherryPick: [];
   amendCommit: [options: AmendCommitOptions];
   "update:amendModeRequested": [value: boolean];
   discard: [path: string];
@@ -148,6 +150,7 @@ const commitAnalyzerTooltipVisible = ref(false);
 const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "360px", zIndex: 2147483600 });
 const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
 const mergeInProgress = computed(() => props.repositoryOperation?.kind === "merge");
+const cherryPickInProgress = computed(() => props.repositoryOperation?.kind === "cherry-pick");
 let appliedOperationMessageKey = "";
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
@@ -175,17 +178,25 @@ function scrollSelectedCommitFileIntoView() {
 }
 
 function confirmDiscard(path: string | null) {
-  const abortingMerge = mergeInProgress.value && path === null;
+  const context = props.destructiveContext;
+  const repoPath = props.repoPath;
+  const kind = props.repositoryOperation?.kind;
+  const abortingOperation = path === null && (kind === "merge" || kind === "cherry-pick");
   toast.action(
     "error",
-    abortingMerge ? "Abort merge?" : "Discard changes?",
+    abortingOperation ? `Abort ${kind}?` : "Discard changes?",
     [
       {
-        label: abortingMerge ? "Abort Merge" : "Yes, Discard",
+        label: abortingOperation ? `Abort ${kind}` : "Yes, Discard",
         style: "danger",
         onClick: () => {
-          if (abortingMerge) {
-            emit("abortMerge");
+          if (props.repoPath !== repoPath || props.destructiveContext !== context) {
+            toast.info("Repository state changed. Action cancelled.");
+            return;
+          }
+          if (abortingOperation) {
+            if (kind === "cherry-pick") emit("abortCherryPick");
+            else emit("abortMerge");
           } else if (path === null) {
             emit("discardAll");
           } else {
@@ -200,8 +211,8 @@ function confirmDiscard(path: string | null) {
       },
     ],
     0,
-    abortingMerge
-      ? "The branch returns to its pre-merge state. Protected pre-pull changes are restored when available."
+    abortingOperation
+      ? `The branch returns to its pre-${kind} state. Conflict resolutions will be cancelled.`
       : "This action cannot be undone.",
   );
 }
@@ -2036,14 +2047,14 @@ onUnmounted(() => {
     <div v-show="activeTab === 'changes' && isWorkingChanges" class="flex-1 flex flex-col overflow-hidden">
       <div ref="commitFilesScrollContainer" class="flex-1 overflow-y-auto">
         <div
-          v-if="mergeInProgress"
+          v-if="mergeInProgress || cherryPickInProgress"
           class="flex items-start gap-2 border-b border-[var(--primary)]/25 bg-[var(--primary)]/6 px-3 py-2"
         >
           <GitBranch class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--primary)]" />
           <div class="min-w-0 flex-1">
-            <div class="text-[11px] font-semibold text-[var(--foreground)]">Merge in progress</div>
+            <div class="text-[11px] font-semibold text-[var(--foreground)]">{{ cherryPickInProgress ? 'Cherry-pick in progress' : 'Merge in progress' }}</div>
             <div class="mt-0.5 line-clamp-2 text-[10px] leading-relaxed text-[var(--muted-foreground)]">
-              Resolve and stage every conflict, then complete the merge below. Abort restores the pre-merge branch state and any GitSwamp pull safety stash.
+              {{ cherryPickInProgress ? 'Resolve and stage every conflict, then commit below. Abort cancels the cherry-pick and its conflict resolutions.' : 'Resolve and stage every conflict, then complete the merge below. Abort restores the pre-merge branch state and any GitSwamp pull safety stash.' }}
             </div>
           </div>
           <button
@@ -2052,7 +2063,7 @@ onUnmounted(() => {
             :disabled="operationBusy"
             @click="confirmDiscard(null)"
           >
-            Abort Merge
+            {{ cherryPickInProgress ? 'Abort cherry-pick' : 'Abort Merge' }}
           </button>
         </div>
 
@@ -2604,7 +2615,7 @@ onUnmounted(() => {
           @click="onCommit"
         >
           <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
-          {{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : 'Commit Changes') }}
+          {{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : 'Commit Changes')) }}
         </AppButton>
       </div>
     </div>
