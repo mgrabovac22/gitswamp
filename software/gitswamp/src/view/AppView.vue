@@ -19,6 +19,7 @@ import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
 import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
+import { useRepositoryOperationNotice } from "@/shared/notifications/useRepositoryOperationNotice";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import { clearDiffViewerCaches } from "@/shared/config/diffViewCache";
 import { handleRepositoryTabShortcut } from "@/features/repository/tabs/repositoryTabShortcuts";
@@ -3232,20 +3233,12 @@ function confirmAbortMerge() {
   ], 20000, "Merge resolutions will be cancelled. Pre-pull local changes will be restored when available.");
 }
 
-watch(() => [git.repositoryOperation.value?.kind, git.hasConflicts.value] as const, ([kind, conflicts], previous) => {
-  if (kind === "cherry-pick" && !conflicts && (previous?.[0] !== "cherry-pick" || previous?.[1])) {
-    toast.action("info", "Conflicts are resolved, but the cherry-pick is still active.", [
-      { label: "Review changes", style: "primary", onClick: onSelectWorkingChanges },
-      { label: "Abort cherry-pick", style: "danger", onClick: confirmAbortCherryPick },
-    ], 20000, "Commit the resolved changes to complete the cherry-pick, or abort it using the header button.");
-  }
-  if (kind === "merge" && !conflicts && (previous?.[0] !== "merge" || previous?.[1])) {
-    toast.action("info", "Conflicts are resolved, but the merge is still active.", [
-      { label: "Review merge", style: "primary", onClick: onSelectWorkingChanges },
-      { label: "Abort merge", style: "danger", onClick: confirmAbortMerge },
-    ], 20000, "Review and commit the staged changes to finish the merge, or abort it using the header button.");
-  }
-});
+useRepositoryOperationNotice({
+  path: () => git.repoPath.value,
+  kind: () => git.repositoryOperation.value?.kind,
+  hasConflicts: () => git.hasConflicts.value,
+  loading: () => git.loading.value,
+}, toast, onSelectWorkingChanges, confirmAbortMerge, confirmAbortCherryPick);
 
 function confirmDiscardUnstagedFromPalette() {
   if (git.repositoryOperation.value?.kind === "cherry-pick") {
