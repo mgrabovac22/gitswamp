@@ -3311,6 +3311,34 @@ mod tests {
     }
 
     #[test]
+    fn commit_files_preserves_all_paths_and_stats_for_large_commits() {
+        let path = unique_temp_repo_path("large-commit-files");
+        std::fs::create_dir_all(&path).unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let repo = Repository::init(&path).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        GitService::initialize_empty_repo(&path_str).unwrap();
+        let mut index = repo.index().unwrap();
+        for number in 0..2048 {
+            let name = format!("file-{:04}.txt", number);
+            std::fs::write(path.join(&name), format!("content {}\n", number)).unwrap();
+            index.add_path(Path::new(&name)).unwrap();
+        }
+        index.write().unwrap();
+        drop(index);
+        let sha = GitService::create_commit_with_options(&path_str, "Large commit", false).unwrap();
+        let started = std::time::Instant::now();
+        let files = GitService::commit_files(&path_str, &sha).unwrap();
+        println!("2048-file commit metadata: {:?}", started.elapsed());
+        assert_eq!(files.len(), 2048);
+        assert!(files.iter().all(|file| file.status == "added" && file.additions == 1 && file.deletions == 0));
+        let unique: HashSet<_> = files.iter().map(|file| &file.path).collect();
+        assert_eq!(unique.len(), 2048);
+        drop(repo);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn repo_info_handles_unborn_head() {
         let path = unique_temp_repo_path("empty-repo-info");
         std::fs::create_dir_all(&path).expect("create temp repo dir");

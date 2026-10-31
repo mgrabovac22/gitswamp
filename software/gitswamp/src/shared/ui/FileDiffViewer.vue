@@ -3,7 +3,8 @@ import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History, Paintbrush } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
-import { highlightCodeLine, splitFilePath } from "@/shared/codeView";
+import { splitFilePath } from "@/shared/codeView";
+import { useDiffSyntax } from "@/shared/config/code-view/useDiffSyntax";
 import {
   getCachedDiffText,
   getCachedStructuredDiff,
@@ -14,6 +15,7 @@ import {
 import { useToast } from "@/shared/notifications/useToast";
 import { useGit } from "@/domain/git/UseGit";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
+import CodeTextEditor from "@/shared/ui/CodeTextEditor.vue";
 import logoCrocGif from "@/assets/logo_croc.gif";
 import logoCrocLoadingGif from "@/assets/logo_croc_loading.gif";
 
@@ -109,6 +111,14 @@ let fileWatchInterval: ReturnType<typeof setInterval> | null = null;
 let lastFileHash = "";
 let fileWatchRequestInFlight = false;
 let fileContentLoadSequence = 0;
+let diffLoadSequence = 0;
+let editLoadSequence = 0;
+let saveSequence = 0;
+let blameLoadSequence = 0;
+let timeLapseLoadSequence = 0;
+const fileIdentity = computed(() => JSON.stringify([props.repoPath, props.filePath, props.commitSha, props.staged]));
+const syntax = useDiffSyntax(() => props.filePath);
+const editDrafts = new Map<string, string>();
 let cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 function isMemorySaverModeEnabled(): boolean {
@@ -749,19 +759,44 @@ function buildTokenInlineMarkup(base: string, compare: string, changedClass: str
 }
 
 watch(
-  () => [props.filePath, props.staged, props.commitSha, props.fallbackStatus, props.fallbackOldPath],
-  () => {
+  () => [fileIdentity.value, props.fallbackStatus, props.fallbackOldPath],
+  (_next, previous) => {
+    if (hasUnsavedChanges.value && previous) editDrafts.set(String(previous[0]), editContent.value);
     fileContentLoadSequence += 1;
+    diffLoadSequence += 1;
+    editLoadSequence += 1;
+    blameLoadSequence += 1;
+    timeLapseLoadSequence += 1;
+    saveSequence += 1;
+    loadingFileContent.value = false;
+    blameLoading.value = false;
+    blameLines.value = [];
+    timeLapseLoading.value = false;
+    timeLapseFrames.value = [];
+    saving.value = false;
+    fileContent.value = "";
+    editContent.value = "";
+    hasUnsavedChanges.value = false;
+    diff.value = null;
+    highlightedLineCache.value.clear();
     currentHunkIndex.value = 0;
     blameError.value = null;
     if (showBlamePanel.value) {
       void loadFileBlame(true);
     }
-    reload();
+    if (viewMode.value === "edit" && isWorkingChanges.value) void loadFileForEdit();
+    else if (viewMode.value === "edit") viewMode.value = "diff";
+    else if (viewMode.value === "time-lapse") void loadTimeLapseFrames();
+    else void reload();
   }
 );
 
 watch(viewMode, (mode) => {
+  if (hasUnsavedChanges.value) editDrafts.set(fileIdentity.value, editContent.value);
+  fileContentLoadSequence += 1;
+  editLoadSequence += 1;
+  loadingFileContent.value = false;
+  loading.value = false;
   if (mode !== "time-lapse") {
     stopTimeLapsePlayback();
   }
@@ -811,6 +846,9 @@ watch(blamePanelVisible, (visible) => {
 
 async function reload() {
   if (viewMode.value === "edit") return;
+  const sequence = ++diffLoadSequence;
+  const identity = fileIdentity.value;
+  const isCurrent = () => sequence === diffLoadSequence && identity === fileIdentity.value && viewMode.value !== "edit";
 
   resetDiffColoringBudget();
   
@@ -825,17 +863,21 @@ async function reload() {
       diff.value = cachedDiff;
     } else {
       if (props.commitSha) {
-        diff.value = await invoke<FileDiff>("get_commit_diff", {
+        const loadedDiff = await invoke<FileDiff>("get_commit_diff", {
           path: props.repoPath,
           sha: props.commitSha,
           filePath: props.filePath,
         });
+        if (!isCurrent()) return;
+        diff.value = loadedDiff;
       } else {
-        diff.value = await invoke<FileDiff>("get_working_diff", {
+        const loadedDiff = await invoke<FileDiff>("get_working_diff", {
           path: props.repoPath,
           filePath: props.filePath,
           staged: props.staged ?? false,
         });
+        if (!isCurrent()) return;
+        diff.value = loadedDiff;
       }
 
       if (diff.value && diffCacheKey) {
@@ -858,7 +900,9 @@ async function reload() {
       void loadFileContentAsync();
     }
   } catch (e) {
+    if (!isCurrent()) return;
     const fallbackDiff = await loadSyntheticPickaxeDiff();
+    if (!isCurrent()) return;
     if (fallbackDiff) {
       diff.value = fallbackDiff;
       lastFileHash = hashDiffStructure(fallbackDiff);
@@ -868,7 +912,7 @@ async function reload() {
       error.value = String(e);
     }
   } finally {
-    loading.value = false;
+    if (isCurrent()) loading.value = false;
   }
 }
 
@@ -952,6 +996,9 @@ async function loadFileBlame(forceRefresh = false) {
 
   blameLoading.value = true;
   blameError.value = null;
+  const sequence = ++blameLoadSequence;
+  const identity = fileIdentity.value;
+  const isCurrent = () => sequence === blameLoadSequence && identity === fileIdentity.value;
 
   try {
     const blameCacheKey = getBlameCacheKey();
@@ -969,14 +1016,16 @@ async function loadFileBlame(forceRefresh = false) {
       sha: props.commitSha ?? null,
     });
 
+    if (!isCurrent()) return;
     blameLines.value = lines;
     blameCache.value.set(blameCacheKey, lines);
     maintainBlameCache();
   } catch (e) {
+    if (!isCurrent()) return;
     blameLines.value = [];
     blameError.value = String(e);
   } finally {
-    blameLoading.value = false;
+    if (isCurrent()) blameLoading.value = false;
   }
 }
 
@@ -1114,6 +1163,9 @@ function onSplitPaneScroll(hunkIdx: number, side: "old" | "new", event: Event) {
 }
 
 async function loadFileForEdit() {
+  const sequence = ++editLoadSequence;
+  const identity = fileIdentity.value;
+  const isCurrent = () => sequence === editLoadSequence && identity === fileIdentity.value && viewMode.value === "edit";
   loading.value = true;
   error.value = null;
   try {
@@ -1122,36 +1174,44 @@ async function loadFileForEdit() {
       filePath: props.filePath,
       sha: null,
     });
+    if (!isCurrent()) return;
     fileContent.value = content;
-    editContent.value = content;
-    hasUnsavedChanges.value = false;
+    editContent.value = editDrafts.get(identity) ?? content;
+    hasUnsavedChanges.value = editContent.value !== content;
   } catch (e) {
-    error.value = String(e);
+    if (isCurrent()) error.value = String(e);
   } finally {
-    loading.value = false;
+    if (isCurrent()) loading.value = false;
   }
 }
 
 async function saveFile() {
-  if (!hasUnsavedChanges.value) return;
+  if (!hasUnsavedChanges.value || saving.value) return;
+  const sequence = ++saveSequence;
+  const identity = fileIdentity.value;
+  const content = editContent.value;
+  editDrafts.set(identity, content);
   saving.value = true;
   try {
     await invoke("save_file_content", {
       path: props.repoPath,
       filePath: props.filePath,
-      content: editContent.value,
+      content,
     });
-    hasUnsavedChanges.value = false;
-    fileContent.value = editContent.value;
+    if (editDrafts.get(identity) === content) editDrafts.delete(identity);
+    if (sequence !== saveSequence || identity !== fileIdentity.value) return;
+    fileContent.value = content;
+    hasUnsavedChanges.value = editContent.value !== content;
     emit("refresh");
   } catch (e) {
-    error.value = String(e);
+    if (sequence === saveSequence && identity === fileIdentity.value) error.value = String(e);
   } finally {
-    saving.value = false;
+    if (sequence === saveSequence && identity === fileIdentity.value) saving.value = false;
   }
 }
 
 function discardEditChanges() {
+  editDrafts.delete(fileIdentity.value);
   editContent.value = fileContent.value;
   hasUnsavedChanges.value = false;
 }
@@ -1209,6 +1269,8 @@ function startFileWatch() {
     if (!isUnstaged.value || viewMode.value === "edit" || viewMode.value === "time-lapse") return;
     if (loading.value || loadingFileContent.value || fileWatchRequestInFlight) return;
     fileWatchRequestInFlight = true;
+    const identity = fileIdentity.value;
+    const isCurrent = () => identity === fileIdentity.value && viewMode.value !== "edit" && viewMode.value !== "time-lapse";
     
     try {
       const newDiff = await invoke<FileDiff>("get_working_diff", {
@@ -1216,6 +1278,7 @@ function startFileWatch() {
         filePath: props.filePath,
         staged: false,
       });
+      if (!isCurrent()) return;
       
       const newHash = hashDiffStructure(newDiff);
       if (newHash !== lastFileHash) {
@@ -1285,6 +1348,12 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  fileContentLoadSequence += 1;
+  diffLoadSequence += 1;
+  editLoadSequence += 1;
+  saveSequence += 1;
+  blameLoadSequence += 1;
+  timeLapseLoadSequence += 1;
   if (cacheCleanupInterval) {
     clearInterval(cacheCleanupInterval);
     cacheCleanupInterval = null;
@@ -1818,6 +1887,9 @@ async function buildTimeLapseFrame(commit: CommitInfo, normalizedPath: string): 
 async function loadTimeLapseFrames() {
   if (timeLapseLoading.value) return;
   if (!props.repoPath) return;
+  const sequence = ++timeLapseLoadSequence;
+  const identity = fileIdentity.value;
+  const isCurrent = () => sequence === timeLapseLoadSequence && identity === fileIdentity.value;
 
   stopTimeLapsePlayback();
   timeLapseLoading.value = true;
@@ -1829,6 +1901,7 @@ async function loadTimeLapseFrames() {
       path: props.repoPath,
       maxCount: timeLapseCommitWindowSafe.value,
     });
+    if (!isCurrent()) return;
 
     const normalizedPath = normalizeCommitFilePath(props.filePath);
     const frames: TimeLapseFrame[] = [];
@@ -1838,6 +1911,7 @@ async function loadTimeLapseFrames() {
       if (frames.length >= TIME_LAPSE_MAX_FRAMES) break;
 
       const frame = await buildTimeLapseFrame(commit, normalizedPath);
+      if (!isCurrent()) return;
       if (!frame) continue;
       if (frame.content === previousContent && frames.length > 0) continue;
 
@@ -1852,7 +1926,7 @@ async function loadTimeLapseFrames() {
       toast.info("No historical frames found for this file in recent commits.");
     }
   } finally {
-    timeLapseLoading.value = false;
+    if (isCurrent()) timeLapseLoading.value = false;
   }
 }
 
@@ -2268,11 +2342,6 @@ function getHighlightedLine(lineText: string, key: string): string {
     return escapeHtml(lineText);
   }
 
-  if (shouldAbortDiffColoring()) {
-    activateRawDiffFallback();
-    return escapeHtml(lineText);
-  }
-
   const cached = highlightedLineCache.value.get(key);
   if (cached !== undefined) {
     return cached;
@@ -2281,12 +2350,9 @@ function getHighlightedLine(lineText: string, key: string): string {
   const shouldUsePlainText = usePlainTextHighlighting.value
     || isPlainTextFastPath.value
     || lineText.length > LONG_LINE_PLAIN_TEXT_THRESHOLD;
-  const highlighted = shouldUsePlainText
-    ? escapeHtml(lineText)
-    : highlightCodeLine(lineText, props.filePath);
-  highlightedLineCache.value.set(key, highlighted);
-  maintainHighlightCache();
-  return highlighted;
+  if (shouldUsePlainText) return escapeHtml(lineText);
+  // Render immediately; tokenization runs in the worker, never in Vue's render.
+  return syntax.get(lineText) ?? escapeHtml(lineText);
 }
 
 function getHighlightedDiffLine(hunkIdx: number, lineIdx: number, line: DiffLine): string {
@@ -2519,7 +2585,7 @@ watch(
 
 <template>
   <div class="relative h-full flex flex-col bg-[var(--card)] overflow-hidden">
-    <div class="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] bg-[var(--card)] flex-shrink-0">
+    <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2.5 border-b border-[var(--border)] bg-[var(--card)] flex-shrink-0">
       <div class="flex items-center gap-3 min-w-0">
         <Pencil v-if="isWorkingChanges" class="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
         <FileText v-else class="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
@@ -2533,7 +2599,7 @@ watch(
         <span v-if="hasUnsavedChanges" class="text-xs text-[var(--destructive)] flex-shrink-0">● Unsaved</span>
       </div>
       
-      <div class="flex items-center gap-2 flex-shrink-0">
+      <div class="flex flex-wrap items-center gap-2 max-w-full">
         <div class="flex items-center gap-1.5">
           <template v-if="viewMode === 'edit'">
             <button
@@ -3054,13 +3120,12 @@ watch(
         </button>
       </div>
 
-      <div v-else-if="viewMode === 'edit'" class="min-w-fit h-full">
-        <textarea
+      <div v-else-if="viewMode === 'edit'" class="min-w-0 h-full">
+        <CodeTextEditor
           v-model="editContent"
-          @input="onEditInput"
-          class="w-full h-full bg-[var(--diff-bg)] text-[var(--diff-text)] p-3 resize-none outline-none font-mono text-[12px] leading-[1.4]"
-          spellcheck="false"
-        ></textarea>
+          :file-path="filePath"
+          @update:model-value="onEditInput"
+        />
       </div>
 
       <div v-else-if="viewMode === 'time-lapse'" class="h-full flex flex-col overflow-hidden relative">

@@ -49,6 +49,8 @@ const HttpClientPanel = defineAsyncComponent(() => import("@/features/repository
 
 const props = defineProps<{
   git: any;
+  commitFilesLoading?: boolean;
+  commitFilesError?: string | null;
   showTerminal: boolean;
   terminalAllowAll: boolean;
   openPullRequestBranches?: string[];
@@ -688,6 +690,8 @@ function handleRefreshState() {
             :conflict-files="props.git.conflictFiles.value"
             :has-conflicts="props.git.hasConflicts.value"
             :commit-files="props.git.selectedCommitFiles.value"
+            :commit-files-loading="props.commitFilesLoading"
+            :commit-files-error="props.commitFilesError"
             :is-working-changes="props.viewingWorkingChanges || repositoryOperation !== null"
             :is-stash="props.viewingStash"
             :selected-stash="props.git.selectedStash.value"

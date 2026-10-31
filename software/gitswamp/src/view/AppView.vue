@@ -290,7 +290,8 @@ const authEmailInput = ref("");
 const authKeyNameInput = ref("gitswamp");
 const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
-let singleCommitLoadKey: string | null = null;
+const commitFilesLoading = ref(false);
+const commitFilesError = ref<string | null>(null);
 let selectedCommitWatcherSkipSha: string | null = null;
 let backgroundRemoteHygieneLastRunAt = 0;
 let backgroundStaleWorkSignature = "";
@@ -305,8 +306,13 @@ let backgroundLargeChangeLastToastAt = 0;
 let backgroundConflictSignature = "";
 let backgroundConflictLastToastAt = 0;
 const COMMIT_FILES_CACHE_LIMIT = 12;
-const COMMIT_FILES_CACHE_MAX_FILES = 350;
+const COMMIT_FILES_CACHE_MAX_FILES = 5000;
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
+const commitFilesRequests = new Map<string, Promise<CommitFileInfo[]>>();
+watch(() => [git.repoPath.value, ...git.selectedCommits.value.map(commit => commit.sha)].join("\0"), () => {
+  commitFilesLoading.value = false;
+  commitFilesError.value = null;
+}, { flush: "sync" });
 const gitRpgProfileCache = new Map<string, GitRpgProfile>();
 
 function getCommitFilesCacheKey(repoPath: string, sha: string) {
@@ -329,7 +335,7 @@ function cacheCommitFiles(repoPath: string, sha: string, files: CommitFileInfo[]
     commitFilesCache.delete(key);
   }
   commitFilesCache.set(key, files);
-  while (commitFilesCache.size > COMMIT_FILES_CACHE_LIMIT) {
+  while (commitFilesCache.size > COMMIT_FILES_CACHE_LIMIT || [...commitFilesCache.values()].reduce((sum, value) => sum + value.length, 0) > 10000) {
     const oldestKey = commitFilesCache.keys().next().value;
     if (!oldestKey) break;
     commitFilesCache.delete(oldestKey);
@@ -4471,13 +4477,15 @@ async function getCommitFiles(repoPath: string, sha: string): Promise<CommitFile
   const cached = getCachedCommitFiles(repoPath, sha);
   if (cached) return cached;
 
-  try {
-    const files = await invoke<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha });
+  const key = getCommitFilesCacheKey(repoPath, sha);
+  const pending = commitFilesRequests.get(key);
+  if (pending) return pending;
+  const request = invoke<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha }).then(files => {
     cacheCommitFiles(repoPath, sha, files);
     return files;
-  } catch {
-    return [];
-  }
+  }).finally(() => commitFilesRequests.delete(key));
+  commitFilesRequests.set(key, request);
+  return request;
 }
 
 async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
@@ -4488,43 +4496,54 @@ async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
 
   const runToken = ++multiCommitFilesRunToken;
   const sorted = [...commits].sort((a, b) => b.timestamp - a.timestamp);
-
-  const responses = await Promise.all(
-    sorted.map(async (commit) => {
-      const files = await getCommitFiles(repoPath, commit.sha);
-      return { sha: commit.sha, files };
-    }),
-  );
-
-  if (runToken !== multiCommitFilesRunToken || git.repoPath.value !== repoPath) {
-    return;
-  }
-
-  const byPath = new Map<string, CommitFileInfo>();
-  for (const response of responses) {
-    for (const file of response.files) {
-      const existing = byPath.get(file.path);
-      if (!existing) {
-        byPath.set(file.path, {
-          ...file,
-          commit_shas: [response.sha],
-        });
-        continue;
+  commitFilesLoading.value = true;
+  commitFilesError.value = null;
+  try {
+    const responses: { sha: string; files: CommitFileInfo[] }[] = [];
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(4, sorted.length) }, async () => {
+      while (cursor < sorted.length && runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) {
+        const index = cursor++;
+        const commit = sorted[index];
+        const files = await getCommitFiles(repoPath, commit.sha);
+        responses[index] = { sha: commit.sha, files };
       }
+    }));
 
-      existing.additions += file.additions;
-      existing.deletions += file.deletions;
-      existing.status = mergeCommitFileStatus(existing.status, file.status);
-
-      const hashes = existing.commit_shas || [];
-      if (!hashes.includes(response.sha)) {
-        hashes.push(response.sha);
-      }
-      existing.commit_shas = hashes;
+    if (runToken !== multiCommitFilesRunToken || git.repoPath.value !== repoPath) {
+      return;
     }
-  }
 
-  git.selectedCommitFiles.value = Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+    const byPath = new Map<string, CommitFileInfo>();
+    for (const response of responses) {
+      for (const file of response.files) {
+        const existing = byPath.get(file.path);
+        if (!existing) {
+          byPath.set(file.path, {
+            ...file,
+            commit_shas: [response.sha],
+          });
+          continue;
+        }
+
+        existing.additions += file.additions;
+        existing.deletions += file.deletions;
+        existing.status = mergeCommitFileStatus(existing.status, file.status);
+
+        const hashes = existing.commit_shas || [];
+        if (!hashes.includes(response.sha)) {
+          hashes.push(response.sha);
+        }
+        existing.commit_shas = hashes;
+      }
+    }
+
+    git.selectedCommitFiles.value = Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+  } catch {
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesError.value = "Could not load changed files.";
+  } finally {
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesLoading.value = false;
+  }
 }
 
 async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
@@ -4534,9 +4553,9 @@ async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
     return;
   }
 
-  const cacheKey = getCommitFilesCacheKey(repoPath, commit.sha);
   const cached = getCachedCommitFiles(repoPath, commit.sha);
   if (cached) {
+    commitFilesLoading.value = false;
     const stillSelected = git.selectedCommits.value.length === 1 && git.selectedCommits.value[0]?.sha === commit.sha;
     if (stillSelected) {
       git.selectedCommitFiles.value = cached;
@@ -4544,12 +4563,9 @@ async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
     return;
   }
 
-  if (singleCommitLoadKey === cacheKey) {
-    return;
-  }
-
-  singleCommitLoadKey = cacheKey;
   const runToken = ++multiCommitFilesRunToken;
+  commitFilesLoading.value = true;
+  commitFilesError.value = null;
 
   try {
     const files = await getCommitFiles(repoPath, commit.sha);
@@ -4564,10 +4580,10 @@ async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
     }
 
     git.selectedCommitFiles.value = files;
+  } catch {
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesError.value = "Could not load changed files.";
   } finally {
-    if (singleCommitLoadKey === cacheKey) {
-      singleCommitLoadKey = null;
-    }
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesLoading.value = false;
   }
 }
 
@@ -5235,6 +5251,8 @@ function submitCreateTag() {
       </div>
       <RepositoryWorkspace
         :git="git"
+        :commit-files-loading="commitFilesLoading"
+        :commit-files-error="commitFilesError"
         :show-terminal="showTerminal"
         :terminal-allow-all="terminalAllowAll"
         :open-pull-request-branches="openPullRequestBranches"
