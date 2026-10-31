@@ -150,11 +150,11 @@ src/
      - **View Menu:**
        - Toggle Terminal (Ctrl+`)
        - Visualize Commit History/Graph (Alt+1)
-       - Galaxy View (Alt+2)
-       - Productivity Arena (Alt+3)
+       - Galaxy View (Alt+7)
+       - Productivity Arena (Alt+2)
        - Time Machine (Alt+4)
-       - Usual Conflict Suspects/Heatmap (Alt+5)
-       - Burnout Analytics (Alt+6)
+       - Usual Conflict Suspects/Heatmap (Alt+3)
+       - Burnout Analytics (Alt+9)
        - Open in Folder Explorer (Alt+O)
        - Open integrations/options (Ctrl+Shift+I)
        - Open Settings (Ctrl+,)
@@ -442,7 +442,7 @@ GitSwamp provides 8 history/workspace modes, accessible from the **View** menu a
 - Supports zooming, panning, and navigation
 - Virtual scrolling for large repositories
 
-#### 2. **Galaxy View** - Alt+2
+#### 2. **Galaxy View** - Alt+7
 - Canvas-based commit and branch visualization
 - Spiral, layer, and constellation layouts
 - 3D, balanced, and circling motion options
@@ -450,7 +450,7 @@ GitSwamp provides 8 history/workspace modes, accessible from the **View** menu a
 - Zoom, pan, hover details, and click-to-focus selection
 - Useful for exploratory branch understanding without leaving the repository workspace
 
-#### 3. **Productivity Arena** - Alt+3
+#### 3. **Productivity Arena** - Alt+2
 - Developer activity and metrics visualization
 - Displays productivity patterns across time
 - Shows commit frequency by contributor
@@ -476,7 +476,7 @@ GitSwamp provides 8 history/workspace modes, accessible from the **View** menu a
 - Snapshot panels keep context and update progressively with section loaders and caches
 - Useful for forensic analysis and understanding evolution
 
-#### 5. **Usual Conflict Suspects (Conflict Heatmap)** - Alt+5
+#### 5. **Usual Conflict Suspects (Conflict Heatmap)** - Alt+3
 - Merge conflict hotspot visualization
 - Identifies files with highest conflict frequency
 - Conflict risk assessment and patterns
@@ -487,7 +487,7 @@ GitSwamp provides 8 history/workspace modes, accessible from the **View** menu a
 - Search-based filtering plus tree-scope filtering
 - Helps prevent problematic merges
 
-#### 6. **Burnout Analytics** - Alt+6
+#### 6. **Burnout Analytics** - Alt+9
 - Repository burnout pulse for recent weeks
 - After-hours and weekend activity signals
 - Contributor focus and workload risk summaries
@@ -825,6 +825,10 @@ onUnmounted(() => {
 ```
 
 ## 10. Performance Optimization
+
+Diff syntax coloring now uses `useDiffSyntax.ts`, `syntaxQueue.ts` and `syntax.worker.ts` under `src/shared/config/code-view`. Rendering first returns escaped text, and worker results arrive in batches. The queue deduplicates repeated lines, bounds retained work and cancels obsolete file requests. It does not change addition/deletion markup.
+
+`useWindowedRows.ts` limits rendered rows for large commit file/tree lists. Commit detail requests share an in-flight promise per repository/SHA, and multi-selection starts at most four concurrent requests. A dedicated loading state is independent of the repository's global busy state. See [current workflows](DOCUMENTATION_39_RECENT_WORKFLOWS.md) for user-visible behavior.
 
 ### 10.1 Virtual Scrolling
 

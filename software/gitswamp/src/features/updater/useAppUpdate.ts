@@ -7,6 +7,7 @@ import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 
 export interface AppUpdateInfo {
   debInstallation?: boolean;
+  alreadyInstalled?: boolean;
   tag: string;
   version: string;
   currentVersion: string;
@@ -25,6 +26,7 @@ export type AppUpdateStatus =
   | "available"
   | "installing"
   | "installed"
+  | "downloaded"
   | "error";
 
 type DownloadEvent =
@@ -39,6 +41,7 @@ const info = ref<AppUpdateInfo | null>(null);
 const errorMessage = ref("");
 const downloaded = ref(0);
 const total = ref<number | null>(null);
+const downloadedPath = ref<string | null>(null);
 
 const percent = computed(() => {
   const size = total.value;
@@ -47,7 +50,7 @@ const percent = computed(() => {
 });
 
 const isVisible = computed(
-  () => info.value !== null && (status.value === "available" || status.value === "installing"),
+  () => info.value !== null && ["available", "installing", "downloaded", "installed"].includes(status.value),
 );
 
 function setBytes(value: number) {
@@ -61,15 +64,17 @@ async function check(force = false): Promise<void> {
   try {
     const result = await invoke<AppUpdateInfo | null>("check_for_update");
     if (!result) {
+      info.value = null;
       status.value = "none";
       return;
     }
-    if (!force && safeStorageGet(DISMISS_STORAGE_KEY) === result.tag) {
+    if (!force && !result.alreadyInstalled && safeStorageGet(DISMISS_STORAGE_KEY) === result.tag) {
       status.value = "none";
       return;
     }
     info.value = result;
-    status.value = "available";
+    downloadedPath.value = null;
+    status.value = result.alreadyInstalled ? "installed" : "available";
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error);
     status.value = "error";
@@ -84,6 +89,22 @@ async function install(): Promise<void> {
   total.value = null;
 
   try {
+    if (info.value.debInstallation) {
+      const result = await invoke<{ path: string | null; version: string; alreadyInstalled: boolean }>("download_deb_update", {
+        tag: info.value.tag, version: info.value.version,
+      });
+      if (result.alreadyInstalled) {
+        status.value = "installed";
+        return;
+      }
+      if (!result.path) throw new Error("The Debian download returned no package path.");
+      downloadedPath.value = result.path;
+      status.value = "downloaded";
+      useToast().action("info", `GitSwamp ${result.version} package downloaded`, [
+        { label: "Open .deb", style: "primary", onClick: () => openPath(result.path!) },
+      ], 0, "Install the package in your system package manager, then restart GitSwamp.");
+      return;
+    }
     const channel = new Channel<DownloadEvent>();
     channel.onmessage = (message) => {
       if (message.event === "Started") {
@@ -103,21 +124,20 @@ async function install(): Promise<void> {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (info.value?.debInstallation) {
-      try {
-        const path = await invoke<string>("download_deb_update");
-        errorMessage.value = `The latest .deb was downloaded to ${path}. Install the package.`;
-        useToast().action("info", "Latest Debian package downloaded", [
-          { label: "Open .deb", style: "primary", onClick: () => openPath(path) },
-        ], 0, path);
-      } catch (fallbackError) {
-        errorMessage.value = `${message}\nDebian download failed: ${String(fallbackError)}`;
-      }
-    } else {
-      errorMessage.value = message;
-    }
+    errorMessage.value = message;
     status.value = "available";
   }
+}
+
+async function openDownloadedPackage(): Promise<void> {
+  if (!downloadedPath.value) return;
+  try { await openPath(downloadedPath.value); }
+  catch (error) { useToast().error(`Could not open the package: ${String(error)}`); }
+}
+
+async function restart(): Promise<void> {
+  try { await relaunch(); }
+  catch (error) { useToast().error(`Restart GitSwamp manually: ${String(error)}`); }
 }
 
 function dismiss(): void {
@@ -145,6 +165,8 @@ export function useAppUpdate() {
     install,
     dismiss,
     openReleasePage,
+    openDownloadedPackage,
+    restart,
   };
 }
 

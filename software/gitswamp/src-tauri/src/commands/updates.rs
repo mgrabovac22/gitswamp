@@ -44,6 +44,7 @@ impl GithubRelease {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckResult {
     pub deb_installation: bool,
+    pub already_installed: bool,
     pub tag: String,
     pub version: String,
     pub current_version: String,
@@ -137,7 +138,8 @@ pub async fn check_for_update(
     app: AppHandle,
     pending: State<'_, PendingUpdate>,
 ) -> Result<Option<UpdateCheckResult>, String> {
-    let releases = fetch_releases()?;
+    let releases = tauri::async_runtime::spawn_blocking(fetch_releases)
+        .await.map_err(|e| e.to_string())??;
     let Some(release) = pick_release(&releases) else {
         return Ok(None);
     };
@@ -159,8 +161,13 @@ pub async fn check_for_update(
         return Ok(None);
     };
 
+    let deb_installation = is_deb_installation();
+    let version = update.version.clone();
+    let already_installed = deb_installation && tauri::async_runtime::spawn_blocking(move || deb_already_installed(&version))
+        .await.map_err(|e| e.to_string())?;
     let result = UpdateCheckResult {
-        deb_installation: is_deb_installation(),
+        already_installed,
+        deb_installation,
         tag: release.tag_name.clone(),
         version: update.version.clone(),
         current_version: update.current_version.clone(),
@@ -185,6 +192,41 @@ fn is_deb_installation() -> bool {
     cfg!(target_os = "linux") && matches!(tauri::utils::platform::bundle_type(), Some(tauri::utils::config::BundleType::Deb))
 }
 
+const DEB_PACKAGE_NAME: &str = "git-swamp";
+
+fn parse_installed_deb_version(output: &str) -> Option<String> {
+    let (status, version) = output.trim_end().split_once('\t')?;
+    if !status.starts_with("ii") || version.is_empty() { return None; }
+    Some(version.to_string())
+}
+
+fn deb_already_installed(version: &str) -> bool {
+    if !cfg!(target_os = "linux") { return false; }
+    let output = std::process::Command::new("dpkg-query")
+        .args(["--show", "--showformat=${db:Status-Abbrev}\t${Version}", DEB_PACKAGE_NAME]).output();
+    let Some(installed) = output.ok().filter(|output| output.status.success())
+        .and_then(|output| parse_installed_deb_version(&String::from_utf8_lossy(&output.stdout))) else { return false; };
+    std::process::Command::new("dpkg").args(["--compare-versions", &installed, "ge", version])
+        .output().map(|output| output.status.success()).unwrap_or(false)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebUpdateDownload {
+    path: Option<String>,
+    version: String,
+    already_installed: bool,
+}
+
+fn validate_deb_metadata(output: &str, version: &str, architecture: &str) -> Result<(), String> {
+    let fields: Vec<_> = output.lines().collect();
+    let expected_arch = match architecture { "x86_64" => "amd64", "aarch64" => "arm64", _ => return Err("Unsupported Debian architecture.".to_string()) };
+    if fields.len() != 3 || fields[0] != DEB_PACKAGE_NAME || fields[1] != version || fields[2] != expected_arch {
+        return Err("The Debian package name, version or architecture does not match the offered update. Nothing was installed.".to_string());
+    }
+    Ok(())
+}
+
 fn deb_asset_name(release: &GithubRelease, architecture: &str) -> Option<String> {
     release.assets.as_ref()?.iter().find(|asset| {
         let name = asset.name.to_lowercase();
@@ -198,13 +240,21 @@ fn deb_asset_name(release: &GithubRelease, architecture: &str) -> Option<String>
 }
 
 #[tauri::command]
-pub async fn download_deb_update(app: AppHandle) -> Result<String, String> {
+pub async fn download_deb_update(app: AppHandle, tag: String, version: String) -> Result<DebUpdateDownload, String> {
     if !is_deb_installation() {
         return Err("Debian fallback is only available for a .deb installation.".to_string());
     }
     let directory = app.path().download_dir().map_err(|e| format!("Downloads folder unavailable: {}", e))?;
     tauri::async_runtime::spawn_blocking(move || {
-        let release = pick_release(&fetch_releases()?).ok_or("No usable release is available.")?;
+        if tag.strip_prefix('v').unwrap_or(&tag) != version || !version.starts_with(|c: char| c.is_ascii_digit())
+            || !version.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)) {
+            return Err("Invalid release version.".to_string());
+        }
+        if deb_already_installed(&version) {
+            return Ok(DebUpdateDownload { path: None, version, already_installed: true });
+        }
+        let release = fetch_releases()?.into_iter().find(|release| release.tag_name == tag && !release.draft && release.has_manifest())
+            .ok_or("The offered release is no longer available. Check for updates again.")?;
         let asset = deb_asset_name(&release, std::env::consts::ARCH).ok_or("This release has no Debian package for your architecture.")?;
         let mut url = url::Url::parse("https://github.com/mgrabovac22/gitswamp/releases/download/").map_err(|e| e.to_string())?;
         url.path_segments_mut().map_err(|_| "Invalid release URL")?.pop_if_empty().push(&release.tag_name).push(&asset);
@@ -227,8 +277,23 @@ pub async fn download_deb_update(app: AppHandle) -> Result<String, String> {
         })();
         drop(file);
         if let Err(error) = download { let _ = std::fs::remove_file(&partial); return Err(error); }
-        std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
-        Ok(destination.to_string_lossy().to_string())
+        let validation = (|| -> Result<(), String> {
+            let output = std::process::Command::new("dpkg-deb")
+                .args(["--show", "--showformat=${Package}\n${Version}\n${Architecture}\n"])
+                .arg(&partial).output().map_err(|e| format!("Could not inspect Debian package: {}", e))?;
+            if !output.status.success() { return Err("Could not read Debian package metadata.".to_string()); }
+            validate_deb_metadata(&String::from_utf8_lossy(&output.stdout), &version, std::env::consts::ARCH)
+        })();
+        if let Err(error) = validation { let _ = std::fs::remove_file(&partial); return Err(error); }
+        if deb_already_installed(&version) {
+            let _ = std::fs::remove_file(&partial);
+            return Ok(DebUpdateDownload { path: None, version, already_installed: true });
+        }
+        if let Err(error) = std::fs::rename(&partial, &destination) {
+            let _ = std::fs::remove_file(&partial);
+            return Err(error.to_string());
+        }
+        Ok(DebUpdateDownload { path: Some(destination.to_string_lossy().to_string()), version, already_installed: false })
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -237,6 +302,9 @@ pub async fn install_update(
     pending: State<'_, PendingUpdate>,
     on_event: Channel<DownloadEvent>,
 ) -> Result<(), String> {
+    if is_deb_installation() {
+        return Err("Debian installations must be updated through the system package manager.".to_string());
+    }
     let update = pending
         .0
         .lock()
@@ -280,6 +348,24 @@ pub async fn install_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_only_fully_installed_debian_versions() {
+        assert_eq!(parse_installed_deb_version("ii \t0.4.123\n").as_deref(), Some("0.4.123"));
+        assert_eq!(parse_installed_deb_version("ii \t1:0.4.123-1").as_deref(), Some("1:0.4.123-1"));
+        assert!(parse_installed_deb_version("rc \t0.4.123").is_none());
+        assert!(parse_installed_deb_version("iU \t0.4.123").is_none());
+        assert!(parse_installed_deb_version("invalid").is_none());
+    }
+
+    #[test]
+    fn deb_metadata_must_match_the_offered_version_and_package() {
+        assert!(validate_deb_metadata("git-swamp\n0.4.123\namd64\n", "0.4.123", "x86_64").is_ok());
+        assert!(validate_deb_metadata("git-swamp\n0.4.123\narm64\n", "0.4.123", "aarch64").is_ok());
+        for metadata in ["git-swamp\n0.4.0\namd64\n", "another-app\n0.4.123\namd64\n", "git-swamp\n0.4.123\narm64\n", "invalid"] {
+            assert!(validate_deb_metadata(metadata, "0.4.123", "x86_64").is_err());
+        }
+    }
 
     fn release(tag: &str, published: &str, prerelease: bool, manifest: bool) -> GithubRelease {
         GithubRelease {

@@ -1,5 +1,7 @@
 # User Guide
 
+See [Current workflows and troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md) for amend, checkout protection, abort, Undo, editing, large commits and Debian updates.
+
 ## 1. Getting Started
 
 ### 1.1 Installation
@@ -7,14 +9,14 @@
 **Download GitSwamp:**
 1. Visit [GitHub Releases](https://github.com/mgrabovac22/gitswamp/releases)
 2. Download for your operating system:
-   - Windows: `gitswamp-setup.msi`
+   - Windows: the `-setup.exe` installer
    - macOS: `GitSwamp.dmg`
-   - Linux: `gitswamp.AppImage`
+   - Linux: an `.AppImage` or the `.deb` for your architecture
 
 **Install:**
 
 **Windows:**
-- Run the `.msi` installer
+- Run the `-setup.exe` installer
 - Follow installation wizard
 - Application starts automatically
 
@@ -24,6 +26,8 @@
 - Launch from Applications
 
 **Linux:**
+- Debian/Ubuntu: open the `.deb` in your package manager, or run `sudo apt install ./GitSwamp_VERSION_amd64.deb` with the actual filename. Restart GitSwamp after upgrading.
+- A package with the same internal version is already installed; renaming it does not make it an upgrade.
 - Make AppImage executable: `chmod +x gitswamp.AppImage`
 - Run: `./gitswamp.AppImage`
 
@@ -170,7 +174,7 @@ The interactive commit history graph showing:
 - All commits in chronological order
 - Interactive commit selection and navigation
 
-#### Galaxy View (Alt+2)
+#### Galaxy View (Alt+7)
 Explore history on a canvas-based map:
 - Spiral, layered, and constellation layouts
 - 3D, balanced, and circling motion modes
@@ -178,7 +182,7 @@ Explore history on a canvas-based map:
 - Zoom, pan, click-to-focus, and hover details
 - Useful for understanding how branches and commits relate visually
 
-#### Productivity Arena (Alt+3)
+#### Productivity Arena (Alt+2)
 Visualize developer activity and metrics:
 - Start in preview mode, then use **Load all** for the full commit history
 - Filter metrics by author to compare one contributor against the whole team
@@ -203,7 +207,7 @@ Navigate through repository history frame-by-frame:
 - Snapshot panels keep context and update progressively with section loaders and caches
 - Useful for forensic analysis and understanding repository evolution
 
-#### Usual Conflict Suspects (Alt+5)
+#### Usual Conflict Suspects (Alt+3)
 See merge conflict hotspots and risky areas:
 - Files with highest conflict frequency
 - Conflict risk assessment
@@ -215,7 +219,7 @@ See merge conflict hotspots and risky areas:
 - Search filtering and tree-scope filtering for focused investigation
 - Helps prevent conflicting changes
 
-#### Burnout Analytics (Alt+6)
+#### Burnout Analytics (Alt+9)
 Understand team focus and repository pulse:
 - Recent weekly repository activity
 - After-hours and weekend indicators
@@ -229,7 +233,7 @@ Understand team focus and repository pulse:
 
 **Method 1: Sidebar**
 1. Find branch in "Branches" section
-2. Click to checkout
+2. Double-click the branch to check it out, or use its context menu
 3. Working directory updates
 
 **Method 2: Header**
@@ -254,6 +258,8 @@ Understand team focus and repository pulse:
 2. Select "Delete Branch"
 3. Confirm deletion
 4. Branch removed
+
+The active branch cannot be deleted. Switch to another branch first. Branches and tags with the same name are separate references; use the branch entry for branch checkout.
 
 ### 5.4 Rename Branch
 
@@ -306,6 +312,10 @@ Understand team focus and repository pulse:
 2. Click file in file list
 3. Shows changes in that commit
 
+Large commits show a loading indicator while files and statistics are computed in the background. Their file and tree lists render the visible rows, with normal scrolling through the full list.
+
+**Edit a File:** select the pencil icon in a working-file diff, edit and Save. Selecting another file loads its content. Drafts last only while that viewer stays open. Supported code is colored; oversized or unsupported files remain plain text.
+
 **File Journey:**
 1. Open a file diff
 2. Click the small File Journey icon in the diff toolbar
@@ -326,6 +336,8 @@ Understand team focus and repository pulse:
 4. Add detailed description (optional)
 5. Click "Commit"
 6. New commit appears in graph
+
+To amend, stage the desired changes and right-click the last commit or Working Changes in the graph, then choose **Amend commit**. Review the options before confirming: amend can replace file content and changes the commit SHA.
 
 **Visual Commit Builder:**
 1. Click the builder icon beside the commit analyzer/message area
@@ -357,6 +369,8 @@ Each line should be under 72 characters.
 3. Local branch updates
 4. Commit graph refreshes
 5. After a successful merge flow, GitSwamp may offer to download generated release notes
+
+Pull protection uses a safety stash when local changes need to be moved aside. If merge or stash restoration conflicts, review the result rather than discarding it. Resolving individual files does not end the merge; commit it or use **Abort merge**.
 
 ### 7.3 Fetch Changes
 
@@ -491,6 +505,8 @@ If conflicts occur during pull/merge:
 4. Mark resolved
 5. Commit to complete merge
 
+**Resolve all** asks which whole-file side to keep. Manual resolution is per file. To cancel, choose **Abort merge** or **Abort cherry-pick** in the header and wait for success. With Undo enabled, abort first waits through the five-second cancellation window.
+
 ## 13. Keyboard Shortcuts
 
 | Shortcut | Action | Menu Location |
@@ -513,11 +529,14 @@ If conflicts occur during pull/merge:
 | `Ctrl+Shift+L` | Toggle logs | Help/Debug |
 | `Alt+O` | Open in folder explorer | View → Open Folder Explorer |
 | `Alt+1` | Switch to Graph view (Commit history) | View → Visualize Commit History |
-| `Alt+2` | Switch to Galaxy View | View → Galaxy View |
-| `Alt+3` | Switch to Productivity Arena | View → Productivity Arena |
+| `Alt+2` | Switch to Productivity Arena | View → Productivity Arena |
+| `Alt+3` | Switch to Usual Conflict Suspects | View → Usual Conflict Suspects |
 | `Alt+4` | Switch to Time Machine | View → Time Machine |
-| `Alt+5` | Switch to Conflict Heatmap | View → Usual Conflict Suspects |
-| `Alt+6` | Switch to Burnout Analytics | View → Burnout Analytics |
+| `Alt+5` | Switch to Fast Scripts | View → Fast Scripts |
+| `Alt+6` | Switch to API Pulse | View → API Pulse |
+| `Alt+7` | Switch to Galaxy View | View → Galaxy View |
+| `Alt+8` | Switch to Repository City | View → Repository City |
+| `Alt+9` | Switch to Burnout Analytics | View → Burnout Analytics |
 | `Ctrl+R` | Focus commit search | (Global) |
 
 **Note:** `Ctrl+`` means Ctrl + Backtick (key below Esc on most layouts).
@@ -589,6 +608,7 @@ If conflicts occur during pull/merge:
 
 **GitSwamp safety helpers:**
 - UI destructive actions such as discard run after a short undo toast window
+- Undo cancels during that window, not after execution. With Undo disabled, actions may execute immediately after their normal confirmation.
 - The integrated terminal previews destructive commands such as `git reset --hard`, forced `git clean`, destructive restore, branch delete, stash pop/drop/clear, and force push
 - When possible, the terminal safety prompt can create a safety stash before continuing
 - Discard actions for changes are scoped to the intended unstaged working-tree changes, not staged changes
@@ -663,9 +683,9 @@ If conflicts occur during pull/merge:
 
 ### 16.1 Documentation
 
-- Check [GitHub Wiki](https://github.com/mgrabovac22/gitswamp/wiki)
-- See [FAQ Section](#faq)
-- Review [Video Tutorials](#tutorials)
+- Open the [documentation index](DOCUMENTATION_00_INDEX.md).
+- Review [current workflows and troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md), including Debian's same-version message.
+- Android users should use the [mobile guide](../software/gitswamp-mobile/README.md).
 
 ### 16.2 Report Issues
 

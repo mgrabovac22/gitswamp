@@ -10,6 +10,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+src-tauri/packaging/changelog
+src-tauri/packaging/RELEASE-NOTES.txt
+src-tauri/packaging/com.wortex.gitswamp.metainfo.xml
 *.local
 
 # Editor directories and files

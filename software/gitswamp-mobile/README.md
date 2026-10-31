@@ -40,6 +40,18 @@ The script also creates `dist/GitSwamp-Mobile-debug.apk` with the standard Andro
 
 ## Core workflow
 
+### GitHub authorization and clone
+
+Clone first tries the saved host credential or anonymous access. If authorization is needed, choose GitHub browser sign-in or a personal access token. Existing remembered credentials are reused; a network/DNS failure is not treated as a request to authorize again.
+
+After GitHub authorization, the clone flow shows accessible repositories. Search the loaded list, load another page when needed, select a repository, review its local folder name and choose Clone. The **GitHub repositories** action can open this list without typing a URL first. A token is only forwarded to a validated GitHub clone URL, not an arbitrary host returned in a repository payload.
+
+If browser authorization succeeds but the connection fails, retry the connection or clone instead of starting another authorization. The pending device-code session is encrypted and can resume until GitHub's expiry time. A remembered access token is stored in the Android Keystore-backed vault.
+
+The repository screen has a dashboard/back action. Diff horizontal scrolling is available across the diff viewport, not just on selected text elements. Desktop-only amend and active-operation controls are described separately in the [desktop workflow guide](../../documentation/DOCUMENTATION_39_RECENT_WORKFLOWS.md).
+
+### Repository actions
+
 - **Start screen:** clone an HTTPS repository, browse a device folder, initialize a repository, search recent repositories, or reopen one instantly.
 - **Commit graph:** Canvas-rendered branch lanes, commit refs, message, author, relative time, SHA, commit search, selectable rows, and bounded incremental loading.
 - **Commit details:** metadata, parent SHAs, changed-file list, and file-specific unified diff.

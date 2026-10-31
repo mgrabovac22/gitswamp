@@ -1,5 +1,11 @@
 # Security Considerations
 
+## Debian Update Boundary
+
+The Debian updater downloads the offered GitHub release for the matching architecture. It checks the archive header and inspects package name/version/architecture using `dpkg-deb` before exposing the final file. Installed dpkg state is checked to avoid redundant installation or offering an older package over a newer installed version.
+
+Downloads use HTTPS. The separate `.deb` path is not claimed to have Tauri updater signature verification, which remains part of supported native updater artifacts. Debian installation is a user-approved system package-manager action. GitSwamp does not request an administrator password, automatically run privileged installation commands or disable OS security checks.
+
 ## 1. Authentication & Authorization
 
 ### 1.1 Local Repository Access

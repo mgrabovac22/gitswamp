@@ -3,6 +3,16 @@
 How GitSwamp checks for, downloads, and installs updates, and exactly what you must
 build, sign, and publish to every GitHub release for it to work.
 
+## Current Debian Behavior
+
+AppImage, Windows and macOS keep the signed native updater flow. A `.deb` installation downloads the exact release shown by the panel and hands installation to the system package manager. It does not first try an AppImage installation.
+
+The updater checks `git-swamp` using `dpkg-query` and Debian version ordering. If the offered version or a newer one is already installed, an older running process shows **Restart required** rather than downloading again. The downloaded package is inspected with `dpkg-deb`: its name, version and architecture must match the offered update. Download completion is not reported as completed installation.
+
+The panel offers **Download .deb**, **Open .deb**, **Check installation**, **Restart** and a link to GitHub release notes according to its state. Authorization belongs to the OS package manager. HTTPS and metadata checks do not imply that the `.deb` has a Tauri updater signature.
+
+See [user troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md#same-version-already-installed) for version comparison commands. A same-version message is expected when manually opening an already installed package.
+
 ---
 
 ## 1. How it works
@@ -125,6 +135,18 @@ The updater compares against the version baked into the app from
 
 Use `X.Y.Z` (no leading `v`). The Git tag may include a `v` (e.g. `v0.5.0`).
 
+### Automated main-branch releases
+
+`.github/workflows/release.yml` runs on pushes to `main`, including merged pull requests. It builds Windows x64, Linux x64, macOS Intel and Apple Silicon. The prepared patch number is `basePatch * 1_000_000 + github.run_number`. Successive workflow runs of one base version therefore produce distinct package versions; rerunning the same workflow run intentionally retains its version.
+
+`node scripts/set-release-version.mjs VERSION` synchronizes package.json, the root package-lock entry, Tauri config and Cargo's package version. It prepares Linux metadata and can be rerun with the same version.
+
+Package information uses the standard text **GitSwamp update with fixes and improvements.** There is no curated per-release feature list to maintain. GitHub still generates release notes automatically; `latest.json` uses the standard update text.
+
+Linux CI runs `scripts/verify-deb.mjs` against the actual package before upload, rejecting mismatched internal versions or missing metadata. Changing a filename alone is not a version bump.
+
+Add secrets under GitHub **Settings > Secrets and variables > Actions > New repository secret**: `TAURI_SIGNING_PRIVATE_KEY` and, if needed, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never commit the private key. GitHub supplies `GITHUB_TOKEN` for release uploads.
+
 ---
 
 ## 4. Build and sign a release
@@ -164,10 +186,7 @@ updater artifacts. Default locations are under `src-tauri/target/release/bundle/
 
 Notes:
 
-- **Linux auto-update requires the AppImage.** A `.deb`/`.rpm` installation cannot be
-  replaced by the AppImage updater because the running installation format controls how
-  Tauri installs the update. Install the published `.AppImage` once; later updates use
-  the signed `.AppImage.tar.gz` updater artifact and replace that AppImage in place.
+- **AppImage updates replace the AppImage.** Debian installations use the separate package flow above; do not switch formats as an update workaround. RPM is not built by the current workflow.
 - **Windows uses the NSIS `-setup.exe`.** Do not rely on the `.msi` for updates.
 - **macOS tarballs have identical names for both architectures**, so you must rename each
   one to include `_x64` or `_aarch64` before uploading, otherwise the two collide and the
@@ -176,6 +195,8 @@ Notes:
 ---
 
 ## 6. Which release the app picks
+
+Debian downloads stay bound to the tag and version shown at check time. A new release published during the download does not silently change the selected package.
 
 The app filters out drafts and any release **without a `latest.json` asset**, then:
 

@@ -8,12 +8,18 @@ Complete software documentation for the GitSwamp Git client application built wi
 
 - **Work Dashboard** on the start screen lists GitHub pull requests authored by the signed-in user and issues assigned to them, with local repository context when no token is configured
 - **Command Palette (Ctrl+K)** centralizes common repository, view, terminal, settings, and analysis actions
-- **Galaxy View (Alt+2)** and **Burnout Analytics (Alt+6)** extend the history tools alongside Productivity Arena, Time Machine, and Conflict Suspects
+- **Galaxy View (Alt+7)** and **Burnout Analytics (Alt+9)** extend the history tools alongside Productivity Arena, Time Machine, and Conflict Suspects
 - **Smart .gitignore Wizard** is enabled by default and suggests generated/private untracked files such as `node_modules/`, `dist/`, `target/`, `.env`, and logs
 - **Micro-staging** supports hunk-level stage, unstage, and discard actions directly in the diff viewer
 - **Terminal Command Safety Layer** previews destructive manual Git commands and can create a safety stash before continuing
 - **Release Notes Generator** offers a Markdown download after successful merge flows
-- **102 Tauri commands** provide comprehensive Git operations, analytics, diff tooling, terminal support, and system integration
+- **Tauri commands** provide Git operations, analytics, diff tooling, terminal support and system integration
+
+## Current Workflows
+
+See the [updated workflow guide](./documentation/DOCUMENTATION_39_RECENT_WORKFLOWS.md) for amend, safe branch checkout, merge/cherry-pick abort, Undo, direct file editing, background syntax coloring, large commit lists and Debian updates. Android authorization and clone instructions are in the [mobile guide](./software/gitswamp-mobile/README.md).
+
+Debian packages update through the system package manager. If the same package version is already installed, restart GitSwamp rather than repeatedly reinstalling it. Package information uses standard update text; GitHub release notes remain automatically generated.
 
 ## Documentation Overview
 
@@ -33,7 +39,7 @@ This comprehensive documentation package contains the active GitSwamp documentat
 ### Implementation Guides
 - **[Frontend Overview](./documentation/DOCUMENTATION_04_FRONTEND_OVERVIEW.md)** - Vue 3 frontend architecture and components
 - **[Backend Overview](./documentation/DOCUMENTATION_08_BACKEND_OVERVIEW.md)** - Rust backend and Tauri integration
-- **[Commands Reference](./documentation/DOCUMENTATION_09_COMMANDS_REFERENCE.md)** - All 102 Tauri commands with examples
+- **[Commands Reference](./documentation/DOCUMENTATION_09_COMMANDS_REFERENCE.md)** - Command contracts and examples
 
 ### Features & Operations
 - **[Core Features](./documentation/DOCUMENTATION_11_CORE_FEATURES.md)** - Main application functionality
@@ -111,7 +117,7 @@ This comprehensive documentation package contains the active GitSwamp documentat
 **Size:** ~15 KB | **Sections:** 12
 
 ### 6. Commands Reference (DOCUMENTATION_09_COMMANDS_REFERENCE.md)
-- Complete command listing (102 Tauri commands)
+- Command listing and IPC contracts
 - Repository commands
 - Commit commands
 - Branch commands
@@ -211,7 +217,7 @@ This comprehensive documentation package contains the active GitSwamp documentat
 | Total Documentation Size | ~130 KB |
 | Code Examples | 100+ |
 | Diagrams & Flowcharts | 10+ |
-| Commands Documented | 102 |
+| Command registration | `software/gitswamp/src-tauri/src/lib.rs` |
 | Components Documented | 41 Vue components |
 | Data Models | 10+ |
 | Keyboard Shortcuts | 20+ |
@@ -351,7 +357,7 @@ This comprehensive documentation package contains the active GitSwamp documentat
 
 **Key Directories:**
 - Frontend components: 41 Vue files
-- Backend commands: 14 Rust command modules (102 commands)
+- Backend command registration: `software/gitswamp/src-tauri/src/lib.rs`
 - Models: 10+ TypeScript/Rust types
 - Styles: Tailwind CSS configuration
 

@@ -400,6 +400,10 @@ tauri-build = "2"
 
 ## 9. Async/Await Pattern
 
+`get_commit_files` and `get_repo_info` are asynchronous Tauri commands using `tauri::async_runtime::spawn_blocking` for libgit2 work. This keeps heavy commit statistics and status scans off the native UI thread without changing their response models. Async IPC alone is not proof that all internal work is nonblocking; inspect each command implementation.
+
+Debian update discovery and package downloads also move blocking HTTP/process work to background tasks. `download_deb_update` accepts the offered `tag` and `version`, checks installed dpkg state, and validates downloaded package name/version/architecture before returning a path. It never starts a privileged installation itself.
+
 ### 9.1 Async Commands
 
 All Tauri commands are automatically async:
