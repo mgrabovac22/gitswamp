@@ -377,7 +377,6 @@ function handleCommitFileArrowLeft(event: KeyboardEvent) {
 }
 
 const activeTab = ref<"changes" | "info">("changes");
-// Tracks whether the user explicitly selected the tab. When true, do not override on programmatic commit changes.
 const userSelectedTab = ref(false);
 
 function setActiveTab(tab: "changes" | "info") {
@@ -404,7 +403,6 @@ watch(() => props.commit, (newVal) => {
     return;
   }
 
-  // Preserve user choice when stepping between commits
   if (userSelectedTab.value) {
     return;
   }

@@ -93,10 +93,9 @@ const timeLapseCommitWindowSafe = computed(() => {
   return Math.min(MAX_TIME_LAPSE_COMMIT_WINDOW, Math.max(MIN_TIME_LAPSE_COMMIT_WINDOW, rounded));
 });
 
-// Virtualization state
 const scrollTop = ref(0);
 const containerHeight = ref(400);
-const LINE_HEIGHT = 18; // pixels per line
+const LINE_HEIGHT = 18;
 const OVERSCAN = 10;
 const fileDiffScrollContainer = ref<HTMLElement | null>(null);
 const FILE_DIFF_OVERVIEW_MIN_VISIBLE_RATIO = 1.08;
@@ -895,7 +894,6 @@ async function reload() {
       void loadFileBlame();
     }
     
-    // Don't load file content synchronously - do it lazily
     if (viewMode.value === "file-diff") {
       void loadFileContentAsync();
     }
@@ -922,7 +920,6 @@ async function loadFileContentAsync(forceRefresh = false) {
   const loadSequence = ++fileContentLoadSequence;
   
   try {
-    // Use requestAnimationFrame to prevent blocking
     await new Promise(resolve => requestAnimationFrame(resolve));
     if (loadSequence !== fileContentLoadSequence) return;
     
@@ -2002,7 +1999,6 @@ async function shareSelectionAsSnippet() {
     }
     toast.success("Snippet shared as gist. Link copied to clipboard.");
   } catch {
-    // Try to create a paste.rs fallback and show diagnostic info
     try {
       const pasteUrl = await createPasteRsLink(selected);
       if (pasteUrl) {
@@ -2072,7 +2068,6 @@ async function createGithubGistLink(fileName: string, selected: string): Promise
 
     return gistUrl;
   } catch (err: any) {
-    // Normalize error message and log for diagnostics. Caller will fall back.
     const message = err?.message || String(err);
     console.error("createGithubGistLink failed:", message);
     throw new Error(`createGithubGistLink failed: ${message}`);
@@ -2100,7 +2095,6 @@ async function createPasteRsLink(selected: string): Promise<string | null> {
   return link;
 }
 
-// Virtualization for file-diff view
 const visibleFileLines = computed(() => {
   const all = fullFileLines.value;
   if (!all.length) return [];
@@ -2351,7 +2345,6 @@ function getHighlightedLine(lineText: string, key: string): string {
     || isPlainTextFastPath.value
     || lineText.length > LONG_LINE_PLAIN_TEXT_THRESHOLD;
   if (shouldUsePlainText) return escapeHtml(lineText);
-  // Render immediately; tokenization runs in the worker, never in Vue's render.
   return syntax.get(lineText) ?? escapeHtml(lineText);
 }
 

@@ -94,11 +94,6 @@ fn fetch_releases() -> Result<Vec<GithubRelease>, String> {
         .map_err(|e| format!("Update release parse failed: {}", e))
 }
 
-/// Picks the release that should be offered as an update.
-///
-/// The newest non-draft release that ships a `latest.json` manifest wins.
-/// A prerelease is only preferred when it is chronologically newer than the
-/// newest stable release.
 fn pick_release(releases: &[GithubRelease]) -> Option<GithubRelease> {
     let mut candidates: Vec<GithubRelease> = releases
         .iter()

@@ -1878,9 +1878,6 @@ impl GitService {
             return Self::checkout_remote_branch(&repo, remote_name, remote_branch);
         }
 
-        // A branch checkout deliberately resolves only local branches. Tags and
-        // arbitrary revisions use the explicit commit checkout path and cannot
-        // accidentally place the user in detached HEAD state.
         Self::checkout_local_branch(&repo, trimmed)
     }
     pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {

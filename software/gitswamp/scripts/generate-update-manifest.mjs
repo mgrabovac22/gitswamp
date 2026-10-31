@@ -56,8 +56,6 @@ function platformFor(file) {
     return isArm ? "linux-aarch64" : "linux-x86_64";
   }
   if (lower.endsWith(".app.tar.gz")) {
-    // A universal macOS bundle cannot be expressed as a single platform key;
-    // build and publish one tarball per architecture instead.
     if (isUniversal) return null;
     return isArm ? "darwin-aarch64" : "darwin-x86_64";
   }

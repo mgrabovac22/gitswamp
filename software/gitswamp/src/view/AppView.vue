@@ -446,7 +446,6 @@ async function resolveConflict(filePath: string, resolution: 'keep-modified' | '
       strategy = "delete";
     }
 
-    // Use backend to resolve conflict properly
     await invoke('resolve_conflict_file', {
       path: git.repoPath.value,
       filePath: filePath,
@@ -3977,7 +3976,6 @@ watch([tabs, activeTabId], () => {
   );
 }, { deep: true });
 
-// Collapse side panel and close diff when switching tabs
 watch(activeTabId, () => {
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
@@ -4293,10 +4291,8 @@ async function handleInit(path: string, branchName: string) {
 
 async function handlePush() {
   appendLog("user", "Push triggered.");
-  // First, check if origin exists
   const hasOrigin = await git.checkOriginExists();
   if (hasOrigin) {
-    // Origin exists, push normally
     activeRemoteAction.value = "push";
     try {
       await git.push();
@@ -4311,7 +4307,6 @@ async function handlePush() {
     }
   } else {
     appendLog("app", "Push requires remote setup first.");
-    // No origin, show dialog to select platform
     const repoName = git.repoInfo.value?.name || "repository";
     multiPlatformPushRepoName.value = repoName;
     showMultiPlatformPushDialog.value = true;
@@ -4319,14 +4314,12 @@ async function handlePush() {
 }
 
 function handleMultiPlatformPush(platform: string) {
-  // For hosted platforms, ask for owner/workspace first. Azure additionally needs host domain.
   if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted' || platform === 'gitlab-self' || platform === 'bitbucket' || platform === 'azure') {
     pushPlatform.value = platform;
     pushUsername.value = "";
     pushDomain.value = "";
     showPushUsernameDialog.value = true;
   } else {
-    // For other platforms, push directly
     performPush(platform, "");
   }
 }
@@ -4343,10 +4336,8 @@ async function performPush(platform: string, username: string) {
         return;
       }
 
-      // For self-hosted instances: username/repo@domain.com
       repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}@${normalizedDomain}`;
     } else {
-      // For standard platforms: username/repo
       repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}`;
     }
   } else {

@@ -137,8 +137,6 @@ impl RemoteService {
             return candidates;
         }
 
-        // Unknown hosts include self-hosted platforms, so prefer GitLab's oauth2 alias first
-        // and then fall back to other common token usernames.
         Self::push_unique_candidate(&mut candidates, AUTH_USER_GITLAB);
         Self::push_unique_candidate(&mut candidates, AUTH_USER_GITHUB);
         Self::push_unique_candidate(&mut candidates, AUTH_USER_BITBUCKET);
@@ -461,8 +459,6 @@ impl RemoteService {
             );
         }
 
-        // Leave untracked files in place. Safe checkout refuses to overwrite them,
-        // avoiding an expensive stash of generated directories such as node_modules.
         let safety_stash = if has_tracked_changes {
             Some(StashService::stash_push_oid(
                 path,

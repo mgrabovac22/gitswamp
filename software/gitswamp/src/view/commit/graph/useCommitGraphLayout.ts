@@ -161,7 +161,6 @@ function buildGraphModel(commits: CommitInfo[]) {
 }
 
 function nodeConnectionGap(commit: CommitInfo): number {
-  // Merge edges should connect to the center of the merge node.
   if (commit.parent_shas.length > 1) {
     return 0;
   }
@@ -617,8 +616,6 @@ export function useCommitGraphLayout(
     const maxTurnY = ey - minBottomGap;
     const turnY = Math.min(preferredTurnY, maxTurnY);
 
-    // Use one consistent, symmetric corner radius so all lane changes
-    // have the same horizontal<->vertical transition feel.
     const targetRadius = CORNER_R + 2;
     const availableUp = Math.max(1, turnY - sy);
     const availableDown = Math.max(1, ey - turnY);
