@@ -40,8 +40,11 @@ pub async fn push_force(path: String, token: Option<String>) -> Result<String, S
 }
 
 #[tauri::command]
-pub async fn fetch_all(path: String, token: Option<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || GitService::fetch_all(&path, token.as_deref()))
+pub async fn fetch_all(path: String, token: Option<String>, remote_name: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || match remote_name {
+        Some(name) => GitService::fetch_remote(&path, token.as_deref(), &name),
+        None => GitService::fetch_all(&path, token.as_deref()),
+    })
         .await
         .map_err(|e| e.to_string())?
 }

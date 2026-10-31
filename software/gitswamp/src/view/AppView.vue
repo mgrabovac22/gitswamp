@@ -248,6 +248,7 @@ const multiPlatformPushRepoName = ref("");
 const showPushUsernameDialog = ref(false);
 const pushPlatform = ref("");
 const pushUsername = ref("");
+const pushProject = ref("");
 const pushDomain = ref("");
 const detailsPanelCollapsed = ref(true);
 const openPullRequestBranches = ref<string[]>([]);
@@ -4317,6 +4318,7 @@ function handleMultiPlatformPush(platform: string) {
   if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted' || platform === 'gitlab-self' || platform === 'bitbucket' || platform === 'azure') {
     pushPlatform.value = platform;
     pushUsername.value = "";
+    pushProject.value = "";
     pushDomain.value = "";
     showPushUsernameDialog.value = true;
   } else {
@@ -4336,7 +4338,10 @@ async function performPush(platform: string, username: string) {
         return;
       }
 
-      repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}@${normalizedDomain}`;
+      const repositoryName = git.repoInfo.value?.name || multiPlatformPushRepoName.value;
+      repoName = platform === "azure"
+        ? `${username}/${pushProject.value.trim()}/${repositoryName}@${normalizedDomain}`
+        : `${username}/${repositoryName}@${normalizedDomain}`;
     } else {
       repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}`;
     }
@@ -5413,6 +5418,7 @@ function submitCreateTag() {
       :show-push-username-dialog="showPushUsernameDialog"
       :push-platform="pushPlatform"
       :push-username="pushUsername"
+      :push-project="pushProject"
       :push-domain="pushDomain"
       :show-auth-required-dialog="showAuthRequiredDialog"
       :auth-provider="authProvider"
@@ -5423,6 +5429,7 @@ function submitCreateTag() {
       :auth-submitting="authSubmitting"
       @update:show-push-username-dialog="showPushUsernameDialog = $event"
       @update:push-username="pushUsername = $event"
+      @update:push-project="pushProject = $event"
       @update:push-domain="pushDomain = $event"
       @push="performPush(pushPlatform, pushUsername)"
       @update:show-auth-required-dialog="showAuthRequiredDialog = $event"

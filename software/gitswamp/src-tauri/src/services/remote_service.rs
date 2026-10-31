@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::constants::{
     AUTH_USER_BITBUCKET, AUTH_USER_BITBUCKET_API, AUTH_USER_GITHUB, AUTH_USER_GITLAB, AZURE_HOST,
     AZURE_LEGACY_HOST, BITBUCKET_HOST, GITHUB_HOST, GITLAB_HOST, HTTPS_SCHEME, PLATFORM_AZURE,
@@ -25,6 +23,16 @@ enum PullPlan {
 }
 
 impl RemoteService {
+    fn public_remote_url(remote_url: &str) -> Result<String, String> {
+        let mut url = url::Url::parse(remote_url)
+            .map_err(|error| format!("Failed to build provider remote URL: {}", error))?;
+        url.set_username("")
+            .map_err(|_| "Failed to remove credentials from provider remote URL.".to_string())?;
+        url.set_password(None)
+            .map_err(|_| "Failed to remove credentials from provider remote URL.".to_string())?;
+        Ok(url.to_string())
+    }
+
     pub fn get_git_path() -> String {
         GitRepository::get_git_path()
     }
@@ -284,12 +292,21 @@ impl RemoteService {
     }
 
     pub fn fetch_all(path: &str, token: Option<&str>) -> Result<String, String> {
+        Self::fetch_selected(path, token, None)
+    }
+
+    pub fn fetch_remote(path: &str, token: Option<&str>, remote_name: &str) -> Result<String, String> {
+        Self::fetch_selected(path, token, Some(remote_name))
+    }
+
+    fn fetch_selected(path: &str, token: Option<&str>, remote_name: Option<&str>) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let remotes = repo.remotes().map_err(|e| e.message().to_string())?;
-        let remote_names: Vec<String> = remotes
-            .iter()
-            .filter_map(|n| n.map(|s| s.to_string()))
-            .collect();
+        let remote_names: Vec<String> = if let Some(name) = remote_name {
+            vec![name.to_string()]
+        } else {
+            remotes.iter().filter_map(|n| n.map(|s| s.to_string())).collect()
+        };
 
         for remote_name in &remote_names {
             let mut remote = repo
@@ -832,28 +849,18 @@ impl RemoteService {
         let parsed_name_parts: Vec<&str> = name_part
             .split('/')
             .map(|part| part.trim())
-            .filter(|part| !part.is_empty())
             .collect();
         let repo_name_part_count = parsed_name_parts.len();
 
-        let fallback_repo_name = Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("repository")
-            .to_string();
+        if repo_name_part_count < 2 || parsed_name_parts.iter().any(|part| part.is_empty()) {
+            return Err(
+                "Repository name must include the owner and repository, for example owner/repo."
+                    .to_string(),
+            );
+        }
 
-        let owner = parsed_name_parts
-            .first()
-            .map(|value| (*value).to_string())
-            .unwrap_or_else(|| "user".to_string());
-        let actual_repo_name = if repo_name_part_count >= 2 {
-            parsed_name_parts
-                .last()
-                .map(|value| (*value).to_string())
-                .unwrap_or_else(|| fallback_repo_name.clone())
-        } else {
-            fallback_repo_name.clone()
-        };
+        let owner = parsed_name_parts[0].to_string();
+        let actual_repo_name = parsed_name_parts[repo_name_part_count - 1].to_string();
         let azure_project = if repo_name_part_count >= 3 {
             Some(parsed_name_parts[repo_name_part_count - 2].to_string())
         } else {
@@ -864,7 +871,7 @@ impl RemoteService {
 
         let remote_url = match platform {
             PLATFORM_GITHUB => {
-                if repo_name_part_count > 2 {
+                if repo_name_part_count != 2 {
                     return Err(
                         "Invalid repo_name format. Use username/repo for GitHub.".to_string()
                     );
@@ -875,7 +882,7 @@ impl RemoteService {
                 )
             }
             PLATFORM_GITHUB_ENTERPRISE => {
-                if repo_name_part_count > 2 {
+                if repo_name_part_count != 2 {
                     return Err(
                         "Invalid repo_name format. Use username/repo@domain for GitHub Enterprise."
                             .to_string(),
@@ -890,7 +897,7 @@ impl RemoteService {
                 )
             }
             PLATFORM_GITLAB => {
-                if repo_name_part_count > 2 {
+                if repo_name_part_count != 2 {
                     return Err(
                         "Invalid repo_name format. Use username/repo for GitLab.".to_string()
                     );
@@ -901,7 +908,7 @@ impl RemoteService {
                 )
             }
             PLATFORM_GITLAB_SELF_HOSTED => {
-                if repo_name_part_count > 2 {
+                if repo_name_part_count != 2 {
                     return Err("Invalid repo_name format. Use username/repo@domain for GitLab self-hosted.".to_string());
                 }
                 let domain = domain.ok_or(
@@ -913,7 +920,7 @@ impl RemoteService {
                 )
             }
             PLATFORM_BITBUCKET => {
-                if repo_name_part_count > 2 {
+                if repo_name_part_count != 2 {
                     return Err(
                         "Invalid repo_name format. Use workspace/repo for Bitbucket.".to_string(),
                     );
@@ -929,7 +936,12 @@ impl RemoteService {
                 )
             }
             PLATFORM_AZURE => {
-                let project = azure_project.unwrap_or_else(|| "project".to_string());
+                if repo_name_part_count != 3 {
+                    return Err("Azure DevOps requires exactly organization/project/repository@domain.".to_string());
+                }
+                let project = azure_project.ok_or(
+                    "Azure DevOps requires organization/project/repository@domain.",
+                )?;
                 let domain_value = domain
                     .unwrap_or_else(|| AZURE_HOST.to_string())
                     .trim()
@@ -956,33 +968,54 @@ impl RemoteService {
             _ => return Err(format!("Unknown platform: {platform}")),
         };
 
-        if repo.find_remote(TEMP_PUSH_REMOTE_PLATFORM).is_ok() {
-            let _ = repo.remote_delete(TEMP_PUSH_REMOTE_PLATFORM);
-        }
-
-        let mut remote = repo
-            .remote(TEMP_PUSH_REMOTE_PLATFORM, &remote_url)
-            .map_err(|e| format!("Failed to create temporary remote: {}", e.message()))?;
-
-        let callbacks = Self::build_remote_callbacks(Some(token), &remote_url);
-
-        let mut push_opts = git2::PushOptions::new();
-        push_opts.remote_callbacks(callbacks);
-
         let mut push_refspecs: Vec<&str> = Vec::with_capacity(1 + tag_refspecs.len());
         push_refspecs.push(refspec.as_str());
         for tag_refspec in &tag_refspecs {
             push_refspecs.push(tag_refspec.as_str());
         }
 
-        remote.push(&push_refspecs, Some(&mut push_opts)).map_err(|e| {
-            let msg = e.message().to_string();
-            if msg.contains("status code: 404") {
-                return "Push failed with 404: repository not found or no access. For GitHub, create the repository first on GitHub (same username/repo) and verify token permissions (repo scope).".to_string();
-            }
-            msg
-        })?;
+        let origin_url = Self::public_remote_url(&remote_url)?;
+        Self::push_provider_remote(&repo, &origin_url, token, &push_refspecs)?;
         Ok(format!("Push to {platform} completed. Tags pushed too."))
+    }
+
+    fn push_provider_remote(repo: &git2::Repository, origin_url: &str, token: &str, refspecs: &[&str]) -> Result<(), String> {
+        if repo.find_remote(TEMP_PUSH_REMOTE_PLATFORM).is_ok() {
+            repo.remote_delete(TEMP_PUSH_REMOTE_PLATFORM).map_err(|error| {
+                format!("Could not remove the old temporary remote. Push cancelled: {}", error.message())
+            })?;
+        }
+        let mut remote = repo.remote_anonymous(origin_url)
+            .map_err(|error| format!("Failed to create push connection: {}", error.message()))?;
+        let mut push_opts = git2::PushOptions::new();
+        push_opts.remote_callbacks(Self::build_remote_callbacks(Some(token), origin_url));
+        let push_result = remote.push(refspecs, Some(&mut push_opts));
+        drop(remote);
+
+        if let Err(error) = push_result {
+            let msg = error.message().to_string();
+            if msg.contains("status code: 404") {
+                return Err("Push failed with 404: repository not found or no access. Create the repository first on the provider and verify token permissions.".to_string());
+            }
+            return Err(msg);
+        }
+
+        if repo.find_remote("origin").is_ok() {
+            if let Err(error) = repo.remote_set_url("origin", origin_url) {
+                return Err(format!(
+                    "Push succeeded, but origin could not be updated: {}",
+                    error.message()
+                ));
+            }
+        } else {
+            if let Err(error) = repo.remote("origin", origin_url) {
+                return Err(format!(
+                    "Push succeeded, but origin could not be configured: {}",
+                    error.message()
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn check_origin(path: &str) -> Result<bool, String> {
@@ -1040,6 +1073,74 @@ mod tests {
         config
             .set_str("user.email", email)
             .expect("email should be set");
+    }
+
+    #[test]
+    fn provider_remote_url_does_not_store_credentials() {
+        assert_eq!(
+            RemoteService::public_remote_url("https://owner:secret@example.com/owner/repo.git")
+                .expect("credentialed URL should parse"),
+            "https://example.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn provider_push_uses_anonymous_remote_and_keeps_only_clean_origin() {
+        let workspace = TestWorkspace::new("provider-anonymous-success");
+        let repo_path = workspace.child("repo");
+        let bare_path = workspace.child("remote.git");
+        let repo = Repository::init(&repo_path).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        let bare = Repository::init_bare(&bare_path).unwrap();
+        let signature = Signature::now("Test", "test@example.com").unwrap();
+        write_file(&repo_path, "notes.txt", "initial\n");
+        let commit = commit_all(&repo, "Initial commit", &signature);
+        repo.remote(super::TEMP_PUSH_REMOTE_PLATFORM, "https://owner:old-test-secret@example.invalid/repo.git").unwrap();
+        RemoteService::push_provider_remote(&repo, bare_path.to_str().unwrap(), "new-test-secret", &["refs/heads/main:refs/heads/main"]).unwrap();
+        assert_eq!(bare.refname_to_id("refs/heads/main").unwrap(), commit);
+        assert_eq!(repo.find_remote("origin").unwrap().url(), bare_path.to_str());
+        assert!(repo.find_remote(super::TEMP_PUSH_REMOTE_PLATFORM).is_err());
+        let config = fs::read_to_string(repo.path().join("config")).unwrap();
+        assert!(!config.contains("old-test-secret"));
+        assert!(!config.contains("new-test-secret"));
+        // libgit2 may leave an empty section header, but no remote URL or secret.
+        assert!(repo.config().unwrap().get_string(&format!("remote.{}.url", super::TEMP_PUSH_REMOTE_PLATFORM)).is_err());
+
+        // Follow-up fetch must not contact a second, unrelated remote.
+        repo.remote("unrelated", workspace.child("missing.git").to_str().unwrap()).unwrap();
+        RemoteService::fetch_remote(repo_path.to_str().unwrap(), Some("new-test-secret"), "origin").unwrap();
+        assert_eq!(repo.refname_to_id("refs/remotes/origin/main").unwrap(), commit);
+    }
+
+    #[test]
+    fn provider_push_failure_never_saves_new_credentials_or_creates_origin() {
+        let workspace = TestWorkspace::new("provider-anonymous-failure");
+        let repo_path = workspace.child("repo");
+        let repo = Repository::init(&repo_path).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        let signature = Signature::now("Test", "test@example.com").unwrap();
+        write_file(&repo_path, "notes.txt", "initial\n");
+        commit_all(&repo, "Initial commit", &signature);
+        repo.remote(super::TEMP_PUSH_REMOTE_PLATFORM, "https://owner:old-test-secret@example.invalid/repo.git").unwrap();
+        assert!(RemoteService::push_provider_remote(&repo, workspace.child("missing.git").to_str().unwrap(), "new-test-secret", &["refs/heads/main:refs/heads/main"]).is_err());
+        assert!(repo.find_remote("origin").is_err());
+        assert!(repo.find_remote(super::TEMP_PUSH_REMOTE_PLATFORM).is_err());
+        let config = fs::read_to_string(repo.path().join("config")).unwrap();
+        assert!(!config.contains("test-secret"));
+    }
+
+    #[test]
+    fn provider_push_reports_legacy_cleanup_failure_before_pushing() {
+        let workspace = TestWorkspace::new("provider-cleanup-locked");
+        let repo = Repository::init(workspace.child("repo")).unwrap();
+        let bare = Repository::init_bare(workspace.child("remote.git")).unwrap();
+        repo.remote(super::TEMP_PUSH_REMOTE_PLATFORM, "https://example.invalid/repo.git").unwrap();
+        let lock_path = repo.path().join("config.lock");
+        fs::write(&lock_path, "locked by another operation").unwrap();
+        let error = RemoteService::push_provider_remote(&repo, bare.path().to_str().unwrap(), "new-test-secret", &["refs/heads/main:refs/heads/main"]).unwrap_err();
+        assert!(error.contains("Could not remove the old temporary remote"));
+        assert!(bare.is_empty().unwrap());
+        fs::remove_file(lock_path).unwrap();
     }
 
     fn write_file(root: &Path, relative: &str, content: &str) {

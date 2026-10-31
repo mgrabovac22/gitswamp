@@ -1896,6 +1896,10 @@ impl GitService {
         RemoteService::fetch_all(path, token)
     }
 
+    pub fn fetch_remote(path: &str, token: Option<&str>, remote_name: &str) -> Result<String, String> {
+        RemoteService::fetch_remote(path, token, remote_name)
+    }
+
     pub fn run_git_command(path: &str, args: &[&str]) -> Result<String, String> {
         RemoteService::run_git_command(path, args)
     }

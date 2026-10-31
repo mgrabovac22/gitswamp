@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { computed } from "vue";
 const props = defineProps<{
   showPushUsernameDialog: boolean;
   pushPlatform: string;
   pushUsername: string;
+  pushProject: string;
   pushDomain: string;
   showAuthRequiredDialog: boolean;
   authProvider: "github" | "gitlab" | "gitlab-self" | "bitbucket" | "azure";
@@ -16,6 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:showPushUsernameDialog": [value: boolean];
   "update:pushUsername": [value: string];
+  "update:pushProject": [value: string];
   "update:pushDomain": [value: string];
   "push": [];
   "update:showAuthRequiredDialog": [value: boolean];
@@ -28,7 +31,15 @@ const emit = defineEmits<{
   "generateAndPushGitlabKey": [];
 }>();
 
-function onPushUsernameEnter() {
+const canPush = computed(() => {
+  const needsDomain = ["gitlab-self-hosted", "gitlab-self", "github-enterprise", "azure"].includes(props.pushPlatform);
+  return !!props.pushUsername.trim()
+    && (props.pushPlatform !== "azure" || !!props.pushProject.trim())
+    && (!needsDomain || !!props.pushDomain.trim());
+});
+
+function submitPush() {
+  if (!canPush.value) return;
   emit("push");
 }
 </script>
@@ -44,27 +55,40 @@ function onPushUsernameEnter() {
           id="push-domain"
           :value="props.pushDomain"
           @input="emit('update:pushDomain', ($event.target as HTMLInputElement).value)"
+          @keyup.enter="submitPush"
           :placeholder="props.pushPlatform === 'azure' ? 'dev.azure.com' : 'gitlab.company.com'"
           class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 mb-4"
         />
       </div>
 
       <div class="mb-4">
-        <label for="push-username" class="text-xs text-[var(--muted-foreground)] block mb-2">Username</label>
+        <label for="push-username" class="text-xs text-[var(--muted-foreground)] block mb-2">{{ props.pushPlatform === 'azure' ? 'Organization' : 'Username' }}</label>
         <input
           id="push-username"
           :value="props.pushUsername"
           @input="emit('update:pushUsername', ($event.target as HTMLInputElement).value)"
           :placeholder="`Your ${props.pushPlatform} username...`"
           class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
-          @keyup.enter="onPushUsernameEnter"
+          @keyup.enter="submitPush"
           :autofocus="!(props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'gitlab-self' || props.pushPlatform === 'github-enterprise' || props.pushPlatform === 'azure')"
+        />
+      </div>
+
+      <div v-if="props.pushPlatform === 'azure'" class="mb-4">
+        <label for="push-project" class="text-xs text-[var(--muted-foreground)] block mb-2">Project</label>
+        <input
+          id="push-project"
+          :value="props.pushProject"
+          @input="emit('update:pushProject', ($event.target as HTMLInputElement).value)"
+          @keyup.enter="submitPush"
+          placeholder="Your Azure project..."
+          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
         />
       </div>
 
       <div class="flex justify-end gap-2">
         <button @click="emit('update:showPushUsernameDialog', false)" class="px-3 py-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded hover:bg-[var(--secondary)] transition-colors">Cancel</button>
-        <button @click="emit('push')" :disabled="!props.pushUsername.trim() || (props.pushPlatform === 'gitlab-self-hosted' || props.pushPlatform === 'gitlab-self' || props.pushPlatform === 'github-enterprise' || props.pushPlatform === 'azure') && !props.pushDomain.trim()" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Push</button>
+        <button @click="submitPush" :disabled="!canPush" class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 transition-colors">Push</button>
       </div>
     </div>
   </div>
