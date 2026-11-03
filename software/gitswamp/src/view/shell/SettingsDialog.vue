@@ -54,6 +54,7 @@ const commitAnalyzerEnabled = ref(true);
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
 const lightThemeOptions = appThemeOptions.filter((theme) => theme.group === "light");
+const specialThemeOptions = appThemeOptions.filter((theme) => theme.group === "special");
 const DEFAULT_DARK_PALETTE: AppPalettePreference = "default";
 const DEFAULT_LIGHT_PALETTE: AppPalettePreference = "default-light";
 
@@ -168,6 +169,7 @@ function onThemePresetChange(event: Event) {
 }
 
 function themeLabel(theme: AppThemeOption): string {
+  if (theme.group === "special") return `${theme.label} (Special)`;
   return theme.mode === "dark" ? `${theme.label} (Dark)` : `${theme.label} (Light)`;
 }
 
@@ -245,6 +247,11 @@ function handleDelete() {
               </optgroup>
               <optgroup label="Light Themes">
                 <option v-for="theme in lightThemeOptions" :key="theme.id" :value="theme.id">
+                  {{ themeLabel(theme) }}
+                </option>
+              </optgroup>
+              <optgroup label="Special Themes">
+                <option v-for="theme in specialThemeOptions" :key="theme.id" :value="theme.id">
                   {{ themeLabel(theme) }}
                 </option>
               </optgroup>

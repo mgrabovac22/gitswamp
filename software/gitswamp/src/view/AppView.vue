@@ -2,6 +2,7 @@
 import TitleBar from "@/view/shell/TitleBar.vue";
 import AppHeader from "@/view/shell/AppHeader.vue";
 import CommandPalette from "@/view/shell/CommandPalette.vue";
+import ThemeAmbience from "@/view/shell/ThemeAmbience.vue";
 import RepositoryTabs from "@/view/repository/RepositoryTabs.vue";
 import RepositoryWorkspace from "@/view/repository/RepositoryWorkspace.vue";
 import LandingPage from "@/view/repository/LandingPage.vue";
@@ -5442,6 +5443,7 @@ function submitCreateTag() {
       @generate-and-push-gitlab-key="generateAndPushGitlabKey()"
     />
 
+    <ThemeAmbience />
     <ToastContainer />
   </div>
 </template>

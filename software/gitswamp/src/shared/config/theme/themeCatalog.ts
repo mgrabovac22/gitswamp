@@ -32,13 +32,40 @@ export type AppPalettePreference =
   | "pine-mist-light"
   | "graphite-paper-light"
   | "volcanic-night"
-  | "arctic-paper-light";
+  | "arctic-paper-light"
+  | "aurora-night"
+  | "sakura-night"
+  | "desert-dusk"
+  | "abyss-purple"
+  | "rainforest-night"
+  | "seafoam-light"
+  | "peach-light"
+  | "sky-light"
+  | "lemon-grove-light"
+  | "blush-gray-light"
+  | "neon-grid"
+  | "solar-flare"
+  | "vaporwave"
+  | "holographic-light"
+  | "blueprint-light"
+  | "kitty"
+  | "kawaii-pastel"
+  | "anime-sakura"
+  | "pixel-arcade"
+  | "starry-night"
+  | "snowy"
+  | "lux-special"
+  | "all-star-ogre"
+  | "toon-town"
+  | "comic-boom"
+  | "rubber-hose"
+  | "cartoon-carnival";
 
 export interface AppThemeOption {
   id: AppPalettePreference;
   label: string;
   mode: ThemeModePreference;
-  group: "dark" | "light";
+  group: "dark" | "light" | "special";
 }
 
 export const APP_THEME_OPTIONS: AppThemeOption[] = [
@@ -74,4 +101,31 @@ export const APP_THEME_OPTIONS: AppThemeOption[] = [
   { id: "graphite-paper-light", label: "Graphite Paper Light", mode: "light", group: "light" },
   { id: "volcanic-night", label: "Volcanic Night", mode: "dark", group: "dark" },
   { id: "arctic-paper-light", label: "Arctic Paper Light", mode: "light", group: "light" },
+  { id: "aurora-night", label: "Aurora Night", mode: "dark", group: "dark" },
+  { id: "sakura-night", label: "Sakura Night", mode: "dark", group: "dark" },
+  { id: "desert-dusk", label: "Desert Dusk", mode: "dark", group: "dark" },
+  { id: "abyss-purple", label: "Abyss Purple", mode: "dark", group: "dark" },
+  { id: "rainforest-night", label: "Rainforest Night", mode: "dark", group: "dark" },
+  { id: "seafoam-light", label: "Seafoam Light", mode: "light", group: "light" },
+  { id: "peach-light", label: "Peach Light", mode: "light", group: "light" },
+  { id: "sky-light", label: "Sky Light", mode: "light", group: "light" },
+  { id: "lemon-grove-light", label: "Lemon Grove Light", mode: "light", group: "light" },
+  { id: "blush-gray-light", label: "Blush Gray Light", mode: "light", group: "light" },
+  { id: "neon-grid", label: "Neon Grid", mode: "dark", group: "special" },
+  { id: "solar-flare", label: "Solar Flare", mode: "dark", group: "special" },
+  { id: "vaporwave", label: "Vaporwave", mode: "dark", group: "special" },
+  { id: "holographic-light", label: "Holographic Light", mode: "light", group: "special" },
+  { id: "blueprint-light", label: "Blueprint Light", mode: "light", group: "special" },
+  { id: "kitty", label: "Kitty", mode: "light", group: "special" },
+  { id: "kawaii-pastel", label: "Kawaii Pastel", mode: "light", group: "special" },
+  { id: "anime-sakura", label: "Anime Sakura", mode: "dark", group: "special" },
+  { id: "pixel-arcade", label: "Pixel Arcade", mode: "dark", group: "special" },
+  { id: "starry-night", label: "Starry Night", mode: "dark", group: "special" },
+  { id: "snowy", label: "Snowy", mode: "light", group: "special" },
+  { id: "lux-special", label: "Lux Special", mode: "light", group: "special" },
+  { id: "all-star-ogre", label: "All-Star Ogre", mode: "dark", group: "special" },
+  { id: "toon-town", label: "Toon Town", mode: "light", group: "special" },
+  { id: "comic-boom", label: "Comic Boom", mode: "light", group: "special" },
+  { id: "rubber-hose", label: "Rubber Hose", mode: "light", group: "special" },
+  { id: "cartoon-carnival", label: "Cartoon Carnival", mode: "dark", group: "special" },
 ];
