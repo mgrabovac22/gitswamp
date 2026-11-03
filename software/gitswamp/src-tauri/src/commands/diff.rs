@@ -1,4 +1,4 @@
-use crate::models::{FileBlameLine, FileDiff, StagedDiffSummary};
+use crate::models::{BinaryDiffInfo, FileBlameLine, FileDiff, StagedDiffSummary};
 use crate::services::git_service::GitService;
 
 #[tauri::command]
@@ -47,6 +47,52 @@ pub async fn get_staged_file_content(path: String, file_path: String) -> Result<
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_binary_diff_info(
+    path: String,
+    file_path: String,
+    old_path: Option<String>,
+    sha: Option<String>,
+    staged: bool,
+) -> Result<BinaryDiffInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        GitService::get_binary_diff_info(
+            &path,
+            &file_path,
+            old_path.as_deref(),
+            sha.as_deref(),
+            staged,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_file_bytes(
+    path: String,
+    file_path: String,
+    old_path: Option<String>,
+    sha: Option<String>,
+    staged: bool,
+    side: String,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        GitService::get_file_bytes(
+            &path,
+            &file_path,
+            old_path.as_deref(),
+            sha.as_deref(),
+            staged,
+            &side,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]

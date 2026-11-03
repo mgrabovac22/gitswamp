@@ -17,9 +17,9 @@ use commands::credentials::{
     save_token,
 };
 use commands::diff::{
-    get_commit_diff, get_file_blame, get_file_content, get_staged_diff_summary,
-    get_staged_file_content, get_working_diff, has_conflict_markers, revert_hunk,
-    save_file_content, stage_hunk, unstage_hunk,
+    get_binary_diff_info, get_commit_diff, get_file_blame, get_file_bytes, get_file_content,
+    get_staged_diff_summary, get_staged_file_content, get_working_diff, has_conflict_markers,
+    revert_hunk, save_file_content, stage_hunk, unstage_hunk,
 };
 use commands::ghost::{
     discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch,
@@ -182,6 +182,8 @@ pub fn run() {
             get_commit_diff,
             get_file_content,
             get_staged_file_content,
+            get_binary_diff_info,
+            get_file_bytes,
             get_staged_diff_summary,
             get_file_blame,
             save_file_content,

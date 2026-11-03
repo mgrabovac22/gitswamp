@@ -3,11 +3,14 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::constants::{CONFLICT_END, CONFLICT_MID, CONFLICT_START};
-use crate::models::{DiffHunk, DiffLine, FileBlameLine, FileDiff};
+use crate::models::{
+    BinaryDiffInfo, BinarySideInfo, DiffHunk, DiffLine, FileBlameLine, FileDiff,
+};
 use crate::repositories::git_repository::GitRepository;
 use crate::services::helpers::extract_file_diff;
 
 const UNCOMMITTED_SHA: &str = "0000000000000000000000000000000000000000";
+const MAX_BINARY_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Clone)]
 struct BlameCommitMeta {
@@ -25,6 +28,17 @@ pub struct DiffService;
 impl DiffService {
     fn build_untracked_file_diff(repo_root: &Path, file_path: &str) -> Result<FileDiff, String> {
         let full_path = repo_root.join(file_path);
+        let metadata = std::fs::metadata(&full_path).map_err(|e| e.to_string())?;
+        if metadata.len() > MAX_BINARY_PREVIEW_BYTES {
+            return Ok(FileDiff {
+                path: file_path.to_string(),
+                old_path: None,
+                status: "added".to_string(),
+                hunks: Vec::new(),
+                is_binary: true,
+            });
+        }
+
         let content = std::fs::read(&full_path).map_err(|e| e.to_string())?;
 
         if content.contains(&0) {
@@ -226,8 +240,16 @@ impl DiffService {
             Err(error) if !staged => {
                 let status = repo
                     .status_file(Path::new(file_path))
-                    .map_err(|e| e.message().to_string())?;
-                if status.contains(git2::Status::WT_NEW) {
+                    .unwrap_or_else(|_| git2::Status::empty());
+                let tracked_in_index = repo
+                    .index()
+                    .ok()
+                    .and_then(|index| index.get_path(Path::new(file_path), 0).map(|_| ()))
+                    .is_some();
+                let full_path = Path::new(path).join(file_path);
+                if status.contains(git2::Status::WT_NEW)
+                    || (!tracked_in_index && full_path.is_file())
+                {
                     Self::build_untracked_file_diff(Path::new(path), file_path)
                 } else if status.is_empty() {
                     Ok(FileDiff {
@@ -330,6 +352,244 @@ impl DiffService {
 
         String::from_utf8(blob.content().to_vec())
             .map_err(|_| "File is not valid UTF-8".to_string())
+    }
+
+    pub fn get_binary_diff_info(
+        path: &str,
+        file_path: &str,
+        old_path: Option<&str>,
+        sha: Option<&str>,
+        staged: bool,
+    ) -> Result<BinaryDiffInfo, String> {
+        let repo = GitRepository::open(path)?;
+        let repo_root = Path::new(path);
+        let old_target = old_path.unwrap_or(file_path);
+
+        let old_size = Self::repo_side_size(&repo, repo_root, old_target, sha, staged, "old")?;
+        let new_size = Self::repo_side_size(&repo, repo_root, file_path, sha, staged, "new")?;
+
+        Ok(BinaryDiffInfo {
+            old: BinarySideInfo {
+                exists: old_size.is_some(),
+                size: old_size.unwrap_or(0),
+            },
+            new: BinarySideInfo {
+                exists: new_size.is_some(),
+                size: new_size.unwrap_or(0),
+            },
+        })
+    }
+
+    pub fn get_file_bytes(
+        path: &str,
+        file_path: &str,
+        old_path: Option<&str>,
+        sha: Option<&str>,
+        staged: bool,
+        side: &str,
+    ) -> Result<Vec<u8>, String> {
+        if side != "old" && side != "new" {
+            return Err(format!("Invalid side '{}'", side));
+        }
+
+        let repo = GitRepository::open(path)?;
+        let repo_root = Path::new(path);
+        let target = if side == "old" {
+            old_path.unwrap_or(file_path)
+        } else {
+            file_path
+        };
+
+        Self::repo_side_bytes(&repo, repo_root, target, sha, staged, side)?
+            .ok_or_else(|| format!("File '{}' does not exist on the {} side", target, side))
+    }
+
+    fn repo_side_size(
+        repo: &git2::Repository,
+        repo_root: &Path,
+        file_path: &str,
+        sha: Option<&str>,
+        staged: bool,
+        side: &str,
+    ) -> Result<Option<u64>, String> {
+        if let Some(commit_sha) = sha {
+            let oid = git2::Oid::from_str(commit_sha).map_err(|e| e.message().to_string())?;
+            let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+
+            if side == "old" {
+                let tree = commit.parent(0).ok().and_then(|parent| parent.tree().ok());
+                return match tree.and_then(|tree| Self::tree_blob_oid(&tree, file_path)) {
+                    Some(blob_oid) => Ok(Some(Self::blob_size(repo, blob_oid)?)),
+                    None => Ok(None),
+                };
+            }
+
+            let tree_oid = commit
+                .tree()
+                .ok()
+                .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
+            if let Some(blob_oid) = tree_oid {
+                return Ok(Some(Self::blob_size(repo, blob_oid)?));
+            }
+
+            let untracked_oid = commit
+                .parent(2)
+                .ok()
+                .and_then(|parent| parent.tree().ok())
+                .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
+            return match untracked_oid {
+                Some(blob_oid) => Ok(Some(Self::blob_size(repo, blob_oid)?)),
+                None => Ok(None),
+            };
+        }
+
+        if side == "new" {
+            if staged {
+                return Self::index_blob_size(repo, file_path);
+            }
+            let full_path = repo_root.join(file_path);
+            return match std::fs::metadata(&full_path) {
+                Ok(meta) if meta.is_file() => Ok(Some(meta.len())),
+                _ => Ok(None),
+            };
+        }
+
+        if staged {
+            let tree_oid = repo
+                .head()
+                .and_then(|head| head.peel_to_tree())
+                .ok()
+                .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
+            return match tree_oid {
+                Some(blob_oid) => Ok(Some(Self::blob_size(repo, blob_oid)?)),
+                None => Ok(None),
+            };
+        }
+
+        Self::index_blob_size(repo, file_path)
+    }
+
+    fn repo_side_bytes(
+        repo: &git2::Repository,
+        repo_root: &Path,
+        file_path: &str,
+        sha: Option<&str>,
+        staged: bool,
+        side: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        if let Some(commit_sha) = sha {
+            let oid = git2::Oid::from_str(commit_sha).map_err(|e| e.message().to_string())?;
+            let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+
+            if side == "old" {
+                let tree = commit.parent(0).ok().and_then(|parent| parent.tree().ok());
+                return match tree.and_then(|tree| Self::tree_blob_oid(&tree, file_path)) {
+                    Some(blob_oid) => Self::read_blob_limited(repo, blob_oid).map(Some),
+                    None => Ok(None),
+                };
+            }
+
+            let tree_oid = commit
+                .tree()
+                .ok()
+                .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
+            if let Some(blob_oid) = tree_oid {
+                return Self::read_blob_limited(repo, blob_oid).map(Some);
+            }
+
+            let untracked_oid = commit
+                .parent(2)
+                .ok()
+                .and_then(|parent| parent.tree().ok())
+                .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
+            return match untracked_oid {
+                Some(blob_oid) => Self::read_blob_limited(repo, blob_oid).map(Some),
+                None => Ok(None),
+            };
+        }
+
+        if side == "new" {
+            if staged {
+                return Self::index_blob_bytes(repo, file_path);
+            }
+            let full_path = repo_root.join(file_path);
+            if !full_path.is_file() {
+                return Ok(None);
+            }
+            return Self::read_working_file_limited(&full_path).map(Some);
+        }
+
+        if staged {
+            let tree_oid = repo
+                .head()
+                .and_then(|head| head.peel_to_tree())
+                .ok()
+                .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
+            return match tree_oid {
+                Some(blob_oid) => Self::read_blob_limited(repo, blob_oid).map(Some),
+                None => Ok(None),
+            };
+        }
+
+        Self::index_blob_bytes(repo, file_path)
+    }
+
+    fn tree_blob_oid(tree: &git2::Tree<'_>, file_path: &str) -> Option<git2::Oid> {
+        tree.get_path(Path::new(file_path)).ok().map(|entry| entry.id())
+    }
+
+    fn blob_size(repo: &git2::Repository, oid: git2::Oid) -> Result<u64, String> {
+        let blob = repo.find_blob(oid).map_err(|e| e.message().to_string())?;
+        Ok(blob.size() as u64)
+    }
+
+    fn index_blob_size(
+        repo: &git2::Repository,
+        file_path: &str,
+    ) -> Result<Option<u64>, String> {
+        let index = repo.index().map_err(|e| e.message().to_string())?;
+        match index.get_path(Path::new(file_path), 0) {
+            Some(entry) => Ok(Some(Self::blob_size(repo, entry.id)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn index_blob_bytes(
+        repo: &git2::Repository,
+        file_path: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let index = repo.index().map_err(|e| e.message().to_string())?;
+        match index.get_path(Path::new(file_path), 0) {
+            Some(entry) => Self::read_blob_limited(repo, entry.id).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn read_blob_limited(
+        repo: &git2::Repository,
+        oid: git2::Oid,
+    ) -> Result<Vec<u8>, String> {
+        let blob = repo.find_blob(oid).map_err(|e| e.message().to_string())?;
+        let size = blob.size() as u64;
+        if size > MAX_BINARY_PREVIEW_BYTES {
+            return Err(Self::preview_too_large_message(size));
+        }
+        Ok(blob.content().to_vec())
+    }
+
+    fn read_working_file_limited(full_path: &Path) -> Result<Vec<u8>, String> {
+        let metadata = std::fs::metadata(full_path).map_err(|e| e.to_string())?;
+        if metadata.len() > MAX_BINARY_PREVIEW_BYTES {
+            return Err(Self::preview_too_large_message(metadata.len()));
+        }
+        std::fs::read(full_path).map_err(|e| e.to_string())
+    }
+
+    fn preview_too_large_message(size: u64) -> String {
+        format!(
+            "File is too large to preview ({} bytes, limit {} bytes)",
+            size, MAX_BINARY_PREVIEW_BYTES
+        )
     }
 
     pub fn get_file_blame(

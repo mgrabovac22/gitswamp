@@ -7,3 +7,13 @@ export interface FileDiff {
   hunks: DiffHunk[]
   is_binary: boolean
 }
+
+export interface BinarySideInfo {
+  exists: boolean
+  size: number
+}
+
+export interface BinaryDiffInfo {
+  old: BinarySideInfo
+  new: BinarySideInfo
+}

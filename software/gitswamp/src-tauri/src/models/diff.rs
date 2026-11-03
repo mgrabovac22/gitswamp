@@ -26,3 +26,15 @@ pub struct FileDiff {
     pub hunks: Vec<DiffHunk>,
     pub is_binary: bool,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BinarySideInfo {
+    pub exists: bool,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BinaryDiffInfo {
+    pub old: BinarySideInfo,
+    pub new: BinarySideInfo,
+}

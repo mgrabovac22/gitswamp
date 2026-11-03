@@ -3252,6 +3252,27 @@ impl GitService {
         DiffService::get_staged_file_content(path, file_path)
     }
 
+    pub fn get_binary_diff_info(
+        path: &str,
+        file_path: &str,
+        old_path: Option<&str>,
+        sha: Option<&str>,
+        staged: bool,
+    ) -> Result<crate::models::BinaryDiffInfo, String> {
+        DiffService::get_binary_diff_info(path, file_path, old_path, sha, staged)
+    }
+
+    pub fn get_file_bytes(
+        path: &str,
+        file_path: &str,
+        old_path: Option<&str>,
+        sha: Option<&str>,
+        staged: bool,
+        side: &str,
+    ) -> Result<Vec<u8>, String> {
+        DiffService::get_file_bytes(path, file_path, old_path, sha, staged, side)
+    }
+
     pub fn get_file_blame(
         path: &str,
         file_path: &str,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History, Paintbrush } from "lucide-vue-next";
+import { FileText, Pencil, ChevronUp, ChevronDown, Undo2, Eye, Edit3, Save, RotateCcw, Play, Pause, StepBack, StepForward, Share2, Users, Columns2, History, Paintbrush, Image as ImageIcon } from "lucide-vue-next";
 import type { FileDiff, DiffLine, CommitInfo, CommitFileInfo, FileBlameLine } from "@/types";
 import { splitFilePath } from "@/shared/codeView";
 import { useDiffSyntax } from "@/shared/config/code-view/useDiffSyntax";
@@ -14,6 +14,8 @@ import {
 } from "@/shared/config/diffViewCache";
 import { useToast } from "@/shared/notifications/useToast";
 import { useGit } from "@/domain/git/UseGit";
+import { isImageFilePath } from "@/shared/config/imagePreview";
+import BinaryDiffViewer from "@/shared/ui/BinaryDiffViewer.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import CodeTextEditor from "@/shared/ui/CodeTextEditor.vue";
 import logoCrocGif from "@/assets/logo_croc.gif";
@@ -33,7 +35,7 @@ const emit = defineEmits<{
   refresh: [];
 }>();
 
-type ViewMode = "diff" | "split-diff" | "file-diff" | "edit" | "time-lapse";
+type ViewMode = "diff" | "split-diff" | "file-diff" | "image-diff" | "edit" | "time-lapse";
 const viewMode = ref<ViewMode>("diff");
 const loadingLetters = ["L", "o", "a", "d", "i", "n", "g"];
 const MAX_HIGHLIGHT_LINES = 6000;
@@ -275,6 +277,7 @@ function maintainBlameCache() {
 const isWorkingChanges = computed(() => !props.commitSha);
 const isUnstaged = computed(() => isWorkingChanges.value && !props.staged);
 const fileNameParts = computed(() => splitFilePath(props.filePath));
+const isImageFile = computed(() => isImageFilePath(props.filePath));
 const blameSupportedView = computed(() => viewMode.value === "diff" || viewMode.value === "split-diff");
 const blamePanelVisible = computed(() => showBlamePanel.value && blameSupportedView.value);
 const fileJourneyAvailable = computed(() => {
@@ -817,6 +820,8 @@ watch(viewMode, (mode) => {
     loadFileContentAsync();
   } else if (mode === "time-lapse") {
     void loadTimeLapseFrames();
+  } else if (mode === "image-diff") {
+    if (!diff.value) reload();
   } else {
     reload();
   }
@@ -2688,6 +2693,19 @@ watch(
               <Eye class="w-3.5 h-3.5" />
             </button>
             <button
+              v-if="isImageFile"
+              @click="viewMode = 'image-diff'"
+              :class="[
+                'px-2 py-1.5 transition-colors',
+                viewMode === 'image-diff'
+                  ? 'bg-[var(--primary)] text-white'
+                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]'
+              ]"
+              title="Visual image comparison"
+            >
+              <ImageIcon class="w-3.5 h-3.5" />
+            </button>
+            <button
               @click="viewMode = 'time-lapse'"
               :class="[
                 'px-2 py-1.5 transition-colors',
@@ -2775,8 +2793,17 @@ watch(
         <button @click="reload" class="text-xs text-[var(--diff-link)] hover:underline">Retry</button>
       </div>
 
-      <div v-else-if="diff?.is_binary" class="flex items-center justify-center h-full">
-        <div class="text-[var(--muted-foreground)]">Binary file - cannot display diff</div>
+      <div
+        v-else-if="diff && (diff.is_binary || viewMode === 'image-diff')"
+        class="h-full min-h-0"
+      >
+        <BinaryDiffViewer
+          :repo-path="repoPath"
+          :file-path="filePath"
+          :old-path="diff.old_path ?? fallbackOldPath ?? null"
+          :commit-sha="commitSha ?? null"
+          :staged="staged ?? false"
+        />
       </div>
 
       <div v-else-if="viewMode === 'diff' && diff" class="min-w-fit">
