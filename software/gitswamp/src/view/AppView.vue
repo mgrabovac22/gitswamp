@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import TitleBar from "@/view/shell/TitleBar.vue";
+import SecretCommitDialog from "@/shared/ui/SecretCommitDialog.vue";
 import AppHeader from "@/view/shell/AppHeader.vue";
 import CommandPalette from "@/view/shell/CommandPalette.vue";
 import ThemeAmbience from "@/view/shell/ThemeAmbience.vue";
@@ -5445,5 +5446,6 @@ function submitCreateTag() {
 
     <ThemeAmbience />
     <ToastContainer />
+    <SecretCommitDialog :repo-path="git.repoPath.value" />
   </div>
 </template>

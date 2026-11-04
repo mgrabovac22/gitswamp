@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { secretDetectorEnabled, storeSecretDetectorEnabled } from "@/shared/config/secretDetectorPreferences";
 import { ref, onMounted, watch } from "vue";
 import { Shield, Eye, EyeOff, Check, Trash2, Layout, Monitor, Sun, Moon } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -50,6 +51,7 @@ const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
 const smartGitignoreWizardEnabled = ref(true);
+const secretDetection = ref(secretDetectorEnabled());
 const commitAnalyzerEnabled = ref(true);
 const appThemeOptions = APP_THEME_OPTIONS;
 const darkThemeOptions = appThemeOptions.filter((theme) => theme.group === "dark");
@@ -112,6 +114,7 @@ onMounted(() => {
 
   commitAnalyzerEnabled.value = getStoredCommitAnalyzerSettings().enabled;
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
+  secretDetection.value = secretDetectorEnabled();
 
   applySettings();
 });
@@ -151,6 +154,7 @@ watch(commitAnalyzerEnabled, (value) => {
 watch(smartGitignoreWizardEnabled, (value) => {
   storeSmartGitignoreWizardEnabled(value);
 });
+watch(secretDetection, storeSecretDetectorEnabled);
 
 watch(appPalette, (value) => {
   applyAppPalettePreference(value);
@@ -429,6 +433,11 @@ function handleDelete() {
                 :class="smartGitignoreWizardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'"
               />
             </button>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 py-2">
+            <label for="secret-detection" class="text-xs font-medium text-[var(--foreground)]">Accidental Secret Detector</label>
+            <input id="secret-detection" v-model="secretDetection" type="checkbox" class="w-4 h-4 accent-[var(--primary)]" />
           </div>
 
           <div class="flex items-center justify-between py-2">

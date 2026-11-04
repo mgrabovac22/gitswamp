@@ -2,6 +2,7 @@ import type { AmendCommitOptions, RepoInfo } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
 
 import { callTauri } from "./gitCall";
+import { checkCommitSecrets } from "./secretCommitGuard";
 import type { GitState } from "./gitState";
 import { markFilesStaged, markFilesUnstaged, removeUnstagedFiles } from "./gitStatusOptimisticUpdates";
 
@@ -17,6 +18,7 @@ type RefreshDeps = {
 };
 
 export function createStatusActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
+  let commitPending = false;
 
   function guardMergeDiscard(): boolean {
     const kind = state.repositoryOperation.value?.kind;
@@ -81,11 +83,18 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function commitChanges(message: string, allowEmpty = false) {
-    if (!state.repoPath.value) return;
+  async function commitChanges(message: string, allowEmpty = false): Promise<boolean> {
+    if (!state.repoPath.value || commitPending || state.loading.value) return false;
+    const repoPath = state.repoPath.value;
+    commitPending = true;
+    state.loading.value = true;
+    state.error.value = null;
     const wasMerge = state.repositoryOperation.value?.kind === "merge";
     try {
-      await callTauri("create_commit", { path: state.repoPath.value, message, allowEmpty });
+      const approval = await checkCommitSecrets(repoPath, () => state.repoPath.value === repoPath, refresh.refreshStatus);
+      if (!approval || state.repoPath.value !== repoPath) return false;
+      await callTauri("create_commit", { path: repoPath, message, allowEmpty, ...approval });
+      if (state.repoPath.value !== repoPath) return true;
       await Promise.all([
         refresh.refreshCommits(),
         refresh.refreshStatus(),
@@ -108,7 +117,12 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     } catch (e) {
       state.error.value = String(e);
       toast.error("Commit failed: " + String(e));
+      return false;
+    } finally {
+      commitPending = false;
+      if (state.repoPath.value === repoPath) state.loading.value = false;
     }
+    return true;
   }
 
   async function restorePullSafetyStash(): Promise<boolean> {
@@ -132,23 +146,28 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
   }
 
   async function amendLastCommit(options: AmendCommitOptions): Promise<boolean> {
-    if (!state.repoPath.value) return false;
+    if (!state.repoPath.value || commitPending || state.loading.value) return false;
     if (state.hasConflicts.value) {
       toast.error("Cannot amend while conflicts exist. Resolve conflicts first.");
       return false;
     }
 
     const repoPath = state.repoPath.value;
-    const loadingToast = toast.loading("Amending the last commit...");
+    commitPending = true;
+    let loadingToast: number | null = null;
     state.error.value = null;
     state.loading.value = true;
 
     try {
+      const approval = await checkCommitSecrets(repoPath, () => state.repoPath.value === repoPath, refresh.refreshStatus);
+      if (!approval || state.repoPath.value !== repoPath) return false;
+      loadingToast = toast.loading("Amending the last commit...");
       const result = await callTauri<string>("amend_commit", {
         path: repoPath,
         message: options.message,
         resetAuthor: options.resetAuthor,
         signoff: options.signoff,
+        ...approval,
       });
       state.terminalOutput.value.push("$ git commit --amend\n" + result);
 
@@ -170,8 +189,9 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
       toast.error("Amend failed: " + String(error));
       return false;
     } finally {
-      state.loading.value = false;
-      toast.remove(loadingToast);
+      commitPending = false;
+      if (state.repoPath.value === repoPath) state.loading.value = false;
+      if (loadingToast !== null) toast.remove(loadingToast);
     }
   }
 

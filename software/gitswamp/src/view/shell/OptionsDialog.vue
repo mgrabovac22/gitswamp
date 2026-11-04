@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { secretDetectorEnabled, storeSecretDetectorEnabled } from "@/shared/config/secretDetectorPreferences";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -212,6 +213,7 @@ const wrapDiffLines = ref(false);
 const showDiffLineNumbers = ref(true);
 const notifyGitkeep = ref(true);
 const smartGitignoreWizardEnabled = ref(true);
+const secretDetection = ref(secretDetectorEnabled());
 const bugAutopsyEnabled = ref(false);
 const identityGuardEnabled = ref(false);
 const destructiveUndoEnabled = ref(true);
@@ -2012,6 +2014,7 @@ onMounted(() => {
   organisationProfiles.value = readOrganisationProfilesFromStorage();
 
   smartGitignoreWizardEnabled.value = getStoredSmartGitignoreWizardEnabled();
+  secretDetection.value = secretDetectorEnabled();
   bugAutopsyEnabled.value = getStoredBugAutopsyEnabled();
   identityGuardEnabled.value = getStoredIdentityGuardEnabled();
   destructiveUndoEnabled.value = getStoredDestructiveUndoEnabled();
@@ -2123,6 +2126,7 @@ watch(smartGitignoreWizardEnabled, (value) => {
   }
   storeSmartGitignoreWizardEnabled(value);
 });
+watch(secretDetection, storeSecretDetectorEnabled);
 
 watch(destructiveUndoEnabled, (value) => {
   if (isHydrating) {
@@ -3123,6 +3127,11 @@ watch(activePlatform, () => {
                   <button @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="smartGitignoreWizardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="smartGitignoreWizardEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
                   </button>
+                </div>
+
+                <div class="flex items-center justify-between gap-3 py-2">
+                  <label for="options-secret-detection" class="text-xs font-medium text-[var(--foreground)]">Accidental Secret Detector</label>
+                  <input id="options-secret-detection" v-model="secretDetection" type="checkbox" class="w-4 h-4 accent-[var(--primary)]" />
                 </div>
 
                 <div class="flex items-center justify-between py-2">

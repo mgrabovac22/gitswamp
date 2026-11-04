@@ -391,6 +391,10 @@ async function handleAmendCommit(options: AmendCommitOptions) {
   await props.git.amendLastCommit(options);
 }
 
+async function handleCommit(payload: { message: string; allowEmpty: boolean; done: (success: boolean) => void }) {
+  payload.done(await props.git.commitChanges(payload.message, payload.allowEmpty));
+}
+
 function setAmendModeFromGraph(enabled: boolean) {
   amendModeRequested.value = enabled;
   if (!enabled) return;
@@ -704,7 +708,7 @@ function handleRefreshState() {
             @unstage="props.git.unstageFile($event)"
             @stage-all="props.git.stageAll()"
             @unstage-all="props.git.unstageAll()"
-            @commit="props.git.commitChanges($event.message, $event.allowEmpty)"
+            @commit="handleCommit"
             @abort-merge="abortCurrentMerge"
             @abort-cherry-pick="props.git.scheduleAbortOperation('cherry-pick')"
             @amend-commit="handleAmendCommit($event)"

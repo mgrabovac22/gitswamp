@@ -44,6 +44,7 @@ use commands::operations::{
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
 use commands::status::{
+    scan_secrets, ignore_secret_files,
     abort_cherry_pick, abort_merge, add_gitkeep, amend_commit, create_commit, discard_file, discard_files,
     get_empty_directories, get_status, resolve_all_conflicts, resolve_conflict_file,
     restore_pull_safety_stash, stage_file, stage_files, unstage_file, unstage_files,
@@ -85,6 +86,8 @@ pub fn run() {
             create_branch,
             delete_branch,
             get_status,
+            scan_secrets,
+            ignore_secret_files,
             stage_file,
             stage_files,
             unstage_file,

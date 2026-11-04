@@ -8,6 +8,22 @@ Stage the files that should be included in the last commit. Right-click the curr
 
 Amend can change commit content, not just its message. It creates a new commit SHA. Coordinate with collaborators before rewriting already published history.
 
+## Secret Review and Large Files
+
+**Accidental Secret Detector** is enabled by default in Options. It runs locally and marks possible credentials beside unstaged files without notifications. It checks text content regardless of extension, including UTF-16 text with a byte-order mark. Empty values, environment-variable references and common placeholder values are not treated as embedded credentials. An `.example` filename is not an exemption when it contains an actual value.
+
+Before commit or amend, GitSwamp reviews the staged index, not the current working-file contents. A compact confirmation lists file paths, line numbers and finding types, never the matched secret values. Cancel preserves the commit message. **Add to .gitignore** only unstages newly added flagged files and appends literal paths to the root `.gitignore`; it keeps local files and never silently untracks existing files or stages `.gitignore`. Edit credentials out of tracked files instead. Confirmation is invalidated when the staged tree or HEAD changes.
+
+Staged files larger than **100 MiB** trigger a separate Git LFS recommendation even when secret detection is disabled. The check reads Git object sizes without loading large blobs. GitHub rejects regular Git files above this size; a local commit is still possible after explicit confirmation. The popup links to the official Git LFS guide. It does not install LFS, rewrite history or convert files automatically. Configure and stage LFS files with system Git in the terminal, including `.gitattributes`; a staged LFS pointer is small and does not trigger the size warning. Large blobs already present in older history may still need migration before a push can succeed.
+
+Secret scanning is heuristic, not a guarantee that every credential will be found. It inspects at most 1 MiB per text file and 16 MiB per scan, up to 2048 files with a cooperative five-second budget. Unchecked content is reported before committing instead of being declared clean. Binary content is not decoded as text. Background checks are debounced and serialized, only inspect the visible unstaged file set and do not retain file contents. Very large index metadata can be refused for a bounded review.
+
+## Commit Galaxy
+
+Galaxy uses a Three.js spiral scene with a bright center and four arms. Older loaded commits are nearer the center and newer commits farther out; parent-first ordering preserves ancestry even when commit clocks disagree. Branch ancestry determines stable lanes and colors, parent lines show actual Git edges and merge commits can be highlighted. The stars behind the commit nodes are visual context, not additional commits.
+
+The layout selector retains spiral, branch layers, constellation and tree views. Drag rotates the galaxy, the wheel zooms, and tree mode pans. Select a commit to inspect it; Reset and Focus restore framing or move to the selected commit. Circling smoothly orbits the camera, pauses during hover and dragging, and resumes after interaction. It stops for hidden tabs, reduced-motion preferences and tree view. Static modes render on demand. Geometry is bounded to 50,000 loaded commits and 100,000 parent edges, pixel ratio is capped at 1.5, and closing the view releases WebGL resources.
+
 ## Branches, Tags and Remote Checkout
 
 Branches and tags with identical names are separate Git references. Use the branch entry to switch branches; selecting a tag is not equivalent to creating or tracking a branch.
