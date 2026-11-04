@@ -17,9 +17,9 @@ use commands::credentials::{
     save_token,
 };
 use commands::diff::{
-    get_commit_diff, get_file_blame, get_file_content, get_staged_diff_summary,
-    get_staged_file_content, get_working_diff, has_conflict_markers, revert_hunk,
-    save_file_content, stage_hunk, unstage_hunk,
+    get_binary_diff_info, get_commit_diff, get_file_blame, get_file_bytes, get_file_content,
+    get_staged_diff_summary, get_staged_file_content, get_working_diff, has_conflict_markers,
+    revert_hunk, save_file_content, stage_hunk, unstage_hunk,
 };
 use commands::ghost::{
     discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch,
@@ -44,6 +44,7 @@ use commands::operations::{
 use commands::repository::get_repo_info;
 use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
 use commands::status::{
+    scan_secrets, ignore_secret_files,
     abort_cherry_pick, abort_merge, add_gitkeep, amend_commit, create_commit, discard_file, discard_files,
     get_empty_directories, get_status, resolve_all_conflicts, resolve_conflict_file,
     restore_pull_safety_stash, stage_file, stage_files, unstage_file, unstage_files,
@@ -85,6 +86,8 @@ pub fn run() {
             create_branch,
             delete_branch,
             get_status,
+            scan_secrets,
+            ignore_secret_files,
             stage_file,
             stage_files,
             unstage_file,
@@ -182,6 +185,8 @@ pub fn run() {
             get_commit_diff,
             get_file_content,
             get_staged_file_content,
+            get_binary_diff_info,
+            get_file_bytes,
             get_staged_diff_summary,
             get_file_blame,
             save_file_content,

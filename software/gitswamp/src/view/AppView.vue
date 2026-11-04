@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import TitleBar from "@/view/shell/TitleBar.vue";
+import SecretCommitDialog from "@/shared/ui/SecretCommitDialog.vue";
 import AppHeader from "@/view/shell/AppHeader.vue";
 import CommandPalette from "@/view/shell/CommandPalette.vue";
+import ThemeAmbience from "@/view/shell/ThemeAmbience.vue";
 import RepositoryTabs from "@/view/repository/RepositoryTabs.vue";
 import RepositoryWorkspace from "@/view/repository/RepositoryWorkspace.vue";
 import LandingPage from "@/view/repository/LandingPage.vue";
@@ -19,6 +21,7 @@ import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
 import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
+import { useRepositoryOperationNotice } from "@/shared/notifications/useRepositoryOperationNotice";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import { clearDiffViewerCaches } from "@/shared/config/diffViewCache";
 import { handleRepositoryTabShortcut } from "@/features/repository/tabs/repositoryTabShortcuts";
@@ -247,6 +250,7 @@ const multiPlatformPushRepoName = ref("");
 const showPushUsernameDialog = ref(false);
 const pushPlatform = ref("");
 const pushUsername = ref("");
+const pushProject = ref("");
 const pushDomain = ref("");
 const detailsPanelCollapsed = ref(true);
 const openPullRequestBranches = ref<string[]>([]);
@@ -289,7 +293,8 @@ const authEmailInput = ref("");
 const authKeyNameInput = ref("gitswamp");
 const authSubmitting = ref(false);
 let multiCommitFilesRunToken = 0;
-let singleCommitLoadKey: string | null = null;
+const commitFilesLoading = ref(false);
+const commitFilesError = ref<string | null>(null);
 let selectedCommitWatcherSkipSha: string | null = null;
 let backgroundRemoteHygieneLastRunAt = 0;
 let backgroundStaleWorkSignature = "";
@@ -304,8 +309,13 @@ let backgroundLargeChangeLastToastAt = 0;
 let backgroundConflictSignature = "";
 let backgroundConflictLastToastAt = 0;
 const COMMIT_FILES_CACHE_LIMIT = 12;
-const COMMIT_FILES_CACHE_MAX_FILES = 350;
+const COMMIT_FILES_CACHE_MAX_FILES = 5000;
 const commitFilesCache = new Map<string, CommitFileInfo[]>();
+const commitFilesRequests = new Map<string, Promise<CommitFileInfo[]>>();
+watch(() => [git.repoPath.value, ...git.selectedCommits.value.map(commit => commit.sha)].join("\0"), () => {
+  commitFilesLoading.value = false;
+  commitFilesError.value = null;
+}, { flush: "sync" });
 const gitRpgProfileCache = new Map<string, GitRpgProfile>();
 
 function getCommitFilesCacheKey(repoPath: string, sha: string) {
@@ -328,7 +338,7 @@ function cacheCommitFiles(repoPath: string, sha: string, files: CommitFileInfo[]
     commitFilesCache.delete(key);
   }
   commitFilesCache.set(key, files);
-  while (commitFilesCache.size > COMMIT_FILES_CACHE_LIMIT) {
+  while (commitFilesCache.size > COMMIT_FILES_CACHE_LIMIT || [...commitFilesCache.values()].reduce((sum, value) => sum + value.length, 0) > 10000) {
     const oldestKey = commitFilesCache.keys().next().value;
     if (!oldestKey) break;
     commitFilesCache.delete(oldestKey);
@@ -439,7 +449,6 @@ async function resolveConflict(filePath: string, resolution: 'keep-modified' | '
       strategy = "delete";
     }
 
-    // Use backend to resolve conflict properly
     await invoke('resolve_conflict_file', {
       path: git.repoPath.value,
       filePath: filePath,
@@ -3232,20 +3241,12 @@ function confirmAbortMerge() {
   ], 20000, "Merge resolutions will be cancelled. Pre-pull local changes will be restored when available.");
 }
 
-watch(() => [git.repositoryOperation.value?.kind, git.hasConflicts.value] as const, ([kind, conflicts], previous) => {
-  if (kind === "cherry-pick" && !conflicts && (previous?.[0] !== "cherry-pick" || previous?.[1])) {
-    toast.action("info", "Conflicts are resolved, but the cherry-pick is still active.", [
-      { label: "Review changes", style: "primary", onClick: onSelectWorkingChanges },
-      { label: "Abort cherry-pick", style: "danger", onClick: confirmAbortCherryPick },
-    ], 20000, "Commit the resolved changes to complete the cherry-pick, or abort it using the header button.");
-  }
-  if (kind === "merge" && !conflicts && (previous?.[0] !== "merge" || previous?.[1])) {
-    toast.action("info", "Conflicts are resolved, but the merge is still active.", [
-      { label: "Review merge", style: "primary", onClick: onSelectWorkingChanges },
-      { label: "Abort merge", style: "danger", onClick: confirmAbortMerge },
-    ], 20000, "Review and commit the staged changes to finish the merge, or abort it using the header button.");
-  }
-});
+useRepositoryOperationNotice({
+  path: () => git.repoPath.value,
+  kind: () => git.repositoryOperation.value?.kind,
+  hasConflicts: () => git.hasConflicts.value,
+  loading: () => git.loading.value,
+}, toast, onSelectWorkingChanges, confirmAbortMerge, confirmAbortCherryPick);
 
 function confirmDiscardUnstagedFromPalette() {
   if (git.repositoryOperation.value?.kind === "cherry-pick") {
@@ -3978,7 +3979,6 @@ watch([tabs, activeTabId], () => {
   );
 }, { deep: true });
 
-// Collapse side panel and close diff when switching tabs
 watch(activeTabId, () => {
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
@@ -4294,10 +4294,8 @@ async function handleInit(path: string, branchName: string) {
 
 async function handlePush() {
   appendLog("user", "Push triggered.");
-  // First, check if origin exists
   const hasOrigin = await git.checkOriginExists();
   if (hasOrigin) {
-    // Origin exists, push normally
     activeRemoteAction.value = "push";
     try {
       await git.push();
@@ -4312,7 +4310,6 @@ async function handlePush() {
     }
   } else {
     appendLog("app", "Push requires remote setup first.");
-    // No origin, show dialog to select platform
     const repoName = git.repoInfo.value?.name || "repository";
     multiPlatformPushRepoName.value = repoName;
     showMultiPlatformPushDialog.value = true;
@@ -4320,14 +4317,13 @@ async function handlePush() {
 }
 
 function handleMultiPlatformPush(platform: string) {
-  // For hosted platforms, ask for owner/workspace first. Azure additionally needs host domain.
   if (platform === 'github' || platform === 'gitlab' || platform === 'github-enterprise' || platform === 'gitlab-self-hosted' || platform === 'gitlab-self' || platform === 'bitbucket' || platform === 'azure') {
     pushPlatform.value = platform;
     pushUsername.value = "";
+    pushProject.value = "";
     pushDomain.value = "";
     showPushUsernameDialog.value = true;
   } else {
-    // For other platforms, push directly
     performPush(platform, "");
   }
 }
@@ -4344,10 +4340,11 @@ async function performPush(platform: string, username: string) {
         return;
       }
 
-      // For self-hosted instances: username/repo@domain.com
-      repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}@${normalizedDomain}`;
+      const repositoryName = git.repoInfo.value?.name || multiPlatformPushRepoName.value;
+      repoName = platform === "azure"
+        ? `${username}/${pushProject.value.trim()}/${repositoryName}@${normalizedDomain}`
+        : `${username}/${repositoryName}@${normalizedDomain}`;
     } else {
-      // For standard platforms: username/repo
       repoName = `${username}/${git.repoInfo.value?.name || multiPlatformPushRepoName.value}`;
     }
   } else {
@@ -4478,13 +4475,15 @@ async function getCommitFiles(repoPath: string, sha: string): Promise<CommitFile
   const cached = getCachedCommitFiles(repoPath, sha);
   if (cached) return cached;
 
-  try {
-    const files = await invoke<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha });
+  const key = getCommitFilesCacheKey(repoPath, sha);
+  const pending = commitFilesRequests.get(key);
+  if (pending) return pending;
+  const request = invoke<CommitFileInfo[]>("get_commit_files", { path: repoPath, sha }).then(files => {
     cacheCommitFiles(repoPath, sha, files);
     return files;
-  } catch {
-    return [];
-  }
+  }).finally(() => commitFilesRequests.delete(key));
+  commitFilesRequests.set(key, request);
+  return request;
 }
 
 async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
@@ -4495,43 +4494,54 @@ async function loadAggregatedSelectedCommitFiles(commits: CommitInfo[]) {
 
   const runToken = ++multiCommitFilesRunToken;
   const sorted = [...commits].sort((a, b) => b.timestamp - a.timestamp);
-
-  const responses = await Promise.all(
-    sorted.map(async (commit) => {
-      const files = await getCommitFiles(repoPath, commit.sha);
-      return { sha: commit.sha, files };
-    }),
-  );
-
-  if (runToken !== multiCommitFilesRunToken || git.repoPath.value !== repoPath) {
-    return;
-  }
-
-  const byPath = new Map<string, CommitFileInfo>();
-  for (const response of responses) {
-    for (const file of response.files) {
-      const existing = byPath.get(file.path);
-      if (!existing) {
-        byPath.set(file.path, {
-          ...file,
-          commit_shas: [response.sha],
-        });
-        continue;
+  commitFilesLoading.value = true;
+  commitFilesError.value = null;
+  try {
+    const responses: { sha: string; files: CommitFileInfo[] }[] = [];
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(4, sorted.length) }, async () => {
+      while (cursor < sorted.length && runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) {
+        const index = cursor++;
+        const commit = sorted[index];
+        const files = await getCommitFiles(repoPath, commit.sha);
+        responses[index] = { sha: commit.sha, files };
       }
+    }));
 
-      existing.additions += file.additions;
-      existing.deletions += file.deletions;
-      existing.status = mergeCommitFileStatus(existing.status, file.status);
-
-      const hashes = existing.commit_shas || [];
-      if (!hashes.includes(response.sha)) {
-        hashes.push(response.sha);
-      }
-      existing.commit_shas = hashes;
+    if (runToken !== multiCommitFilesRunToken || git.repoPath.value !== repoPath) {
+      return;
     }
-  }
 
-  git.selectedCommitFiles.value = Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+    const byPath = new Map<string, CommitFileInfo>();
+    for (const response of responses) {
+      for (const file of response.files) {
+        const existing = byPath.get(file.path);
+        if (!existing) {
+          byPath.set(file.path, {
+            ...file,
+            commit_shas: [response.sha],
+          });
+          continue;
+        }
+
+        existing.additions += file.additions;
+        existing.deletions += file.deletions;
+        existing.status = mergeCommitFileStatus(existing.status, file.status);
+
+        const hashes = existing.commit_shas || [];
+        if (!hashes.includes(response.sha)) {
+          hashes.push(response.sha);
+        }
+        existing.commit_shas = hashes;
+      }
+    }
+
+    git.selectedCommitFiles.value = Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+  } catch {
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesError.value = "Could not load changed files.";
+  } finally {
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesLoading.value = false;
+  }
 }
 
 async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
@@ -4541,9 +4551,9 @@ async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
     return;
   }
 
-  const cacheKey = getCommitFilesCacheKey(repoPath, commit.sha);
   const cached = getCachedCommitFiles(repoPath, commit.sha);
   if (cached) {
+    commitFilesLoading.value = false;
     const stillSelected = git.selectedCommits.value.length === 1 && git.selectedCommits.value[0]?.sha === commit.sha;
     if (stillSelected) {
       git.selectedCommitFiles.value = cached;
@@ -4551,12 +4561,9 @@ async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
     return;
   }
 
-  if (singleCommitLoadKey === cacheKey) {
-    return;
-  }
-
-  singleCommitLoadKey = cacheKey;
   const runToken = ++multiCommitFilesRunToken;
+  commitFilesLoading.value = true;
+  commitFilesError.value = null;
 
   try {
     const files = await getCommitFiles(repoPath, commit.sha);
@@ -4571,10 +4578,10 @@ async function loadSingleSelectedCommitFiles(commit: CommitInfo) {
     }
 
     git.selectedCommitFiles.value = files;
+  } catch {
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesError.value = "Could not load changed files.";
   } finally {
-    if (singleCommitLoadKey === cacheKey) {
-      singleCommitLoadKey = null;
-    }
+    if (runToken === multiCommitFilesRunToken && git.repoPath.value === repoPath) commitFilesLoading.value = false;
   }
 }
 
@@ -5242,6 +5249,8 @@ function submitCreateTag() {
       </div>
       <RepositoryWorkspace
         :git="git"
+        :commit-files-loading="commitFilesLoading"
+        :commit-files-error="commitFilesError"
         :show-terminal="showTerminal"
         :terminal-allow-all="terminalAllowAll"
         :open-pull-request-branches="openPullRequestBranches"
@@ -5411,6 +5420,7 @@ function submitCreateTag() {
       :show-push-username-dialog="showPushUsernameDialog"
       :push-platform="pushPlatform"
       :push-username="pushUsername"
+      :push-project="pushProject"
       :push-domain="pushDomain"
       :show-auth-required-dialog="showAuthRequiredDialog"
       :auth-provider="authProvider"
@@ -5421,6 +5431,7 @@ function submitCreateTag() {
       :auth-submitting="authSubmitting"
       @update:show-push-username-dialog="showPushUsernameDialog = $event"
       @update:push-username="pushUsername = $event"
+      @update:push-project="pushProject = $event"
       @update:push-domain="pushDomain = $event"
       @push="performPush(pushPlatform, pushUsername)"
       @update:show-auth-required-dialog="showAuthRequiredDialog = $event"
@@ -5433,6 +5444,8 @@ function submitCreateTag() {
       @generate-and-push-gitlab-key="generateAndPushGitlabKey()"
     />
 
+    <ThemeAmbience />
     <ToastContainer />
+    <SecretCommitDialog :repo-path="git.repoPath.value" />
   </div>
 </template>

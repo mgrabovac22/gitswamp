@@ -67,7 +67,6 @@ function onBackdropClick() {
   }
 }
 
-// Parse conflict markers from file content
 function parseConflicts(content: string): ConflictHunk[] {
   const lines = content.split('\n');
   const conflicts: ConflictHunk[] = [];
@@ -239,7 +238,6 @@ function toggleTheirsLine(hunkIdx: number, lineIdx: number) {
   sel.side = 'none'; // Manual selection
 }
 
-// Build the resolved file content
 const resolvedLines = computed(() => {
   const lines = fileContent.value.split('\n');
   const result: string[] = [];
@@ -315,12 +313,9 @@ const simpleResolutionContent = computed(() => {
       
       i++; // skip >>>>>>>
       
-      // Apply resolution
       if (simpleResolution.value === 'keep-modified') {
-        // Keep our version (modified)
         result.push(...oursContent);
       } else if (simpleResolution.value === 'keep-base') {
-        // Keep their version (base)
         result.push(...theirsContent);
       }
     } else {
@@ -363,7 +358,6 @@ async function saveResolution() {
       content: displayContent.value,
     });
     
-    // Stage the resolved file
     await invoke("stage_file", {
       path: props.repoPath,
       filePath: props.filePath,

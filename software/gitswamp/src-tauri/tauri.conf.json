@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node scripts/prepare-linux-package.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -27,6 +27,23 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Marin Grabovac",
+    "homepage": "https://mgrabovac22.github.io/gitswamp/",
+    "category": "DeveloperTool",
+    "shortDescription": "Visual Git client with conflict resolution and repository analytics",
+    "longDescription": "GitSwamp 0.4.0: visual Git history, staging, file editing, conflict resolution, Time Machine and repository analytics.\n\nGitSwamp update with fixes and improvements.\n\nInstall this package over an older GitSwamp installation, then close and reopen GitSwamp. If the same version is already installed, no reinstall is needed. Repositories and user settings are not removed by a normal upgrade.",
+    "linux": {
+      "deb": {
+        "section": "devel",
+        "priority": "optional",
+        "changelog": "packaging/changelog",
+        "files": {
+          "/usr/share/metainfo/com.wortex.gitswamp.metainfo.xml": "packaging/com.wortex.gitswamp.metainfo.xml",
+          "/usr/share/doc/git-swamp/RELEASE-NOTES.txt": "packaging/RELEASE-NOTES.txt",
+          "/usr/share/doc/git-swamp/USER-GUIDE.md": "../../../documentation/DOCUMENTATION_31_USER_GUIDE.md"
+        }
+      }
+    },
     "targets": [
       "appimage",
       "deb",

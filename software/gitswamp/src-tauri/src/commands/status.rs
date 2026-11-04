@@ -1,5 +1,21 @@
 use crate::models::FileStatusInfo;
 use crate::services::git_service::GitService;
+use crate::services::secret_service::{ignore_untracked, validate_commit, SecretScan, SecretService};
+
+#[tauri::command]
+pub async fn scan_secrets(path: String, staged: bool, include_secrets: Option<bool>, file_paths: Option<Vec<String>>) -> Result<SecretScan, String> {
+    tauri::async_runtime::spawn_blocking(move || if staged {
+        SecretService::review_staged(&path, include_secrets.unwrap_or(true))
+    } else if let Some(paths) = file_paths { SecretService::scan_worktree_paths(&path, &paths) }
+    else { SecretService::scan(&path, false) })
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn ignore_secret_files(path: String, paths: Vec<String>, snapshot: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || ignore_untracked(&path, &paths, &snapshot))
+        .await.map_err(|e| e.to_string())?
+}
 
 #[tauri::command]
 pub async fn get_status(path: String) -> Result<Vec<FileStatusInfo>, String> {
@@ -41,8 +57,11 @@ pub async fn create_commit(
     path: String,
     message: String,
     allow_empty: Option<bool>,
+    secret_check: Option<bool>,
+    secret_approval: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        validate_commit(&path, secret_check.unwrap_or(true), secret_approval.as_deref())?;
         GitService::create_commit_with_options(&path, &message, allow_empty.unwrap_or(false))
     })
     .await
@@ -81,8 +100,11 @@ pub async fn amend_commit(
     message: String,
     reset_author: bool,
     signoff: bool,
+    secret_check: Option<bool>,
+    secret_approval: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        validate_commit(&path, secret_check.unwrap_or(true), secret_approval.as_deref())?;
         GitService::amend_commit(&path, &message, reset_author, signoff)
     })
     .await

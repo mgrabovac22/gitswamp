@@ -1,152 +1,34 @@
-# GitSwamp Project Documentation
+# GitSwamp Documentation
 
-Complete software documentation for the GitSwamp desktop application - a modern Git client built with Tauri, Vue 3, and Rust.
+The guides below cover the desktop application and its native Android companion. CI assigns release versions from the source version in `software/gitswamp/src-tauri/tauri.conf.json`.
 
-## Current Feature Map
+## User Guides
 
-The active GitSwamp application includes the following documented feature areas:
+- [User guide](DOCUMENTATION_31_USER_GUIDE.md): installation, repositories, branches, staging, commits and conflicts.
+- [Current workflows and troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md): amend, checkout protection, pull safety, abort, Undo, editing, large commits and Debian updates.
+- [Commit intelligence panels](DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md): Time Machine, integration signals and team analytics.
+- [API Pulse](DOCUMENTATION_37_APIPULSE.md): HTTP collections, environments, runs and response inspection.
+- [Android guide](../software/gitswamp-mobile/README.md): installation, authorization, clone and on-device Git operations.
 
-- Start dashboard with GitHub-authenticated pull requests authored by the user, assigned issues, and local repository context
-- Multi-tab repository workspace with Ctrl+Tab switching, middle-click close, and restore/reopen support
-- Command Palette (Ctrl+K) for common repository, view, settings, terminal, and analytics actions
-- Graph, Galaxy View, Productivity Arena, Time Machine, Usual Conflict Suspects, Burnout Analytics, Remote Insights, and Conflict Resolve modes
-- Smart .gitignore Wizard for generated/private untracked files, enabled by default
-- Diff viewer micro-staging with hunk-level stage, unstage, and discard
-- Visual Commit Builder with conventional type, scope, optional issue tag, and summary composition
-- Terminal Command Safety Layer with destructive command previews and optional safety stash
-- Undo toast delay for destructive UI actions
-- Markdown Release Notes generator after successful merge flows
-- Optional background maintenance/reminder mechanisms surfaced through toasts
+## Developer Guides
 
-## Documentation Structure
+- [Project overview](DOCUMENTATION_00_PROJECT_OVERVIEW.md)
+- [System architecture](DOCUMENTATION_01_SYSTEM_ARCHITECTURE.md)
+- [Architecture diagrams](DOCUMENTATION_03_ARCHITECTURE_DIAGRAMS.md)
+- [Data models](DOCUMENTATION_02_DATA_MODELS.md)
+- [Frontend](DOCUMENTATION_04_FRONTEND_OVERVIEW.md)
+- [Backend](DOCUMENTATION_08_BACKEND_OVERVIEW.md)
+- [Commands reference](DOCUMENTATION_09_COMMANDS_REFERENCE.md)
+- [Core features](DOCUMENTATION_11_CORE_FEATURES.md)
+- [Development setup](DOCUMENTATION_19_DEVELOPMENT_SETUP.md)
+- [Security](DOCUMENTATION_25_SECURITY.md)
+- [HTTP client implementation](DOCUMENTATION_37_HTTP_CLIENT.md)
+- [Build, signing and updater](DOCUMENTATION_38_AUTO_UPDATER.md)
 
-This documentation is organized into the following modules:
+## Important Behavior
 
-### 1. Project Overview
-- **[00_PROJECT_OVERVIEW.md](./DOCUMENTATION_00_PROJECT_OVERVIEW.md)** - Introduction, purpose, and high-level architecture
+Resolving conflict markers does not end a merge or cherry-pick. Commit to complete it, or choose its Abort action. Undo cancels scheduled execution during the five-second window; it is not a rollback after execution.
 
-### 2. Architecture & Design
-- **[01_SYSTEM_ARCHITECTURE.md](./DOCUMENTATION_01_SYSTEM_ARCHITECTURE.md)** - System design, component interaction, and technical stack
-- **[02_DATA_MODELS.md](./DOCUMENTATION_02_DATA_MODELS.md)** - Data structures, entities, and type definitions
-- **[03_ARCHITECTURE_DIAGRAMS.md](./DOCUMENTATION_03_ARCHITECTURE_DIAGRAMS.md)** - Visual architecture representations
+Large commit reads and diff syntax coloring run in the background. Large file lists render a window of rows without changing the full scroll range. Editor drafts last only while the same diff viewer remains mounted.
 
-### 3. Frontend Documentation
-- **[04_FRONTEND_OVERVIEW.md](./DOCUMENTATION_04_FRONTEND_OVERVIEW.md)** - Vue 3 frontend structure and organization
-- **[05_COMPONENTS_GUIDE.md](./DOCUMENTATION_05_COMPONENTS_GUIDE.md)** - Detailed component documentation
-- **[06_COMPOSABLES_GUIDE.md](./DOCUMENTATION_06_COMPOSABLES_GUIDE.md)** - Composables and state management
-- **[07_UI_SYSTEM.md](./DOCUMENTATION_07_UI_SYSTEM.md)** - UI components and styling
-
-### 4. Backend Documentation
-- **[08_BACKEND_OVERVIEW.md](./DOCUMENTATION_08_BACKEND_OVERVIEW.md)** - Rust backend structure
-- **[09_COMMANDS_REFERENCE.md](./DOCUMENTATION_09_COMMANDS_REFERENCE.md)** - All Tauri commands reference
-- **[10_SERVICES_GUIDE.md](./DOCUMENTATION_10_SERVICES_GUIDE.md)** - Service layer documentation
-
-### 5. Features & Functionality
-- **[11_CORE_FEATURES.md](./DOCUMENTATION_11_CORE_FEATURES.md)** - Main application features
-- **[12_BRANCH_MANAGEMENT.md](./DOCUMENTATION_12_BRANCH_MANAGEMENT.md)** - Branch operations and workflows
-- **[13_COMMIT_OPERATIONS.md](./DOCUMENTATION_13_COMMIT_OPERATIONS.md)** - Commit history and management
-- **[14_FILE_OPERATIONS.md](./DOCUMENTATION_14_FILE_OPERATIONS.md)** - Staging, diffing, and file operations
-- **[15_ADVANCED_FEATURES.md](./DOCUMENTATION_15_ADVANCED_FEATURES.md)** - Stashing, tagging, conflict resolution
-- **[36_COMMIT_INTELLIGENCE_PANELS.md](./DOCUMENTATION_36_COMMIT_INTELLIGENCE_PANELS.md)** - Productivity, Time Machine, Conflict Suspects, Burnout Analytics, code ownership, and scoring algorithms
-  - Also see [04_FRONTEND_OVERVIEW.md](./DOCUMENTATION_04_FRONTEND_OVERVIEW.md) and [11_CORE_FEATURES.md](./DOCUMENTATION_11_CORE_FEATURES.md) for module placement and UI structure
-- **[37_APIPULSE.md](./DOCUMENTATION_37_APIPULSE.md)** - APIPulse HTTP/REST client: collections, environments, runs, simulated tests, and the response viewer
-- **[38_AUTO_UPDATER.md](./DOCUMENTATION_38_AUTO_UPDATER.md)** - Auto-updater: signing keys, build/publish steps, `latest.json`, and the upload checklist for GitHub releases
-
-### 6. Integration & APIs
-- **[16_GITHUB_INTEGRATION.md](./DOCUMENTATION_16_GITHUB_INTEGRATION.md)** - GitHub API integration
-- **[17_GITLAB_INTEGRATION.md](./DOCUMENTATION_17_GITLAB_INTEGRATION.md)** - GitLab API integration
-- **[18_EXTERNAL_APIS.md](./DOCUMENTATION_18_EXTERNAL_APIS.md)** - External service integrations
-
-### 7. Development Guide
-- **[19_DEVELOPMENT_SETUP.md](./DOCUMENTATION_19_DEVELOPMENT_SETUP.md)** - Setup and build instructions
-- **[20_CODING_STANDARDS.md](./DOCUMENTATION_20_CODING_STANDARDS.md)** - Code style and conventions
-- **[21_TESTING_GUIDE.md](./DOCUMENTATION_21_TESTING_GUIDE.md)** - Testing strategies and procedures
-
-### 8. Deployment & Operations
-- **[22_DEPLOYMENT_GUIDE.md](./DOCUMENTATION_22_DEPLOYMENT_GUIDE.md)** - Deployment instructions
-- **[23_CONFIGURATION.md](./DOCUMENTATION_23_CONFIGURATION.md)** - Configuration options and settings
-- **[24_TROUBLESHOOTING.md](./DOCUMENTATION_24_TROUBLESHOOTING.md)** - Common issues and solutions
-
-### 9. Security & Performance
-- **[25_SECURITY.md](./DOCUMENTATION_25_SECURITY.md)** - Security considerations
-- **[26_PERFORMANCE.md](./DOCUMENTATION_26_PERFORMANCE.md)** - Performance optimization
-- **[27_LOGGING_MONITORING.md](./DOCUMENTATION_27_LOGGING_MONITORING.md)** - Logging and monitoring
-
-### 10. API Reference
-- **[28_FRONTEND_API.md](./DOCUMENTATION_28_FRONTEND_API.md)** - Frontend API documentation
-- **[29_BACKEND_API.md](./DOCUMENTATION_29_BACKEND_API.md)** - Backend API reference
-- **[30_TYPE_DEFINITIONS.md](./DOCUMENTATION_30_TYPE_DEFINITIONS.md)** - TypeScript type definitions
-
-### 11. User Guide
-- **[31_USER_GUIDE.md](./DOCUMENTATION_31_USER_GUIDE.md)** - End-user documentation
-- **[32_KEYBOARD_SHORTCUTS.md](./DOCUMENTATION_32_KEYBOARD_SHORTCUTS.md)** - Keyboard shortcuts and hotkeys
-
-### 12. Appendices
-- **[33_GLOSSARY.md](./DOCUMENTATION_33_GLOSSARY.md)** - Terms and definitions
-- **[34_REFERENCES.md](./DOCUMENTATION_34_REFERENCES.md)** - External references and resources
-- **[35_CHANGELOG.md](./DOCUMENTATION_35_CHANGELOG.md)** - Version history and changes
-
----
-
-## Quick Navigation
-
-### For Project Managers
-Start with [00_PROJECT_OVERVIEW.md](./DOCUMENTATION_00_PROJECT_OVERVIEW.md) and [01_SYSTEM_ARCHITECTURE.md](./DOCUMENTATION_01_SYSTEM_ARCHITECTURE.md)
-
-### For Frontend Developers
-Follow the Frontend section: [04_FRONTEND_OVERVIEW.md](./DOCUMENTATION_04_FRONTEND_OVERVIEW.md) → [05_COMPONENTS_GUIDE.md](./DOCUMENTATION_05_COMPONENTS_GUIDE.md) → [06_COMPOSABLES_GUIDE.md](./DOCUMENTATION_06_COMPOSABLES_GUIDE.md)
-
-### For Backend Developers
-Follow the Backend section: [08_BACKEND_OVERVIEW.md](./DOCUMENTATION_08_BACKEND_OVERVIEW.md) → [09_COMMANDS_REFERENCE.md](./DOCUMENTATION_09_COMMANDS_REFERENCE.md) → [10_SERVICES_GUIDE.md](./DOCUMENTATION_10_SERVICES_GUIDE.md)
-
-### For Feature Implementation
-See [11_CORE_FEATURES.md](./DOCUMENTATION_11_CORE_FEATURES.md), [04_FRONTEND_OVERVIEW.md](./DOCUMENTATION_04_FRONTEND_OVERVIEW.md), and feature-specific documents
-
-### For DevOps/Operations
-See [19_DEVELOPMENT_SETUP.md](./DOCUMENTATION_19_DEVELOPMENT_SETUP.md), [22_DEPLOYMENT_GUIDE.md](./DOCUMENTATION_22_DEPLOYMENT_GUIDE.md), [23_CONFIGURATION.md](./DOCUMENTATION_23_CONFIGURATION.md)
-
-### For Security Review
-See [25_SECURITY.md](./DOCUMENTATION_25_SECURITY.md)
-
----
-
-## Project Information
-
-- **Project Name:** GitSwamp
-- **Version:** 0.1.0
-- **Type:** Desktop Application (Tauri)
-- **Primary Language:** Vue 3 (Frontend), Rust (Backend)
-- **Build Tool:** Vite
-- **Status:** In Development
-
----
-
-## Getting Started
-
-1. **Project Overview:** Read [00_PROJECT_OVERVIEW.md](./DOCUMENTATION_00_PROJECT_OVERVIEW.md)
-2. **Architecture Understanding:** Review [01_SYSTEM_ARCHITECTURE.md](./DOCUMENTATION_01_SYSTEM_ARCHITECTURE.md)
-3. **Development Setup:** Follow [19_DEVELOPMENT_SETUP.md](./DOCUMENTATION_19_DEVELOPMENT_SETUP.md)
-4. **Feature Exploration:** Browse feature-specific documentation
-
----
-
-## Documentation Conventions
-
-- **Code Examples:** Marked with language-specific code blocks
-- **Important Notes:** Highlighted with special formatting
-- **References:** Cross-linked throughout documents
-- **Diagrams:** Included where architectural clarity is needed
-
----
-
-## Version Information
-
-- **Documentation Version:** 1.0.0
-- **Last Updated:** 2026
-- **Compatible with GitSwamp:** v0.1.0+
-
----
-
-## Feedback & Contributions
-
-This documentation is part of the GitSwamp project. For updates or improvements, please refer to the project's contribution guidelines.
+Debian installations update through the package manager. If the newer package is already installed while an older process is running, restart GitSwamp instead of reinstalling it. Package information uses standard update text; GitHub release notes remain automatically generated by GitHub.

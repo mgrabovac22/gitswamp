@@ -61,7 +61,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
       is_clean: repoInfo?.is_clean ?? true,
       head_sha: repoInfo?.head_sha ?? null,
       remotes: repoInfo?.remotes ? repoInfo.remotes.map((remote) => ({ ...remote })) : [],
-      operation: repoInfo?.operation ? { ...repoInfo.operation } : null,
+      operation: null,
     };
   }
 
@@ -114,7 +114,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     if (!snapshot) return false;
 
     rememberRepositorySnapshot(path, snapshot);
-    state.repoInfo.value = snapshot.repoInfo;
+    state.repoInfo.value = snapshot.repoInfo ? createOptimisticRepoInfo(path, snapshot.repoInfo) : null;
     state.commits.value = snapshot.commits;
     state.branches.value = snapshot.branches;
     state.fileStatuses.value = snapshot.fileStatuses;
@@ -154,7 +154,6 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
         return;
       }
 
-      state.repoInfo.value = repoInfo;
       await Promise.all([
         commitRefresh,
         branchRefresh,
@@ -166,6 +165,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
         return;
       }
 
+      state.repoInfo.value = repoInfo;
       snapshotCurrentRepository();
       watcher.startFileWatcher();
     } catch (e) {

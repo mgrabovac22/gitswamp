@@ -58,7 +58,7 @@ export function highlightCodeLine(line: string, filePath: string): string {
       return hljs.highlight(line, { language, ignoreIllegals: true }).value;
     }
 
-    return hljs.highlightAuto(line).value;
+    return escapeHtml(line);
   } catch {
     return escapeHtml(line);
   }
@@ -72,6 +72,18 @@ export function highlightCode(code: string, language: string | null): string {
     return hljs.highlightAuto(code).value;
   } catch {
     return escapeHtml(code);
+  }
+}
+
+export function highlightFilePreview(code: string, filePath: string): string | null {
+  const language = detectLanguageFromPath(filePath);
+  if (!language || !hljs.getLanguage(language) || code.length > 60_000 || code.includes("\0")) return null;
+  const lines = code.split("\n");
+  if (lines.length > 1500 || lines.some(line => line.length > 2000)) return null;
+  try {
+    return hljs.highlight(code, { language, ignoreIllegals: true }).value;
+  } catch {
+    return null;
   }
 }
 

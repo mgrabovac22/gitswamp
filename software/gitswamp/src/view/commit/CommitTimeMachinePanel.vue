@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { FileArchive, FileCode2, FileImage, FileText, Folder } from "lucide-vue-next";
 import logoCrocLoading from "@/assets/logo_croc_loading.gif";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
+import { highlightFilePreview } from "@/shared/codeView";
 import type { CommitInfo, CommitFileInfo } from "@/types";
 
 const FULL_HISTORY_LIMIT = 60000;
@@ -50,6 +51,9 @@ const treeError = ref("");
 const currentDirectory = ref("");
 const selectedExplorerFilePath = ref("");
 const selectedExplorerFileContent = ref("");
+const explorerHighlightedContent = computed(() => highlightFilePreview(
+  selectedExplorerFileContent.value, selectedExplorerFilePath.value,
+));
 const explorerFileLoading = ref(false);
 const explorerFileError = ref("");
 const panelScrollContainer = ref<HTMLElement | null>(null);
@@ -475,6 +479,7 @@ async function loadExplorerFile(path: string, shaOverride?: string) {
   const cacheKey = `${props.repoPath}::${sha}::${path}`;
 
   selectedExplorerFilePath.value = path;
+  selectedExplorerFileContent.value = "";
   explorerFileError.value = "";
 
   const cachedContent = getCachedEntry(fileContentCache, cacheKey);
@@ -1038,7 +1043,7 @@ onUnmounted(() => {
               {{ selectedExplorerFilePath ? selectedExplorerFilePath : "Select a file to preview snapshot content" }}
             </div>
             <div v-if="explorerFileError && !selectedExplorerFileContent" class="text-xs text-[var(--destructive)]">{{ explorerFileError }}</div>
-            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text">{{ selectedExplorerFileContent }}</pre>
+            <pre v-else-if="selectedExplorerFileContent" class="snapshot-preview select-text"><code v-if="explorerHighlightedContent !== null" v-html="explorerHighlightedContent" /><code v-else>{{ selectedExplorerFileContent }}</code></pre>
             <div v-else class="text-xs text-[var(--muted-foreground)]">No file selected.</div>
 
             <div v-if="explorerFileLoading" class="tm-subcard-overlay">

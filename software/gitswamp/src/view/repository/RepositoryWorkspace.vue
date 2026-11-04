@@ -49,6 +49,8 @@ const HttpClientPanel = defineAsyncComponent(() => import("@/features/repository
 
 const props = defineProps<{
   git: any;
+  commitFilesLoading?: boolean;
+  commitFilesError?: string | null;
   showTerminal: boolean;
   terminalAllowAll: boolean;
   openPullRequestBranches?: string[];
@@ -389,6 +391,10 @@ async function handleAmendCommit(options: AmendCommitOptions) {
   await props.git.amendLastCommit(options);
 }
 
+async function handleCommit(payload: { message: string; allowEmpty: boolean; done: (success: boolean) => void }) {
+  payload.done(await props.git.commitChanges(payload.message, payload.allowEmpty));
+}
+
 function setAmendModeFromGraph(enabled: boolean) {
   amendModeRequested.value = enabled;
   if (!enabled) return;
@@ -688,6 +694,8 @@ function handleRefreshState() {
             :conflict-files="props.git.conflictFiles.value"
             :has-conflicts="props.git.hasConflicts.value"
             :commit-files="props.git.selectedCommitFiles.value"
+            :commit-files-loading="props.commitFilesLoading"
+            :commit-files-error="props.commitFilesError"
             :is-working-changes="props.viewingWorkingChanges || repositoryOperation !== null"
             :is-stash="props.viewingStash"
             :selected-stash="props.git.selectedStash.value"
@@ -700,7 +708,7 @@ function handleRefreshState() {
             @unstage="props.git.unstageFile($event)"
             @stage-all="props.git.stageAll()"
             @unstage-all="props.git.unstageAll()"
-            @commit="props.git.commitChanges($event.message, $event.allowEmpty)"
+            @commit="handleCommit"
             @abort-merge="abortCurrentMerge"
             @abort-cherry-pick="props.git.scheduleAbortOperation('cherry-pick')"
             @amend-commit="handleAmendCommit($event)"

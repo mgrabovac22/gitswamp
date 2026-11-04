@@ -2,7 +2,17 @@
 
 ## 1. Command Overview
 
-GitSwamp exposes 102 Tauri commands organized across multiple modules. All commands are asynchronous and use type-safe serialization. Modules include: repository, commits, commit_files, branches, status, diff, stash, tags, clone_init, operations, credentials, conflicts, ghost, and logs.
+GitSwamp exposes commands through typed Tauri IPC. Frontend invocation returns a Promise; native handlers may be synchronous or asynchronous. Heavy repository-info and commit-file reads use `spawn_blocking`. Registration in `software/gitswamp/src-tauri/src/lib.rs` is the source of truth for available commands.
+
+### Current updater contract
+
+| Command | Frontend arguments | Result |
+| --- | --- | --- |
+| `check_for_update` | none | Update info or null; includes `debInstallation` and `alreadyInstalled` |
+| `download_deb_update` | `{ tag, version }` from the offered update | `{ path: string or null, version, alreadyInstalled }` |
+| `install_update` | `{ onEvent }` channel | Native update installation for non-Debian formats |
+
+Debian download checks installed dpkg state and package metadata but never installs it. A null path with `alreadyInstalled: true` means restart, not another download. See [the updater guide](DOCUMENTATION_38_AUTO_UPDATER.md).
 
 ## 2. Repository Commands
 

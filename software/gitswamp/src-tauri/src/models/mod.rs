@@ -25,7 +25,7 @@ pub use branch::BranchInfo;
 pub use commit::CommitInfo;
 pub use commit_file::CommitFileInfo;
 pub use conflict_hotspot::{ConflictHotspot, ConflictPair, MergeRiskPreflight};
-pub use diff::{DiffHunk, DiffLine, FileDiff};
+pub use diff::{BinaryDiffInfo, BinarySideInfo, DiffHunk, DiffLine, FileDiff};
 pub use file_blame_line::FileBlameLine;
 pub use file_status::FileStatusInfo;
 pub use ghost_branch_state::GhostBranchState;

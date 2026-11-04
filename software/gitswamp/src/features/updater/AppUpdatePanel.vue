@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowDownToLine, Loader2, X } from "lucide-vue-next";
+import { ArrowDownToLine, Loader2, RotateCcw, ExternalLink, X } from "lucide-vue-next";
 import { useAppUpdate } from "./useAppUpdate";
 
 const {
@@ -12,6 +12,10 @@ const {
   isVisible: panelVisible,
   install,
   dismiss,
+  openDownloadedPackage,
+  restart,
+  openReleasePage,
+  check,
 } = useAppUpdate();
 
 function formatBytes(bytes: number): string {
@@ -44,7 +48,7 @@ function formatBytes(bytes: number): string {
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-1.5">
             <span class="text-[11px] font-semibold text-[var(--sidebar-foreground)] truncate">
-              {{ status === "installing" ? "Installing update…" : "Update available" }}
+              {{ status === 'installed' ? 'Restart required' : status === 'downloaded' ? 'Package ready' : status === 'installing' ? (updateInfo.debInstallation ? 'Downloading package...' : 'Installing update...') : 'Update available' }}
             </span>
             <span
               v-if="updateInfo.prerelease"
@@ -63,6 +67,12 @@ function formatBytes(bytes: number): string {
             class="text-[10px] text-[var(--muted-foreground)]/80 mt-1 line-clamp-2 whitespace-pre-line"
           >
             {{ updateInfo.notes }}
+          </p>
+          <p v-if="status === 'installed'" class="text-[10px] text-[var(--muted-foreground)] mt-1">
+            The update is installed. Restart GitSwamp to use it.
+          </p>
+          <p v-if="status === 'downloaded'" class="text-[10px] text-[var(--muted-foreground)] mt-1">
+            Open the .deb, finish installation in your package manager, then restart GitSwamp.
           </p>
 
           <div v-if="status === 'installing'" class="mt-1.5">
@@ -90,12 +100,13 @@ function formatBytes(bytes: number): string {
 
           <div class="flex items-center gap-1.5 mt-2">
             <button
-              @click="install"
+              @click="status === 'installed' ? restart() : status === 'downloaded' ? openDownloadedPackage() : install()"
               :disabled="status === 'installing'"
               class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[10px] font-semibold bg-[var(--sidebar-primary)] text-[var(--sidebar-primary-foreground)] hover:opacity-90 disabled:opacity-50 transition-all"
             >
-              <ArrowDownToLine class="w-3 h-3" />
-              Install
+              <RotateCcw v-if="status === 'installed'" class="w-3 h-3" />
+              <ArrowDownToLine v-else class="w-3 h-3" />
+              {{ status === 'installed' ? 'Restart' : status === 'downloaded' ? 'Open .deb' : updateInfo.debInstallation ? 'Download .deb' : 'Install' }}
             </button>
             <button
               @click="dismiss"
@@ -106,6 +117,10 @@ function formatBytes(bytes: number): string {
               Dismiss
             </button>
           </div>
+          <button v-if="status !== 'installing'" @click="openReleasePage" class="mt-1.5 flex items-center gap-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)]" title="Open full release notes">
+            <ExternalLink class="w-3 h-3" /> Release notes
+          </button>
+          <button v-if="status === 'downloaded'" @click="check(true)" class="mt-1.5 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)]">Check installation</button>
         </div>
       </div>
     </div>

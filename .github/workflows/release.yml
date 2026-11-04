@@ -86,6 +86,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Test updater and packaging metadata
+        run: node --test tests/linuxUpdates.test.mjs
+
       - name: Require updater signing key
         shell: bash
         env:
@@ -104,6 +107,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build ${{ matrix.tauri_args }}
+
+      - name: Verify Linux package version and release information
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          deb="$(find src-tauri/target -type f -name '*.deb' -print -quit)"
+          test -n "$deb"
+          node scripts/verify-deb.mjs "$deb"
 
       - name: Create signed Linux updater archive
         if: runner.os == 'Linux'
@@ -157,7 +168,7 @@ jobs:
           GITSWAMP_REPO: ${{ github.repository }}
         run: |
           node scripts/collect-release-assets.mjs ../../release-artifacts release-files
-          node scripts/generate-update-manifest.mjs --tag "${{ needs.prepare.outputs.tag }}" --version "${{ needs.prepare.outputs.version }}" --bundle-dir release-files --out release-files/latest.json --notes "Automated build for ${{ github.sha }}"
+          node scripts/generate-update-manifest.mjs --tag "${{ needs.prepare.outputs.tag }}" --version "${{ needs.prepare.outputs.version }}" --bundle-dir release-files --out release-files/latest.json --notes "GitSwamp update with fixes and improvements."
 
       - name: Publish signed release and updater manifest
         uses: softprops/action-gh-release@v2

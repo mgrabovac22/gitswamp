@@ -1,5 +1,7 @@
 # Core Features
 
+For current amend, branch/tag checkout, local-change protection, merge/cherry-pick abort, Undo, editor and large-commit behavior, see [Current workflows and troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md). Platform update instructions are in the [updater guide](DOCUMENTATION_38_AUTO_UPDATER.md); Android clone and authorization are in the [mobile guide](../software/gitswamp-mobile/README.md).
+
 ## 1. Feature Overview
 
 GitSwamp provides comprehensive Git repository management through 102 integrated Tauri commands and a user-friendly interface designed for both simple and advanced workflows.

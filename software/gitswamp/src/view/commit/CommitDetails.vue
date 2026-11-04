@@ -31,7 +31,9 @@ import AppButton from "@/shared/ui/AppButton.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
 import SmartGitignoreWizard from "@/view/commit/SmartGitignoreWizard.vue";
+import { useUnstagedSecrets } from "@/shared/config/useUnstagedSecrets";
 import { splitFilePath } from "@/shared/codeView";
+import { useWindowedRows } from "@/shared/ui/useWindowedRows";
 import { useToast } from "@/shared/notifications/useToast";
 import {
   createCommitLintEngine,
@@ -73,6 +75,8 @@ const props = defineProps<{
   conflictFiles?: FileStatusInfo[];
   hasConflicts?: boolean;
   commitFiles: CommitFileInfo[];
+  commitFilesLoading?: boolean;
+  commitFilesError?: string | null;
   isWorkingChanges: boolean;
   isStash?: boolean;
   selectedStash?: StashInfo | null;
@@ -88,7 +92,7 @@ const emit = defineEmits<{
   unstage: [path: string];
   stageAll: [];
   unstageAll: [];
-  commit: [payload: { message: string; allowEmpty: boolean }];
+  commit: [payload: { message: string; allowEmpty: boolean; done: (success: boolean) => void }];
   abortMerge: [];
   abortCherryPick: [];
   amendCommit: [options: AmendCommitOptions];
@@ -110,6 +114,7 @@ const emit = defineEmits<{
 }>();
 
 const commitSummary = ref("");
+const { findingsByPath: unstagedSecrets } = useUnstagedSecrets(() => props.repoPath, () => props.unstagedFiles, () => props.isWorkingChanges && !props.operationBusy);
 const commitDescription = ref("");
 const allowEmptyCommit = ref(getStoredAllowEmptyCommit());
 const amendPreviousCommit = ref(false);
@@ -141,6 +146,9 @@ let copiedShaTimer: ReturnType<typeof setTimeout> | null = null;
 const copiedShaKey = ref<string | null>(null);
 const selectedChangePath = ref<string | null>(null);
 const commitFilesScrollContainer = ref<HTMLElement | null>(null);
+const changedFilesScrollContainer = ref<HTMLElement | null>(null);
+const commitFileRowHeight = computed(() => (props.selectedCommits?.length ?? 0) > 1 ? 60 : 46);
+const visibleCommitFiles = useWindowedRows(() => props.commitFiles, changedFilesScrollContainer, () => commitFileRowHeight.value);
 const fileNavigationMode = ref(false);
 const commitBuilderButtonRef = ref<HTMLElement | null>(null);
 const commitBuilderPanelRef = ref<HTMLElement | null>(null);
@@ -166,10 +174,22 @@ function openStashDiff(filePath: string) {
 }
 
 function scrollSelectedCommitFileIntoView() {
-  const container = commitFilesScrollContainer.value;
+  const container = props.isWorkingChanges ? commitFilesScrollContainer.value : changedFilesScrollContainer.value;
   const selectedPath = selectedChangePath.value;
   if (!container || !selectedPath) {
     return;
+  }
+
+  if (!props.isWorkingChanges && props.commitFiles.length > 200) {
+    const index = props.commitFiles.findIndex(file => file.path === selectedPath);
+    if (index >= 0) {
+      const top = 48 + index * commitFileRowHeight.value;
+      if (top < container.scrollTop || top + commitFileRowHeight.value > container.scrollTop + container.clientHeight) {
+        container.scrollTop = top;
+        container.dispatchEvent(new Event("scroll"));
+        void nextTick(() => container.querySelector<HTMLElement>("[data-commit-file-path='" + globalThis.CSS.escape(selectedPath) + "']")?.scrollIntoView({ block: "nearest" }));
+      }
+    }
   }
 
   const escapedPath = globalThis.CSS?.escape ? globalThis.CSS.escape(selectedPath) : selectedPath;
@@ -359,7 +379,6 @@ function handleCommitFileArrowLeft(event: KeyboardEvent) {
 }
 
 const activeTab = ref<"changes" | "info">("changes");
-// Tracks whether the user explicitly selected the tab. When true, do not override on programmatic commit changes.
 const userSelectedTab = ref(false);
 
 function setActiveTab(tab: "changes" | "info") {
@@ -386,7 +405,6 @@ watch(() => props.commit, (newVal) => {
     return;
   }
 
-  // Preserve user choice when stepping between commits
   if (userSelectedTab.value) {
     return;
   }
@@ -1453,6 +1471,7 @@ function flattenTreeRows(nodes: ChangesTreeNode[], depth = 0, rows: ChangesTreeR
 
 const treeNodes = computed(() => buildChangesTree(treeSourcePaths.value, activeTreeMeta.value));
 const treeRows = computed(() => flattenTreeRows(treeNodes.value));
+const visibleCommitTreeRows = useWindowedRows(() => treeRows.value, changedFilesScrollContainer, () => 32);
 const changeMapFiles = computed<ChangeMapFile[]>(() => {
   const byPath = new Map<string, ChangeMapFile>();
 
@@ -1734,6 +1753,7 @@ function closeAmendMode() {
 function onCommit() {
   if (!canSubmitCommit.value) return;
   const message = composedCommitMessage.value;
+  const submittedRepo = props.repoPath;
 
   if (amendPreviousCommit.value) {
     emit("amendCommit", {
@@ -1747,9 +1767,13 @@ function onCommit() {
   emit("commit", {
     message,
     allowEmpty: allowEmptyCommit.value && props.stagedFiles.length === 0 && !mergeInProgress.value,
+    done: (success) => {
+      if (success && props.repoPath === submittedRepo && composedCommitMessage.value === message) {
+        commitSummary.value = "";
+        commitDescription.value = "";
+      }
+    },
   });
-  commitSummary.value = "";
-  commitDescription.value = "";
 }
 
 async function copyToClipboard(text: string, key?: string) {
@@ -1954,6 +1978,10 @@ watch(
   () => {
     showAllFilesInTree.value = false;
     changesViewMode.value = "files";
+    if (changedFilesScrollContainer.value) {
+      changedFilesScrollContainer.value.scrollTop = 0;
+      changedFilesScrollContainer.value.dispatchEvent(new Event("scroll"));
+    }
   },
 );
 
@@ -2235,6 +2263,7 @@ onUnmounted(() => {
               @contextmenu="openFileContextMenu($event, f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
+              <AlertTriangle v-if="unstagedSecrets.has(f.path)" class="w-3.5 h-3.5 shrink-0 text-amber-500" :aria-label="unstagedSecrets.get(f.path)" :title="unstagedSecrets.get(f.path)" />
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
                 <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
@@ -2401,6 +2430,8 @@ onUnmounted(() => {
               >
                 {{ row.node.name }}
               </span>
+
+              <AlertTriangle v-if="row.node.type === 'file' && unstagedSecrets.has(row.node.path)" class="w-3.5 h-3.5 shrink-0 text-amber-500" :aria-label="unstagedSecrets.get(row.node.path)" :title="unstagedSecrets.get(row.node.path)" />
 
               <span
                 v-if="row.node.type === 'folder'"
@@ -2621,7 +2652,7 @@ onUnmounted(() => {
     </div>
 
     <div v-show="activeTab === 'changes' && !isWorkingChanges && (commit || isMultiCommitSelection)" class="flex-1 flex flex-col overflow-hidden">
-      <div class="flex-1 overflow-y-auto">
+      <div ref="changedFilesScrollContainer" class="flex-1 overflow-y-auto">
         <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[var(--card)] text-xs text-[var(--foreground)] border-b border-[var(--border)]">
           <div class="flex items-center gap-2 min-w-0">
             <span class="font-medium">{{ isMultiCommitSelection ? 'Merged changed files' : 'Changed files' }}</span>
@@ -2667,14 +2698,21 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <template v-if="changesViewMode === 'files'">
+        <div v-if="commitFilesLoading" class="px-4 py-6 text-xs text-[var(--muted-foreground)] flex items-center gap-2" role="status">
+          <span class="w-3.5 h-3.5 rounded-full border-2 border-[var(--border)] border-t-[var(--primary)] animate-spin" />
+          Loading changed files...
+        </div>
+        <div v-else-if="commitFilesError" class="px-4 py-6 text-xs text-[var(--destructive)]" role="alert">{{ commitFilesError }}</div>
+        <template v-else-if="changesViewMode === 'files'">
           <div v-if="commitFiles.length > 0">
+            <div v-if="visibleCommitFiles.before" :style="{ height: `${visibleCommitFiles.before}px` }" />
             <div
-              v-for="f in commitFiles"
+              v-for="f in visibleCommitFiles.rows"
               :key="f.path"
               :data-commit-file-path="f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[var(--primary)]/5 transition-all cursor-pointer group"
               :class="selectedChangePath === f.path ? 'bg-[var(--primary)]/10' : ''"
+              :style="visibleCommitFiles.active ? { height: `${commitFileRowHeight}px`, boxSizing: 'border-box' } : undefined"
               @click="openDiff(f.path, isMultiCommitSelection ? (f.commit_shas?.[0] || primaryCommitShaForDiff) : commit!.sha, false)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >
@@ -2690,6 +2728,7 @@ onUnmounted(() => {
               <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
               <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
             </div>
+            <div v-if="visibleCommitFiles.after" :style="{ height: `${visibleCommitFiles.after}px` }" />
           </div>
           <div v-else class="px-4 py-12 flex flex-col items-center justify-center">
             <div class="w-12 h-12 rounded-full bg-[var(--card)] flex items-center justify-center mb-3 border border-[var(--border)]">
@@ -2708,15 +2747,16 @@ onUnmounted(() => {
           </div>
 
           <div v-if="treeRows.length > 0">
+            <div v-if="visibleCommitTreeRows.before" :style="{ height: `${visibleCommitTreeRows.before}px` }" />
             <div
-              v-for="row in treeRows"
+              v-for="row in visibleCommitTreeRows.rows"
               :key="row.node.key"
               class="group flex items-center gap-2 py-1.5 pr-3 transition-colors"
               :class="[
                 row.node.type === 'folder' ? 'hover:bg-[var(--secondary)]/45 cursor-pointer' : 'hover:bg-[var(--primary)]/6',
                 row.node.changed ? '' : 'opacity-70',
               ]"
-              :style="{ paddingLeft: `${10 + row.depth * 14}px` }"
+              :style="{ paddingLeft: `${10 + row.depth * 14}px`, ...(visibleCommitTreeRows.active ? { height: '32px', boxSizing: 'border-box' as const } : {}) }"
               @click="onTreeRowClick(row)"
               @contextmenu="onTreeRowContextMenu($event, row)"
             >
@@ -2769,6 +2809,7 @@ onUnmounted(() => {
             </div>
             <p class="text-xs text-[var(--muted-foreground)]">No file changes</p>
           </div>
+          <div v-if="visibleCommitTreeRows.after" :style="{ height: `${visibleCommitTreeRows.after}px` }" />
         </template>
 
         <template v-else>

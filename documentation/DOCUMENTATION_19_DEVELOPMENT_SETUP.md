@@ -1,5 +1,13 @@
 # Development Setup Guide
 
+## Release Packaging Update
+
+See the [updater guide](DOCUMENTATION_38_AUTO_UPDATER.md#automated-main-branch-releases) for CI. Run `node scripts/set-release-version.mjs VERSION` from `software/gitswamp` before a manual release build. It aligns version files and generates Linux metadata. The Tauri build hook regenerates metadata for ordinary local builds too.
+
+Run `node --test tests/*.test.mjs` and `npm run build` for frontend regressions. Native updater tests use `cargo test commands::updates::tests --lib` from `software/gitswamp/src-tauri`. Linux CI checks the built package with `node scripts/verify-deb.mjs PATH_TO_DEB`; Windows cannot verify the Linux GUI installation.
+
+Generated package text, changelog and AppStream XML are ignored by Git and use standard update wording. Do not hand-edit them or rename an old package instead of updating its internal version.
+
 ## 1. Prerequisites
 
 ### 1.1 System Requirements

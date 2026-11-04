@@ -1878,9 +1878,6 @@ impl GitService {
             return Self::checkout_remote_branch(&repo, remote_name, remote_branch);
         }
 
-        // A branch checkout deliberately resolves only local branches. Tags and
-        // arbitrary revisions use the explicit commit checkout path and cannot
-        // accidentally place the user in detached HEAD state.
         Self::checkout_local_branch(&repo, trimmed)
     }
     pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
@@ -1897,6 +1894,10 @@ impl GitService {
 
     pub fn fetch_all(path: &str, token: Option<&str>) -> Result<String, String> {
         RemoteService::fetch_all(path, token)
+    }
+
+    pub fn fetch_remote(path: &str, token: Option<&str>, remote_name: &str) -> Result<String, String> {
+        RemoteService::fetch_remote(path, token, remote_name)
     }
 
     pub fn run_git_command(path: &str, args: &[&str]) -> Result<String, String> {
@@ -3251,6 +3252,27 @@ impl GitService {
         DiffService::get_staged_file_content(path, file_path)
     }
 
+    pub fn get_binary_diff_info(
+        path: &str,
+        file_path: &str,
+        old_path: Option<&str>,
+        sha: Option<&str>,
+        staged: bool,
+    ) -> Result<crate::models::BinaryDiffInfo, String> {
+        DiffService::get_binary_diff_info(path, file_path, old_path, sha, staged)
+    }
+
+    pub fn get_file_bytes(
+        path: &str,
+        file_path: &str,
+        old_path: Option<&str>,
+        sha: Option<&str>,
+        staged: bool,
+        side: &str,
+    ) -> Result<Vec<u8>, String> {
+        DiffService::get_file_bytes(path, file_path, old_path, sha, staged, side)
+    }
+
     pub fn get_file_blame(
         path: &str,
         file_path: &str,
@@ -3308,6 +3330,34 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("gitswamp-{}-{}", label, stamp))
+    }
+
+    #[test]
+    fn commit_files_preserves_all_paths_and_stats_for_large_commits() {
+        let path = unique_temp_repo_path("large-commit-files");
+        std::fs::create_dir_all(&path).unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let repo = Repository::init(&path).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        GitService::initialize_empty_repo(&path_str).unwrap();
+        let mut index = repo.index().unwrap();
+        for number in 0..2048 {
+            let name = format!("file-{:04}.txt", number);
+            std::fs::write(path.join(&name), format!("content {}\n", number)).unwrap();
+            index.add_path(Path::new(&name)).unwrap();
+        }
+        index.write().unwrap();
+        drop(index);
+        let sha = GitService::create_commit_with_options(&path_str, "Large commit", false).unwrap();
+        let started = std::time::Instant::now();
+        let files = GitService::commit_files(&path_str, &sha).unwrap();
+        println!("2048-file commit metadata: {:?}", started.elapsed());
+        assert_eq!(files.len(), 2048);
+        assert!(files.iter().all(|file| file.status == "added" && file.additions == 1 && file.deletions == 0));
+        let unique: HashSet<_> = files.iter().map(|file| &file.path).collect();
+        assert_eq!(unique.len(), 2048);
+        drop(repo);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]

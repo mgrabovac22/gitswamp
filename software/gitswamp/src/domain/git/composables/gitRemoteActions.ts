@@ -41,17 +41,20 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function autoFetchAfterPush() {
-    if (!state.repoPath.value) return;
-    const repoPath = state.repoPath.value;
+  async function autoFetchAfterPush(target?: { repoPath: string; token: string; remoteName: string }) {
+    const repoPath = target?.repoPath ?? state.repoPath.value;
+    if (!repoPath || state.repoPath.value !== repoPath) return;
     try {
       const fetchResult = await callTauri<string>("fetch_all", {
         path: repoPath,
-        token: getTokenForUrl(state, getOriginUrl(state)),
+        token: target ? target.token : getTokenForUrl(state, getOriginUrl(state)),
+        ...(target ? { remoteName: target.remoteName } : {}),
       });
-      state.terminalOutput.value.push("$ git fetch --all --prune\n" + fetchResult);
+      if (state.repoPath.value !== repoPath) return;
+      state.terminalOutput.value.push(`$ git fetch ${target?.remoteName ?? '--all'} --prune\n` + fetchResult);
     } catch (error) {
-      state.terminalOutput.value.push("$ git fetch --all --prune\nError: " + String(error));
+      if (state.repoPath.value !== repoPath) return;
+      state.terminalOutput.value.push(`$ git fetch ${target?.remoteName ?? '--all'} --prune\nError: ` + String(error));
     }
     await refreshRemoteRefs(repoPath, true);
   }
@@ -308,6 +311,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
 
   async function pushToMultiplePlatforms(platform: string, repoName: string) {
     if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading(`Loading: pushing to ${platform}...`);
@@ -321,17 +325,20 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       }
 
       const result = await callTauri<string>("push_to_platform", {
-        path: state.repoPath.value,
+        path: repoPath,
         platform: backendPlatform,
         providerToken: token,
         repoName,
       });
 
+      if (state.repoPath.value !== repoPath) return;
       state.terminalOutput.value.push(`$ git push ${platform}\n` + result);
-      await autoFetchAfterPush();
+      await autoFetchAfterPush({ repoPath, token, remoteName: "origin" });
+      if (state.repoPath.value !== repoPath) return;
       toast.success(`Push to ${platform} completed successfully`);
       state.error.value = null;
     } catch (e) {
+      if (state.repoPath.value !== repoPath) return;
       const errorMsg = String(e);
       state.error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
       state.terminalOutput.value.push(`$ git push ${platform}\nError: ` + e);

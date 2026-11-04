@@ -4,6 +4,10 @@ GitSwamp is a powerful desktop Git client built with Tauri, Vue 3, TypeScript, a
 
 ## Key Features
 
+Current safety, editing, large-repository and Linux update instructions are in the [workflow guide](../../documentation/DOCUMENTATION_39_RECENT_WORKFLOWS.md). Diff code coloring runs in a Web Worker; large commit metadata loads off the native UI thread, and large file lists render only the visible rows.
+
+Debian installations download a matching `.deb` for the system package manager. An already installed update offers restart instead of another installation attempt. Other installation formats retain their native updater flow.
+
 ### Core Git Operations
 - **Repository Management**: Clone, init, open multiple repositories in tabs with session restore and a start dashboard
 - **Commit History**: Interactive commit graph with search, Galaxy view, time-lapse history view, and expert advisor
@@ -320,7 +324,7 @@ npm run tauri build
 
 A Postman-style REST client that lives in the central view area of a repository tab. It supports repository-scoped and global collections, `{{variable}}` interpolation, shared header documents, cookie management, sequential runs, simulated load profiles and JSON import/export. Requests are executed by the Rust backend and all data is persisted per repository and globally.
 
-See the [API Pulse guide](../..API Pulsetation/DOCUMENTATION_37_APIPULSE.md) for the full reference (collections, runs, simulated tests, statistics, the response viewer and export/import).
+See the [API Pulse guide](../../documentation/DOCUMENTATION_37_APIPULSE.md) for collections, runs, simulated tests, statistics, the response viewer and export/import.
 
 ## Authentication & Token Management
 
@@ -400,7 +404,7 @@ When using GitLab self-hosted:
 ### Diff Viewer Optimization
 - Virtualized rendering for large files (20px line height)
 - Inline diff LCS (longest common subsequence) algorithm for character-level changes
-- Syntax highlighting cache with ~2000-entry LRU
+- Syntax coloring uses a worker with batches of up to 64 distinct lines, at most 6000 requested lines per file, and coalesced repaint notifications. Inline change markup has its own bounded cache.
 - Plain text fast path for >4KB lines
 - Format-specific fast path for log/csv/txt/patch files
 

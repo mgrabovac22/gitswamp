@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { prepareLinuxPackage } from "./prepare-linux-package.mjs";
 
 const version = process.argv[2]?.trim();
 
@@ -14,17 +15,20 @@ function updateJson(path) {
 
 updateJson("package.json");
 updateJson("src-tauri/tauri.conf.json");
+const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+lock.version = version;
+if (lock.packages?.[""]) lock.packages[""].version = version;
+writeFileSync("package-lock.json", `${JSON.stringify(lock, null, 2)}\n`);
 
 const cargoPath = "src-tauri/Cargo.toml";
 const cargo = readFileSync(cargoPath, "utf8");
+const packageVersion = /^(\[package\][\s\S]*?^version\s*=\s*)"[^"]+"/m;
+if (!packageVersion.test(cargo)) throw new Error("No Cargo package version found.");
 const updatedCargo = cargo.replace(
-  /^(\[package\][\s\S]*?^version\s*=\s*)"[^"]+"/m,
+  packageVersion,
   `$1"${version}"`,
 );
 
-if (updatedCargo === cargo) {
-  throw new Error("Could not update the package version in src-tauri/Cargo.toml.");
-}
-
 writeFileSync(cargoPath, updatedCargo, "utf8");
+prepareLinuxPackage();
 console.log(`Prepared release version ${version}.`);

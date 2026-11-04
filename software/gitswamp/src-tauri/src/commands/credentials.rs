@@ -8,13 +8,6 @@ fn credentials_dir() -> PathBuf {
     dir
 }
 
-// Legacy function - now using provider_credentials_path("github") instead
-// fn credentials_path() -> PathBuf {
-//     let mut dir = credentials_dir();
-//     dir.push("credentials");
-//     dir
-// }
-
 fn provider_credentials_path(provider: &str) -> PathBuf {
     let mut dir = credentials_dir();
     dir.push(format!("credentials_{}", provider));
