@@ -31,6 +31,7 @@ pub struct FileDiff {
 pub struct BinarySideInfo {
     pub exists: bool,
     pub size: u64,
+    pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

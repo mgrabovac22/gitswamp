@@ -42,6 +42,7 @@ const MAX_HIGHLIGHT_LINES = 6000;
 const MAX_HIGHLIGHT_CHARS = 450000;
 
 const diff = shallowRef<FileDiff | null>(null);
+const binaryViewer = ref<InstanceType<typeof BinaryDiffViewer> | null>(null);
 const fileContent = ref<string>("");
 const editContent = ref<string>("");
 const loading = ref(true);
@@ -780,6 +781,7 @@ watch(
     editContent.value = "";
     hasUnsavedChanges.value = false;
     diff.value = null;
+    if (viewMode.value === "image-diff" && !isImageFile.value) viewMode.value = "diff";
     highlightedLineCache.value.clear();
     currentHunkIndex.value = 0;
     blameError.value = null;
@@ -1275,6 +1277,10 @@ function startFileWatch() {
     const isCurrent = () => identity === fileIdentity.value && viewMode.value !== "edit" && viewMode.value !== "time-lapse";
     
     try {
+      if (diff.value?.is_binary || viewMode.value === "image-diff") {
+        await binaryViewer.value?.refresh();
+        return;
+      }
       const newDiff = await invoke<FileDiff>("get_working_diff", {
         path: props.repoPath,
         filePath: props.filePath,
@@ -2707,6 +2713,7 @@ watch(
             </button>
             <button
               @click="viewMode = 'time-lapse'"
+              :disabled="!!diff?.is_binary"
               :class="[
                 'px-2 py-1.5 transition-colors',
                 viewMode === 'time-lapse'
@@ -2718,7 +2725,7 @@ watch(
               <Play class="w-3.5 h-3.5" />
             </button>
             <button
-              v-if="isWorkingChanges"
+              v-if="isWorkingChanges && !diff?.is_binary"
               @click="viewMode = 'edit'"
               :class="[
                 'px-2 py-1.5 transition-colors',
@@ -2798,6 +2805,7 @@ watch(
         class="h-full min-h-0"
       >
         <BinaryDiffViewer
+          ref="binaryViewer"
           :repo-path="repoPath"
           :file-path="filePath"
           :old-path="diff.old_path ?? fallbackOldPath ?? null"

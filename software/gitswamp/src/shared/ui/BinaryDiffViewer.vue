@@ -9,6 +9,7 @@ import {
   FileText,
   Image as ImageIcon,
   Loader2,
+  RotateCw,
 } from "lucide-vue-next";
 import type { BinaryDiffInfo, BinarySideInfo } from "@/types";
 import {
@@ -16,6 +17,7 @@ import {
   imageMimeType,
   isImageFilePath,
 } from "@/shared/config/imagePreview";
+import { validateImagePreview, withBinaryPreviewSlot } from "@/shared/config/binaryPreview";
 
 const props = defineProps<{
   repoPath: string;
@@ -37,6 +39,8 @@ const mode = ref<BinaryViewMode>("side-by-side");
 const info = shallowRef<BinaryDiffInfo | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
+const oldError = ref<string | null>(null);
+const newError = ref<string | null>(null);
 const oldUrl = ref<string | null>(null);
 const newUrl = ref<string | null>(null);
 const oldDimensions = reactive({ width: 0, height: 0 });
@@ -44,7 +48,12 @@ const newDimensions = reactive({ width: 0, height: 0 });
 const sliderPosition = ref(50);
 const dragging = ref(false);
 const sliderStage = ref<HTMLElement | null>(null);
+const stageSize = reactive({ width: 0, height: 0 });
+let stageObserver: ResizeObserver | null = null;
 let loadToken = 0;
+let loadedKey = "";
+let disposed = false;
+let refreshing = false;
 
 const isImage = computed(() => isImageFilePath(props.filePath));
 const fileName = computed(() => {
@@ -53,6 +62,17 @@ const fileName = computed(() => {
 });
 const oldTargetPath = computed(() => props.oldPath || props.filePath);
 const canCompare = computed(() => Boolean(oldUrl.value && newUrl.value));
+const comparisonStyles = computed(() => {
+  const width = Math.max(oldDimensions.width, newDimensions.width, 1);
+  const height = Math.max(oldDimensions.height, newDimensions.height, 1);
+  const scale = Math.min(1, stageSize.width / width, stageSize.height / height);
+  const left = `${(stageSize.width - width * scale) / 2}px`;
+  const top = `${(stageSize.height - height * scale) / 2}px`;
+  const style = (dimensions: typeof oldDimensions) => ({
+    width: `${dimensions.width * scale}px`, height: `${dimensions.height * scale}px`, left, top,
+  });
+  return { old: style(oldDimensions), new: style(newDimensions) };
+});
 const oldTooLarge = computed(
   () => Boolean(info.value?.old.exists) && (info.value?.old.size ?? 0) > MAX_IMAGE_PREVIEW_BYTES,
 );
@@ -63,12 +83,14 @@ const compareHint = computed(() => {
   if (!info.value) return "";
   if (!info.value.old.exists) return "No previous version to compare.";
   if (!info.value.new.exists) return "This file has no current version to compare.";
+  if (!canCompare.value) return "Both images must be available for comparison.";
   return "";
 });
 
 function resetUrls() {
-  if (oldUrl.value) URL.revokeObjectURL(oldUrl.value);
-  if (newUrl.value) URL.revokeObjectURL(newUrl.value);
+  for (const url of new Set([oldUrl.value, newUrl.value])) {
+    if (url) URL.revokeObjectURL(url);
+  }
   oldUrl.value = null;
   newUrl.value = null;
 }
@@ -90,35 +112,44 @@ async function loadSide(
   sideInfo: BinarySideInfo,
   token: number,
 ): Promise<string | null> {
-  if (!sideInfo.exists || sideInfo.size > MAX_IMAGE_PREVIEW_BYTES) return null;
-
-  const raw = await invoke<ArrayBuffer | Uint8Array | number[]>("get_file_bytes", {
+  if (!sideInfo.exists || sideInfo.size > MAX_IMAGE_PREVIEW_BYTES || token !== loadToken) return null;
+  const args = {
     path: props.repoPath,
     filePath: props.filePath,
     oldPath: props.oldPath ?? null,
     sha: props.commitSha ?? null,
     staged: props.staged ?? false,
     side,
-  });
-
-  if (token !== loadToken) return null;
-
-  const bytes = toBytes(raw);
-  if (!bytes || bytes.byteLength === 0) return null;
-
-  return bytesToUrl(bytes, side === "old" ? oldTargetPath.value : props.filePath);
+  };
+  const imagePath = side === "old" ? oldTargetPath.value : props.filePath;
+  try {
+    return await withBinaryPreviewSlot(() => !disposed && token === loadToken, async () => {
+      const raw = await invoke<ArrayBuffer | Uint8Array | number[]>("get_file_bytes", args);
+      if (disposed || token !== loadToken) return null;
+      const bytes = toBytes(raw);
+      if (!bytes) throw new Error("Image data could not be read");
+      validateImagePreview(bytes, imagePath);
+      return bytesToUrl(bytes, imagePath);
+    }) ?? null;
+  } catch (err) {
+    if (token === loadToken && !disposed) {
+      (side === "old" ? oldError : newError).value = err instanceof Error ? err.message : String(err);
+    }
+    return null;
+  }
 }
 
-async function loadBinary() {
+async function loadBinary(checkOnly = false) {
+  if (disposed || (checkOnly && (loading.value || refreshing))) return;
+  refreshing = true;
   const token = ++loadToken;
-  resetUrls();
-  info.value = null;
-  error.value = null;
-  loading.value = true;
-  oldDimensions.width = 0;
-  oldDimensions.height = 0;
-  newDimensions.width = 0;
-  newDimensions.height = 0;
+  if (!checkOnly) {
+    resetUrls();
+    info.value = null;
+    error.value = null;
+    loading.value = true;
+    loadedKey = "";
+  }
 
   try {
     const result = await invoke<BinaryDiffInfo>("get_binary_diff_info", {
@@ -131,30 +162,50 @@ async function loadBinary() {
 
     if (token !== loadToken) return;
     info.value = result;
+    error.value = null;
+    const key = JSON.stringify([result.old, result.new]);
+    if (checkOnly && key === loadedKey) return;
+    loadedKey = key;
+    resetUrls();
+    oldError.value = null;
+    newError.value = null;
+    error.value = null;
+    loading.value = true;
+    mode.value = "side-by-side";
+    sliderPosition.value = 50;
+    dragging.value = false;
+    oldDimensions.width = oldDimensions.height = 0;
+    newDimensions.width = newDimensions.height = 0;
 
     if (!isImage.value) return;
 
-    const [oldValue, newValue] = await Promise.all([
-      loadSide("old", result.old, token),
-      loadSide("new", result.new, token),
-    ]);
-
+    // Publish each side immediately so invalidation/unmount always owns its URL.
+    const oldValue = await loadSide("old", result.old, token);
     if (token !== loadToken) {
       if (oldValue) URL.revokeObjectURL(oldValue);
-      if (newValue) URL.revokeObjectURL(newValue);
       return;
     }
-
     oldUrl.value = oldValue;
+    const sameBlob = result.old.id && result.old.id === result.new.id;
+    const newValue = sameBlob && oldValue ? oldValue : await loadSide("new", result.new, token);
+    if (token !== loadToken) {
+      if (newValue && newValue !== oldValue) URL.revokeObjectURL(newValue);
+      return;
+    }
     newUrl.value = newValue;
   } catch (err) {
     if (token === loadToken) {
       error.value = err instanceof Error ? err.message : String(err);
     }
   } finally {
-    if (token === loadToken) loading.value = false;
+    if (token === loadToken) {
+      loading.value = false;
+      refreshing = false;
+    }
   }
 }
+
+defineExpose({ refresh: () => loadBinary(true) });
 
 function updateSlider(clientX: number) {
   const stage = sliderStage.value;
@@ -185,10 +236,20 @@ function onSliderPointerUp(event: PointerEvent) {
 
 function onImageLoad(side: "old" | "new", event: Event) {
   const image = event.target as HTMLImageElement | null;
-  if (!image) return;
+  if (!image || image.getAttribute("src") !== (side === "old" ? oldUrl.value : newUrl.value)) return;
   const dimensions = side === "old" ? oldDimensions : newDimensions;
   dimensions.width = image.naturalWidth;
   dimensions.height = image.naturalHeight;
+}
+
+function onImageError(side: "old" | "new", event: Event) {
+  const source = (event.target as HTMLImageElement | null)?.getAttribute("src");
+  const url = side === "old" ? oldUrl : newUrl;
+  if (!source || url.value !== source) return;
+  (side === "old" ? oldError : newError).value = "Image could not be decoded by this browser";
+  url.value = null;
+  if (source !== oldUrl.value && source !== newUrl.value) URL.revokeObjectURL(source);
+  mode.value = "side-by-side";
 }
 
 function formatSize(bytes: number): string {
@@ -214,6 +275,8 @@ function emptyMessage(side: "old" | "new"): string {
   }
   const tooLarge = side === "old" ? oldTooLarge.value : newTooLarge.value;
   if (tooLarge) return "File is too large to preview";
+  const sideError = side === "old" ? oldError.value : newError.value;
+  if (sideError) return sideError;
   return "Image could not be loaded";
 }
 
@@ -225,7 +288,19 @@ watch(
   { immediate: true },
 );
 
+watch(sliderStage, stage => {
+  stageObserver?.disconnect();
+  stageObserver = null;
+  if (!stage) return;
+  const update = () => { stageSize.width = stage.clientWidth; stageSize.height = stage.clientHeight; };
+  update();
+  stageObserver = new ResizeObserver(update);
+  stageObserver.observe(stage);
+});
+
 onBeforeUnmount(() => {
+  disposed = true;
+  stageObserver?.disconnect();
   loadToken += 1;
   resetUrls();
 });
@@ -244,6 +319,10 @@ onBeforeUnmount(() => {
         <span>Previous: {{ info.old.exists ? formatSize(info.old.size) : "—" }}</span>
         <span>Current: {{ info.new.exists ? formatSize(info.new.size) : "—" }}</span>
       </div>
+      <button type="button" title="Reload preview" aria-label="Reload preview" :disabled="loading"
+        class="binary-diff-reload" @click="loadBinary()">
+        <RotateCw class="binary-diff-title-icon" />
+      </button>
     </div>
 
     <div v-if="loading" class="binary-diff-state">
@@ -260,15 +339,14 @@ onBeforeUnmount(() => {
       <div class="binary-diff-notice">
         <p class="binary-diff-notice-title">Binary file</p>
         <p class="binary-diff-notice-text">
-          Text diff is not available for this file type. Image comparison is available for PNG,
-          JPG, GIF, WEBP, BMP, ICO, AVIF and SVG files.
+          Text diff is not available for this file type.
         </p>
       </div>
     </div>
 
     <template v-else>
       <div class="binary-diff-toolbar">
-        <div class="binary-diff-modes">
+        <div class="binary-diff-modes" role="group" aria-label="Image comparison mode">
           <button
             v-for="option in modeOptions"
             :key="option.id"
@@ -276,6 +354,8 @@ onBeforeUnmount(() => {
             class="binary-diff-mode"
             :class="{ 'binary-diff-mode--active': mode === option.id }"
             :disabled="option.id !== 'side-by-side' && !canCompare"
+            :aria-pressed="mode === option.id"
+            :title="option.label"
             @click="mode = option.id"
           >
             <Columns2 v-if="option.id === 'side-by-side'" class="binary-diff-mode-icon" />
@@ -301,6 +381,7 @@ onBeforeUnmount(() => {
                 :alt="`Previous version of ${fileName}`"
                 class="binary-diff-image"
                 @load="onImageLoad('old', $event)"
+                @error="onImageError('old', $event)"
               />
               <p v-else class="binary-diff-empty">{{ emptyMessage("old") }}</p>
             </div>
@@ -317,6 +398,7 @@ onBeforeUnmount(() => {
                 :alt="`Current version of ${fileName}`"
                 class="binary-diff-image"
                 @load="onImageLoad('new', $event)"
+                @error="onImageError('new', $event)"
               />
               <p v-else class="binary-diff-empty">{{ emptyMessage("new") }}</p>
             </div>
@@ -333,10 +415,14 @@ onBeforeUnmount(() => {
             @pointerup="onSliderPointerUp"
             @pointercancel="onSliderPointerUp"
           >
+            <span class="binary-diff-side-label binary-diff-side-label--old">Previous</span>
+            <span class="binary-diff-side-label binary-diff-side-label--new">Current</span>
             <img
               :src="oldUrl ?? ''"
               :alt="`Previous version of ${fileName}`"
               class="binary-diff-stage-image"
+              :style="comparisonStyles.old"
+              @error="onImageError('old', $event)"
             />
             <div
               class="binary-diff-slider-layer"
@@ -346,6 +432,8 @@ onBeforeUnmount(() => {
                 :src="newUrl ?? ''"
                 :alt="`Current version of ${fileName}`"
                 class="binary-diff-stage-image"
+                :style="comparisonStyles.new"
+                @error="onImageError('new', $event)"
               />
             </div>
             <div class="binary-diff-slider-line" :style="{ left: `${sliderPosition}%` }">
@@ -354,20 +442,26 @@ onBeforeUnmount(() => {
               </span>
             </div>
           </div>
+          <input v-if="canCompare" v-model.number="sliderPosition" type="range" min="0" max="100" step="1"
+            aria-label="Image comparison position" class="binary-diff-range" />
           <p v-else class="binary-diff-empty">{{ compareHint }}</p>
         </div>
 
         <div v-else class="binary-diff-slider-wrap">
-          <div v-if="canCompare" class="binary-diff-stage binary-diff-stage--difference">
+          <div v-if="canCompare" ref="sliderStage" class="binary-diff-stage binary-diff-stage--difference">
             <img
               :src="oldUrl ?? ''"
               :alt="`Previous version of ${fileName}`"
               class="binary-diff-stage-image"
+              :style="comparisonStyles.old"
+              @error="onImageError('old', $event)"
             />
             <img
               :src="newUrl ?? ''"
               :alt="`Current version of ${fileName}`"
               class="binary-diff-stage-image binary-diff-stage-image--difference"
+              :style="comparisonStyles.new"
+              @error="onImageError('new', $event)"
             />
           </div>
           <p v-else class="binary-diff-empty">{{ compareHint }}</p>
@@ -383,6 +477,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   background: var(--card);
   color: var(--foreground);
 }
@@ -429,7 +524,7 @@ onBeforeUnmount(() => {
   font-size: 0.6rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   color: var(--muted-foreground);
 }
 
@@ -439,7 +534,11 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
   font-size: 0.68rem;
   color: var(--muted-foreground);
+  margin-left: auto;
 }
+
+.binary-diff-reload { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; flex-shrink: 0; border-radius: 0.25rem; }
+.binary-diff-reload:disabled { opacity: 0.45; }
 
 .binary-diff-state {
   display: flex;
@@ -467,7 +566,7 @@ onBeforeUnmount(() => {
 .binary-diff-notice {
   max-width: 32rem;
   border: 1px solid var(--diff-border);
-  border-radius: 0.6rem;
+  border-radius: 0.5rem;
   background: var(--secondary);
   padding: 1rem 1.25rem;
 }
@@ -498,7 +597,7 @@ onBeforeUnmount(() => {
 
 .binary-diff-modes {
   display: flex;
-  overflow: hidden;
+  flex-wrap: wrap;
   border: 1px solid var(--diff-border);
   border-radius: 0.4rem;
 }
@@ -528,6 +627,8 @@ onBeforeUnmount(() => {
   background: var(--primary);
   color: #fff;
 }
+
+.binary-diff-mode--active:hover:not(:disabled) { color: #fff; }
 
 .binary-diff-mode:disabled {
   cursor: not-allowed;
@@ -603,6 +704,8 @@ onBeforeUnmount(() => {
 }
 
 .binary-diff-image {
+  display: block;
+  min-width: 0;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -621,12 +724,20 @@ onBeforeUnmount(() => {
   min-height: 0;
   align-items: center;
   justify-content: center;
+  flex-direction: column;
+  gap: 0.5rem;
 }
+
+.binary-diff-range { width: 100%; flex-shrink: 0; accent-color: var(--primary); }
+.binary-diff-side-label { position: absolute; top: 0.5rem; z-index: 2; padding: 0.2rem 0.4rem; background: var(--card); font-size: 0.7rem; pointer-events: none; }
+.binary-diff-side-label--old { left: 0.5rem; }
+.binary-diff-side-label--new { right: 0.5rem; }
 
 .binary-diff-stage {
   position: relative;
   width: 100%;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--diff-border);
   border-radius: 0.5rem;
@@ -696,5 +807,9 @@ onBeforeUnmount(() => {
 
 .binary-diff-stage-image--difference {
   mix-blend-mode: difference;
+}
+
+@media (max-width: 600px) {
+  .binary-diff-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
 }
 </style>

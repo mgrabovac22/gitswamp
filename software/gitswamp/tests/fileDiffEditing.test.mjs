@@ -39,6 +39,7 @@ function mountViewer() {
     "@tauri-apps/api/core": { invoke: (command, args) => new Promise((resolve, reject) => calls.push({ command, args, resolve, reject })) },
     "@/shared/codeView": codeView,
     "@/shared/config/code-view/useDiffSyntax": { useDiffSyntax: () => ({ get: () => undefined }) },
+    "@/shared/config/imagePreview": evaluate(read("shared/config/imagePreview.ts")),
     "@/shared/config/diffViewCache": {
       getCachedDiffText: () => null, getCachedStructuredDiff: () => null,
       pruneDiffViewerCaches() {}, setCachedDiffText() {}, setCachedStructuredDiff() {},

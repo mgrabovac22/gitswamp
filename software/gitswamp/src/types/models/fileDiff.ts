@@ -11,6 +11,7 @@ export interface FileDiff {
 export interface BinarySideInfo {
   exists: boolean
   size: number
+  id: string
 }
 
 export interface BinaryDiffInfo {

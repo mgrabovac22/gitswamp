@@ -179,8 +179,6 @@ pub fn extract_file_diff(diff: &Diff, target_path: &str) -> Result<FileDiff, Str
             None
         };
 
-        let is_binary = new_file.is_binary() || old_file.is_binary();
-
         let mut hunks: Vec<DiffHunk> = Vec::new();
 
         if let Ok(Some(patch)) = git2::Patch::from_diff(diff, idx) {
@@ -218,6 +216,11 @@ pub fn extract_file_diff(diff: &Diff, target_path: &str) -> Result<FileDiff, Str
                 }
             }
         }
+
+        // libgit2 determines binary flags lazily when the selected patch is read.
+        let is_binary = delta.flags().contains(git2::DiffFlags::BINARY)
+            || delta.new_file().is_binary()
+            || delta.old_file().is_binary();
 
         result = Some(FileDiff {
             path: file_path.to_string(),

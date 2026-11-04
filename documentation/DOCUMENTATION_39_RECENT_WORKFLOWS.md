@@ -52,6 +52,16 @@ Editor and Time Machine syntax previews fall back to plain text above 60,000 cha
 
 Time Machine reads a selected commit's snapshot without checking it out. Copying a rollback command does not run it; executing that command separately can modify the working tree.
 
+## Compare Images and Binary Files
+
+Open an image in a commit or Working Changes to see **Previous** and **Current** versions. For SVG files, choose the image icon in the diff toolbar. **Side by side** shows both images, **Slider** reveals either side with a draggable divider or keyboard-accessible range control, and **Difference** blends the images to highlight visual changes. Overlays use a common scale, including images with different dimensions.
+
+Unstaged comparisons use the index as Previous and the working file as Current. Staged comparisons use HEAD and the index. Commit comparisons use the first parent and the selected commit. Added or deleted files show the available side only. Other binary files show sizes without loading their full contents into the frontend. **Reload preview** retries a failed preview or explicitly refreshes staged/commit metadata.
+
+Preview reads are serialized and only the selected file's two sides are retained. Identical Git blobs share one URL. Changing files or closing the viewer releases preview URLs; previews are not kept in the diff cache. Working-file refresh checks metadata and skips image reads when unchanged.
+
+Each image is limited to 10 MB, 8 million pixels and 8192 pixels per side. PNG, JPEG, static GIF/WebP, BMP, ICO and simple SVG previews are supported; browser decoding support still applies. Animated images, TIFF/AVIF, oversized images and complex SVG files show a message instead of starting an unrestricted decode. SVG has an additional 256 KB limit and rejects embedded/external content, filters, animation and styles. These bounds limit preview work; actual process RAM also depends on the WebView's decoder and graphics caches.
+
 ## Large Commits and Coloring
 
 Selecting a large commit shows **Loading changed files...** while metadata is calculated in the background. File statistics are still computed, not replaced with guesses. The first read can take time due to disk speed, Git object storage and file size.
@@ -91,6 +101,7 @@ The package includes a standard description, update text, AppStream metadata and
 | Pending destructive actions | `src/shared/notifications/destructiveScheduler.ts`, `src/domain/git/UseGit.ts` |
 | Active-operation notices | `src/shared/notifications/useRepositoryOperationNotice.ts` |
 | Editor guards | `src/shared/ui/FileDiffViewer.vue`, `CodeTextEditor.vue` |
+| Image and binary comparison | `src/shared/ui/BinaryDiffViewer.vue`, `src/shared/config/binaryPreview.ts`, `src-tauri/src/services/diff_service.rs` |
 | Syntax worker | `src/shared/config/code-view/useDiffSyntax.ts`, `syntaxQueue.ts`, `syntax.worker.ts` |
 | Windowed file lists | `src/shared/ui/useWindowedRows.ts`, `src/view/commit/CommitDetails.vue` |
 | Asynchronous native reads | `src-tauri/src/commands/commit_files.rs`, `repository.rs` |

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -365,17 +366,28 @@ impl DiffService {
         let repo_root = Path::new(path);
         let old_target = old_path.unwrap_or(file_path);
 
-        let old_size = Self::repo_side_size(&repo, repo_root, old_target, sha, staged, "old")?;
-        let new_size = Self::repo_side_size(&repo, repo_root, file_path, sha, staged, "new")?;
+        let old_info = Self::repo_side_info(&repo, repo_root, old_target, sha, staged, "old")?;
+        let new_info = Self::repo_side_info(&repo, repo_root, file_path, sha, staged, "new")?;
+
+        let (old_exists, (old_size, old_id)) = match old_info {
+            Some((size, id)) => (true, (size, id)),
+            None => (false, (0, String::new())),
+        };
+        let (new_exists, (new_size, new_id)) = match new_info {
+            Some((size, id)) => (true, (size, id)),
+            None => (false, (0, String::new())),
+        };
 
         Ok(BinaryDiffInfo {
             old: BinarySideInfo {
-                exists: old_size.is_some(),
-                size: old_size.unwrap_or(0),
+                exists: old_exists,
+                size: old_size,
+                id: old_id,
             },
             new: BinarySideInfo {
-                exists: new_size.is_some(),
-                size: new_size.unwrap_or(0),
+                exists: new_exists,
+                size: new_size,
+                id: new_id,
             },
         })
     }
@@ -404,14 +416,14 @@ impl DiffService {
             .ok_or_else(|| format!("File '{}' does not exist on the {} side", target, side))
     }
 
-    fn repo_side_size(
+    fn repo_side_info(
         repo: &git2::Repository,
         repo_root: &Path,
         file_path: &str,
         sha: Option<&str>,
         staged: bool,
         side: &str,
-    ) -> Result<Option<u64>, String> {
+    ) -> Result<Option<(u64, String)>, String> {
         if let Some(commit_sha) = sha {
             let oid = git2::Oid::from_str(commit_sha).map_err(|e| e.message().to_string())?;
             let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
@@ -419,7 +431,7 @@ impl DiffService {
             if side == "old" {
                 let tree = commit.parent(0).ok().and_then(|parent| parent.tree().ok());
                 return match tree.and_then(|tree| Self::tree_blob_oid(&tree, file_path)) {
-                    Some(blob_oid) => Ok(Some(Self::blob_size(repo, blob_oid)?)),
+                    Some(blob_oid) => Self::blob_info(repo, blob_oid).map(Some),
                     None => Ok(None),
                 };
             }
@@ -429,7 +441,7 @@ impl DiffService {
                 .ok()
                 .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
             if let Some(blob_oid) = tree_oid {
-                return Ok(Some(Self::blob_size(repo, blob_oid)?));
+                return Self::blob_info(repo, blob_oid).map(Some);
             }
 
             let untracked_oid = commit
@@ -438,18 +450,18 @@ impl DiffService {
                 .and_then(|parent| parent.tree().ok())
                 .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
             return match untracked_oid {
-                Some(blob_oid) => Ok(Some(Self::blob_size(repo, blob_oid)?)),
+                Some(blob_oid) => Self::blob_info(repo, blob_oid).map(Some),
                 None => Ok(None),
             };
         }
 
         if side == "new" {
             if staged {
-                return Self::index_blob_size(repo, file_path);
+                return Self::index_blob_info(repo, file_path);
             }
             let full_path = repo_root.join(file_path);
             return match std::fs::metadata(&full_path) {
-                Ok(meta) if meta.is_file() => Ok(Some(meta.len())),
+                Ok(meta) if meta.is_file() => Ok(Some(Self::working_file_info(&meta))),
                 _ => Ok(None),
             };
         }
@@ -461,12 +473,12 @@ impl DiffService {
                 .ok()
                 .and_then(|tree| Self::tree_blob_oid(&tree, file_path));
             return match tree_oid {
-                Some(blob_oid) => Ok(Some(Self::blob_size(repo, blob_oid)?)),
+                Some(blob_oid) => Self::blob_info(repo, blob_oid).map(Some),
                 None => Ok(None),
             };
         }
 
-        Self::index_blob_size(repo, file_path)
+        Self::index_blob_info(repo, file_path)
     }
 
     fn repo_side_bytes(
@@ -538,20 +550,34 @@ impl DiffService {
         tree.get_path(Path::new(file_path)).ok().map(|entry| entry.id())
     }
 
-    fn blob_size(repo: &git2::Repository, oid: git2::Oid) -> Result<u64, String> {
-        let blob = repo.find_blob(oid).map_err(|e| e.message().to_string())?;
-        Ok(blob.size() as u64)
+    fn blob_info(repo: &git2::Repository, oid: git2::Oid) -> Result<(u64, String), String> {
+        let (size, kind) = repo.odb().and_then(|odb| odb.read_header(oid))
+            .map_err(|e| e.message().to_string())?;
+        if kind != git2::ObjectType::Blob {
+            return Err("Preview is only available for files".to_string());
+        }
+        Ok((size as u64, oid.to_string()))
     }
 
-    fn index_blob_size(
+    fn index_blob_info(
         repo: &git2::Repository,
         file_path: &str,
-    ) -> Result<Option<u64>, String> {
+    ) -> Result<Option<(u64, String)>, String> {
         let index = repo.index().map_err(|e| e.message().to_string())?;
         match index.get_path(Path::new(file_path), 0) {
-            Some(entry) => Ok(Some(Self::blob_size(repo, entry.id)?)),
+            Some(entry) => Ok(Some(Self::blob_info(repo, entry.id)?)),
             None => Ok(None),
         }
+    }
+
+    fn working_file_info(metadata: &std::fs::Metadata) -> (u64, String) {
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map(|value| format!("{}.{:09}", value.as_secs(), value.subsec_nanos()))
+            .unwrap_or_else(|| "unknown".to_string());
+        (metadata.len(), format!("worktree:{}:{}", metadata.len(), modified))
     }
 
     fn index_blob_bytes(
@@ -569,11 +595,11 @@ impl DiffService {
         repo: &git2::Repository,
         oid: git2::Oid,
     ) -> Result<Vec<u8>, String> {
-        let blob = repo.find_blob(oid).map_err(|e| e.message().to_string())?;
-        let size = blob.size() as u64;
+        let (size, _) = Self::blob_info(repo, oid)?;
         if size > MAX_BINARY_PREVIEW_BYTES {
             return Err(Self::preview_too_large_message(size));
         }
+        let blob = repo.find_blob(oid).map_err(|e| e.message().to_string())?;
         Ok(blob.content().to_vec())
     }
 
@@ -582,7 +608,15 @@ impl DiffService {
         if metadata.len() > MAX_BINARY_PREVIEW_BYTES {
             return Err(Self::preview_too_large_message(metadata.len()));
         }
-        std::fs::read(full_path).map_err(|e| e.to_string())
+        // Recheck the actual read too: the file may grow after metadata was read.
+        let file = std::fs::File::open(full_path).map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        file.take(MAX_BINARY_PREVIEW_BYTES + 1).read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_BINARY_PREVIEW_BYTES {
+            return Err(Self::preview_too_large_message(bytes.len() as u64));
+        }
+        Ok(bytes)
     }
 
     fn preview_too_large_message(size: u64) -> String {
@@ -755,5 +789,102 @@ impl DiffService {
 
         let patch_text = Self::build_single_hunk_patch(&diff_info, file_path, hunk_index)?;
         Self::apply_hunk_patch(path, &patch_text, true, true, "unstage")
+    }
+}
+
+#[cfg(test)]
+mod binary_tests {
+    use super::{DiffService, MAX_BINARY_PREVIEW_BYTES};
+    use std::path::{Path, PathBuf};
+
+    struct Fixture { root: PathBuf, repo: git2::Repository }
+    impl Fixture {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/gitswamp-tests")
+                .join(format!("binary-{}-{}", std::process::id(), nonce));
+            std::fs::create_dir_all(&root).unwrap();
+            let repo = git2::Repository::init(&root).unwrap();
+            Self { root, repo }
+        }
+        fn path(&self) -> &str { self.root.to_str().unwrap() }
+        fn write(&self, name: &str, bytes: &[u8]) { std::fs::write(self.root.join(name), bytes).unwrap(); }
+        fn stage(&self, name: &str) {
+            let mut index = self.repo.index().unwrap();
+            index.add_path(Path::new(name)).unwrap(); index.write().unwrap();
+        }
+        fn commit(&self) -> git2::Oid {
+            let tree_id = self.repo.index().unwrap().write_tree().unwrap();
+            let tree = self.repo.find_tree(tree_id).unwrap();
+            let sig = git2::Signature::now("Test", "test@example.invalid").unwrap();
+            let parent = self.repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+            self.repo.commit(Some("HEAD"), &sig, &sig, "Test image", &tree, &parent.iter().collect::<Vec<_>>()).unwrap()
+        }
+        fn bytes(&self, sha: Option<&str>, staged: bool, side: &str) -> Vec<u8> {
+            DiffService::get_file_bytes(self.path(), "picture.png", None, sha, staged, side).unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
+    }
+
+    #[test]
+    fn binary_preview_uses_index_worktree_head_and_parent_correctly() {
+        let f = Fixture::new();
+        f.write("picture.png", b"\0head"); f.stage("picture.png");
+        let initial = f.commit().to_string();
+        f.write("picture.png", b"\0index"); f.stage("picture.png");
+        f.write("picture.png", b"\0worktree");
+        assert_eq!(f.bytes(None, false, "old"), b"\0index");
+        assert_eq!(f.bytes(None, false, "new"), b"\0worktree");
+        assert_eq!(f.bytes(None, true, "old"), b"\0head");
+        assert_eq!(f.bytes(None, true, "new"), b"\0index");
+        assert!(DiffService::get_working_diff(f.path(), "picture.png", false).unwrap().is_binary);
+        assert!(DiffService::get_working_diff(f.path(), "picture.png", true).unwrap().is_binary);
+        let info = DiffService::get_binary_diff_info(f.path(), "picture.png", None, None, false).unwrap();
+        assert_eq!(info.old.size, 6); assert_eq!(info.new.size, 9);
+        assert!(info.new.id.starts_with("worktree:"));
+        assert_ne!(info.old.id, info.new.id);
+        let next = f.commit().to_string();
+        assert_eq!(f.bytes(Some(&next), false, "old"), b"\0head");
+        assert_eq!(f.bytes(Some(&next), false, "new"), b"\0index");
+        assert!(DiffService::get_commit_diff(f.path(), &next, "picture.png").unwrap().is_binary);
+        let root = DiffService::get_binary_diff_info(f.path(), "picture.png", None, Some(&initial), false).unwrap();
+        assert!(!root.old.exists); assert!(root.new.exists);
+    }
+
+    #[test]
+    fn binary_preview_handles_renames_deletions_and_untracked_files() {
+        let f = Fixture::new();
+        f.write("old.png", b"\0before"); f.stage("old.png"); f.commit();
+        let mut index = f.repo.index().unwrap();
+        index.remove_path(Path::new("old.png")).unwrap(); index.write().unwrap();
+        std::fs::rename(f.root.join("old.png"), f.root.join("picture.png")).unwrap();
+        f.write("picture.png", b"\0after"); f.stage("picture.png");
+        let sha = f.commit().to_string();
+        assert_eq!(DiffService::get_file_bytes(f.path(), "picture.png", Some("old.png"), Some(&sha), false, "old").unwrap(), b"\0before");
+        assert_eq!(f.bytes(Some(&sha), false, "new"), b"\0after");
+        std::fs::remove_file(f.root.join("picture.png")).unwrap();
+        let deleted = DiffService::get_binary_diff_info(f.path(), "picture.png", None, None, false).unwrap();
+        assert!(deleted.old.exists); assert!(!deleted.new.exists);
+        let added = DiffService::get_binary_diff_info(f.path(), "new.png", None, None, false).unwrap();
+        assert!(!added.old.exists); assert!(!added.new.exists);
+        f.write("new.png", b"\0untracked");
+        let added = DiffService::get_binary_diff_info(f.path(), "new.png", None, None, false).unwrap();
+        assert!(!added.old.exists); assert!(added.new.exists);
+        assert!(DiffService::get_working_diff(f.path(), "new.png", false).unwrap().is_binary);
+    }
+
+    #[test]
+    fn binary_preview_reports_large_sizes_without_returning_large_payloads() {
+        let f = Fixture::new();
+        let file = std::fs::File::create(f.root.join("picture.png")).unwrap();
+        file.set_len(MAX_BINARY_PREVIEW_BYTES + 1).unwrap(); drop(file);
+        let info = DiffService::get_binary_diff_info(f.path(), "picture.png", None, None, false).unwrap();
+        assert_eq!(info.new.size, MAX_BINARY_PREVIEW_BYTES + 1);
+        assert!(DiffService::get_file_bytes(f.path(), "picture.png", None, None, false, "new").unwrap_err().contains("too large"));
+        f.stage("picture.png");
+        assert!(DiffService::get_file_bytes(f.path(), "picture.png", None, None, true, "new").unwrap_err().contains("too large"));
+        assert!(DiffService::get_file_bytes(f.path(), "picture.png", None, None, true, "invalid").unwrap_err().contains("Invalid side"));
     }
 }
