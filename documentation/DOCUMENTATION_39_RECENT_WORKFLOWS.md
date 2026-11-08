@@ -8,6 +8,8 @@ Stage the files that should be included in the last commit. Right-click the curr
 
 Amend can change commit content, not just its message. It creates a new commit SHA. Coordinate with collaborators before rewriting already published history.
 
+For a repository initialized outside GitSwamp, stage your files and commit as usual. The first commit creates the branch configured by Git, including `main` or `master`, without requiring a separate README commit. Initialize a Repository uses the last clone location, or a folder under your home directory when no clone location is saved.
+
 ## Secret Review and Large Files
 
 **Accidental Secret Detector** is enabled by default in Options. It runs locally and marks possible credentials beside unstaged files without notifications. It checks text content regardless of extension, including UTF-16 text with a byte-order mark. Empty values, environment-variable references and common placeholder values are not treated as embedded credentials. An `.example` filename is not an exemption when it contains an actual value.
@@ -16,7 +18,21 @@ Before commit or amend, GitSwamp reviews the staged index, not the current worki
 
 Staged files larger than **100 MiB** trigger a separate Git LFS recommendation even when secret detection is disabled. The check reads Git object sizes without loading large blobs. GitHub rejects regular Git files above this size; a local commit is still possible after explicit confirmation. The popup links to the official Git LFS guide. It does not install LFS, rewrite history or convert files automatically. Configure and stage LFS files with system Git in the terminal, including `.gitattributes`; a staged LFS pointer is small and does not trigger the size warning. Large blobs already present in older history may still need migration before a push can succeed.
 
-Secret scanning is heuristic, not a guarantee that every credential will be found. It inspects at most 1 MiB per text file and 16 MiB per scan, up to 2048 files with a cooperative five-second budget. Unchecked content is reported before committing instead of being declared clean. Binary content is not decoded as text. Background checks are debounced and serialized, only inspect the visible unstaged file set and do not retain file contents. Very large index metadata can be refused for a bounded review.
+Secret scanning is heuristic, not a guarantee that every credential will be found. It inspects at most 1 MiB per text file and 16 MiB per scan, up to 2048 files with a cooperative five-second budget. Unchecked content is reported before committing instead of being declared clean. Binary content is not decoded as text. Background checks are debounced and inspect only the staged and unstaged files in Working Changes. Hover or focus a warning triangle to see the type and line number; the matched value is never displayed. Very large index metadata can be refused for a bounded review.
+
+## Visualise Git Operations
+
+**Options > Advanced > Background Maintenance > Visualise operations** is off by default. When enabled, it previews newly detected conflicts over the current graph. The current and incoming code excerpts slide over each other, and lines inside Git's conflict markers turn red. Binary or delete conflicts may not have text ranges. Each file stays visible for three seconds, after which the preview advances or closes. **X** or Escape ends the preview immediately. It never resolves conflicts or changes the index.
+
+Only the displayed file's excerpts are kept in memory. The preview reads at most 256 KiB of working-tree text and shows up to seven lines per side from the first conflict region. When text markers are missing, small staged text versions can still be shown without invented conflict lines. The app does not show the preview just because a repository with existing conflicts was opened.
+
+With the same option enabled, a successful merge shows the incoming history joining the target branch and highlights the new merge commit. The preview lists up to six commits that were not already reachable from the target. A merge that changes nothing does not open it. Cherry-pick and revert show the selected commit and the new commit created on the target; the original commit remains in history.
+
+Local branch deletion shows its reference dropping into the bin. Creating a branch highlights its starting commit, and renaming a branch changes its label without showing any change to commit history. Reset to Commit animates the move from the previous tip to the selected SHA and shows whether it was a soft, mixed or hard reset. A reset that does not move HEAD does not show a rewind. Existing confirmation and Undo steps are unchanged.
+
+Push shows the branch moving toward the configured provider (or a generic remote icon). Pull and manual Fetch animate in the other direction; Fetch updates remote-tracking refs, not the working tree. Background fetch does not open a preview. Stash save, apply and pop show the movement between Working Changes and the local stash.
+
+Success previews close within seven seconds, or immediately with **X** or Escape. The graph and toast actions remain available while a preview is open. If Undo is enabled, the preview for a pending local branch deletion or Reset to Commit also offers **Undo** during the same five-second window as the toast. Undo closes the preview and cancels the scheduled action before it runs; closing the preview alone leaves the toast and its countdown active. Undo does not reverse a Git operation that has already finished. The previews respect the system's reduced-motion setting. When the option is off, GitSwamp does not request commit summaries or load the animation panel.
 
 ## Commit Galaxy
 
@@ -27,6 +43,8 @@ The layout selector retains spiral, branch layers, constellation and tree views.
 ## Branches, Tags and Remote Checkout
 
 Branches and tags with identical names are separate Git references. Use the branch entry to switch branches; selecting a tag is not equivalent to creating or tracking a branch.
+
+Right-click a branch in the sidebar or its badge on the graph for branch actions. **Create branch here** starts from that branch's tip without first checking it out. **Rename branch** is available for local branches. Sidebar menus also open with **Shift+F10** on a focused branch row.
 
 Checking out a remote-only branch creates or uses the corresponding local tracking branch. If a local branch contains commits not present in that remote reference, GitSwamp does not silently reset it to the older remote state. Review the divergence before choosing the next Git operation.
 
@@ -89,9 +107,11 @@ Diff syntax coloring uses a Web Worker. Plain text appears first and colors arri
 ## Debian and Ubuntu Updates
 
 1. Choose **Download .deb** in the update panel.
-2. Choose **Open .deb** and finish installation in the system package manager.
+2. Choose **Open installer** and finish installation in the system package manager. If no installer is associated with Debian packages, open the saved package from Downloads with your package manager.
 3. Return to GitSwamp and use **Check installation**, or close and reopen the app.
 4. If the new package is installed but the old process is running, the panel offers **Restart** instead of another download.
+
+The update panel shows the size of the Debian package for your architecture and reports progress from that package's download.
 
 Debian updates do not use the AppImage installer. Other installation formats keep their native updater flow. Administrator authorization belongs to the system package manager; GitSwamp does not collect that password.
 

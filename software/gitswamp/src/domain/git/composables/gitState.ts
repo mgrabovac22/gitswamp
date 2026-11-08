@@ -44,6 +44,7 @@ export function createGitState() {
     ghost_branch: "",
   });
   const lastStatusHash = ref("");
+  const diskStatusReady = ref(false);
 
   const localBranches = computed(() => branches.value.filter((b) => !b.is_remote));
   const remoteBranches = computed(() => branches.value.filter((b) => b.is_remote));
@@ -89,6 +90,7 @@ export function createGitState() {
     gitPath,
     ghostBranchState,
     lastStatusHash,
+    diskStatusReady,
     localBranches,
     remoteBranches,
     stagedFiles,

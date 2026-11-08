@@ -8,6 +8,7 @@ import LogsPanel from "@/view/shell/LogsPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
 import { useResizableWorkspace } from "@/features/repository/workspace/useResizableWorkspace";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
+import { publishPendingOperationPreview } from "@/shared/notifications/gitOperationPreview";
 import ManualBisectOverlay from "@/features/repository/manual-bisect/ManualBisectOverlay.vue";
 import { useManualBisect } from "@/features/repository/manual-bisect/useManualBisect";
 import type {
@@ -265,6 +266,7 @@ function scheduleDeleteBranch(name: string) {
     message: `Delete branch "${name}" in 5 seconds.`,
     detail: "Click Undo to keep the branch.",
     run: () => props.git.deleteBranch(name),
+    onPending: undo => publishPendingOperationPreview({ kind: "branch-deleted", repoPath: props.git.repoPath.value, target: name }, undo),
   });
 }
 
@@ -303,6 +305,13 @@ function scheduleResetToCommit(sha: string, mode: "soft" | "mixed" | "hard") {
       ? "Hard reset can drop working-tree changes. Click Undo to cancel."
       : "Click Undo to keep the current branch position.",
     run: () => props.git.resetToCommit(sha, mode),
+    onPending: undo => {
+      const info = props.git.repoInfo.value;
+      if (!info?.head_sha || info.head_sha === sha) return;
+      return publishPendingOperationPreview({
+        kind: "reset", repoPath: props.git.repoPath.value, target: info.current_branch, previousSha: info.head_sha, resultSha: sha, mode,
+      }, undo);
+    },
   });
 }
 
@@ -417,6 +426,7 @@ function handleRefreshState() {
   <div class="relative flex-1 flex overflow-hidden">
     <div class="h-full flex-shrink-0" :style="{ width: `${sidebarWidth}px` }">
       <RepositorySidebar
+        :repo-path="props.git.repoPath.value"
         :branches="props.git.localBranches.value"
         :remote-branches="props.git.remoteBranches.value"
         :current-branch="props.git.currentBranch.value"
@@ -438,7 +448,15 @@ function handleRefreshState() {
         @checkout-remote="emit('checkoutRemoteBranch', $event)"
         @checkout-tag="props.git.checkoutCommit($event)"
         @create-branch="props.git.createBranch($event)"
+        @create-branch-at="emit('createBranchAt', $event)"
+        @rename-branch="emit('renameBranch', $event)"
+        @request-merge="emit('requestMerge', $event)"
+        @request-rebase="emit('requestRebase', $event)"
+        @set-upstream="(branch, upstream) => props.git.setUpstream(branch, upstream)"
+        @reset-branch-to-remote="scheduleResetBranchToRemote($event)"
         @delete-branch="scheduleDeleteBranch($event)"
+        @delete-remote-branch="scheduleDeleteRemoteBranch($event)"
+        @delete-branch-and-remote="scheduleDeleteBranchAndRemote($event)"
         @stash-pop="scheduleStashPop($event)"
         @stash-apply="props.git.stashApply($event)"
         @stash-drop="scheduleStashDrop($event)"

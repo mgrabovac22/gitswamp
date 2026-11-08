@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { homeDir, join } from "@tauri-apps/api/path";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Globe,
@@ -15,7 +14,7 @@ import {
   KeyRound,
 } from "lucide-vue-next";
 import type { AzureRepo, BitbucketRepo, GithubRepo, GitlabRepo } from "@/types";
-import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
+import { defaultRepositoryDirectory, rememberCloneDirectory } from "./repositoryDirectory";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -74,11 +73,9 @@ const tokenInstructions: Record<string, string> = {
   "azure": "Go to Azure DevOps → User settings → Personal access tokens → New Token with 'Code: Read' scope. Host example: dev.azure.com/myorg",
 };
 
-const DEFAULT_CLONE_PATH = String.raw`C:\Repozitoriji`;
-const CLONE_PATH_STORAGE_KEY = "gitswamp-clone-path";
 
 const activeSource = ref<string | null>(null);
-const clonePath = ref(DEFAULT_CLONE_PATH);
+const clonePath = ref("");
 const cloneFolderName = ref("");
 const cloneUrl = ref("");
 const shallowClone = ref(false);
@@ -238,52 +235,6 @@ function buildGithubRepoSections(repos: GithubRepo[]): GithubRepoSection[] {
   }
 
   return sections;
-}
-
-function getRuntimePlatform(): string {
-  try {
-    return `${navigator.platform} ${navigator.userAgent}`.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function isWindowsRuntime(): boolean {
-  return /win/i.test(getRuntimePlatform());
-}
-
-function isMacRuntime(): boolean {
-  return /mac|darwin/i.test(getRuntimePlatform());
-}
-
-function isLinuxRuntime(): boolean {
-  return /linux/i.test(getRuntimePlatform());
-}
-
-async function setDefaultClonePath() {
-  const storedPath = safeStorageGet(CLONE_PATH_STORAGE_KEY)?.trim();
-  if (storedPath) {
-    clonePath.value = storedPath;
-    return;
-  }
-
-  if (isWindowsRuntime()) {
-    clonePath.value = DEFAULT_CLONE_PATH;
-    return;
-  }
-
-  try {
-    const home = await homeDir();
-    clonePath.value = await join(home, "Repozitoriji");
-  } catch {
-    if (isMacRuntime()) {
-      clonePath.value = "/Users/Repozitoriji";
-    } else if (isLinuxRuntime()) {
-      clonePath.value = "/home/Repozitoriji";
-    } else {
-      clonePath.value = String.raw`C:\Repozitoriji`;
-    }
-  }
 }
 
 const githubRepoSections = computed<GithubRepoSection[]>(() => buildGithubRepoSections(githubRepos.value));
@@ -928,12 +879,7 @@ watch([githubSearch, browseAllPublicRepos], () => {
   }
 });
 
-watch(clonePath, (value) => {
-  const trimmed = value.trim();
-  if (trimmed) {
-    safeStorageSet(CLONE_PATH_STORAGE_KEY, trimmed);
-  }
-});
+watch(clonePath, rememberCloneDirectory);
 
 watch(needsConnection, (needs) => {
   if (needs) return;
@@ -964,8 +910,9 @@ const isBitbucketDcMode = computed(() => activeSource.value === "bitbucket-dc");
 const isAzureMode = computed(() => activeSource.value === "azure");
 const gitlabConnectionName = computed(() => (isGitlabSelfMode.value ? gitlabDomain.value : "gitlab.com"));
 
-onMounted(() => {
-  void setDefaultClonePath();
+onMounted(async () => {
+  const directory = await defaultRepositoryDirectory();
+  if (!clonePath.value) clonePath.value = directory;
 });
 </script>
 

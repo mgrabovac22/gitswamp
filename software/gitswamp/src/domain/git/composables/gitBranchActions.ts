@@ -1,5 +1,6 @@
 import type { RepoInfo, MergeRiskPreflight } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
+import { publishOperationPreview } from "@/shared/notifications/gitOperationPreview";
 
 import { callTauri } from "./gitCall";
 import type { GitState } from "./gitState";
@@ -114,11 +115,13 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
   async function createBranch(name: string, startPoint?: string): Promise<boolean> {
     if (!state.repoPath.value) return false;
+    const repoPath = state.repoPath.value;
     try {
       state.loading.value = true;
-      await callTauri("create_branch", { path: state.repoPath.value, name, startPoint: startPoint || null });
+      const sourceSha = await callTauri<string>("create_branch", { path: repoPath, name, startPoint: startPoint || null });
       await Promise.all([refresh.refreshBranches(), refresh.refreshCommits()]);
       toast.success(startPoint ? `Branch "${name}" created at selected commit` : `Branch "${name}" created`);
+      if (state.repoPath.value === repoPath) publishOperationPreview({ kind: "branch-created", repoPath, target: name, sourceSha });
       return true;
     } catch (e) {
       state.error.value = String(e);
@@ -131,15 +134,17 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
   async function deleteBranch(name: string) {
     if (!state.repoPath.value) return false;
+    const repoPath = state.repoPath.value;
     if (name.replace(/^refs\/heads\//, "") === state.repoInfo.value?.current_branch) {
       toast.warning(`Cannot delete the current branch "${name}". Check out another branch first.`);
       return false;
     }
     try {
       state.loading.value = true;
-      await callTauri("delete_branch", { path: state.repoPath.value, name });
+      await callTauri("delete_branch", { path: repoPath, name });
       await Promise.all([refresh.refreshBranches(), refresh.refreshCommits()]);
       toast.success(`Deleted branch "${name}"`);
+      if (state.repoPath.value === repoPath) publishOperationPreview({ kind: "branch-deleted", repoPath, target: name });
       return true;
     } catch (e) {
       state.error.value = String(e);
@@ -152,12 +157,16 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
   async function renameBranch(oldName: string, newName: string) {
     if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
     try {
       state.loading.value = true;
-      const result = await callTauri<string>("rename_branch", { path: state.repoPath.value, oldName, newName });
+      const result = await callTauri<string>("rename_branch", { path: repoPath, oldName, newName });
       state.terminalOutput.value.push("$ git branch -m " + oldName + " " + newName + "\n" + (result || "(done)"));
       await Promise.all([refresh.refreshBranches(), refresh.refreshCommits()]);
       state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+      if (state.repoPath.value === repoPath && oldName !== newName) {
+        publishOperationPreview({ kind: "branch-renamed", repoPath, target: newName, previousName: oldName });
+      }
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git branch -m\nError: " + e);
@@ -179,6 +188,7 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
       return false;
     }
     const sourceRef = sourceRemote ? `origin/${sourceBranch}` : sourceBranch;
+    const mergeRef = sourceRemote ? `refs/remotes/${sourceRef}` : `refs/heads/${sourceRef}`;
 
     const preflight = await fetchMergePreflight(sourceBranch, sourceRemote, target);
     if (preflight && preflight.risk_level !== "low" && preflight.suspect_count > 0) {
@@ -209,7 +219,7 @@ export function createBranchActions(state: GitState, refresh: RefreshDeps, toast
 
       const result = await callTauri<string>("run_git_command", {
         path: state.repoPath.value,
-        args: ["merge", "--no-ff", "--no-edit", sourceRef],
+        args: ["merge", "--no-ff", "--no-edit", mergeRef],
       });
       state.terminalOutput.value.push(`$ git checkout ${target}\n$ git merge --no-ff --no-edit ${sourceRef}\n` + (result || "(done)"));
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);

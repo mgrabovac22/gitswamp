@@ -31,7 +31,8 @@ import AppButton from "@/shared/ui/AppButton.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import GitCommitIcon from "@/shared/ui/GitCommitIcon.vue";
 import SmartGitignoreWizard from "@/view/commit/SmartGitignoreWizard.vue";
-import { useUnstagedSecrets } from "@/shared/config/useUnstagedSecrets";
+import { useFileSecrets } from "@/shared/config/useFileSecrets";
+import SecretFindingBadge from "@/shared/ui/SecretFindingBadge.vue";
 import { splitFilePath } from "@/shared/codeView";
 import { useWindowedRows } from "@/shared/ui/useWindowedRows";
 import { useToast } from "@/shared/notifications/useToast";
@@ -114,7 +115,10 @@ const emit = defineEmits<{
 }>();
 
 const commitSummary = ref("");
-const { findingsByPath: unstagedSecrets } = useUnstagedSecrets(() => props.repoPath, () => props.unstagedFiles, () => props.isWorkingChanges && !props.operationBusy);
+const secretScanActive = () => props.isWorkingChanges && !props.operationBusy;
+const { findingsByPath: unstagedSecrets } = useFileSecrets(() => props.repoPath, () => props.unstagedFiles, secretScanActive);
+const { findingsByPath: stagedSecrets } = useFileSecrets(() => props.repoPath, () => props.stagedFiles, secretScanActive, true);
+const treeSecrets = computed(() => new Map([...stagedSecrets.value, ...unstagedSecrets.value]));
 const commitDescription = ref("");
 const allowEmptyCommit = ref(getStoredAllowEmptyCommit());
 const amendPreviousCommit = ref(false);
@@ -2263,7 +2267,7 @@ onUnmounted(() => {
               @contextmenu="openFileContextMenu($event, f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
-              <AlertTriangle v-if="unstagedSecrets.has(f.path)" class="w-3.5 h-3.5 shrink-0 text-amber-500" :aria-label="unstagedSecrets.get(f.path)" :title="unstagedSecrets.get(f.path)" />
+              <SecretFindingBadge v-if="unstagedSecrets.has(f.path)" :findings="unstagedSecrets.get(f.path)!" />
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
                 <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
@@ -2322,6 +2326,7 @@ onUnmounted(() => {
               @contextmenu="openFileContextMenu($event, f.path)"
             >
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
+              <SecretFindingBadge v-if="stagedSecrets.has(f.path)" :findings="stagedSecrets.get(f.path)!" />
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
                 <div class="text-[10px] text-[var(--muted-foreground)] truncate">{{ fileParts(f.path).directory || '.' }}</div>
@@ -2431,7 +2436,7 @@ onUnmounted(() => {
                 {{ row.node.name }}
               </span>
 
-              <AlertTriangle v-if="row.node.type === 'file' && unstagedSecrets.has(row.node.path)" class="w-3.5 h-3.5 shrink-0 text-amber-500" :aria-label="unstagedSecrets.get(row.node.path)" :title="unstagedSecrets.get(row.node.path)" />
+              <SecretFindingBadge v-if="row.node.type === 'file' && treeSecrets.has(row.node.path)" :findings="treeSecrets.get(row.node.path)!" />
 
               <span
                 v-if="row.node.type === 'folder'"

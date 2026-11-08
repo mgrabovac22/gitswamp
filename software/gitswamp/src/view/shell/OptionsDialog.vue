@@ -50,6 +50,8 @@ import {
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
 import { useAppUpdate } from "@/features/updater/useAppUpdate";
+import AppUpdatePanel from "@/features/updater/AppUpdatePanel.vue";
+import { visualiseOperationsEnabled, storeVisualiseOperations } from "@/shared/config/visualiseOperationsPreferences";
 import AppButton from "@/shared/ui/AppButton.vue";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
@@ -232,6 +234,8 @@ const backgroundBehindBranchReminderEnabled = ref(false);
 const backgroundLargeChangeReminderEnabled = ref(false);
 const backgroundLargeChangeThreshold = ref(40);
 const backgroundConflictReminderEnabled = ref(false);
+const visualiseOperations = ref(visualiseOperationsEnabled());
+watch(visualiseOperations, storeVisualiseOperations);
 const backgroundCommitDetailsPreloadEnabled = ref(false);
 const backgroundMaintenanceIntervalMinutes = ref(10);
 
@@ -3426,6 +3430,10 @@ watch(activePlatform, () => {
                     <div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" :class="backgroundConflictReminderEnabled ? 'left-[calc(100%-1.125rem)]' : 'left-0.5'" />
                   </button>
                 </div>
+                <div class="flex items-center justify-between gap-3 py-2">
+                  <label for="visualise-operations" class="text-xs font-medium text-[var(--foreground)]">Visualise operations</label>
+                  <input id="visualise-operations" v-model="visualiseOperations" type="checkbox" class="w-4 h-4 accent-[var(--primary)]" />
+                </div>
 
                 <div class="flex items-center justify-between py-2">
                   <div>
@@ -3730,15 +3738,7 @@ watch(activePlatform, () => {
                   </div>
                 </div>
 
-                <div v-if="updateStatus === 'available' && updateInfo" class="rounded border border-[var(--primary)]/30 bg-[var(--primary)]/10 p-2.5">
-                  <div class="text-[11px] font-medium text-[var(--foreground)]">
-                    Update available: v{{ updateInfo.version }}
-                  </div>
-                  <div class="mt-2 flex gap-2">
-                    <AppButton size="sm" @click="appUpdate.install">Install update</AppButton>
-                    <AppButton size="sm" variant="secondary" @click="appUpdate.openReleasePage">Open release</AppButton>
-                  </div>
-                </div>
+                <AppUpdatePanel v-if="appUpdate.isVisible.value" />
                 <div v-else-if="updateStatus === 'none'" class="text-[10px] text-[var(--muted-foreground)]">
                   GitSwamp is up to date.
                 </div>
@@ -3757,7 +3757,7 @@ watch(activePlatform, () => {
                     {{ updateStatus === 'checking' ? 'Checking…' : 'Check for updates' }}
                   </AppButton>
                   <AppButton
-                    v-if="updateInfo"
+                    v-if="updateInfo && !appUpdate.isVisible.value"
                     size="sm"
                     variant="secondary"
                     @click="appUpdate.openReleasePage"
@@ -3766,9 +3766,6 @@ watch(activePlatform, () => {
                     Manual download
                   </AppButton>
                 </div>
-                <p v-if="updateStatus === 'available' && updateError" class="text-[10px] text-[var(--destructive)]">
-                  {{ updateError }}
-                </p>
               </div>
             </div>
           </template>

@@ -1,4 +1,4 @@
-use crate::services::git_service::GitService;
+use crate::services::git_service::{CommitOperationResult, GitService, ResetCommitResult};
 
 #[tauri::command]
 pub async fn get_lost_commits(
@@ -94,18 +94,18 @@ pub fn get_git_path() -> String {
 }
 
 #[tauri::command]
-pub fn cherry_pick(path: String, sha: String) -> Result<String, String> {
+pub fn cherry_pick(path: String, sha: String) -> Result<CommitOperationResult, String> {
     GitService::cherry_pick(&path, &sha)
 }
 
 #[tauri::command]
-pub fn revert_commit(path: String, sha: String) -> Result<String, String> {
+pub fn revert_commit(path: String, sha: String) -> Result<CommitOperationResult, String> {
     GitService::revert_commit(&path, &sha)
 }
 
 #[tauri::command]
-pub fn reset_to_commit(path: String, sha: String, mode: String) -> Result<String, String> {
-    GitService::reset_to_commit(&path, &sha, &mode)
+pub fn reset_to_commit(path: String, sha: String, mode: String, visualise: Option<bool>) -> Result<ResetCommitResult, String> {
+    GitService::reset_to_commit(&path, &sha, &mode, visualise.unwrap_or(false))
 }
 
 #[tauri::command]

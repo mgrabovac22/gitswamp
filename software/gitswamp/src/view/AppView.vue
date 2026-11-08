@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import TitleBar from "@/view/shell/TitleBar.vue";
 import SecretCommitDialog from "@/shared/ui/SecretCommitDialog.vue";
+import ConflictAppearanceDialog from "@/features/repository/ConflictAppearanceDialog.vue";
+import { useConflictVisualisation } from "@/features/repository/useConflictVisualisation";
+import { useOperationVisualisation } from "@/features/repository/useOperationVisualisation";
 import AppHeader from "@/view/shell/AppHeader.vue";
 import CommandPalette from "@/view/shell/CommandPalette.vue";
 import ThemeAmbience from "@/view/shell/ThemeAmbience.vue";
@@ -21,6 +24,7 @@ import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
 import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
+import { publishOperationPreview } from "@/shared/notifications/gitOperationPreview";
 import { useRepositoryOperationNotice } from "@/shared/notifications/useRepositoryOperationNotice";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import { clearDiffViewerCaches } from "@/shared/config/diffViewCache";
@@ -90,6 +94,13 @@ import type {
 } from "@/types";
 
 const git = useGit();
+const { preview: conflictPreview, close: closeConflictPreview } = useConflictVisualisation(
+  () => git.repoPath.value, () => git.diskStatusReady.value, () => git.conflictFiles.value,
+);
+const { preview: operationPreview, close: closeOperationPreview } = useOperationVisualisation(
+  () => git.repoPath.value, () => Boolean(conflictPreview.value) || git.hasConflicts.value,
+);
+const OperationVisualisationDialog = defineAsyncComponent(() => import("@/features/repository/OperationVisualisationDialog.vue"));
 const toast = useToast();
 const PickaxeSearchPanel = defineAsyncComponent(() => import("@/features/repository/pickaxe/PickaxeSearchPanel.vue"));
 const { scheduleDestructiveAction } = useUndoableDestructiveAction(() => git.destructiveContext.value, () => !git.loading.value);
@@ -4676,12 +4687,12 @@ function mergeSourceRef(payload: { source: string; sourceRemote: boolean }): str
   return payload.sourceRemote ? `origin/${payload.source}` : payload.source;
 }
 
-async function getGitRefSha(ref: string): Promise<string | null> {
-  if (!git.repoPath.value || !ref.trim()) return null;
+async function getGitRefSha(repoPath: string, ref: string): Promise<string | null> {
+  if (!repoPath || !ref.trim()) return null;
 
   try {
     const result = await invoke<string>("run_git_command", {
-      path: git.repoPath.value,
+      path: repoPath,
       args: ["rev-parse", "--verify", ref],
     });
     return result.trim().split(/\s+/)[0] || null;
@@ -4768,6 +4779,8 @@ function offerMergeReleaseNotes(request: MergeReleaseNotesRequest): void {
 
 function handleRequestMerge(payload: { source: string; sourceRemote: boolean; target: string }) {
   if (!payload.source || !payload.target || payload.source === payload.target) return;
+  const repoPath = git.repoPath.value;
+  const targetRef = `refs/heads/${payload.target}`;
   toast.action(
     "warning",
     `Merge ${payload.sourceRemote ? "origin/" + payload.source : payload.source} into ${payload.target}?`,
@@ -4776,8 +4789,11 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
         label: "Merge",
         style: "primary",
         onClick: async () => {
-          const beforeTargetSha = await getGitRefSha(payload.target);
+          if (git.repoPath.value !== repoPath) return;
+          const beforeTargetSha = await getGitRefSha(repoPath, targetRef);
+          if (git.repoPath.value !== repoPath) return;
           const merged = await git.mergeBranchIntoCurrent(payload.source, payload.sourceRemote, payload.target);
+          if (git.repoPath.value !== repoPath) return;
           if (!merged && git.repositoryOperation.value?.kind === "merge") {
             onSelectConflicts();
             detailsPanelCollapsed.value = false;
@@ -4793,9 +4809,13 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
             );
             return;
           }
-          const afterTargetSha = merged ? await getGitRefSha("HEAD") : null;
-          if (merged && beforeTargetSha && afterTargetSha && beforeTargetSha !== afterTargetSha) {
+          const afterTargetSha = merged ? await getGitRefSha(repoPath, targetRef) : null;
+          if (git.repoPath.value === repoPath && beforeTargetSha && afterTargetSha && beforeTargetSha !== afterTargetSha) {
             offerMergeReleaseNotes({ ...payload, beforeTargetSha, afterTargetSha });
+            publishOperationPreview({
+              kind: "merge", repoPath, source: mergeSourceRef(payload), target: payload.target,
+              beforeSha: beforeTargetSha, resultSha: afterTargetSha,
+            });
           }
         },
       },
@@ -4931,7 +4951,7 @@ function exitGraphIsolation() {
 }
 
 function handleCreateBranch() {
-  showBranchDialog.value = true;
+  handleCreateBranchAtCommit("");
 }
 
 function normalizeGhostNameFragment(value: string): string {
@@ -5066,7 +5086,8 @@ async function submitAnnotatedTag() {
   annotatedTagMessage.value = "";
 }
 
-const branchAtSha = ref("");
+const branchStartPoint = ref("");
+const branchDialogRepo = ref("");
 const tagAtSha = ref("");
 const showTagDialog = ref(false);
 const tagName = ref("");
@@ -5098,22 +5119,32 @@ watch(terminalAllowAll, (value) => {
   safeStorageSet("gitswamp-terminal-allow-all", String(value));
 });
 
-function handleCreateBranchAtCommit(sha: string) {
-  branchAtSha.value = sha;
+function handleCreateBranchAtCommit(startPoint: string) {
+  branchStartPoint.value = startPoint;
+  branchDialogRepo.value = git.repoPath.value;
   newBranchName.value = "";
   showBranchDialog.value = true;
 }
 
+function closeCreateBranchDialog() {
+  branchStartPoint.value = "";
+  branchDialogRepo.value = "";
+  showBranchDialog.value = false;
+  newBranchName.value = "";
+}
+
+watch(() => git.repoPath.value, closeCreateBranchDialog);
+
 async function submitCreateBranchFromDialog(name: string) {
-  const startPoint = branchAtSha.value || undefined;
+  const repoPath = branchDialogRepo.value;
+  if (!repoPath || git.repoPath.value !== repoPath) return;
+  const startPoint = branchStartPoint.value || undefined;
   const created = await git.createBranch(name, startPoint);
   if (!created) {
     return;
   }
 
-  branchAtSha.value = "";
-  showBranchDialog.value = false;
-  newBranchName.value = "";
+  if (branchDialogRepo.value === repoPath) closeCreateBranchDialog();
 }
 
 function handleCreateTagAtCommit(sha: string) {
@@ -5340,6 +5371,7 @@ function submitCreateTag() {
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"
       :new-branch-name="newBranchName"
+      :branch-start-point="branchStartPoint"
       :existing-branch-names="git.localBranches.value.map((branch) => branch.name)"
       :show-stash-dialog="showStashDialog"
       :stash-message="stashMessage"
@@ -5368,7 +5400,7 @@ function submitCreateTag() {
       @update:annotated-tag-message="annotatedTagMessage = $event"
       @update:edit-message-text="editMessageText = $event"
       @update:rename-branch-new="renameBranchNew = $event"
-      @close:branch="showBranchDialog = false"
+      @close:branch="closeCreateBranchDialog"
       @submit:branch="submitCreateBranch(newBranchName)"
       @close:stash="showStashDialog = false"
       @submit:stash="submitStash()"
@@ -5447,5 +5479,12 @@ function submitCreateTag() {
     <ThemeAmbience />
     <ToastContainer />
     <SecretCommitDialog :repo-path="git.repoPath.value" />
+    <ConflictAppearanceDialog v-if="conflictPreview" :preview="conflictPreview" @close="closeConflictPreview" />
+    <OperationVisualisationDialog
+      v-if="operationPreview"
+      :key="`${operationPreview.kind}:${operationPreview.target}:${'resultSha' in operationPreview ? operationPreview.resultSha : ''}:${'pendingUndo' in operationPreview && Boolean(operationPreview.pendingUndo)}`"
+      :preview="operationPreview"
+      @close="closeOperationPreview"
+    />
   </div>
 </template>

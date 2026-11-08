@@ -296,6 +296,7 @@ export function createRefreshActions(state: GitState) {
       if (requestId !== statusRequestId || repoPath !== state.repoPath.value) return;
       state.fileStatuses.value = result;
       state.lastStatusHash.value = statusHash(result);
+      state.diskStatusReady.value = true;
     } catch (e) {
       if (requestId !== statusRequestId || repoPath !== state.repoPath.value) return;
       state.error.value = String(e);

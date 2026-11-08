@@ -1,5 +1,7 @@
-import type { RepoInfo } from "@/types";
+import type { RemoteInfo, RepoInfo } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
+import { visualiseOperationsEnabled } from "@/shared/config/visualiseOperationsPreferences";
+import { publishOperationPreview } from "@/shared/notifications/gitOperationPreview";
 
 import { callTauri } from "./gitCall";
 import {
@@ -23,6 +25,21 @@ type RefreshDeps = {
 export type PullOutcome = "success" | "worktree-dirty" | "operation-stash-retained" | "stash-restore-failed" | "error";
 
 export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
+  function previewTransfer(repoPath: string, kind: "push" | "pull" | "fetch", info: RepoInfo | null, platform?: string) {
+    if (state.repoPath.value !== repoPath || !visualiseOperationsEnabled()) return;
+    const remotes = info?.remotes ?? [];
+    if (kind === "fetch" && !remotes.length) return;
+    const remote = kind === "fetch" ? remotes.length === 1 ? remotes[0] : undefined : remotes.find(item => item.name === "origin");
+    const provider: RemoteInfo["provider"] = platform === "gitlab-self" || platform === "gitlab-self-hosted"
+      ? "gitlab" : platform === "github" || platform === "gitlab" || platform === "azure" || platform === "bitbucket"
+        ? platform : remote?.provider ?? "unknown";
+    publishOperationPreview({
+      kind, repoPath, target: kind === "fetch" ? "Local remote-tracking refs" : info?.current_branch || "Local branch",
+      endpoint: { label: remote?.name ?? (kind === "fetch" ? "All remotes" : "origin"), provider },
+      sha: kind !== "fetch" && info?.head_sha === state.repoInfo.value?.head_sha ? info?.head_sha ?? undefined : undefined,
+    });
+  }
+
   async function refreshRemoteRefs(repoPath: string, includeStatus = false) {
     if (state.repoPath.value !== repoPath) return;
 
@@ -61,18 +78,22 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
 
   async function forcePushCurrentBranch() {
     if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    const info = state.repoInfo.value;
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading("Loading: force pushing branch...");
       state.loading.value = true;
       const forceResult = await callTauri<string>("push_force", {
-        path: state.repoPath.value,
+        path: repoPath,
         token: getTokenForUrl(state, getOriginUrl(state)),
       });
       state.terminalOutput.value.push("$ git push --force-with-lease\n" + forceResult);
+      if (state.repoPath.value !== repoPath) return;
       await autoFetchAfterPush();
       toast.success("Force push completed successfully");
       state.error.value = null;
+      if (!forceResult.startsWith("Already up to date.")) previewTransfer(repoPath, "push", info);
     } catch (e) {
       const errMsg = String(e);
       state.error.value = isAuthenticationError(errMsg) ? `AUTH_REQUIRED:${errMsg}` : errMsg;
@@ -102,6 +123,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       await refreshRemoteRefs(repoPath, true);
       toast.success(autoStash ? "Pull completed and local changes are safe" : "Pull completed successfully");
       state.error.value = null;
+      if (!result.startsWith("Already up to date.")) previewTransfer(repoPath, "pull", state.repoInfo.value);
       return "success";
     } catch (e) {
       const errorMsg = String(e);
@@ -133,18 +155,22 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
 
   async function push() {
     if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
+    const info = state.repoInfo.value;
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading("Loading: pushing changes...");
       state.loading.value = true;
       const result = await callTauri<string>("push", {
-        path: state.repoPath.value,
+        path: repoPath,
         token: getTokenForUrl(state, getOriginUrl(state)),
       });
+      if (state.repoPath.value !== repoPath) return;
       state.terminalOutput.value.push("$ git push\n" + result);
       await autoFetchAfterPush();
       toast.success("Push completed successfully");
       state.error.value = null;
+      previewTransfer(repoPath, "push", info);
     } catch (e) {
       const errorMsg = String(e);
 
@@ -203,6 +229,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       await refreshRemoteRefs(repoPath);
       toast.success("Fetch completed successfully");
       state.error.value = null;
+      previewTransfer(repoPath, "fetch", state.repoInfo.value);
     } catch (e) {
       const errorMsg = String(e);
       state.error.value = isAuthenticationError(errorMsg) ? `AUTH_REQUIRED:${errorMsg}` : errorMsg;
@@ -312,6 +339,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
   async function pushToMultiplePlatforms(platform: string, repoName: string) {
     if (!state.repoPath.value) return;
     const repoPath = state.repoPath.value;
+    const info = state.repoInfo.value;
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading(`Loading: pushing to ${platform}...`);
@@ -337,6 +365,7 @@ export function createRemoteActions(state: GitState, refresh: RefreshDeps, toast
       if (state.repoPath.value !== repoPath) return;
       toast.success(`Push to ${platform} completed successfully`);
       state.error.value = null;
+      previewTransfer(repoPath, "push", info, platform);
     } catch (e) {
       if (state.repoPath.value !== repoPath) return;
       const errorMsg = String(e);

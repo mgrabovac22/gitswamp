@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
-import { Check, RotateCcw } from "lucide-vue-next";
+import { Check, GitBranchPlus, PencilLine, RotateCcw } from "lucide-vue-next";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -680,8 +680,8 @@ function onRefContextMenu(event: MouseEvent, ref: DisplayRef, commit: CommitInfo
   event.stopPropagation();
   refCtxRef.value = ref;
   refCtxCommitSha.value = commit.sha;
-  const menuWidth = 200;
-  const menuHeight = 160;
+  const menuWidth = 280;
+  const menuHeight = Math.min(480, window.innerHeight - 16);
   let x = event.clientX;
   let y = event.clientY;
   if (x + menuWidth > window.innerWidth) {
@@ -690,7 +690,7 @@ function onRefContextMenu(event: MouseEvent, ref: DisplayRef, commit: CommitInfo
   if (y + menuHeight > window.innerHeight) {
     y = window.innerHeight - menuHeight - 8;
   }
-  refCtxX.value = x;
+  refCtxX.value = Math.max(8, x);
   refCtxY.value = y;
   refCtxVisible.value = true;
   ctxVisible.value = false;
@@ -810,8 +810,23 @@ function refAction(action: string) {
     case "delete-local":
       emit("deleteBranch", r.name);
       break;
+    case "rename-branch":
+      if (r.kind === "branch" && r.local) emit("renameBranch", r.name);
+      break;
+    case "branch-here":
+      if (commitSha) emit("createBranchAt", commitSha);
+      break;
     case "delete-remote":
       emit("deleteRemoteBranch", r.name);
+      break;
+    case "delete-both":
+      if (r.local && r.remote) emit("deleteBranchAndRemote", r.name);
+      break;
+    case "set-upstream":
+      if (r.local && r.remote) emit("setUpstream", r.name, `origin/${r.name}`);
+      break;
+    case "reset-to-remote":
+      if (r.local && r.remote) emit("resetBranchToRemote", r.name);
       break;
     case "copy-name":
       navigator.clipboard.writeText(r.name).catch(() => {});
@@ -2028,7 +2043,7 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="refCtxVisible && refCtxRef"
-        class="fixed z-[120] w-[280px] bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)]"
+        class="fixed z-[120] w-[280px] max-w-[calc(100vw-16px)] max-h-[min(480px,calc(100vh-16px))] overflow-auto bg-[var(--popover)] border border-[var(--border)] rounded-lg shadow-2xl p-1.5 text-[10px] text-[var(--foreground)]"
         :style="{ left: refCtxX + 'px', top: refCtxY + 'px' }"
         @click.stop
       >
@@ -2037,11 +2052,16 @@ onUnmounted(() => {
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('checkout-local')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout branch</span><span class="ctx-sub">Switch to local branch {{ refCtxRef.name }}</span></button>
             <button v-if="!refCtxRef.local" class="ctx-item" @click="refAction('checkout-remote')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout remote branch</span><span class="ctx-sub">Create/switch to origin/{{ refCtxRef.name }}</span></button>
             <button class="ctx-item" @click="refAction('checkout-and-isolate')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to this branch and isolate its connected commits</span></button>
+            <button class="ctx-item" @click="refAction('branch-here')"><GitBranchPlus class="ctx-icon h-4 w-4" /><span class="ctx-main">Create branch here</span><span class="ctx-sub">Start a new branch at {{ refCtxRef.name }}</span></button>
+            <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('rename-branch')"><PencilLine class="ctx-icon h-4 w-4" /><span class="ctx-main">Rename branch</span><span class="ctx-sub">Rename {{ refCtxRef.name }}</span></button>
             <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
             <button v-if="canRebaseRefOntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('rebase-onto-current')"><span class="ctx-icon">↕</span><span class="ctx-main">Rebase onto {{ currentBranch }}</span><span class="ctx-sub">Checkout {{ refCtxRef.name }} and rebase it onto {{ currentBranch }}</span></button>
             <button v-if="canRebaseCurrentOntoRef(refCtxRef)" class="ctx-item" @click="refAction('rebase-current-onto-selected')"><span class="ctx-icon">⇅</span><span class="ctx-main">Rebase {{ currentBranch }} onto {{ refCtxRef.name }}</span><span class="ctx-sub">Keep selected branch as base and move current branch on top</span></button>
+            <button v-if="refCtxRef.local && refCtxRef.remote" class="ctx-item" @click="refAction('set-upstream')"><span class="ctx-icon">🔗</span><span class="ctx-main">Set upstream</span><span class="ctx-sub">Link to origin/{{ refCtxRef.name }}</span></button>
+            <button v-if="refCtxRef.local && refCtxRef.remote" class="ctx-item" @click="refAction('reset-to-remote')"><RotateCcw class="ctx-icon h-4 w-4" /><span class="ctx-main">Reset branch to remote</span><span class="ctx-sub">Match origin/{{ refCtxRef.name }}</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('delete-local')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local branch</span><span class="ctx-sub">Delete {{ refCtxRef.name }} from local repository</span></button>
             <button v-if="refCtxRef.remote" class="ctx-item" @click="refAction('delete-remote')"><span class="ctx-icon">🛰</span><span class="ctx-main">Delete remote branch</span><span class="ctx-sub">Delete origin/{{ refCtxRef.name }} on remote</span></button>
+            <button v-if="refCtxRef.local && refCtxRef.remote" class="ctx-item" @click="refAction('delete-both')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local and remote</span><span class="ctx-sub">Remove both branch references</span></button>
             <button class="ctx-item" @click="refAction('copy-name')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy branch name</span><span class="ctx-sub">Copy name to clipboard</span></button>
           </div>
         </template>

@@ -26,6 +26,19 @@ use crate::services::stash_service::{StashService, PULL_SAFETY_STASH_PREFIX};
 
 pub struct GitService;
 
+#[derive(Debug, serde::Serialize)]
+pub struct CommitOperationResult {
+    pub message: &'static str,
+    pub sha: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetCommitResult {
+    pub message: String,
+    pub previous_sha: Option<String>,
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct CloneProgressUpdate {
     pub url: String,
@@ -1758,16 +1771,20 @@ impl GitService {
             .find_tree(tree_oid)
             .map_err(|e| e.message().to_string())?;
         let sig = repo.signature().map_err(|e| e.message().to_string())?;
-        let head = repo.head().map_err(|e| e.message().to_string())?;
-        let head_parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
+        let head_parent = match repo.head() {
+            Ok(head) => Some(head.peel_to_commit().map_err(|e| e.message().to_string())?),
+            Err(error) if error.code() == git2::ErrorCode::UnbornBranch && !is_merge && !is_cherry_pick => None,
+            Err(error) => return Err(error.message().to_string()),
+        };
 
-        if !allow_empty && !is_merge && tree_oid == head_parent.tree_id() {
+        let unchanged = head_parent.as_ref().map_or_else(|| tree.is_empty(), |parent| tree_oid == parent.tree_id());
+        if !allow_empty && !is_merge && unchanged {
             return Err("No changes staged for commit.".to_string());
         }
 
         let mut parent_ids = HashSet::new();
-        parent_ids.insert(head_parent.id());
-        let mut parents = vec![head_parent];
+        let mut parents: Vec<_> = head_parent.into_iter().collect();
+        parent_ids.extend(parents.iter().map(|parent| parent.id()));
 
         if is_merge {
             let merge_head = std::fs::read_to_string(repo.path().join("MERGE_HEAD"))
@@ -1925,7 +1942,7 @@ impl GitService {
         Ok("Removed tracked files from index (equivalent to git rm -r --cached .).".to_string())
     }
 
-    pub fn cherry_pick(path: &str, sha: &str) -> Result<String, String> {
+    pub fn cherry_pick(path: &str, sha: &str) -> Result<CommitOperationResult, String> {
         let repo = GitRepository::open(path)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
@@ -1943,10 +1960,10 @@ impl GitService {
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let parent = head.peel_to_commit().map_err(|e| e.message().to_string())?;
         let msg = commit.message().unwrap_or("cherry-pick");
-        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[&parent])
+        let result = repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[&parent])
             .map_err(|e| e.message().to_string())?;
         repo.cleanup_state().map_err(|e| e.message().to_string())?;
-        Ok("Cherry-pick complete.".to_string())
+        Ok(CommitOperationResult { message: "Cherry-pick complete.", sha: result.to_string() })
     }
 
     pub fn abort_cherry_pick(path: &str) -> Result<String, String> {
@@ -1959,7 +1976,7 @@ impl GitService {
         Ok("Cherry-pick aborted.".to_string())
     }
 
-    pub fn revert_commit(path: &str, sha: &str) -> Result<String, String> {
+    pub fn revert_commit(path: &str, sha: &str) -> Result<CommitOperationResult, String> {
         let repo = GitRepository::open(path)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
@@ -1980,13 +1997,13 @@ impl GitService {
             "Revert \"{}\"",
             commit.message().unwrap_or("").lines().next().unwrap_or("")
         );
-        repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&parent])
+        let result = repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&parent])
             .map_err(|e| e.message().to_string())?;
         repo.cleanup_state().map_err(|e| e.message().to_string())?;
-        Ok("Revert complete.".to_string())
+        Ok(CommitOperationResult { message: "Revert complete.", sha: result.to_string() })
     }
 
-    pub fn reset_to_commit(path: &str, sha: &str, mode: &str) -> Result<String, String> {
+    pub fn reset_to_commit(path: &str, sha: &str, mode: &str, visualise: bool) -> Result<ResetCommitResult, String> {
         let repo = GitRepository::open(path)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo
@@ -1998,9 +2015,17 @@ impl GitService {
             "hard" => git2::ResetType::Hard,
             _ => git2::ResetType::Mixed,
         };
+        let previous_sha = if visualise {
+            repo.head().ok().and_then(|head| head.target()).map(|id| id.to_string())
+        } else {
+            None
+        };
         repo.reset(&commit, reset_type, None)
             .map_err(|e| e.message().to_string())?;
-        Ok(format!("Reset ({}) to {}.", mode, &sha[..7.min(sha.len())]))
+        Ok(ResetCommitResult {
+            message: format!("Reset ({}) to {}.", mode, &sha[..7.min(sha.len())]),
+            previous_sha,
+        })
     }
 
     pub fn rebase_branch_onto(
@@ -2679,7 +2704,7 @@ impl GitService {
         Ok(commits)
     }
 
-    pub fn create_branch(path: &str, name: &str, start_point: Option<&str>) -> Result<(), String> {
+    pub fn create_branch(path: &str, name: &str, start_point: Option<&str>) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
         let commit = if let Some(sp) = start_point {
             let obj = repo
@@ -2693,7 +2718,7 @@ impl GitService {
         repo.branch(name, &commit, false)
             .map_err(|e| e.message().to_string())?;
 
-        Ok(())
+        Ok(commit.id().to_string())
     }
 
     pub fn delete_branch(path: &str, name: &str) -> Result<(), String> {
@@ -3333,6 +3358,26 @@ mod tests {
     }
 
     #[test]
+    fn reset_captures_previous_head_only_for_an_enabled_preview() {
+        let path = unique_temp_repo_path("reset-preview");
+        let path_str = path.to_str().unwrap();
+        let repo = Repository::init(&path).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        GitService::initialize_empty_repo(path_str).unwrap();
+        let first = repo.head().unwrap().target().unwrap().to_string();
+        let second = GitService::create_commit_with_options(path_str, "Second", true).unwrap();
+        assert_eq!(GitService::create_branch(path_str, "preview", Some(&first)).unwrap(), first);
+        let enabled = GitService::reset_to_commit(path_str, &first, "soft", true).unwrap();
+        assert_eq!(enabled.previous_sha.as_deref(), Some(second.as_str()));
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+        let disabled = GitService::reset_to_commit(path_str, &second, "mixed", false).unwrap();
+        assert_eq!(disabled.previous_sha, None);
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), second);
+        drop(repo);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn commit_files_preserves_all_paths_and_stats_for_large_commits() {
         let path = unique_temp_repo_path("large-commit-files");
         std::fs::create_dir_all(&path).unwrap();
@@ -3402,6 +3447,37 @@ mod tests {
         assert_eq!(commits[0].message, "Initial commit");
 
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn normal_commit_creates_the_configured_unborn_branch() {
+        use crate::services::secret_service::{validate_commit, SecretService};
+
+        for branch in ["main", "master"] {
+            let path = unique_temp_repo_path(&format!("first-commit-{branch}"));
+            let repo = Repository::init_opts(&path, git2::RepositoryInitOptions::new().initial_head(branch)).unwrap();
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "Test User").unwrap();
+            config.set_str("user.email", "test@example.invalid").unwrap();
+            let path_str = path.to_str().unwrap();
+            assert_eq!(GitService::create_commit_with_options(path_str, "Empty", false).unwrap_err(),
+                "No changes staged for commit.");
+            std::fs::write(path.join("project.txt"), "first version\n").unwrap();
+            GitService::stage_file(path_str, "project.txt").unwrap();
+            let report = SecretService::review_staged(path_str, true).unwrap();
+            validate_commit(path_str, true, Some(&report.snapshot)).unwrap();
+
+            let oid = GitService::create_commit_with_options(path_str, "Initial commit", false).unwrap();
+            let head = repo.head().unwrap();
+            assert_eq!(head.shorthand(), Some(branch));
+            let commit = head.peel_to_commit().unwrap();
+            assert_eq!(commit.id().to_string(), oid);
+            assert_eq!(commit.parent_count(), 0);
+            assert!(commit.tree().unwrap().get_path(Path::new("project.txt")).is_ok());
+            drop((commit, head, config));
+            drop(repo);
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 
     #[test]
@@ -3624,6 +3700,20 @@ mod tests {
             GitService::checkout_branch(&path_str, "main").unwrap();
             let before = commit_file("local\n");
             assert!(GitService::cherry_pick(&path_str, &incoming).unwrap_err().contains("conflicts"));
+            if mode == "conflict" {
+                let file = path.join("notes.txt");
+                let original = std::fs::read(&file).unwrap();
+                let preview = crate::services::conflict_preview::preview(&path_str, "notes.txt").unwrap().unwrap();
+                assert!(crate::services::conflict_preview::preview(&path_str, "../outside.txt").unwrap().is_none());
+                assert_eq!(preview.ours.as_deref(), Some("notes.txt"));
+                assert_eq!(preview.theirs.as_deref(), Some("notes.txt"));
+                assert_eq!(preview.ranges.len(), 1);
+                assert_eq!(preview.ranges[0][0], 1);
+                assert!(preview.ours_code.iter().any(|line| line.conflicted && line.text == "local"));
+                assert!(preview.theirs_code.iter().any(|line| line.conflicted && line.text == "incoming"));
+                assert_eq!(std::fs::read(&file).unwrap(), original);
+                assert!(Repository::open(&path).unwrap().index().unwrap().has_conflicts());
+            }
             std::fs::write(path.join("keep.txt"), "unrelated work\n").unwrap();
             if mode != "conflict" {
                 GitService::resolve_conflict_file(&path_str, "notes.txt", "theirs").unwrap();

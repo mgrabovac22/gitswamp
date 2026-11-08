@@ -5,7 +5,11 @@ use crate::services::secret_service::{ignore_untracked, validate_commit, SecretS
 #[tauri::command]
 pub async fn scan_secrets(path: String, staged: bool, include_secrets: Option<bool>, file_paths: Option<Vec<String>>) -> Result<SecretScan, String> {
     tauri::async_runtime::spawn_blocking(move || if staged {
-        SecretService::review_staged(&path, include_secrets.unwrap_or(true))
+        if let Some(paths) = file_paths {
+            SecretService::scan_staged_paths(&path, &paths)
+        } else {
+            SecretService::review_staged(&path, include_secrets.unwrap_or(true))
+        }
     } else if let Some(paths) = file_paths { SecretService::scan_worktree_paths(&path, &paths) }
     else { SecretService::scan(&path, false) })
         .await.map_err(|e| e.to_string())?

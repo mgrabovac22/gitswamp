@@ -10,7 +10,7 @@ use commands::clone_init::{clone_repo, init_repo, initialize_empty_repo, search_
 use commands::commit_files::get_commit_files;
 use commands::commits::{get_author_deletion_stats, get_commit_tree_paths, get_commits};
 use commands::conflicts::{
-    get_conflict_hotspots, get_conflict_pairs, get_merge_preflight_risk, get_repository_tree_paths,
+    get_conflict_hotspots, get_conflict_pairs, get_conflict_preview, get_merge_preflight_risk, get_repository_tree_paths,
 };
 use commands::credentials::{
     delete_provider_token, delete_token, load_provider_token, load_token, save_provider_token,
@@ -26,6 +26,7 @@ use commands::ghost::{
 };
 use commands::http::http_send_request;
 use commands::logs::{append_app_log, get_app_log_path};
+use commands::operation_preview::get_operation_preview;
 use commands::operations::{
     add_bitbucket_ssh_key, add_github_ssh_key, add_gitlab_ssh_key, check_origin, checkout_commit,
     cherry_pick, create_annotated_tag, create_tag_at, delete_bitbucket_ssh_key,
@@ -50,7 +51,7 @@ use commands::status::{
     restore_pull_safety_stash, stage_file, stage_files, unstage_file, unstage_files,
 };
 use commands::tags::get_tags;
-use commands::updates::{check_for_update, download_deb_update, install_update, PendingUpdate};
+use commands::updates::{check_for_update, download_deb_update, install_update, open_deb_update, PendingUpdate};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,10 +75,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_repo_info,
             download_deb_update,
+            open_deb_update,
             get_commits,
             get_author_deletion_stats,
             get_commit_tree_paths,
             get_conflict_hotspots,
+            get_conflict_preview,
+            get_operation_preview,
             get_conflict_pairs,
             get_repository_tree_paths,
             get_merge_preflight_risk,

@@ -18,7 +18,7 @@ function updater(respond) {
     "@tauri-apps/api/core": {invoke:async(command,args)=>{calls.push({command,args});return respond(command,args);},Channel:class{}},
     "@tauri-apps/plugin-process":{relaunch:async()=>{restarts++;}},
     "@tauri-apps/plugin-opener":{openPath:async path=>opened.push(path),openUrl:async()=>{}},
-    "@/shared/notifications/useToast":{useToast:()=>({action:(...args)=>toasts.push(args),error:()=>{}})},
+    "@/shared/notifications/useToast":{useToast:()=>({action:(...args)=>toasts.push(args),info:(...args)=>toasts.push(["info",...args]),error:(...args)=>toasts.push(["error",...args])})},
     "@/app/storage/safeStorage":{safeStorageGet:()=>null,safeStorageSet:()=>{}},
   };
   const source=readFileSync(join(root,"src/features/updater/useAppUpdate.ts"),"utf8");
@@ -35,12 +35,33 @@ test("installed Debian update offers restart rather than another install",async(
   await u.api.restart();assert.equal(u.restarts(),1);assert.equal(u.calls.length,1);
 });
 test("Debian downloads the exact offered release and never invokes AppImage install",async()=>{
-  const u=updater(command=>command==="check_for_update"?info:{path:"/Downloads/update.deb",version:info.version,alreadyInstalled:false});
+  const u=updater((command,args)=>{
+    if(command==="check_for_update")return {...info,downloadSize:10_000_000};
+    if(command==="open_deb_update")return true;
+    args.onEvent.onmessage({event:"Started",data:{contentLength:10_000_000}});
+    args.onEvent.onmessage({event:"Progress",data:{chunkLength:10_000_000}});
+    return {path:"/Downloads/update.deb",version:info.version,alreadyInstalled:false};
+  });
   await u.api.check(true);await u.api.install();
   assert.equal(u.api.status.value,"downloaded");assert.equal(u.api.isVisible.value,true);
   assert.deepEqual(u.calls.map(call=>call.command),["check_for_update","download_deb_update"]);
-  assert.deepEqual(u.calls[1].args,{tag:info.tag,version:info.version});
-  assert.equal(u.restarts(),0);await u.api.openDownloadedPackage();assert.deepEqual(u.opened,["/Downloads/update.deb"]);
+  const {onEvent,...args}=u.calls[1].args;
+  assert.equal(typeof onEvent.onmessage,"function");
+  assert.deepEqual(args,{tag:info.tag,version:info.version});
+  assert.equal(u.api.total.value,10_000_000);
+  assert.equal(u.api.percent.value,100);
+  assert.equal(u.restarts(),0);await u.api.openDownloadedPackage();
+  assert.deepEqual(u.calls.at(-1),{command:"open_deb_update",args:undefined});
+  await u.api.check(true);
+  assert.equal(u.api.status.value,"downloaded");
+});
+test("when no Debian installer opens, the saved path is informational and remains available",async()=>{
+  const u=updater(command=>command==="check_for_update"?info:command==="open_deb_update"?false:{path:"/Downloads/update.deb",version:info.version,alreadyInstalled:false});
+  await u.api.check(true);await u.api.install();await u.toasts[0][2][0].onClick();
+  assert.equal(u.api.status.value,"downloaded");
+  assert.equal(u.toasts[1][0],"info");
+  assert.match(u.toasts[1][1],/\/Downloads\/update.deb/);
+  assert.equal(u.api.errorMessage.value,"");
 });
 test("install detects an update installed since the original check",async()=>{
   const u=updater(command=>command==="check_for_update"?info:{path:null,version:info.version,alreadyInstalled:true});

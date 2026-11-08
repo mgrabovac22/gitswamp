@@ -787,21 +787,11 @@ impl RemoteService {
 
     pub fn reset_branch_to_remote(path: &str, branch: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
-
-        let (object, reference) = repo
-            .revparse_ext(branch)
-            .map_err(|e| e.message().to_string())?;
-
-        repo.checkout_tree(&object, None)
-            .map_err(|e| e.message().to_string())?;
-
-        if let Some(reference) = reference {
-            repo.set_head(reference.name().unwrap_or(""))
-                .map_err(|e| e.message().to_string())?;
-        } else {
-            repo.set_head_detached(object.id())
-                .map_err(|e| e.message().to_string())?;
-        }
+        let local_ref_name = format!("refs/heads/{}", branch);
+        let local_commit = repo
+            .find_reference(&local_ref_name)
+            .and_then(|reference| reference.peel_to_commit())
+            .map_err(|e| format!("Cannot find local branch {}: {}", branch, e.message()))?;
 
         let remote_ref_name = format!("refs/remotes/origin/{}", branch);
         let remote_ref = repo.find_reference(&remote_ref_name).map_err(|e| {
@@ -818,6 +808,10 @@ impl RemoteService {
             .find_commit(remote_oid)
             .map_err(|e| e.message().to_string())?;
 
+        repo.checkout_tree(local_commit.as_object(), None)
+            .map_err(|e| e.message().to_string())?;
+        repo.set_head(&local_ref_name)
+            .map_err(|e| e.message().to_string())?;
         repo.reset(remote_commit.as_object(), git2::ResetType::Hard, None)
             .map_err(|e| e.message().to_string())?;
 
@@ -1082,6 +1076,33 @@ mod tests {
                 .expect("credentialed URL should parse"),
             "https://example.com/owner/repo.git"
         );
+    }
+
+    #[test]
+    fn reset_to_remote_checks_both_refs_before_switching_and_ignores_matching_tags() {
+        let workspace = TestWorkspace::new("reset-remote-exact-refs");
+        let path = workspace.child("repo");
+        let repo = Repository::init(&path).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        let signature = Signature::now("Test", "test@example.com").unwrap();
+        write_file(&path, "notes.txt", "base\n");
+        let base = commit_all(&repo, "Base", &signature);
+        write_file(&path, "notes.txt", "local\n");
+        let local = commit_all(&repo, "Local", &signature);
+        repo.reference("refs/heads/topic", local, false, "test").unwrap();
+        repo.reference("refs/tags/topic", base, false, "test").unwrap();
+
+        assert!(RemoteService::reset_branch_to_remote(path.to_str().unwrap(), "topic").is_err());
+        assert_eq!(repo.head().unwrap().name(), Some("refs/heads/main"));
+        assert_eq!(fs::read_to_string(path.join("notes.txt")).unwrap(), "local\n");
+
+        repo.reference("refs/remotes/origin/topic", base, false, "test").unwrap();
+        RemoteService::reset_branch_to_remote(path.to_str().unwrap(), "topic").unwrap();
+        assert_eq!(repo.head().unwrap().name(), Some("refs/heads/topic"));
+        assert_eq!(repo.refname_to_id("refs/heads/topic").unwrap(), base);
+        assert_eq!(repo.refname_to_id("refs/heads/main").unwrap(), local);
+        assert_eq!(repo.refname_to_id("refs/tags/topic").unwrap(), base);
+        assert_eq!(fs::read_to_string(path.join("notes.txt")).unwrap().trim_end(), "base");
     }
 
     #[test]

@@ -76,6 +76,7 @@ test('normal and amend commits both wait for guard and duplicate submissions can
       './gitCall':{callTauri:async(command,args)=>{calls.push({command,args});return {}; }},
       './secretCommitGuard':{checkCommitSecrets:()=>new Promise(resolve=>finish=resolve)},
       './gitStatusOptimisticUpdates':{},
+      '@/shared/notifications/gitOperationPreview':{publishOperationPreview(){}},
     });
     const refresh=Object.fromEntries(['refreshCommits','refreshStatus','refreshBranches','refreshStashes','refreshRepoInfo'].map(name=>[name,async()=>{}]));
     const toast={loading:()=>1,remove(){},success(){},error(){}};

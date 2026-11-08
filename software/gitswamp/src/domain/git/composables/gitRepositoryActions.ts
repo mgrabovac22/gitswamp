@@ -190,6 +190,7 @@ export function createRepoActions(state: GitState, refresh: RefreshDeps, watcher
     snapshotCurrentRepository();
 
     state.error.value = null;
+    state.diskStatusReady.value = false;
     state.repoPath.value = path;
     state.loadingMore.value = false;
 

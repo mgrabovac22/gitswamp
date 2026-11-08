@@ -45,6 +45,12 @@ try{
  const page=await browser.newPage({viewport:{width:1200,height:900}}), errors=[];
  page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:'+server.httpServer.address().port+'/__secret_test__');
+ const badges=page.getByLabel('Possible secret',{exact:true});
+ await badges.nth(1).waitFor();
+ await badges.nth(0).hover();assert.match(await page.getByRole('tooltip').innerText(),/Password · line 2/);
+ await page.mouse.move(1,1);
+ await badges.nth(1).focus();assert.match(await page.getByRole('tooltip').innerText(),/API token · line 12/);
+ await page.keyboard.press('Escape');assert.equal(await page.getByRole('tooltip').count(),0);
  const input=page.getByPlaceholder('Commit message...', {exact:true});await input.fill('Protect configuration');
  const submit=page.getByRole('button',{name:/^Commit changes/i});
  await submit.click();const dialog=page.getByRole('alertdialog');await dialog.waitFor();

@@ -1,5 +1,7 @@
 import type { CommitFileInfo, CommitInfo, RepoInfo } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
+import { visualiseOperationsEnabled } from "@/shared/config/visualiseOperationsPreferences";
+import { publishOperationPreview, type VisualisedOperation } from "@/shared/notifications/gitOperationPreview";
 
 import { callTauri } from "./gitCall";
 import type { GitState } from "./gitState";
@@ -11,7 +13,14 @@ type RefreshDeps = {
   refreshTags: () => Promise<void>;
 };
 
+type CommitOperationResult = { message: string; sha: string };
+
 export function createHistoryActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
+  function previewCommitOperation(kind: VisualisedOperation, repoPath: string, sourceSha: string, resultSha: string, target: string) {
+    if (state.repoPath.value !== repoPath) return;
+    publishOperationPreview({ kind, repoPath, source: sourceSha.slice(0, 7), sourceSha, target, resultSha });
+  }
+
   async function cherryPick(sha: string) {
     if (!state.repoPath.value) return;
     if (state.repositoryOperation.value) {
@@ -23,12 +32,14 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       return;
     }
     const repoPath = state.repoPath.value;
+    let completedSha: string | undefined;
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading("Loading: cherry-pick in progress...");
       state.loading.value = true;
-      const result = await callTauri<string>("cherry_pick", { path: repoPath, sha });
-      state.terminalOutput.value.push("$ git cherry-pick " + sha.substring(0, 7) + "\n" + (result || "(done)"));
+      const result = await callTauri<CommitOperationResult>("cherry_pick", { path: repoPath, sha });
+      completedSha = result.sha;
+      state.terminalOutput.value.push("$ git cherry-pick " + sha.substring(0, 7) + "\n" + result.message);
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git cherry-pick\nError: " + e);
@@ -38,6 +49,9 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
         await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
         const info = await callTauri<RepoInfo>("get_repo_info", { path: repoPath });
         if (state.repoPath.value === repoPath) state.repoInfo.value = info;
+        if (completedSha === info.head_sha && completedSha) {
+          previewCommitOperation("cherry-pick", repoPath, sha, completedSha, info.current_branch);
+        }
       } catch (error) {
         toast.error("Could not refresh cherry-pick state: " + String(error));
       } finally {
@@ -53,13 +67,16 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
       toast.error("Cannot revert while conflicts exist. Resolve conflicts first.");
       return;
     }
+    const repoPath = state.repoPath.value;
+    const target = state.repoInfo.value?.current_branch || "HEAD";
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading("Loading: reverting commit...");
       state.loading.value = true;
-      const result = await callTauri<string>("revert_commit", { path: state.repoPath.value, sha });
-      state.terminalOutput.value.push("$ git revert " + sha.substring(0, 7) + "\n" + (result || "(done)"));
+      const result = await callTauri<CommitOperationResult>("revert_commit", { path: repoPath, sha });
+      state.terminalOutput.value.push("$ git revert " + sha.substring(0, 7) + "\n" + result.message);
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
+      previewCommitOperation("revert", repoPath, sha, result.sha, target);
     } catch (e) {
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git revert\nError: " + e);
@@ -71,20 +88,31 @@ export function createHistoryActions(state: GitState, refresh: RefreshDeps, toas
     }
   }
 
-  async function resetToCommit(sha: string, mode: string) {
+  async function resetToCommit(sha: string, mode: "soft" | "mixed" | "hard") {
     if (!state.repoPath.value) return;
     if (state.hasConflicts.value) {
       toast.error("Cannot reset while conflicts exist. Resolve conflicts first.");
       return;
     }
+    const repoPath = state.repoPath.value;
     let loadingToastId: number | null = null;
     try {
       loadingToastId = toast.loading(`Loading: reset (${mode}) in progress...`);
       state.loading.value = true;
-      const result = await callTauri<string>("reset_to_commit", { path: state.repoPath.value, sha, mode });
-      state.terminalOutput.value.push("$ git reset --" + mode + " " + sha.substring(0, 7) + "\n" + (result || "(done)"));
+      const result = await callTauri<{ message: string; previousSha: string | null }>("reset_to_commit", {
+        path: repoPath, sha, mode, visualise: visualiseOperationsEnabled(),
+      });
+      state.terminalOutput.value.push("$ git reset --" + mode + " " + sha.substring(0, 7) + "\n" + result.message);
       await Promise.all([refresh.refreshCommits(), refresh.refreshStatus(), refresh.refreshBranches()]);
-      state.repoInfo.value = await callTauri<RepoInfo>("get_repo_info", { path: state.repoPath.value });
+      const info = await callTauri<RepoInfo>("get_repo_info", { path: repoPath });
+      if (state.repoPath.value === repoPath) {
+        state.repoInfo.value = info;
+        if (result.previousSha && info.head_sha === sha && result.previousSha !== sha) {
+          publishOperationPreview({
+            kind: "reset", repoPath, target: info.current_branch, mode, previousSha: result.previousSha, resultSha: sha,
+          });
+        }
+      }
       toast.success(`Reset to ${sha.substring(0, 7)} (${mode})`);
     } catch (e) {
       state.error.value = String(e);

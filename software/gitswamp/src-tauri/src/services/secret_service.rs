@@ -382,10 +382,14 @@ impl SecretService {
     }
 
     pub fn scan(path: &str, staged: bool) -> Result<SecretScan, String> {
-        Self::scan_with_limits(path, staged, Limits::default())
+        Self::scan_with_limits(path, staged, Limits::default(), None)
     }
 
-    fn scan_with_limits(path: &str, staged: bool, limits: Limits) -> Result<SecretScan, String> {
+    pub fn scan_staged_paths(path: &str, paths: &[String]) -> Result<SecretScan, String> {
+        Self::scan_with_limits(path, true, Limits::default(), Some(paths))
+    }
+
+    fn scan_with_limits(path: &str, staged: bool, limits: Limits, paths: Option<&[String]>) -> Result<SecretScan, String> {
         let mut budget = Budget::new(limits);
         let repo = Repository::open(path).map_err(|_| FAILED)?;
         let state = State::read(&repo)?;
@@ -396,7 +400,13 @@ impl SecretService {
             snapshot: state.snapshot.clone(),
             large_files: Vec::new(),
         };
-        for entry in state.index.iter() {
+        let entries: Box<dyn Iterator<Item = IndexEntry> + '_> = match paths {
+            Some(paths) => Box::new(paths.iter().take(limits.entries)
+                .filter(|path| safe_relative(path))
+                .filter_map(|path| state.index.get_path(Path::new(path), 0))),
+            None => Box::new(state.index.iter()),
+        };
+        for entry in entries {
             if !continue_scan(&mut scan, &budget) {
                 break;
             }
@@ -1262,6 +1272,7 @@ mod tests {
                 file_bytes: 4,
                 ..Limits::default()
             },
+            None,
         )
         .unwrap();
         assert!(scan.findings.is_empty());

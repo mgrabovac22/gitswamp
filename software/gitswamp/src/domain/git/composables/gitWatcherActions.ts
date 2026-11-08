@@ -35,6 +35,7 @@ export function createWatcherActions(state: GitState, deps: RefreshDeps) {
       if (repoPath !== state.repoPath.value) return;
 
       const newHash = statusHash(newStatuses);
+      state.diskStatusReady.value = true;
       if (newHash === state.lastStatusHash.value) return;
 
       state.lastStatusHash.value = newHash;
