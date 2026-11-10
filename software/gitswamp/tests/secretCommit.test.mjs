@@ -22,11 +22,12 @@ function harness({report=makeReport(), choice='cancel', enabled=true, current=()
   });
   return {calls,prompts,refreshes,run:()=>checkCommitSecrets('repo',current,async()=>refreshes.push(true))};
 }
-test('secret detector is enabled by default, including unavailable storage',()=>{
+test('secret detector is disabled by default and honors an explicit opt-in',()=>{
   const p=evaluate(read('shared/config/secretDetectorPreferences.ts'));
-  globalThis.localStorage={getItem:()=>null};assert.equal(p.secretDetectorEnabled(),true);
-  globalThis.localStorage={getItem:()=>{throw Error('storage');}};assert.equal(p.secretDetectorEnabled(),true);
+  globalThis.localStorage={getItem:()=>null};assert.equal(p.secretDetectorEnabled(),false);
+  globalThis.localStorage={getItem:()=>{throw Error('storage');}};assert.equal(p.secretDetectorEnabled(),false);
   globalThis.localStorage={getItem:()=> 'false'};assert.equal(p.secretDetectorEnabled(),false);
+  globalThis.localStorage={getItem:()=> 'true'};assert.equal(p.secretDetectorEnabled(),true);
 });
 test('clean staged scan is silent and carries exact snapshot to commit',async()=>{
   const h=harness({report:{findings:[],skipped:[],snapshot:'checked-tree'}});
@@ -76,6 +77,7 @@ test('normal and amend commits both wait for guard and duplicate submissions can
       './gitCall':{callTauri:async(command,args)=>{calls.push({command,args});return {}; }},
       './secretCommitGuard':{checkCommitSecrets:()=>new Promise(resolve=>finish=resolve)},
       './gitStatusOptimisticUpdates':{},
+      '@/shared/notifications/gitOperationPreview':{publishOperationPreview(){}},
     });
     const refresh=Object.fromEntries(['refreshCommits','refreshStatus','refreshBranches','refreshStashes','refreshRepoInfo'].map(name=>[name,async()=>{}]));
     const toast={loading:()=>1,remove(){},success(){},error(){}};

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, computed } from "vue";
+import { reactive, ref, computed, nextTick, watch } from "vue";
 import {
   Search,
   GitBranch,
@@ -15,12 +15,21 @@ import {
   CircleDot,
   FileCode2,
   LifeBuoy,
+  Clipboard,
+  Columns3,
+  GitBranchPlus,
+  GitMerge,
+  GitPullRequestArrow,
+  Link2,
+  PencilLine,
+  RotateCcw,
 } from "lucide-vue-next";
 import RepositorySidebarSection from "./RepositorySidebarSection.vue";
 import AppUpdatePanel from "@/features/updater/AppUpdatePanel.vue";
 import type { BranchInfo, StashInfo, TagInfo, IssueInfo, PullRequestInfo, GistInfo, LostCommitInfo } from "@/types";
 
 const props = defineProps<{
+  repoPath?: string;
   branches: BranchInfo[];
   remoteBranches: BranchInfo[];
   currentBranch: string;
@@ -45,7 +54,16 @@ const emit = defineEmits<{
   checkoutRemote: [branchName: string];
   checkoutTag: [sha: string];
   createBranch: [name: string];
+  createBranchAt: [ref: string];
+  openBranchWorkspace: [branchRef: string];
+  renameBranch: [name: string];
+  requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
+  requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
+  setUpstream: [branch: string, upstream: string];
+  resetBranchToRemote: [name: string];
   deleteBranch: [name: string];
+  deleteRemoteBranch: [name: string];
+  deleteBranchAndRemote: [name: string];
   stashPop: [index: number];
   stashApply: [index: number];
   stashDrop: [index: number];
@@ -87,6 +105,93 @@ const issueSearch = ref("");
 const pullRequestSearch = ref("");
 const showNewBranch = ref(false);
 const newBranchName = ref("");
+const branchMenu = ref<{ branch: BranchInfo; x: number; y: number; trigger: HTMLElement } | null>(null);
+const branchMenuElement = ref<HTMLElement | null>(null);
+
+function openBranchMenu(event: MouseEvent | KeyboardEvent, branch: BranchInfo) {
+  if (event instanceof KeyboardEvent && event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const trigger = event.currentTarget as HTMLElement;
+  const bounds = trigger.getBoundingClientRect();
+  const x = event instanceof MouseEvent ? event.clientX : bounds.left;
+  const y = event instanceof MouseEvent ? event.clientY : bounds.bottom;
+  const menu = { branch, x, y, trigger };
+  branchMenu.value = menu;
+  void nextTick(() => {
+    const panel = branchMenuElement.value;
+    if (!panel || branchMenu.value?.trigger !== trigger) return;
+    branchMenu.value.x = Math.max(8, Math.min(x, window.innerWidth - panel.offsetWidth - 8));
+    branchMenu.value.y = Math.max(8, Math.min(y, window.innerHeight - panel.offsetHeight - 8));
+    panel.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true });
+  });
+}
+
+watch(() => props.repoPath, () => { branchMenu.value = null; });
+watch(() => Boolean(branchMenu.value), (open, _, onCleanup) => {
+  if (!open) return;
+  const dismiss = () => { branchMenu.value = null; };
+  const outside = (event: PointerEvent) => {
+    if (!branchMenuElement.value?.contains(event.target as Node)) dismiss();
+  };
+  window.addEventListener("pointerdown", outside);
+  window.addEventListener("resize", dismiss);
+  onCleanup(() => {
+    window.removeEventListener("pointerdown", outside);
+    window.removeEventListener("resize", dismiss);
+  });
+});
+
+function onBranchMenuKey(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    branchMenu.value?.trigger.focus({ preventScroll: true });
+    branchMenu.value = null;
+    return;
+  }
+  if (event.key === "Tab") { branchMenu.value = null; return; }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const items = Array.from(branchMenuElement.value?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+  if (!items.length) return;
+  event.preventDefault();
+  const index = items.indexOf(document.activeElement as HTMLButtonElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+    : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+  items[next].focus();
+}
+
+const canIntegrateMenuBranch = computed(() => {
+  const branch = branchMenu.value?.branch;
+  return Boolean(branch && props.currentBranch && props.currentBranch !== "HEAD"
+    && (branch.is_remote ? branch.name.startsWith("origin/") && branch.name !== `origin/${props.currentBranch}` : branch.name !== props.currentBranch));
+});
+
+const menuBranchHasOrigin = computed(() => {
+  const branch = branchMenu.value?.branch;
+  return !!branch && !branch.is_remote && props.remoteBranches.some(remote => remote.name === `origin/${branch.name}`);
+});
+
+function branchMenuAction(action: "checkout" | "create" | "workspace" | "rename" | "merge" | "rebase" | "upstream" | "reset" | "copy" | "delete" | "delete-both") {
+  const branch = branchMenu.value?.branch;
+  if (!branch) return;
+  const hasOrigin = menuBranchHasOrigin.value;
+  branchMenu.value = null;
+  const ref = `${branch.is_remote ? "refs/remotes/" : "refs/heads/"}${branch.name}`;
+  if (action === "checkout") emit("checkout", branch.is_remote ? ref : branch.name);
+  if (action === "create") emit("createBranchAt", ref);
+  if (action === "workspace") emit("openBranchWorkspace", ref);
+  if (action === "rename" && !branch.is_remote) emit("renameBranch", branch.name);
+  const source = branch.is_remote ? branch.name.slice("origin/".length) : branch.name;
+  if (action === "merge") emit("requestMerge", { source, sourceRemote: branch.is_remote, target: props.currentBranch });
+  if (action === "rebase") emit("requestRebase", { source: props.currentBranch, sourceRemote: false, target: source });
+  if (action === "upstream" && hasOrigin) emit("setUpstream", branch.name, `origin/${branch.name}`);
+  if (action === "reset" && hasOrigin) emit("resetBranchToRemote", branch.name);
+  if (action === "copy") void navigator.clipboard.writeText(branch.name).catch(() => {});
+  if (action === "delete" && !branch.is_remote) emit("deleteBranch", branch.name);
+  if (action === "delete" && branch.is_remote && branch.name.startsWith("origin/")) emit("deleteRemoteBranch", source);
+  if (action === "delete-both" && hasOrigin) emit("deleteBranchAndRemote", branch.name);
+}
 
 function toggleSection(section: keyof RepositorySidebarSections) {
   expandedSections[section] = !expandedSections[section];
@@ -321,17 +426,19 @@ function issueStateClass(issue: IssueInfo): string {
           </div>
         </div>
 
-        <button
+        <div
           v-for="branch in filteredBranches(branches)"
           :key="branch.name"
-          @click="emit('checkout', branch.name)"
           :class="[
-            'w-full flex items-center justify-start gap-2 px-4 py-1 pl-8 text-left text-[11px] transition-all group',
+            'w-full flex items-center pr-4 text-left text-[11px] transition-all group',
             branch.is_head
               ? 'text-[var(--sidebar-primary)] bg-[var(--sidebar-primary)]/10 font-medium'
               : 'text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]',
           ]"
         >
+          <button type="button" class="flex flex-1 min-w-0 items-center gap-2 py-1 pl-8 text-left text-[11px]"
+            aria-haspopup="menu" @click="emit('checkout', branch.name)"
+            @contextmenu="openBranchMenu($event, branch)" @keydown="openBranchMenu($event, branch)">
           <span class="truncate flex-1 text-left">{{ branch.name }}</span>
 
           <span class="flex items-center gap-1 flex-shrink-0">
@@ -354,15 +461,16 @@ function issueStateClass(issue: IssueInfo): string {
             <span v-if="branch.ahead === 0 && branch.behind === 0" class="text-[9px] text-[var(--muted-foreground)]">✓</span>
           </span>
           <span v-else class="text-[9px] text-[var(--muted-foreground)] italic flex-shrink-0">local</span>
+          </button>
           <button
             v-if="!branch.is_head"
             @click.stop="emit('deleteBranch', branch.name)"
-            class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 transition-all flex-shrink-0"
+            class="ml-2 p-0.5 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[#ef4444]/20 transition-all flex-shrink-0"
             title="Delete branch"
           >
             <Trash2 class="w-2.5 h-2.5 text-[var(--muted-foreground)] hover:text-[#ef4444]" />
           </button>
-        </button>
+        </div>
       </RepositorySidebarSection>
 
       <RepositorySidebarSection
@@ -375,7 +483,9 @@ function issueStateClass(issue: IssueInfo): string {
         <button
           v-for="branch in filteredBranches(remoteBranches)"
           :key="branch.name"
+          aria-haspopup="menu"
           @click="emit('checkoutRemote', normalizeBranchName(branch.name))"
+          @contextmenu="openBranchMenu($event, branch)" @keydown="openBranchMenu($event, branch)"
           class="w-full flex items-center justify-start gap-2 px-4 py-1 pl-10 text-left text-[11px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)] transition-all"
         >
           <span class="truncate flex-1 text-left">{{ branch.name }}</span>
@@ -656,4 +766,31 @@ function issueStateClass(issue: IssueInfo): string {
 
     <AppUpdatePanel />
   </div>
+  <Teleport to="body">
+    <div v-if="branchMenu" ref="branchMenuElement" role="menu" :aria-label="`Branch ${branchMenu.branch.name}`"
+      class="branch-menu" :style="{ left: `${branchMenu.x}px`, top: `${branchMenu.y}px` }"
+      @keydown="onBranchMenuKey" @contextmenu.prevent>
+      <div class="branch-menu-name" :title="branchMenu.branch.name">{{ branchMenu.branch.name }}</div>
+      <button role="menuitem" @click="branchMenuAction('checkout')"><GitBranch />Checkout branch</button>
+      <button role="menuitem" @click="branchMenuAction('create')"><GitBranchPlus />Create branch here</button>
+      <button v-if="!branchMenu.branch.is_remote || !branchMenu.branch.name.endsWith('/HEAD')" role="menuitem" @click="branchMenuAction('workspace')"><Columns3 />Open Branch Workspace</button>
+      <button v-if="!branchMenu.branch.is_remote" role="menuitem" @click="branchMenuAction('rename')"><PencilLine />Rename branch</button>
+      <button v-if="canIntegrateMenuBranch" role="menuitem" @click="branchMenuAction('merge')"><GitMerge />Merge into current branch</button>
+      <button v-if="canIntegrateMenuBranch && !branchMenu.branch.is_remote" role="menuitem" @click="branchMenuAction('rebase')"><GitPullRequestArrow />Rebase current onto this branch</button>
+      <button v-if="menuBranchHasOrigin" role="menuitem" @click="branchMenuAction('upstream')"><Link2 />Set upstream</button>
+      <button v-if="menuBranchHasOrigin" role="menuitem" @click="branchMenuAction('reset')"><RotateCcw />Reset branch to remote</button>
+      <button role="menuitem" @click="branchMenuAction('copy')"><Clipboard />Copy branch name</button>
+      <button v-if="!branchMenu.branch.is_remote || branchMenu.branch.name.startsWith('origin/')" role="menuitem" class="branch-menu-delete" @click="branchMenuAction('delete')"><Trash2 />{{ branchMenu.branch.is_remote ? 'Delete remote branch' : 'Delete local branch' }}</button>
+      <button v-if="menuBranchHasOrigin" role="menuitem" class="branch-menu-delete" @click="branchMenuAction('delete-both')"><Trash2 />Delete local and remote</button>
+    </div>
+  </Teleport>
 </template>
+
+<style scoped>
+.branch-menu { position: fixed; z-index: 120; width: min(236px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--popover); color: var(--foreground); box-shadow: 0 8px 24px #0004; }
+.branch-menu-name { margin-bottom: 3px; padding: 4px 7px 6px; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-menu button { display: flex; width: 100%; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 4px; text-align: left; font-size: 11px; }
+.branch-menu button:hover, .branch-menu button:focus-visible { background: var(--accent); outline: none; }
+.branch-menu button svg { width: 14px; height: 14px; flex: none; }
+.branch-menu-delete { color: var(--destructive); }
+</style>

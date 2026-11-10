@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { join, sep } from "@tauri-apps/api/path";
+import { defaultRepositoryDirectory } from "./repositoryDirectory";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Monitor,
@@ -27,7 +29,7 @@ const emit = defineEmits<{
 
 const sources = [
   { id: "local", label: "Local Only", icon: Monitor, color: "#10b981", desc: "Initialize locally" },
-  { id: "github", label: "GitHub", icon: Github, color: "#ffffff", desc: "Push to GitHub" },
+  { id: "github", label: "GitHub", icon: Github, color: "var(--foreground)", desc: "Push to GitHub" },
   { id: "github-enterprise", label: "GitHub Enterprise", icon: Github, color: "#6e7681", desc: "Enterprise server" },
   { id: "gitlab", label: "GitLab", icon: GitBranch, color: "#fc6d26", desc: "Push to GitLab" },
   { id: "gitlab-self", label: "GitLab Self-Hosted", icon: GitBranch, color: "#e24329", desc: "Self-managed" },
@@ -65,7 +67,7 @@ const licenseOptions = [
 
 const activeSource = ref<string | null>(null);
 const repoName = ref("");
-const initPath = ref(String.raw`C:\Repozitoriji`);
+const initPath = ref("");
 const branchName = ref("main");
 const gitignoreTemplate = ref("None");
 const licenseTemplate = ref("None");
@@ -316,8 +318,8 @@ async function saveToken() {
 }
 
 const fullPath = computed(() => {
-  const base = initPath.value.replace(/[/\\]$/, "");
-  return repoName.value ? `${base}\\${repoName.value}` : `${base}\\`;
+  if (!initPath.value.trim()) return "";
+  return `${initPath.value.trim().replace(/[/\\]+$/, "")}${sep()}${repoName.value.trim()}`;
 });
 
 async function browsePath() {
@@ -325,6 +327,7 @@ async function browsePath() {
     const selected = await openDialog({
       directory: true,
       multiple: false,
+      defaultPath: initPath.value || undefined,
       title: "Select folder to initialize in",
     });
     if (selected) {
@@ -333,19 +336,30 @@ async function browsePath() {
   } catch {}
 }
 
-function onInit() {
+async function onInit() {
   if (!repoName.value.trim() || !initPath.value.trim()) return;
   initializing.value = true;
   initError.value = null;
-  emit("init", fullPath.value, branchName.value.trim() || "main");
+  try {
+    const path = await join(initPath.value.trim(), repoName.value.trim());
+    if (props.visible) emit("init", path, branchName.value.trim() || "main");
+  } catch {
+    initError.value = "Could not build the repository path.";
+    initializing.value = false;
+  }
 }
 
 watch(
   () => props.visible,
-  (visible) => {
+  async (visible, _previous, onCleanup) => {
     if (visible) {
       bitbucketUsernameInput.value = storedBitbucketUsername();
       seedDomainFor(activeSource.value);
+      let current = true;
+      onCleanup(() => { current = false; });
+      const previousPath = initPath.value;
+      const directory = await defaultRepositoryDirectory();
+      if (current && initPath.value === previousPath) initPath.value = directory;
     } else {
       activeSource.value = null;
       resetConnectState();
@@ -353,6 +367,7 @@ watch(
       initializing.value = false;
     }
   },
+  { immediate: true },
 );
 </script>
 
@@ -384,7 +399,7 @@ watch(
                 : 'border-[var(--border)]/50 opacity-50 cursor-not-allowed'
             ]"
           >
-            <div class="w-10 h-10 rounded-xl flex items-center justify-center transition-all" :class="isProviderSupported(src.id) ? 'group-hover:scale-110' : ''" :style="{ backgroundColor: src.color + '15' }">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center transition-all" :class="isProviderSupported(src.id) ? 'group-hover:scale-110' : ''" :style="{ backgroundColor: `color-mix(in srgb, ${src.color} 10%, transparent)` }">
               <component :is="src.icon" class="w-5 h-5" :style="{ color: src.color }" />
             </div>
             <div class="text-center">
@@ -509,10 +524,11 @@ watch(
             </div>
 
             <div class="flex items-center gap-3">
-              <label class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">Initialize in</label>
+              <label for="init-repository-directory" class="text-xs text-[var(--muted-foreground)] w-28 text-right flex-shrink-0">Initialize in</label>
               <div class="flex-1 flex gap-2">
                 <input
                   v-model="initPath"
+                  id="init-repository-directory"
                   class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
                 />
                 <button

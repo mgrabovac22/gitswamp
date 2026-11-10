@@ -1,5 +1,6 @@
 use crate::models::{BinaryDiffInfo, FileBlameLine, FileDiff, StagedDiffSummary};
 use crate::services::git_service::GitService;
+use crate::services::worktree_service::validate_checkout;
 
 #[tauri::command]
 pub async fn get_working_diff(
@@ -129,8 +130,10 @@ pub async fn save_file_content(
     path: String,
     file_path: String,
     content: String,
+    expected_branch: Option<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        validate_checkout(&path, expected_branch.as_deref())?;
         GitService::save_file_content(&path, &file_path, &content)
     })
     .await
@@ -143,8 +146,10 @@ pub async fn revert_hunk(
     file_path: String,
     hunk_index: usize,
     staged: bool,
+    expected_branch: Option<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        validate_checkout(&path, expected_branch.as_deref())?;
         GitService::revert_hunk(&path, &file_path, hunk_index, staged)
     })
     .await
@@ -152,8 +157,9 @@ pub async fn revert_hunk(
 }
 
 #[tauri::command]
-pub async fn stage_hunk(path: String, file_path: String, hunk_index: usize) -> Result<(), String> {
+pub async fn stage_hunk(path: String, file_path: String, hunk_index: usize, expected_branch: Option<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        validate_checkout(&path, expected_branch.as_deref())?;
         GitService::stage_hunk(&path, &file_path, hunk_index)
     })
     .await
@@ -165,8 +171,10 @@ pub async fn unstage_hunk(
     path: String,
     file_path: String,
     hunk_index: usize,
+    expected_branch: Option<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        validate_checkout(&path, expected_branch.as_deref())?;
         GitService::unstage_hunk(&path, &file_path, hunk_index)
     })
     .await

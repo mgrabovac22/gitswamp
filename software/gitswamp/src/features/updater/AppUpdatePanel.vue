@@ -60,6 +60,7 @@ function formatBytes(bytes: number): string {
 
           <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5 truncate">
             v{{ updateInfo.currentVersion }} → v{{ updateInfo.version }}
+            <span v-if="updateInfo.debInstallation && updateInfo.downloadSize"> · {{ formatBytes(updateInfo.downloadSize) }} (.deb)</span>
           </div>
 
           <p
@@ -106,7 +107,7 @@ function formatBytes(bytes: number): string {
             >
               <RotateCcw v-if="status === 'installed'" class="w-3 h-3" />
               <ArrowDownToLine v-else class="w-3 h-3" />
-              {{ status === 'installed' ? 'Restart' : status === 'downloaded' ? 'Open .deb' : updateInfo.debInstallation ? 'Download .deb' : 'Install' }}
+              {{ status === 'installed' ? 'Restart' : status === 'downloaded' ? 'Open installer' : updateInfo.debInstallation ? 'Download .deb' : 'Install' }}
             </button>
             <button
               @click="dismiss"

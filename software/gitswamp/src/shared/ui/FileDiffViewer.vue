@@ -28,6 +28,7 @@ const props = defineProps<{
   staged?: boolean;
   fallbackStatus?: string | null;
   fallbackOldPath?: string | null;
+  expectedBranch?: string;
 }>();
 
 const emit = defineEmits<{
@@ -57,6 +58,7 @@ const splitPaneRefs = shallowRef(new Map<string, HTMLElement>());
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
+defineExpose({ hasUnsavedChanges, saving });
 const fileJourneyOpen = ref(false);
 const highlightedLineCache = shallowRef(new Map<string, string>());
 const toast = useToast();
@@ -1199,6 +1201,7 @@ async function saveFile() {
   try {
     await invoke("save_file_content", {
       path: props.repoPath,
+      expectedBranch: props.expectedBranch,
       filePath: props.filePath,
       content,
     });
@@ -1225,6 +1228,7 @@ async function revertHunk(hunkIdx: number) {
   try {
     await invoke("revert_hunk", {
       path: props.repoPath,
+      expectedBranch: props.expectedBranch,
       filePath: props.filePath,
       hunkIndex: hunkIdx,
       staged: props.staged ?? false,
@@ -1241,6 +1245,7 @@ async function stageHunk(hunkIdx: number) {
   try {
     await invoke("stage_hunk", {
       path: props.repoPath,
+      expectedBranch: props.expectedBranch,
       filePath: props.filePath,
       hunkIndex: hunkIdx,
     });
@@ -1256,6 +1261,7 @@ async function unstageHunk(hunkIdx: number) {
   try {
     await invoke("unstage_hunk", {
       path: props.repoPath,
+      expectedBranch: props.expectedBranch,
       filePath: props.filePath,
       hunkIndex: hunkIdx,
     });

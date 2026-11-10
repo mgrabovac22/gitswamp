@@ -16,7 +16,7 @@ pub fn create_branch(
     path: String,
     name: String,
     start_point: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     GitService::create_branch(&path, &name, start_point.as_deref())
 }
 

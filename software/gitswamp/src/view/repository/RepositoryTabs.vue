@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
-import { Folder, Plus, X, Home, Menu, Info } from "lucide-vue-next";
+import { Folder, GitBranch, Plus, X, Home, Menu, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
 import type { AppHelpSection } from "@/features/shell/keyboardShortcuts";
 import type { RepoInfo } from "@/types";
+import type { RepositoryTab } from "@/features/repository/tabs/repositoryTabs.types";
 import type { ToolId } from "@/features/toolbox/toolboxStorage";
 import { APP_VERSION } from "@/constants/app";
 
@@ -12,7 +13,7 @@ const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDia
 const ToolsDialog = defineAsyncComponent(() => import("@/features/toolbox/ToolsDialog.vue"));
 
 type MenuSection = "file" | "edit" | "view" | "tools" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client" | "branch-workspace";
 
 interface MenuAction {
   id: string;
@@ -24,14 +25,16 @@ interface MenuAction {
 }
 
 const props = defineProps<{
-  tabs: { id: string; repo: RepoInfo | null; label: string }[];
+  tabs: RepositoryTab[];
   activeTabId: string;
   canReopenClosedTab?: boolean;
+  workspaceViewOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
   selectTab: [id: string];
   closeTab: [id: string];
+  closeWorkspaceView: [];
   newTab: [];
   reopenClosedTab: [];
   openRepository: [];
@@ -154,11 +157,11 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
     },
     {
       id: "close-tab",
-      label: "Close Current Tab",
-      description: "Close the active tab and keep other repositories open.",
+      label: props.workspaceViewOpen ? "Close Branch Workspace" : "Close Current Tab",
+      description: props.workspaceViewOpen ? "Return to the repository graph." : "Close the active tab and keep other repositories open.",
       shortcut: "Ctrl+W",
       disabled: !canCloseActiveTab.value,
-      run: () => emit("closeTab", props.activeTabId),
+      run: () => props.workspaceViewOpen ? emit("closeWorkspaceView") : emit("closeTab", props.activeTabId),
     },
     {
       id: "reopen-closed-tab",
@@ -183,7 +186,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       label: "Copy Repository Path",
       description: "Copy the full active repository path to clipboard.",
       shortcut: "Ctrl+Shift+C",
-      disabled: !hasActiveRepo.value,
+      disabled: !hasActiveRepo.value || props.workspaceViewOpen,
       run: copyActiveRepoPath,
     },
     {
@@ -191,7 +194,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       label: "Refresh Repository",
       description: "Reload status, branches and commits from git.",
       shortcut: "Ctrl+Shift+R",
-      disabled: !hasActiveRepo.value,
+      disabled: !hasActiveRepo.value || props.workspaceViewOpen,
       run: () => emit("refreshRepository"),
     },
     {
@@ -199,7 +202,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       label: "Open in VS Code",
       description: "Open the current repository in Visual Studio Code.",
       shortcut: "Ctrl+Shift+O",
-      disabled: !hasActiveRepo.value,
+      disabled: !hasActiveRepo.value || props.workspaceViewOpen,
       run: () => emit("openInVsCode"),
     },
   ],
@@ -209,6 +212,7 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       label: "Toggle Terminal",
       description: "Show or hide the integrated terminal panel.",
       shortcut: "Ctrl+`",
+      disabled: props.workspaceViewOpen,
       run: () => emit("toggleTerminal"),
     },
     {
@@ -242,6 +246,13 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Alt+4",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "time-machine"),
+    },
+    {
+      id: "view-branch-workspace",
+      label: "Branch Workspace",
+      description: "Work on branches side by side",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "branch-workspace"),
     },
     {
       id: "view-fast-scripts",
@@ -548,6 +559,7 @@ onUnmounted(() => {
       <button
         v-for="tab in tabs"
         :key="tab.id"
+        :aria-current="activeTabId === tab.id ? 'page' : undefined"
         @click="emit('selectTab', tab.id)"
         @mousedown.middle.prevent.stop="closeTabWithMiddleClick(tab)"
         :class="[
@@ -558,10 +570,12 @@ onUnmounted(() => {
         ]"
       >
         <Home v-if="!tab.repo" class="w-3 h-3 text-[var(--primary)] flex-shrink-0" />
+        <GitBranch v-else-if="tab.worktree" class="w-3 h-3 text-[var(--primary)] flex-shrink-0" />
         <Folder v-else class="w-3 h-3 text-[var(--primary)] flex-shrink-0" />
         <span class="truncate">{{ tab.label }}</span>
         <button
           v-if="tab.repo || tabs.length > 1"
+          :title="tab.worktree ? `Close ${tab.label} worktree tab` : `Close ${tab.label} tab`"
           @click.stop="emit('closeTab', tab.id)"
           class="ml-1 p-0.5 rounded hover:bg-[#ef4444]/20 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
         >

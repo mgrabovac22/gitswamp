@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import TitleBar from "@/view/shell/TitleBar.vue";
 import SecretCommitDialog from "@/shared/ui/SecretCommitDialog.vue";
+import ConflictAppearanceDialog from "@/features/repository/ConflictAppearanceDialog.vue";
+import { useConflictVisualisation } from "@/features/repository/useConflictVisualisation";
+import { useOperationVisualisation } from "@/features/repository/useOperationVisualisation";
 import AppHeader from "@/view/shell/AppHeader.vue";
 import CommandPalette from "@/view/shell/CommandPalette.vue";
 import ThemeAmbience from "@/view/shell/ThemeAmbience.vue";
@@ -21,11 +24,14 @@ import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
 import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
 import { useToast } from "@/shared/notifications/useToast";
+import { publishOperationPreview } from "@/shared/notifications/gitOperationPreview";
 import { useRepositoryOperationNotice } from "@/shared/notifications/useRepositoryOperationNotice";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import { clearDiffViewerCaches } from "@/shared/config/diffViewCache";
 import { handleRepositoryTabShortcut } from "@/features/repository/tabs/repositoryTabShortcuts";
 import { useRepositoryTabs } from "@/features/repository/tabs/useRepositoryTabs";
+import { isOriginalWorktree, sameWorkspacePath, type WorkspaceLocation, type WorkspaceRemovalRequest } from "@/features/repository/workspace/branchWorkspaceTypes";
+import { useWorktreeRemoval } from "@/features/repository/workspace/useWorktreeRemoval";
 import { dispatchHttpClientCommand, type HttpClientCommand } from "@/features/repository/http-client/httpClientCommands";
 import { useRecentRepositories } from "@/features/repository/recent/useRecentRepositories";
 import { useAppLogs } from "@/features/shell/useAppLogs";
@@ -90,6 +96,13 @@ import type {
 } from "@/types";
 
 const git = useGit();
+const { preview: conflictPreview, close: closeConflictPreview } = useConflictVisualisation(
+  () => git.repoPath.value, () => git.diskStatusReady.value, () => git.conflictFiles.value,
+);
+const { preview: operationPreview, close: closeOperationPreview } = useOperationVisualisation(
+  () => git.repoPath.value, () => Boolean(conflictPreview.value) || git.hasConflicts.value,
+);
+const OperationVisualisationDialog = defineAsyncComponent(() => import("@/features/repository/OperationVisualisationDialog.vue"));
 const toast = useToast();
 const PickaxeSearchPanel = defineAsyncComponent(() => import("@/features/repository/pickaxe/PickaxeSearchPanel.vue"));
 const { scheduleDestructiveAction } = useUndoableDestructiveAction(() => git.destructiveContext.value, () => !git.loading.value);
@@ -126,13 +139,12 @@ const {
   closeTab,
   newTab,
   reopenClosedTab,
-  closeActiveTab,
   setActiveTabRepository,
 } = useRepositoryTabs({
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client" | "branch-workspace";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -185,6 +197,12 @@ interface CloneProgressEventPayload {
 }
 
 const historyViewMode = ref<HistoryViewMode>("graph");
+const workspaceViewOpen = computed(() => historyViewMode.value === "branch-workspace" && !isLanding.value);
+const workspaceViewBusy = ref(false);
+const removedWorktree = ref<{ path: string } | null>(null);
+const WorktreeRemovalDialog = defineAsyncComponent(() => import("@/features/repository/workspace/WorktreeRemovalDialog.vue"));
+const worktreeRemoval = useWorktreeRemoval(onWorktreeRemoved);
+const { pending: pendingWorktreeRemoval, busy: removingWorktree, error: worktreeRemovalError } = worktreeRemoval;
 const timeMachineFocusSha = ref<string | null>(null);
 const showCloneDialog = ref(false);
 const showInitDialog = ref(false);
@@ -2878,15 +2896,17 @@ function runHttpCommand(command: HttpClientCommand) {
 }
 
 function setHistoryViewMode(mode: HistoryViewMode) {
+  const leavingWorkspaces = historyViewMode.value === "branch-workspace" && mode !== "branch-workspace";
+  if (leavingWorkspaces && workspaceViewBusy.value) return;
   historyViewMode.value = mode;
 
   if (mode !== "time-machine") {
     timeMachineFocusSha.value = null;
   }
 
-  if (mode !== "graph") {
+  if (mode !== "graph") showDiffViewer.value = false;
+  if (mode !== "graph" && mode !== "branch-workspace") {
     detailsPanelCollapsed.value = true;
-    showDiffViewer.value = false;
     viewingWorkingChanges.value = false;
     viewingStash.value = false;
     git.selectedCommit.value = null;
@@ -2898,7 +2918,79 @@ function setHistoryViewMode(mode: HistoryViewMode) {
   if (mode !== "conflict-resolve") {
     conflictResolverPath.value = "";
   }
+  if (leavingWorkspaces && git.repoPath.value) {
+    void Promise.all([git.refreshRepoInfo(), git.refreshStatus(), git.refreshCommits(), git.refreshBranches()]);
+  }
 }
+
+async function openWorkspaceRepository(location: WorkspaceLocation) {
+  if (workspaceViewBusy.value) return;
+  const sourcePath = git.repoPath.value;
+  const existing = tabs.value.find(tab => sameWorkspacePath(tab.path, location.path));
+  const tag = isOriginalWorktree(sourcePath, location) ? undefined : { sourcePath, branch: location.branch };
+  setHistoryViewMode("graph");
+  if (existing) {
+    if (tag) { existing.worktree = tag; existing.label = tag.branch; }
+    selectTab(existing.id);
+    return;
+  }
+  newTab();
+  const id = activeTabId.value;
+  await openRepo(location.path);
+  const opened = tabs.value.find(tab => tab.id === id && sameWorkspacePath(tab.path, location.path));
+  if (opened && tag) { opened.worktree = tag; opened.label = tag.branch; }
+}
+
+function selectRepositoryTab(id: string) {
+  if (workspaceViewBusy.value || pendingWorktreeRemoval.value) return;
+  selectTab(id);
+}
+
+function requestWorkspaceRemoval(request: WorkspaceRemovalRequest) {
+  if (workspaceViewBusy.value || (git.loading.value && sameWorkspacePath(git.repoPath.value, request.location.path))) return;
+  worktreeRemoval.requestRemoval(request);
+}
+
+function closeRepositoryTab(id: string) {
+  if (workspaceViewBusy.value || pendingWorktreeRemoval.value) return;
+  const tab = tabs.value.find(item => item.id === id);
+  if (tab?.worktree) {
+    requestWorkspaceRemoval({
+      sourcePath: tab.worktree.sourcePath,
+      location: { path: tab.path, branch: tab.repo?.current_branch || tab.worktree.branch, isPrimary: false },
+      finish: () => { if (tabs.value.some(item => item.id === id)) closeTab(id); },
+    });
+    return;
+  }
+  if (workspaceViewOpen.value && id === activeTabId.value) setHistoryViewMode("graph");
+  closeTab(id);
+}
+
+function closeCurrentViewOrTab() {
+  if (workspaceViewOpen.value) setHistoryViewMode("graph");
+  else closeRepositoryTab(activeTabId.value);
+}
+
+function onWorktreeRemoved({ sourcePath, location }: WorkspaceRemovalRequest) {
+  const sourceTab = tabs.value.find(tab => sameWorkspacePath(tab.path, sourcePath));
+  if (sourceTab && sameWorkspacePath(git.repoPath.value, location.path)) selectTab(sourceTab.id);
+  for (const tab of [...tabs.value]) if (sameWorkspacePath(tab.path, location.path)) closeTab(tab.id, false);
+  for (const recent of recentRepos.value) if (sameWorkspacePath(recent.path, location.path)) removeRecent(recent.path);
+  const layoutKey = `gitswamp-branch-workspaces:${sourcePath}`;
+  try {
+    const layout: unknown = JSON.parse(safeStorageGet(layoutKey) ?? "null");
+    if (Array.isArray(layout)) safeStorageSet(layoutKey, JSON.stringify(layout.filter(ref =>
+      typeof ref === "string" && ref !== `refs/heads/${location.branch}`
+      && ref.replace(/^refs\/remotes\/[^/]+\//, "") !== location.branch)));
+  } catch { /* An invalid saved layout is ignored. */ }
+  removedWorktree.value = { path: location.path };
+  if (sameWorkspacePath(git.repoPath.value, sourcePath)) void Promise.all([git.refreshCommits(), git.refreshBranches()]);
+  toast.success(`Removed worktree for ${location.branch}`);
+}
+
+watch(() => git.repoPath.value, () => {
+  if (historyViewMode.value === "branch-workspace") historyViewMode.value = "graph";
+}, { flush: "sync" });
 
 function dispatchFocusCommitSearch() {
   globalThis.dispatchEvent(new Event("gitswamp-focus-commit-search"));
@@ -3283,7 +3375,7 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
   const hasStaged = git.stagedFiles.value.length > 0;
   const hasChanges = hasUnstaged || hasStaged;
 
-  return [
+  const actions: CommandPaletteAction[] = [
     {
       id: "stage-all",
       label: "Stage all",
@@ -3533,6 +3625,14 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       run: () => setHistoryViewMode("time-machine"),
     },
     {
+      id: "view-branch-workspace",
+      label: "Branch Workspace",
+      description: "Open up to four branch worktrees side by side.",
+      keywords: ["branches", "worktrees"],
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("branch-workspace"),
+    },
+    {
       id: "view-fast-scripts",
       label: "Fast Scripts",
       description: "Save and run terminal, Python and custom commands with one click.",
@@ -3631,6 +3731,13 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       run: () => setHistoryViewMode("lost-found"),
     }] : []),
   ];
+  if (!workspaceViewOpen.value) return actions;
+  const originalOnly = new Set([
+    "stage-all", "unstage-all", "discard-unstaged", "working-changes", "fetch", "pull", "push",
+    "checkout-main", "checkout-master", "checkout-develop", "create-branch", "stash", "terminal",
+    "copy-repository-path", "open-vscode", "open-explorer", "refresh",
+  ]);
+  return actions.map(action => originalOnly.has(action.id) ? { ...action, disabled: true } : action);
 });
 
 function isAltOnlyShortcut(event: KeyboardEvent): boolean {
@@ -3774,6 +3881,7 @@ function handleRepositoryNavigationShortcut(event: KeyboardEvent, key: string): 
 
 function beginRepositoryWorkflowShortcut(event: KeyboardEvent): boolean {
   event.preventDefault();
+  if (workspaceViewOpen.value) { toast.info("Use the controls in a branch workspace or open its repository tab."); return false; }
   if (hasActiveRepositoryPath()) return true;
   toast.info("Open a repository to use this shortcut.");
   return false;
@@ -3851,6 +3959,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
+  if (pendingWorktreeRemoval.value) return;
   handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
 
@@ -3867,11 +3976,11 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
   }
 
   if (handleRepositoryTabShortcut(event, {
-    newTab,
-    closeActiveTab,
-    reopenClosedTab,
-    selectAdjacentTab,
-    canCloseActiveTab: () => canCloseActiveTab.value,
+    newTab: () => { if (!workspaceViewBusy.value) newTab(); },
+    closeActiveTab: closeCurrentViewOrTab,
+    reopenClosedTab: () => { if (!workspaceViewBusy.value) reopenClosedTab(); },
+    selectAdjacentTab: direction => { if (!workspaceViewBusy.value) selectAdjacentTab(direction); },
+    canCloseActiveTab: () => workspaceViewOpen.value || canCloseActiveTab.value,
     canReopenClosedTab: () => canReopenClosedTab.value,
   })) {
     return;
@@ -3883,7 +3992,7 @@ function handleGlobalShortcuts(event: KeyboardEvent) {
 
   if (event.ctrlKey && event.code === "Backquote") {
     event.preventDefault();
-    toggleTerminalPanel();
+    if (!workspaceViewOpen.value) toggleTerminalPanel();
     return;
   }
 
@@ -3980,6 +4089,7 @@ watch([tabs, activeTabId], () => {
 }, { deep: true });
 
 watch(activeTabId, () => {
+  if (historyViewMode.value === "branch-workspace") historyViewMode.value = "graph";
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
   diffFallbackStatus.value = null;
@@ -4676,12 +4786,12 @@ function mergeSourceRef(payload: { source: string; sourceRemote: boolean }): str
   return payload.sourceRemote ? `origin/${payload.source}` : payload.source;
 }
 
-async function getGitRefSha(ref: string): Promise<string | null> {
-  if (!git.repoPath.value || !ref.trim()) return null;
+async function getGitRefSha(repoPath: string, ref: string): Promise<string | null> {
+  if (!repoPath || !ref.trim()) return null;
 
   try {
     const result = await invoke<string>("run_git_command", {
-      path: git.repoPath.value,
+      path: repoPath,
       args: ["rev-parse", "--verify", ref],
     });
     return result.trim().split(/\s+/)[0] || null;
@@ -4768,6 +4878,8 @@ function offerMergeReleaseNotes(request: MergeReleaseNotesRequest): void {
 
 function handleRequestMerge(payload: { source: string; sourceRemote: boolean; target: string }) {
   if (!payload.source || !payload.target || payload.source === payload.target) return;
+  const repoPath = git.repoPath.value;
+  const targetRef = `refs/heads/${payload.target}`;
   toast.action(
     "warning",
     `Merge ${payload.sourceRemote ? "origin/" + payload.source : payload.source} into ${payload.target}?`,
@@ -4776,8 +4888,11 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
         label: "Merge",
         style: "primary",
         onClick: async () => {
-          const beforeTargetSha = await getGitRefSha(payload.target);
+          if (git.repoPath.value !== repoPath) return;
+          const beforeTargetSha = await getGitRefSha(repoPath, targetRef);
+          if (git.repoPath.value !== repoPath) return;
           const merged = await git.mergeBranchIntoCurrent(payload.source, payload.sourceRemote, payload.target);
+          if (git.repoPath.value !== repoPath) return;
           if (!merged && git.repositoryOperation.value?.kind === "merge") {
             onSelectConflicts();
             detailsPanelCollapsed.value = false;
@@ -4793,9 +4908,13 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
             );
             return;
           }
-          const afterTargetSha = merged ? await getGitRefSha("HEAD") : null;
-          if (merged && beforeTargetSha && afterTargetSha && beforeTargetSha !== afterTargetSha) {
+          const afterTargetSha = merged ? await getGitRefSha(repoPath, targetRef) : null;
+          if (git.repoPath.value === repoPath && beforeTargetSha && afterTargetSha && beforeTargetSha !== afterTargetSha) {
             offerMergeReleaseNotes({ ...payload, beforeTargetSha, afterTargetSha });
+            publishOperationPreview({
+              kind: "merge", repoPath, source: mergeSourceRef(payload), target: payload.target,
+              beforeSha: beforeTargetSha, resultSha: afterTargetSha,
+            });
           }
         },
       },
@@ -4931,7 +5050,7 @@ function exitGraphIsolation() {
 }
 
 function handleCreateBranch() {
-  showBranchDialog.value = true;
+  handleCreateBranchAtCommit("");
 }
 
 function normalizeGhostNameFragment(value: string): string {
@@ -5066,7 +5185,8 @@ async function submitAnnotatedTag() {
   annotatedTagMessage.value = "";
 }
 
-const branchAtSha = ref("");
+const branchStartPoint = ref("");
+const branchDialogRepo = ref("");
 const tagAtSha = ref("");
 const showTagDialog = ref(false);
 const tagName = ref("");
@@ -5098,22 +5218,32 @@ watch(terminalAllowAll, (value) => {
   safeStorageSet("gitswamp-terminal-allow-all", String(value));
 });
 
-function handleCreateBranchAtCommit(sha: string) {
-  branchAtSha.value = sha;
+function handleCreateBranchAtCommit(startPoint: string) {
+  branchStartPoint.value = startPoint;
+  branchDialogRepo.value = git.repoPath.value;
   newBranchName.value = "";
   showBranchDialog.value = true;
 }
 
+function closeCreateBranchDialog() {
+  branchStartPoint.value = "";
+  branchDialogRepo.value = "";
+  showBranchDialog.value = false;
+  newBranchName.value = "";
+}
+
+watch(() => git.repoPath.value, closeCreateBranchDialog);
+
 async function submitCreateBranchFromDialog(name: string) {
-  const startPoint = branchAtSha.value || undefined;
+  const repoPath = branchDialogRepo.value;
+  if (!repoPath || git.repoPath.value !== repoPath) return;
+  const startPoint = branchStartPoint.value || undefined;
   const created = await git.createBranch(name, startPoint);
   if (!created) {
     return;
   }
 
-  branchAtSha.value = "";
-  showBranchDialog.value = false;
-  newBranchName.value = "";
+  if (branchDialogRepo.value === repoPath) closeCreateBranchDialog();
 }
 
 function handleCreateTagAtCommit(sha: string) {
@@ -5140,10 +5270,12 @@ function submitCreateTag() {
       :tabs="tabs"
       :active-tab-id="activeTabId"
       :can-reopen-closed-tab="canReopenClosedTab"
-      @select-tab="selectTab"
-      @close-tab="closeTab"
-      @new-tab="newTab"
-      @reopen-closed-tab="reopenClosedTab"
+      :workspace-view-open="workspaceViewOpen"
+      @select-tab="selectRepositoryTab"
+      @close-tab="closeRepositoryTab"
+      @close-workspace-view="setHistoryViewMode('graph')"
+      @new-tab="!workspaceViewBusy && newTab()"
+      @reopen-closed-tab="!workspaceViewBusy && reopenClosedTab()"
       @open-repository="browseAndOpen"
       @toggle-terminal="toggleTerminalPanel"
       @set-history-view="setHistoryViewMode($event)"
@@ -5205,6 +5337,7 @@ function submitCreateTag() {
 
     <template v-else-if="git.repoInfo.value">
       <AppHeader
+        v-if="historyViewMode !== 'branch-workspace'"
         :loading="git.loading.value"
         :active-action="activeRemoteAction"
         :ghost-active="git.ghostBranchState.value.active"
@@ -5233,7 +5366,7 @@ function submitCreateTag() {
         @settings="openOptions('preferences')"
       />
       <div
-        v-if="isEmptyRepository"
+        v-if="isEmptyRepository && historyViewMode !== 'branch-workspace'"
         class="flex items-center gap-3 px-4 py-2.5 bg-[var(--secondary)]/60 border-b border-[var(--border)]"
       >
         <div class="text-xs text-[var(--muted-foreground)]">
@@ -5288,7 +5421,11 @@ function submitCreateTag() {
         :error-logs="errorLogs"
         :smart-gitignore-wizard-enabled="smartGitignoreWizardEnabled"
         :bug-autopsy-enabled="bugAutopsyEnabled"
+        :removed-worktree="removedWorktree"
         @set-history-view="setHistoryViewMode($event)"
+        @open-workspace-repository="openWorkspaceRepository($event)"
+        @remove-workspace-worktree="requestWorkspaceRemoval($event)"
+        @workspace-busy="workspaceViewBusy = $event"
         @update:show-terminal="showTerminal = $event"
         @update:terminal-allow-all="terminalAllowAll = $event"
         @update:details-panel-collapsed="detailsPanelCollapsed = $event"
@@ -5340,6 +5477,7 @@ function submitCreateTag() {
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"
       :new-branch-name="newBranchName"
+      :branch-start-point="branchStartPoint"
       :existing-branch-names="git.localBranches.value.map((branch) => branch.name)"
       :show-stash-dialog="showStashDialog"
       :stash-message="stashMessage"
@@ -5368,7 +5506,7 @@ function submitCreateTag() {
       @update:annotated-tag-message="annotatedTagMessage = $event"
       @update:edit-message-text="editMessageText = $event"
       @update:rename-branch-new="renameBranchNew = $event"
-      @close:branch="showBranchDialog = false"
+      @close:branch="closeCreateBranchDialog"
       @submit:branch="submitCreateBranch(newBranchName)"
       @close:stash="showStashDialog = false"
       @submit:stash="submitStash()"
@@ -5447,5 +5585,15 @@ function submitCreateTag() {
     <ThemeAmbience />
     <ToastContainer />
     <SecretCommitDialog :repo-path="git.repoPath.value" />
+    <WorktreeRemovalDialog v-if="pendingWorktreeRemoval" :location="pendingWorktreeRemoval.location"
+      :busy="removingWorktree" :error="worktreeRemovalError" @cancel="worktreeRemoval.cancel"
+      @keep="worktreeRemoval.closeOnly" @remove="worktreeRemoval.remove" />
+    <ConflictAppearanceDialog v-if="conflictPreview" :preview="conflictPreview" @close="closeConflictPreview" />
+    <OperationVisualisationDialog
+      v-if="operationPreview"
+      :key="`${operationPreview.kind}:${operationPreview.target}:${'resultSha' in operationPreview ? operationPreview.resultSha : ''}:${'pendingUndo' in operationPreview && Boolean(operationPreview.pendingUndo)}`"
+      :preview="operationPreview"
+      @close="closeOperationPreview"
+    />
   </div>
 </template>

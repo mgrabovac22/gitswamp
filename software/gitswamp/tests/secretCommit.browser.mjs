@@ -13,6 +13,7 @@ import {createApp,h,ref} from '/node_modules/.vite/deps/vue.js';
 import Details from '/src/view/commit/CommitDetails.vue';
 import Dialog from '/src/shared/ui/SecretCommitDialog.vue';
 import {checkCommitSecrets} from '/src/domain/git/composables/secretCommitGuard.ts';
+import {storeSecretDetectorEnabled} from '/src/shared/config/secretDetectorPreferences.ts';
 import '/src/styles/index.css';
 localStorage.setItem('gitswamp-commit-analyzer-settings',JSON.stringify({enabled:false}));
 localStorage.setItem('gitswamp-show-empty-dirs','false');
@@ -28,6 +29,7 @@ window.testInvoke=async(command,args)=>{
  throw Error(command);
 };
 window.switchRepo=()=>repo.value='another-repo';
+window.setDetector=storeSecretDetectorEnabled;
 createApp({render:()=>h('main',{style:'height:100%;max-width:680px;margin:auto;'},[
  h(Details,{repoPath:repo.value,commit:null,commitFiles:[],stagedFiles:[{path:'src/config.ts',status:'modified',staged:true,conflicted:false}],unstagedFiles:[{path:'.env',status:'untracked',staged:false,conflicted:false}],isWorkingChanges:true,operationBusy:busy.value,onCommit:async payload=>{
   busy.value=true;try{const approval=await checkCommitSecrets(repo.value,()=>true,async()=>{});if(approval)window.committed++;payload.done(Boolean(approval));}finally{busy.value=false}
@@ -45,6 +47,17 @@ try{
  const page=await browser.newPage({viewport:{width:1200,height:900}}), errors=[];
  page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:'+server.httpServer.address().port+'/__secret_test__');
+ const badges=page.getByLabel('Possible secret',{exact:true});
+ await page.getByPlaceholder('Commit message...', {exact:true}).waitFor();
+ await page.waitForTimeout(1000);
+ assert.equal(await badges.count(),0);
+ assert.equal(await page.evaluate(()=>calls.some(c=>c.command==='scan_secrets')),false);
+ await page.evaluate(()=>setDetector(true));
+ await badges.nth(1).waitFor();
+ await badges.nth(0).hover();assert.match(await page.getByRole('tooltip').innerText(),/Password · line 2/);
+ await page.mouse.move(1,1);
+ await badges.nth(1).focus();assert.match(await page.getByRole('tooltip').innerText(),/API token · line 12/);
+ await page.keyboard.press('Escape');assert.equal(await page.getByRole('tooltip').count(),0);
  const input=page.getByPlaceholder('Commit message...', {exact:true});await input.fill('Protect configuration');
  const submit=page.getByRole('button',{name:/^Commit changes/i});
  await submit.click();const dialog=page.getByRole('alertdialog');await dialog.waitFor();

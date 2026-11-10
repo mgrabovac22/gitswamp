@@ -4,6 +4,7 @@ import { computed } from "vue";
 const props = defineProps<{
   showBranchDialog: boolean;
   newBranchName: string;
+  branchStartPoint?: string;
   existingBranchNames?: string[];
   showStashDialog: boolean;
   stashMessage: string;
@@ -61,6 +62,10 @@ const branchNameExists = computed(() => {
 
   return (props.existingBranchNames || []).some((branchName) => branchName.trim().toLowerCase() === candidate);
 });
+const branchStartLabel = computed(() => {
+  const point = props.branchStartPoint ?? "";
+  return point.startsWith("refs/") ? point.replace(/^refs\/(heads|remotes)\//, "") : point.slice(0, 7);
+});
 
 const canSubmitStash = computed(() => props.stashTrackedChangeCount > 0
   || (props.stashIncludeUntracked && props.stashUntrackedFileCount > 0));
@@ -84,6 +89,9 @@ function submitStash() {
   <div v-if="props.showBranchDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="emit('close:branch')">
     <div class="bg-[var(--popover)] border border-[var(--border)] rounded-lg p-6 w-96 shadow-2xl">
       <h3 class="text-sm font-medium text-[var(--foreground)] mb-4">Create New Branch</h3>
+      <p v-if="branchStartLabel" class="mb-3 truncate text-xs text-[var(--muted-foreground)]" :title="props.branchStartPoint">
+        Starting point: <code>{{ branchStartLabel }}</code>
+      </p>
       <input
         :value="props.newBranchName"
         @input="emit('update:newBranchName', ($event.target as HTMLInputElement).value)"

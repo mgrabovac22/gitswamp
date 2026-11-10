@@ -1,5 +1,6 @@
 import type { AmendCommitOptions, RepoInfo } from "@/types";
 import { useToast } from "@/shared/notifications/useToast";
+import { publishOperationPreview } from "@/shared/notifications/gitOperationPreview";
 
 import { callTauri } from "./gitCall";
 import { checkCommitSecrets } from "./secretCommitGuard";
@@ -93,7 +94,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     try {
       const approval = await checkCommitSecrets(repoPath, () => state.repoPath.value === repoPath, refresh.refreshStatus);
       if (!approval || state.repoPath.value !== repoPath) return false;
-      await callTauri("create_commit", { path: repoPath, message, allowEmpty, ...approval });
+      const resultSha = await callTauri<string>("create_commit", { path: repoPath, message, allowEmpty, ...approval });
       if (state.repoPath.value !== repoPath) return true;
       await Promise.all([
         refresh.refreshCommits(),
@@ -102,6 +103,11 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
         refresh.refreshStashes(),
         refresh.refreshRepoInfo(),
       ]);
+      if (wasMerge && state.repoPath.value === repoPath && state.repoInfo.value?.head_sha === resultSha) {
+        publishOperationPreview({
+          kind: "merge", repoPath, source: "Incoming history", target: state.repoInfo.value.current_branch, resultSha,
+        });
+      }
       if (wasMerge && state.stashes.value.some((stash) => stash.message.includes("GitSwamp pull safety"))) {
         toast.action(
           "info",

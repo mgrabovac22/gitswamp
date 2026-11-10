@@ -17,6 +17,7 @@ const RELEASE_DOWNLOAD_FMT: &str =
 #[derive(Debug, Clone, Deserialize)]
 struct GithubAsset {
     name: String,
+    size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -44,6 +45,7 @@ impl GithubRelease {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckResult {
     pub deb_installation: bool,
+    pub download_size: Option<u64>,
     pub already_installed: bool,
     pub tag: String,
     pub version: String,
@@ -70,12 +72,10 @@ pub enum DownloadEvent {
     Finished,
 }
 
-pub struct PendingUpdate(pub Mutex<Option<Update>>);
-
-impl Default for PendingUpdate {
-    fn default() -> Self {
-        Self(Mutex::new(None))
-    }
+#[derive(Default)]
+pub struct PendingUpdate {
+    native: Mutex<Option<Update>>,
+    deb: Mutex<Option<std::path::PathBuf>>,
 }
 
 fn published_key(release: &GithubRelease) -> String {
@@ -163,6 +163,9 @@ pub async fn check_for_update(
     let result = UpdateCheckResult {
         already_installed,
         deb_installation,
+        download_size: if deb_installation {
+            deb_asset(&release, std::env::consts::ARCH).and_then(|asset| asset.size)
+        } else { None },
         tag: release.tag_name.clone(),
         version: update.version.clone(),
         current_version: update.current_version.clone(),
@@ -175,7 +178,7 @@ pub async fn check_for_update(
     };
 
     let mut slot = pending
-        .0
+        .native
         .lock()
         .map_err(|e| format!("Pending update lock failed: {}", e))?;
     *slot = Some(update);
@@ -222,7 +225,7 @@ fn validate_deb_metadata(output: &str, version: &str, architecture: &str) -> Res
     Ok(())
 }
 
-fn deb_asset_name(release: &GithubRelease, architecture: &str) -> Option<String> {
+fn deb_asset<'a>(release: &'a GithubRelease, architecture: &str) -> Option<&'a GithubAsset> {
     release.assets.as_ref()?.iter().find(|asset| {
         let name = asset.name.to_lowercase();
         let matching_arch = match architecture {
@@ -231,11 +234,11 @@ fn deb_asset_name(release: &GithubRelease, architecture: &str) -> Option<String>
             _ => false,
         };
         name.ends_with(".deb") && matching_arch && !name.contains('/') && !name.contains('\\')
-    }).map(|asset| asset.name.clone())
+    })
 }
 
 #[tauri::command]
-pub async fn download_deb_update(app: AppHandle, tag: String, version: String) -> Result<DebUpdateDownload, String> {
+pub async fn download_deb_update(app: AppHandle, tag: String, version: String, on_event: Channel<DownloadEvent>) -> Result<DebUpdateDownload, String> {
     if !is_deb_installation() {
         return Err("Debian fallback is only available for a .deb installation.".to_string());
     }
@@ -250,23 +253,43 @@ pub async fn download_deb_update(app: AppHandle, tag: String, version: String) -
         }
         let release = fetch_releases()?.into_iter().find(|release| release.tag_name == tag && !release.draft && release.has_manifest())
             .ok_or("The offered release is no longer available. Check for updates again.")?;
-        let asset = deb_asset_name(&release, std::env::consts::ARCH).ok_or("This release has no Debian package for your architecture.")?;
+        let asset = deb_asset(&release, std::env::consts::ARCH).ok_or("This release has no Debian package for your architecture.")?;
         let mut url = url::Url::parse("https://github.com/mgrabovac22/gitswamp/releases/download/").map_err(|e| e.to_string())?;
-        url.path_segments_mut().map_err(|_| "Invalid release URL")?.pop_if_empty().push(&release.tag_name).push(&asset);
+        url.path_segments_mut().map_err(|_| "Invalid release URL")?.pop_if_empty().push(&release.tag_name).push(&asset.name);
         let response = ureq::get(url.as_str()).set("User-Agent", APP_USER_AGENT).timeout(std::time::Duration::from_secs(120)).call().map_err(|e| format!("Debian package download failed: {}", e))?;
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
-        let destination = directory.join(format!("{}-{}.deb", asset.trim_end_matches(".deb"), stamp));
+        let destination = directory.join(format!("{}-{}.deb", asset.name.trim_end_matches(".deb"), stamp));
         let partial = destination.with_extension("deb.part");
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&partial).map_err(|e| e.to_string())?;
         let download = (|| -> Result<(), String> {
-            let mut reader = response.into_reader().take(512 * 1024 * 1024 + 1);
+            const LIMIT: u64 = 512 * 1024 * 1024;
+            let content_length = response.header("Content-Length").and_then(|value| value.parse().ok()).or(asset.size);
+            if content_length.is_some_and(|size| size > LIMIT) { return Err("Debian package exceeds the download limit.".to_string()); }
+            let _ = on_event.send(DownloadEvent::Started { content_length });
+            let mut reader = response.into_reader().take(LIMIT + 1);
             let mut magic = [0; 8];
             reader.read_exact(&mut magic).map_err(|e| e.to_string())?;
             if &magic != b"!<arch>\n" { return Err("Downloaded file is not a Debian archive.".to_string()); }
             file.write_all(&magic).map_err(|e| e.to_string())?;
-            let count = std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
-            if count + 8 > 512 * 1024 * 1024 { return Err("Debian package exceeds the download limit.".to_string()); }
+            let mut buffer = [0; 64 * 1024];
+            let mut total = magic.len() as u64;
+            let mut pending_bytes = magic.len();
+            let mut last_update = std::time::Instant::now();
+            loop {
+                let count = reader.read(&mut buffer).map_err(|e| e.to_string())?;
+                if count == 0 { break; }
+                total += count as u64;
+                if total > LIMIT { return Err("Debian package exceeds the download limit.".to_string()); }
+                file.write_all(&buffer[..count]).map_err(|e| e.to_string())?;
+                pending_bytes += count;
+                if last_update.elapsed() >= std::time::Duration::from_millis(150) {
+                    let _ = on_event.send(DownloadEvent::Progress { chunk_length: pending_bytes });
+                    pending_bytes = 0;
+                    last_update = std::time::Instant::now();
+                }
+            }
+            if pending_bytes > 0 { let _ = on_event.send(DownloadEvent::Progress { chunk_length: pending_bytes }); }
             file.sync_all().map_err(|e| e.to_string())?;
             Ok(())
         })();
@@ -288,8 +311,27 @@ pub async fn download_deb_update(app: AppHandle, tag: String, version: String) -
             let _ = std::fs::remove_file(&partial);
             return Err(error.to_string());
         }
+        *app.state::<PendingUpdate>().deb.lock().map_err(|_| "Could not retain the downloaded package.")? = Some(destination.clone());
+        let _ = on_event.send(DownloadEvent::Finished);
         Ok(DebUpdateDownload { path: Some(destination.to_string_lossy().to_string()), version, already_installed: false })
     }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_deb_update(pending: State<'_, PendingUpdate>) -> Result<bool, String> {
+    if !is_deb_installation() { return Err("No Debian update is available.".into()); }
+    let path = pending.deb.lock().map_err(|_| "Could not access the downloaded package.")?
+        .clone().ok_or("Download the Debian update first.")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if !path.is_file() { return Err("The downloaded package is no longer in Downloads.".into()); }
+        let opened = std::process::Command::new("gio").arg("open").arg(&path)
+            .output().map(|output| output.status.success());
+        if matches!(opened, Ok(true)) || (opened.is_err() && tauri_plugin_opener::open_path(&path, None::<&str>).is_ok()) {
+            return Ok(true);
+        }
+        let _ = tauri_plugin_opener::reveal_item_in_dir(&path);
+        Ok(false)
+    }).await.map_err(|_| "Could not open the package manager.".to_string())?
 }
 
 #[tauri::command]
@@ -301,7 +343,7 @@ pub async fn install_update(
         return Err("Debian installations must be updated through the system package manager.".to_string());
     }
     let update = pending
-        .0
+        .native
         .lock()
         .map_err(|e| format!("Pending update lock failed: {}", e))?
         .take();
@@ -330,7 +372,7 @@ pub async fn install_update(
 
     if let Err(error) = result {
         let mut slot = pending
-            .0
+            .native
             .lock()
             .map_err(|e| format!("Pending update lock failed: {}", e))?;
         *slot = Some(update);
@@ -374,10 +416,12 @@ mod tests {
             assets: Some(if manifest {
                 vec![GithubAsset {
                     name: RELEASE_MANIFEST_NAME.to_string(),
+                    size: None,
                 }]
             } else {
                 vec![GithubAsset {
                     name: "GitSwamp.deb".to_string(),
+                    size: None,
                 }]
             }),
         }
@@ -387,15 +431,16 @@ mod tests {
     fn deb_fallback_selects_only_the_matching_architecture() {
         let mut selected = release("v1.0.0", "2026-10-29T00:00:00Z", false, true);
         selected.assets = Some(vec![
-            GithubAsset { name: "GitSwamp_aarch64.deb".into() },
-            GithubAsset { name: "GitSwamp_amd64.deb".into() },
-            GithubAsset { name: "GitSwamp_amd64.AppImage".into() },
+            GithubAsset { name: "GitSwamp_aarch64.deb".into(), size: Some(9_000_000) },
+            GithubAsset { name: "GitSwamp_amd64.deb".into(), size: Some(10_000_000) },
+            GithubAsset { name: "GitSwamp_amd64.AppImage".into(), size: Some(90_000_000) },
         ]);
-        assert_eq!(deb_asset_name(&selected, "x86_64").as_deref(), Some("GitSwamp_amd64.deb"));
-        assert_eq!(deb_asset_name(&selected, "aarch64").as_deref(), Some("GitSwamp_aarch64.deb"));
-        assert!(deb_asset_name(&selected, "unsupported").is_none());
-        selected.assets = Some(vec![GithubAsset { name: "../GitSwamp_amd64.deb".into() }]);
-        assert!(deb_asset_name(&selected, "x86_64").is_none());
+        assert_eq!(deb_asset(&selected, "x86_64").map(|asset| asset.name.as_str()), Some("GitSwamp_amd64.deb"));
+        assert_eq!(deb_asset(&selected, "x86_64").and_then(|asset| asset.size), Some(10_000_000));
+        assert_eq!(deb_asset(&selected, "aarch64").and_then(|asset| asset.size), Some(9_000_000));
+        assert!(deb_asset(&selected, "unsupported").is_none());
+        selected.assets = Some(vec![GithubAsset { name: "../GitSwamp_amd64.deb".into(), size: None }]);
+        assert!(deb_asset(&selected, "x86_64").is_none());
     }
 
     #[test]

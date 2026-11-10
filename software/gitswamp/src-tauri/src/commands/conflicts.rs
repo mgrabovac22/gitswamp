@@ -1,5 +1,12 @@
 use crate::models::{ConflictHotspot, ConflictPair, MergeRiskPreflight};
 use crate::services::git_service::GitService;
+use crate::services::conflict_preview::{self, ConflictPreviewFile};
+
+#[tauri::command]
+pub async fn get_conflict_preview(path: String, file_path: String) -> Result<Option<ConflictPreviewFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || conflict_preview::preview(&path, &file_path))
+        .await.map_err(|e| e.to_string())?
+}
 
 #[tauri::command]
 pub async fn get_conflict_hotspots(

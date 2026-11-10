@@ -1,12 +1,13 @@
 import { computed, ref } from "vue";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { openUrl, openPath } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useToast } from "@/shared/notifications/useToast";
 import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 
 export interface AppUpdateInfo {
   debInstallation?: boolean;
+  downloadSize?: number | null;
   alreadyInstalled?: boolean;
   tag: string;
   version: string;
@@ -72,9 +73,10 @@ async function check(force = false): Promise<void> {
       status.value = "none";
       return;
     }
+    const keepPackage = result.debInstallation && info.value?.tag === result.tag && downloadedPath.value !== null;
     info.value = result;
-    downloadedPath.value = null;
-    status.value = result.alreadyInstalled ? "installed" : "available";
+    if (!keepPackage) downloadedPath.value = null;
+    status.value = result.alreadyInstalled ? "installed" : keepPackage ? "downloaded" : "available";
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error);
     status.value = "error";
@@ -86,12 +88,20 @@ async function install(): Promise<void> {
   status.value = "installing";
   errorMessage.value = "";
   setBytes(0);
-  total.value = null;
+  total.value = info.value.downloadSize ?? null;
 
   try {
+    const channel = new Channel<DownloadEvent>();
+    channel.onmessage = (message) => {
+      if (message.event === "Started") {
+        total.value = message.data.contentLength ?? null;
+      } else if (message.event === "Progress") {
+        setBytes(downloaded.value + message.data.chunkLength);
+      }
+    };
     if (info.value.debInstallation) {
       const result = await invoke<{ path: string | null; version: string; alreadyInstalled: boolean }>("download_deb_update", {
-        tag: info.value.tag, version: info.value.version,
+        tag: info.value.tag, version: info.value.version, onEvent: channel,
       });
       if (result.alreadyInstalled) {
         status.value = "installed";
@@ -101,19 +111,10 @@ async function install(): Promise<void> {
       downloadedPath.value = result.path;
       status.value = "downloaded";
       useToast().action("info", `GitSwamp ${result.version} package downloaded`, [
-        { label: "Open .deb", style: "primary", onClick: () => openPath(result.path!) },
+        { label: "Open installer", style: "primary", onClick: openDownloadedPackage },
       ], 0, "Install the package in your system package manager, then restart GitSwamp.");
       return;
     }
-    const channel = new Channel<DownloadEvent>();
-    channel.onmessage = (message) => {
-      if (message.event === "Started") {
-        total.value = message.data.contentLength ?? null;
-      } else if (message.event === "Progress") {
-        setBytes(downloaded.value + message.data.chunkLength);
-      }
-    };
-
     await invoke("install_update", { onEvent: channel });
     status.value = "installed";
 
@@ -130,9 +131,15 @@ async function install(): Promise<void> {
 }
 
 async function openDownloadedPackage(): Promise<void> {
-  if (!downloadedPath.value) return;
-  try { await openPath(downloadedPath.value); }
-  catch (error) { useToast().error(`Could not open the package: ${String(error)}`); }
+  if (!downloadedPath.value || status.value !== "downloaded") return;
+  const path = downloadedPath.value;
+  try {
+    if (!await invoke<boolean>("open_deb_update")) {
+      useToast().info("No package installer opened. Open the .deb from Downloads with your package manager: " + path, 12000);
+    }
+  } catch (error) {
+    useToast().info(String(error));
+  }
 }
 
 async function restart(): Promise<void> {

@@ -5,4 +5,5 @@ export interface RepositoryTab {
   repo: RepoInfo | null;
   label: string;
   path: string;
+  worktree?: { sourcePath: string; branch: string };
 }

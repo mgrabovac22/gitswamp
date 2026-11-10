@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import type { RepoInfo } from "@/types";
 import type { RepositoryTab } from "./repositoryTabs.types";
+import { sameWorkspacePath } from "@/features/repository/workspace/branchWorkspaceTypes";
 
 const CLOSED_TABS_LIMIT = 10;
 
@@ -25,6 +26,7 @@ function cloneTab(tab: RepositoryTab): RepositoryTab {
     repo: tab.repo ? { ...tab.repo } : null,
     label: tab.label,
     path: tab.path,
+    worktree: tab.worktree ? { ...tab.worktree } : undefined,
   };
 }
 
@@ -75,13 +77,14 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
     closedTabs.value = [cloneTab(tab), ...closedTabs.value].slice(0, CLOSED_TABS_LIMIT);
   }
 
-  function closeTab(id: string) {
+  function closeTab(id: string, remember = true) {
     const idx = tabs.value.findIndex((tab) => tab.id === id);
     if (idx < 0) return;
     if (!tabs.value[idx]?.repo && tabs.value.length <= 1) return;
 
     const closedTab = tabs.value[idx];
-    rememberClosedTab(closedTab);
+    if (remember) rememberClosedTab(closedTab);
+    else closedTabs.value = closedTabs.value.filter(tab => !sameWorkspacePath(tab.path, closedTab.path));
     tabs.value.splice(idx, 1);
 
     if (tabs.value.length === 0) {
@@ -130,8 +133,9 @@ export function useRepositoryTabs(options: RepositoryTabsOptions) {
   function setActiveTabRepository(repo: RepoInfo) {
     const tab = tabs.value.find((item) => item.id === activeTabId.value);
     if (!tab) return;
+    if (!sameWorkspacePath(tab.path, repo.path)) tab.worktree = undefined;
     tab.repo = repo;
-    tab.label = repo.name;
+    tab.label = tab.worktree?.branch ?? repo.name;
     tab.path = repo.path;
   }
 

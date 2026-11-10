@@ -294,6 +294,7 @@ export function useGit() {
     stagedFiles: state.stagedFiles,
     unstagedFiles: state.unstagedFiles,
     conflictFiles: state.conflictFiles,
+    diskStatusReady: state.diskStatusReady,
     hasConflicts: state.hasConflicts,
     selectedCommit: state.selectedCommit,
     selectedCommits: state.selectedCommits,

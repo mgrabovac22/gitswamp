@@ -4,14 +4,18 @@ import type { FileStatusInfo } from "@/types";
 import type { SecretScan } from "@/shared/notifications/secretConfirmation";
 import { SECRET_DETECTOR_EVENT, secretDetectorEnabled } from "./secretDetectorPreferences";
 
-export function useUnstagedSecrets(repo: () => string, files: () => FileStatusInfo[], active: () => boolean) {
+export function useFileSecrets(repo: () => string, files: () => FileStatusInfo[], active: () => boolean, staged = false) {
   const enabled = ref(secretDetectorEnabled());
   const report = shallowRef<SecretScan | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let generation = 0, busy = false, disposed = false, lastStart = 0;
   const findingsByPath = computed(() => {
-    const result = new Map<string, string>();
-    for (const finding of report.value?.findings ?? []) result.set(finding.path, `Possible secret: ${finding.kind} (line ${finding.line})`);
+    const result = new Map<string, string[]>();
+    for (const finding of report.value?.findings ?? []) {
+      const entries = result.get(finding.path) ?? [];
+      entries.push(`${finding.kind} · line ${finding.line}`);
+      result.set(finding.path, entries);
+    }
     return result;
   });
   function schedule() {
@@ -26,7 +30,7 @@ export function useUnstagedSecrets(repo: () => string, files: () => FileStatusIn
     const token = generation, path = repo();
     busy = true; lastStart = Date.now();
     try {
-      const result = await invoke<SecretScan>("scan_secrets", { path, staged: false, filePaths: files().map(file => file.path) });
+      const result = await invoke<SecretScan>("scan_secrets", { path, staged, filePaths: files().slice(0, 2048).map(file => file.path) });
       if (!disposed && token === generation && path === repo()) report.value = result;
     } catch { if (!disposed && token === generation) report.value = null; }
     finally { busy = false; }

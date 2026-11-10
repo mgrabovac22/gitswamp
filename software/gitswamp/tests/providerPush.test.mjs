@@ -17,20 +17,23 @@ function evaluate(source, mocks = {}) {
 const helpers = evaluate(read("domain/git/composables/gitHelpers.ts"));
 const { createGitState } = evaluate(read("domain/git/composables/gitState.ts"));
 
-function pushHarness(intercept = async () => "done") {
+function pushHarness(intercept = async () => "done", previewEnabled = false) {
   const state = createGitState();
   state.repoPath.value = "first-repo";
   state.repoInfo.value = {name:"repo",path:"first-repo",remotes:[],current_branch:"main",head_sha:"abc",is_clean:true};
   state.providerTokens.value = {github:"synthetic-github",gitlab:"synthetic-gitlab",azure:"synthetic-azure",bitbucket:"synthetic-bitbucket"};
   const calls=[];
+  const previews=[];
   const { createRemoteActions } = evaluate(read("domain/git/composables/gitRemoteActions.ts"),{
     "./gitHelpers":helpers,
     "./gitCall":{callTauri:async(command,args)=>{calls.push({command,args});return intercept(command,args);}},
     "@/shared/notifications/useToast":{useToast:()=>({})},
+    "@/shared/config/visualiseOperationsPreferences":{visualiseOperationsEnabled:()=>previewEnabled},
+    "@/shared/notifications/gitOperationPreview":{publishOperationPreview:request=>previews.push(request)},
   });
   const refresh = Object.fromEntries(["refreshBranches","refreshCommits","refreshStatus","refreshTags","refreshRepoInfo","refreshStashes"].map(name=>[name,async()=>{}]));
-  const toast = {loading:()=>1,remove(){},success(){},error(){}};
-  return {state,calls,actions:createRemoteActions(state,refresh,toast)};
+  const toast = {loading:()=>1,remove(){},success(){},error(){},warning(){},action(){}};
+  return {state,calls,previews,actions:createRemoteActions(state,refresh,toast)};
 }
 
 for (const provider of ["github","gitlab","azure","bitbucket"]) {
@@ -51,6 +54,36 @@ test("regular push keeps the existing all-remotes fetch behavior",async()=>{
   assert.deepEqual(h.calls.map(call=>call.command),["push","fetch_all"]);
   assert.equal(h.calls[1].args.token,"synthetic-github");
   assert.equal(h.calls[1].args.remoteName,undefined);
+  assert.deepEqual(h.previews,[]);
+});
+
+test("push preview uses origin's actual provider without extra IPC or exposing the remote URL", async()=>{
+  const h=pushHarness(undefined,true);
+  h.state.repoInfo.value.remotes=[
+    {name:"backup",provider:"github",url:"https://github.com/owner/repo"},
+    {name:"origin",provider:"gitlab",url:"https://gitlab.example/owner/repo"},
+  ];
+  await h.actions.push();
+  assert.deepEqual(h.calls.map(call=>call.command),["push","fetch_all"]);
+  assert.deepEqual(h.previews,[{kind:"push",repoPath:"first-repo",target:"main",endpoint:{label:"origin",provider:"gitlab"},sha:"abc"}]);
+});
+
+test("first push visualizes the chosen provider; automatic fetch does not open a preview",async()=>{
+  const h=pushHarness(undefined,true);
+  await h.actions.pushToMultiplePlatforms("gitlab","owner/repo");
+  await h.actions.backgroundFetchAll();
+  assert.equal(h.previews.length,1);
+  assert.equal(h.previews[0].endpoint.provider,"gitlab");
+});
+
+test("no-op pulls and rejected pushes do not display success previews",async()=>{
+  const h=pushHarness(async command=>{
+    if(command==="pull")return "Already up to date. Local changes were left untouched.";
+    throw Error("Remote rules rejected this push");
+  },true);
+  await h.actions.pull();
+  await h.actions.push();
+  assert.deepEqual(h.previews,[]);
 });
 
 test("changing repositories during provider push never fetches the new repo with the old token",async()=>{

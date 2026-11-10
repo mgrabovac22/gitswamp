@@ -1488,6 +1488,49 @@ impl IntegrationService {
         }
     }
 
+    pub fn open_folder_with_application(folder: &Path, application: &Path) -> Result<(), String> {
+        if !folder.is_absolute() || !folder.is_dir() {
+            return Err("The worktree folder is not available.".to_string());
+        }
+        if !application.is_absolute() {
+            return Err("Choose an application with an absolute path.".to_string());
+        }
+
+        #[cfg(target_os = "macos")]
+        let command = {
+            if !application.is_dir() || application.extension().and_then(|value| value.to_str()) != Some("app") {
+                return Err("Choose a macOS application bundle (.app).".to_string());
+            }
+            let mut command = std::process::Command::new("/usr/bin/open");
+            command.arg("-a").arg(application).arg(folder);
+            command
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let command = {
+            let metadata = application.metadata().map_err(|error| error.to_string())?;
+            if !metadata.is_file() {
+                return Err("Choose an executable application file.".to_string());
+            }
+            #[cfg(windows)]
+            if !application.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("exe")) {
+                return Err("Choose a Windows application (.exe).".to_string());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 == 0 {
+                    return Err("The selected file is not executable.".to_string());
+                }
+            }
+            let mut command = std::process::Command::new(application);
+            command.arg(folder);
+            command
+        };
+
+        Self::spawn_editor(command)
+    }
+
     fn resolve_repo_file_path(repo_path: &str, file_path: &str) -> Result<PathBuf, String> {
         let candidate = PathBuf::from(file_path);
         if candidate.is_absolute() {
