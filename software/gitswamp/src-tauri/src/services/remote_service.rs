@@ -808,6 +808,7 @@ impl RemoteService {
             .find_commit(remote_oid)
             .map_err(|e| e.message().to_string())?;
 
+        crate::services::worktree_service::ensure_branch_available(&repo, branch)?;
         repo.checkout_tree(local_commit.as_object(), None)
             .map_err(|e| e.message().to_string())?;
         repo.set_head(&local_ref_name)

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
-import { Check, GitBranchPlus, PencilLine, RotateCcw } from "lucide-vue-next";
+import { Check, Columns3, GitBranchPlus, PencilLine, RotateCcw } from "lucide-vue-next";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -56,6 +56,7 @@ const emit = defineEmits<{
   loadMore: [];
   checkout: [sha: string];
   createBranchAt: [sha: string];
+  openBranchWorkspace: [branchRef: string];
   cherryPick: [sha: string];
   revert: [sha: string];
   resetSoft: [sha: string];
@@ -815,6 +816,9 @@ function refAction(action: string) {
       break;
     case "branch-here":
       if (commitSha) emit("createBranchAt", commitSha);
+      break;
+    case "branch-workspace":
+      if (r.kind === "branch") emit("openBranchWorkspace", r.local ? `refs/heads/${r.name}` : `refs/remotes/origin/${r.name}`);
       break;
     case "delete-remote":
       emit("deleteRemoteBranch", r.name);
@@ -2053,6 +2057,7 @@ onUnmounted(() => {
             <button v-if="!refCtxRef.local" class="ctx-item" @click="refAction('checkout-remote')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout remote branch</span><span class="ctx-sub">Create/switch to origin/{{ refCtxRef.name }}</span></button>
             <button class="ctx-item" @click="refAction('checkout-and-isolate')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to this branch and isolate its connected commits</span></button>
             <button class="ctx-item" @click="refAction('branch-here')"><GitBranchPlus class="ctx-icon h-4 w-4" /><span class="ctx-main">Create branch here</span><span class="ctx-sub">Start a new branch at {{ refCtxRef.name }}</span></button>
+            <button class="ctx-item" @click="refAction('branch-workspace')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">Open Branch Workspace</span><span class="ctx-sub">Open {{ refCtxRef.name }} in its own worktree</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('rename-branch')"><PencilLine class="ctx-icon h-4 w-4" /><span class="ctx-main">Rename branch</span><span class="ctx-sub">Rename {{ refCtxRef.name }}</span></button>
             <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
             <button v-if="canRebaseRefOntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('rebase-onto-current')"><span class="ctx-icon">↕</span><span class="ctx-main">Rebase onto {{ currentBranch }}</span><span class="ctx-sub">Checkout {{ refCtxRef.name }} and rebase it onto {{ currentBranch }}</span></button>

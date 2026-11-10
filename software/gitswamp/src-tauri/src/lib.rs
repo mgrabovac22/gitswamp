@@ -53,6 +53,10 @@ use commands::status::{
 use commands::tags::get_tags;
 use commands::updates::{check_for_update, download_deb_update, install_update, open_deb_update, PendingUpdate};
 use tauri::Manager;
+use commands::worktrees::{
+    get_branch_workspace_history, get_branch_workspace_status, mutate_branch_workspace,
+    open_branch_workspace, open_branch_workspace_with_application, remove_branch_workspace,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -74,6 +78,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_repo_info,
+            open_branch_workspace,
+            open_branch_workspace_with_application,
+            remove_branch_workspace,
+            get_branch_workspace_status,
+            get_branch_workspace_history,
+            mutate_branch_workspace,
             download_deb_update,
             open_deb_update,
             get_commits,

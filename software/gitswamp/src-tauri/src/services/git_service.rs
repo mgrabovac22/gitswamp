@@ -380,6 +380,7 @@ impl GitService {
         let reference = repo
             .find_reference(&ref_name)
             .map_err(|_| format!("Local branch '{}' was not found.", branch_name))?;
+        crate::services::worktree_service::ensure_branch_available(repo, branch_name)?;
         let object = reference
             .peel(git2::ObjectType::Commit)
             .map_err(|e| e.message().to_string())?;
@@ -420,6 +421,7 @@ impl GitService {
             .map_err(|e| e.message().to_string())?;
 
         if repo.find_branch(branch_name, BranchType::Local).is_ok() {
+            crate::services::worktree_service::ensure_branch_available(repo, branch_name)?;
             let mut local_reference = repo
                 .find_reference(&format!("refs/heads/{}", branch_name))
                 .map_err(|e| e.message().to_string())?;
@@ -697,7 +699,7 @@ impl GitService {
         ))
     }
 
-    fn repository_operation(
+    pub(super) fn repository_operation(
         repo: &Repository,
         current_branch: &str,
     ) -> Option<RepositoryOperationInfo> {

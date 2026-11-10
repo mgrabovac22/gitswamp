@@ -16,3 +16,4 @@ pub mod stash;
 pub mod status;
 pub mod tags;
 pub mod updates;
+pub mod worktrees;

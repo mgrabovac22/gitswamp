@@ -86,6 +86,8 @@ const props = defineProps<{
   smartGitignoreWizardEnabled?: boolean;
   bugAutopsyEnabled?: boolean;
   manualBisect?: ManualBisectDetailsState | null;
+  workspacePane?: boolean;
+  workspaceBranch?: string;
 }>();
 
 const emit = defineEmits<{
@@ -115,6 +117,7 @@ const emit = defineEmits<{
 }>();
 
 const commitSummary = ref("");
+const detailsRoot = ref<HTMLElement | null>(null);
 const secretScanActive = () => props.isWorkingChanges && !props.operationBusy;
 const { findingsByPath: unstagedSecrets } = useFileSecrets(() => props.repoPath, () => props.unstagedFiles, secretScanActive);
 const { findingsByPath: stagedSecrets } = useFileSecrets(() => props.repoPath, () => props.stagedFiles, secretScanActive, true);
@@ -545,7 +548,7 @@ const editingDescription = ref(false);
 const subjectDraft = ref("");
 const descriptionDraft = ref("");
 const showAmendHint = ref(false);
-const workingChangesLabel = computed(() => (compactWorkingLabel.value ? "Working..." : "Working Changes"));
+const workingChangesLabel = computed(() => (compactWorkingLabel.value && !props.workspacePane ? "Working..." : "Working Changes"));
 const GITKEEP_NOTIFY_KEY = "gitswamp-notify-gitkeep";
 const VERY_LARGE_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024;
 const emptyDirectories = ref<string[]>([]);
@@ -786,6 +789,7 @@ function updateCompactWorkingLabel() {
 }
 
 function syncGitkeepNotifyPreference() {
+  if (props.workspacePane) { notifyGitkeep.value = false; return; }
   const saved = localStorage.getItem(GITKEEP_NOTIFY_KEY);
   if (saved === null) {
     localStorage.setItem(GITKEEP_NOTIFY_KEY, "true");
@@ -1901,6 +1905,7 @@ function handleGlobalKeyDown(event: KeyboardEvent) {
     closeFileContextMenu();
     return;
   }
+  if (props.workspacePane && !(event.target instanceof Node && detailsRoot.value?.contains(event.target))) return;
 
   if (event.key === "ArrowRight") {
     handleCommitFileArrowRight(event);
@@ -2047,8 +2052,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="w-full bg-[var(--card)] border-l border-[var(--border)] flex flex-col h-full overflow-visible relative z-[120]">
-    <div class="border-b border-[var(--border)] flex-shrink-0 relative">
+  <div ref="detailsRoot" class="w-full bg-[var(--card)] border-l border-[var(--border)] flex flex-col h-full overflow-visible relative z-[120]">
+    <div v-if="!workspacePane || !isWorkingChanges" class="border-b border-[var(--border)] flex-shrink-0 relative">
       <div class="h-9 flex">
         <button
           v-if="!isMultiCommitSelection && ((commit && !isWorkingChanges) || (isStash && selectedStash))"
@@ -2099,11 +2104,12 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0 || (conflictFiles?.length || 0) > 0" class="px-3 py-2.5 border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent">
-          <div class="flex items-center justify-between gap-2 mb-1">
+        <div v-if="stagedFiles.length > 0 || unstagedFiles.length > 0 || (conflictFiles?.length || 0) > 0"
+          class="border-b border-[var(--border)] bg-gradient-to-r from-[var(--primary)]/5 to-transparent" :class="workspacePane ? 'px-2 py-1' : 'px-3 py-2.5'">
+          <div class="flex items-center justify-between gap-2" :class="{ 'mb-1': !workspacePane }">
             <div class="flex items-center gap-2 min-w-0">
               <div class="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse" />
-              <span class="text-[11px] font-semibold text-[var(--foreground)] whitespace-nowrap">{{ workingChangesLabel }}</span>
+              <span class="text-[11px] font-semibold text-[var(--foreground)] whitespace-nowrap">{{ workspacePane ? 'Files' : workingChangesLabel }}</span>
             </div>
             <div class="flex items-center gap-1 p-0.5 rounded-md border border-[var(--border)] bg-[var(--input-background)]">
               <button
@@ -2129,7 +2135,7 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
-          <div class="flex items-center gap-3 text-[10px] text-[var(--muted-foreground)]">
+          <div v-if="!workspacePane" class="flex items-center gap-3 text-[10px] text-[var(--muted-foreground)]">
             <span v-if="hasConflicts && (conflictFiles?.length || 0) > 0" class="flex items-center gap-1 text-[#ef4444]">
               <span class="w-1.5 h-1.5 rounded-full bg-[#ef4444]" />
               {{ conflictFiles?.length || 0 }} unresolved
@@ -2531,7 +2537,7 @@ onUnmounted(() => {
         </template>
       </div>
 
-      <div class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0">
+      <div class="border-t border-[var(--border)] bg-[var(--card)]/50 flex-shrink-0" :class="workspacePane ? 'p-2' : 'p-3'">
         <div class="mb-2 relative">
           <div class="flex items-center justify-between mb-1 gap-2">
             <div class="text-[10px] font-medium text-[var(--muted-foreground)]">Subject</div>
@@ -2577,8 +2583,9 @@ onUnmounted(() => {
             v-model="commitSummary"
             type="text"
             placeholder="Commit message..."
-            class="w-full px-3 py-2 bg-[var(--input-background)] border rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 transition-colors"
+            class="w-full px-3 bg-[var(--input-background)] border rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 transition-colors"
             :class="[
+              workspacePane ? 'py-1' : 'py-2',
               'border ',
               commitSummary.length > 72 
                 ? 'border-[#ef4444] bg-[#ef4444]/5' 
@@ -2590,8 +2597,9 @@ onUnmounted(() => {
         <textarea
           v-model="commitDescription"
           placeholder="Description (optional)..."
-          rows="3"
-          class="w-full px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-2 overflow-y-auto"
+          :rows="workspacePane ? 1 : 3"
+          class="w-full px-3 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40 resize-none mb-2 overflow-y-auto"
+          :class="workspacePane ? 'py-1' : 'py-2'"
           @input="onDescriptionInput"
           @keydown.enter.ctrl.prevent="onCommit"
           @keydown.enter.meta.prevent="onCommit"
@@ -2647,11 +2655,12 @@ onUnmounted(() => {
 
         <AppButton
           class="w-full bg-[var(--primary)] hover:opacity-90 text-white text-xs font-medium h-8 flex items-center justify-center gap-1.5"
+          :title="workspaceBranch ? `Commit to ${workspaceBranch}` : undefined"
           :disabled="!canSubmitCommit"
           @click="onCommit"
         >
           <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
-          {{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : 'Commit Changes')) }}
+          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes'))) }}</span>
         </AppButton>
       </div>
     </div>

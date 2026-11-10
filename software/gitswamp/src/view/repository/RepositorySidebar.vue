@@ -16,6 +16,7 @@ import {
   FileCode2,
   LifeBuoy,
   Clipboard,
+  Columns3,
   GitBranchPlus,
   GitMerge,
   GitPullRequestArrow,
@@ -54,6 +55,7 @@ const emit = defineEmits<{
   checkoutTag: [sha: string];
   createBranch: [name: string];
   createBranchAt: [ref: string];
+  openBranchWorkspace: [branchRef: string];
   renameBranch: [name: string];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
@@ -170,7 +172,7 @@ const menuBranchHasOrigin = computed(() => {
   return !!branch && !branch.is_remote && props.remoteBranches.some(remote => remote.name === `origin/${branch.name}`);
 });
 
-function branchMenuAction(action: "checkout" | "create" | "rename" | "merge" | "rebase" | "upstream" | "reset" | "copy" | "delete" | "delete-both") {
+function branchMenuAction(action: "checkout" | "create" | "workspace" | "rename" | "merge" | "rebase" | "upstream" | "reset" | "copy" | "delete" | "delete-both") {
   const branch = branchMenu.value?.branch;
   if (!branch) return;
   const hasOrigin = menuBranchHasOrigin.value;
@@ -178,6 +180,7 @@ function branchMenuAction(action: "checkout" | "create" | "rename" | "merge" | "
   const ref = `${branch.is_remote ? "refs/remotes/" : "refs/heads/"}${branch.name}`;
   if (action === "checkout") emit("checkout", branch.is_remote ? ref : branch.name);
   if (action === "create") emit("createBranchAt", ref);
+  if (action === "workspace") emit("openBranchWorkspace", ref);
   if (action === "rename" && !branch.is_remote) emit("renameBranch", branch.name);
   const source = branch.is_remote ? branch.name.slice("origin/".length) : branch.name;
   if (action === "merge") emit("requestMerge", { source, sourceRemote: branch.is_remote, target: props.currentBranch });
@@ -770,6 +773,7 @@ function issueStateClass(issue: IssueInfo): string {
       <div class="branch-menu-name" :title="branchMenu.branch.name">{{ branchMenu.branch.name }}</div>
       <button role="menuitem" @click="branchMenuAction('checkout')"><GitBranch />Checkout branch</button>
       <button role="menuitem" @click="branchMenuAction('create')"><GitBranchPlus />Create branch here</button>
+      <button v-if="!branchMenu.branch.is_remote || !branchMenu.branch.name.endsWith('/HEAD')" role="menuitem" @click="branchMenuAction('workspace')"><Columns3 />Open Branch Workspace</button>
       <button v-if="!branchMenu.branch.is_remote" role="menuitem" @click="branchMenuAction('rename')"><PencilLine />Rename branch</button>
       <button v-if="canIntegrateMenuBranch" role="menuitem" @click="branchMenuAction('merge')"><GitMerge />Merge into current branch</button>
       <button v-if="canIntegrateMenuBranch && !branchMenu.branch.is_remote" role="menuitem" @click="branchMenuAction('rebase')"><GitPullRequestArrow />Rebase current onto this branch</button>

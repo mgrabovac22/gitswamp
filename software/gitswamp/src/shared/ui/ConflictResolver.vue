@@ -9,6 +9,7 @@ const props = defineProps<{
   repoPath: string;
   filePath: string;
   embedded?: boolean;
+  expectedBranch?: string;
 }>();
 
 const emit = defineEmits<{
@@ -354,12 +355,14 @@ async function saveResolution() {
   try {
     await invoke("save_file_content", {
       path: props.repoPath,
+      expectedBranch: props.expectedBranch,
       filePath: props.filePath,
       content: displayContent.value,
     });
     
     await invoke("stage_file", {
       path: props.repoPath,
+      expectedBranch: props.expectedBranch,
       filePath: props.filePath,
     });
     

@@ -351,8 +351,10 @@ pub fn get_available_external_editors() -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn get_available_external_tools() -> Vec<String> {
-    GitService::get_available_external_tools()
+pub async fn get_available_external_tools() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(GitService::get_available_external_tools)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -365,8 +367,10 @@ pub fn open_file_with_editor(
 }
 
 #[tauri::command]
-pub fn open_path_with_tool(path: String, tool: String) -> Result<(), String> {
-    GitService::open_path_with_tool(&path, &tool)
+pub async fn open_path_with_tool(path: String, tool: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::open_path_with_tool(&path, &tool))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

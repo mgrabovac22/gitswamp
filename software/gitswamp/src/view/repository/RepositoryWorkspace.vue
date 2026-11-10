@@ -7,6 +7,7 @@ import TerminalPanel from "@/view/shell/TerminalPanel.vue";
 import LogsPanel from "@/view/shell/LogsPanel.vue";
 import RepositorySidebar from "@/view/repository/RepositorySidebar.vue";
 import { useResizableWorkspace } from "@/features/repository/workspace/useResizableWorkspace";
+import type { WorkspaceLocation, WorkspaceRemovalRequest } from "@/features/repository/workspace/branchWorkspaceTypes";
 import { useUndoableDestructiveAction } from "@/shared/notifications/useUndoableDestructiveAction";
 import { publishPendingOperationPreview } from "@/shared/notifications/gitOperationPreview";
 import ManualBisectOverlay from "@/features/repository/manual-bisect/ManualBisectOverlay.vue";
@@ -26,7 +27,7 @@ import type {
   RemoteUserInfo,
 } from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client" | "branch-workspace";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 interface RemoteCreateOptions {
@@ -47,6 +48,7 @@ const RemoteInsightsPanel = defineAsyncComponent(() => import("@/view/repository
 const LostFoundPanel = defineAsyncComponent(() => import("@/view/repository/LostFoundPanel.vue"));
 const FastScriptsPanel = defineAsyncComponent(() => import("@/features/repository/fast-scripts/FastScriptsPanel.vue"));
 const HttpClientPanel = defineAsyncComponent(() => import("@/features/repository/http-client/components/HttpClientPanel.vue"));
+const BranchWorkspaceView = defineAsyncComponent(() => import("@/features/repository/workspace/BranchWorkspaceView.vue"));
 
 const props = defineProps<{
   git: any;
@@ -89,6 +91,7 @@ const props = defineProps<{
   errorLogs: string[];
   smartGitignoreWizardEnabled?: boolean;
   bugAutopsyEnabled?: boolean;
+  removedWorktree?: { path: string } | null;
 }>();
 
 const emit = defineEmits<{
@@ -97,6 +100,9 @@ const emit = defineEmits<{
   "update:detailsPanelCollapsed": [value: boolean];
   "update:showLogsPanel": [value: boolean];
   setHistoryView: [mode: HistoryViewMode];
+  openWorkspaceRepository: [location: WorkspaceLocation];
+  removeWorkspaceWorktree: [request: WorkspaceRemovalRequest];
+  workspaceBusy: [busy: boolean];
   closeDiffViewer: [];
   closeConflictResolver: [];
   conflictResolved: [];
@@ -131,6 +137,13 @@ const emit = defineEmits<{
   timeMachineBlame: [sha: string];
   createGist: [];
 }>();
+
+const workspaceRequest = ref<{ branchRef: string } | null>(null);
+function openBranchWorkspace(branchRef: string) {
+  workspaceRequest.value = { branchRef };
+  emit("setHistoryView", "branch-workspace");
+}
+watch(() => props.git.repoPath.value, () => { workspaceRequest.value = null; });
 
 function handleRunFastScript(payload: { type: string; body: string; name: string }) {
   emit("update:showTerminal", true);
@@ -423,7 +436,14 @@ function handleRefreshState() {
 </script>
 
 <template>
-  <div class="relative flex-1 flex overflow-hidden">
+  <BranchWorkspaceView v-if="props.historyViewMode === 'branch-workspace'"
+    :key="props.git.repoPath.value" :repo-path="props.git.repoPath.value" :current-branch="props.git.currentBranch.value"
+    :local-branches="props.git.localBranches.value" :remote-branches="props.git.remoteBranches.value" :request="workspaceRequest"
+    :removed-worktree="props.removedWorktree"
+    @request-consumed="workspaceRequest = null" @open-repository="emit('openWorkspaceRepository', $event)"
+    @remove-worktree="emit('removeWorkspaceWorktree', $event)" @busy-change="emit('workspaceBusy', $event)"
+    @close="emit('setHistoryView', 'graph')" />
+  <div v-else class="relative flex-1 flex overflow-hidden">
     <div class="h-full flex-shrink-0" :style="{ width: `${sidebarWidth}px` }">
       <RepositorySidebar
         :repo-path="props.git.repoPath.value"
@@ -449,6 +469,7 @@ function handleRefreshState() {
         @checkout-tag="props.git.checkoutCommit($event)"
         @create-branch="props.git.createBranch($event)"
         @create-branch-at="emit('createBranchAt', $event)"
+        @open-branch-workspace="openBranchWorkspace($event)"
         @rename-branch="emit('renameBranch', $event)"
         @request-merge="emit('requestMerge', $event)"
         @request-rebase="emit('requestRebase', $event)"
@@ -533,6 +554,7 @@ function handleRefreshState() {
           @set-amend-mode="setAmendModeFromGraph($event)"
           @checkout="props.git.checkoutCommit($event)"
           @create-branch-at="emit('createBranchAt', $event)"
+          @open-branch-workspace="openBranchWorkspace($event)"
           @cherry-pick="props.git.cherryPick($event)"
           @revert="props.git.revertCommit($event)"
           @reset-soft="scheduleResetToCommit($event, 'soft')"

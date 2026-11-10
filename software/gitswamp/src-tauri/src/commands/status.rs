@@ -1,6 +1,7 @@
 use crate::models::FileStatusInfo;
 use crate::services::git_service::GitService;
 use crate::services::secret_service::{ignore_untracked, validate_commit, SecretScan, SecretService};
+use crate::services::worktree_service::validate_checkout;
 
 #[tauri::command]
 pub async fn scan_secrets(path: String, staged: bool, include_secrets: Option<bool>, file_paths: Option<Vec<String>>) -> Result<SecretScan, String> {
@@ -29,8 +30,11 @@ pub async fn get_status(path: String) -> Result<Vec<FileStatusInfo>, String> {
 }
 
 #[tauri::command]
-pub async fn stage_file(path: String, file_path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || GitService::stage_file(&path, &file_path))
+pub async fn stage_file(path: String, file_path: String, expected_branch: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_checkout(&path, expected_branch.as_deref())?;
+        GitService::stage_file(&path, &file_path)
+    })
         .await
         .map_err(|e| e.to_string())?
 }
@@ -65,7 +69,7 @@ pub async fn create_commit(
     secret_approval: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        validate_commit(&path, secret_check.unwrap_or(true), secret_approval.as_deref())?;
+        validate_commit(&path, secret_check.unwrap_or(false), secret_approval.as_deref())?;
         GitService::create_commit_with_options(&path, &message, allow_empty.unwrap_or(false))
     })
     .await
@@ -108,7 +112,7 @@ pub async fn amend_commit(
     secret_approval: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        validate_commit(&path, secret_check.unwrap_or(true), secret_approval.as_deref())?;
+        validate_commit(&path, secret_check.unwrap_or(false), secret_approval.as_deref())?;
         GitService::amend_commit(&path, &message, reset_author, signoff)
     })
     .await

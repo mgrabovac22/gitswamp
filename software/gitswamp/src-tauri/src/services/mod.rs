@@ -7,3 +7,4 @@ pub mod operation_preview;
 pub mod remote_service;
 pub mod secret_service;
 pub mod stash_service;
+pub mod worktree_service;

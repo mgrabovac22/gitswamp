@@ -12,7 +12,7 @@ For a repository initialized outside GitSwamp, stage your files and commit as us
 
 ## Secret Review and Large Files
 
-**Accidental Secret Detector** is enabled by default in Options. It runs locally and marks possible credentials beside unstaged files without notifications. It checks text content regardless of extension, including UTF-16 text with a byte-order mark. Empty values, environment-variable references and common placeholder values are not treated as embedded credentials. An `.example` filename is not an exemption when it contains an actual value.
+**Accidental Secret Detector** is off by default. Enable it in Options to scan locally and mark possible credentials in Working Changes without notifications. It checks text content regardless of extension, including UTF-16 text with a byte-order mark. Empty values, environment-variable references and common placeholder values are not treated as embedded credentials. An `.example` filename is not an exemption when it contains an actual value.
 
 Before commit or amend, GitSwamp reviews the staged index, not the current working-file contents. A compact confirmation lists file paths, line numbers and finding types, never the matched secret values. Cancel preserves the commit message. **Add to .gitignore** only unstages newly added flagged files and appends literal paths to the root `.gitignore`; it keeps local files and never silently untracks existing files or stages `.gitignore`. Edit credentials out of tracked files instead. Confirmation is invalidated when the staged tree or HEAD changes.
 
@@ -47,6 +47,18 @@ Branches and tags with identical names are separate Git references. Use the bran
 Right-click a branch in the sidebar or its badge on the graph for branch actions. **Create branch here** starts from that branch's tip without first checking it out. **Rename branch** is available for local branches. Sidebar menus also open with **Shift+F10** on a focused branch row.
 
 Checking out a remote-only branch creates or uses the corresponding local tracking branch. If a local branch contains commits not present in that remote reference, GitSwamp does not silently reset it to the older remote state. Review the divergence before choosing the next Git operation.
+
+## Branch Workspace
+
+Open **View > Branch Workspace** or right-click a branch and choose **Open Branch Workspace**. Add up to four branch columns with the picker on the left. The active branch is marked at the top; the tab strip focuses a column without checking anything out. Each column has its own history, Working Changes and **Commit to [branch]** action. Expand the compact changes panel when you need more room. The toolbar opens the active worktree's folder or its full repository tab.
+
+Use **Open with** in a branch column header to open that worktree in the file manager or a detected IDE. **Choose application...** opens the system picker for other editors.
+
+GitSwamp reuses an existing checkout for a branch. Otherwise it creates a linked worktree in `.gitswamp-worktrees` beside the main repository. A remote-only branch gets a local tracking branch; a same-named local branch with a different upstream is never reset or reassigned automatically. Worktrees share Git objects and branch references but have separate working directories, indexes and HEADs.
+
+**Branch Workspace** stays inside the current repository tab. Use **Open worktree in repository tab** to open a linked worktree in a separate tab. Closing the Branch Workspace view returns to the original graph and leaves all worktree folders intact. Commits from linked worktrees appear under their branches in the refreshed original graph; working files stay in their own directories. History loads in pages, and workspace polling stops when the view closes.
+
+Closing a linked branch column or its full worktree tab offers **Remove worktree** and **Close without removing**. Removal requires confirmation, protects the original worktree, and runs Git without force. Worktrees with staged, unstaged, untracked or ignored files, or an active Git operation, are not removed. Removing the worktree folder does not delete its branch or commits.
 
 The active local branch cannot be deleted. Switch to another branch first. A refused local deletion must not become an accidental remote deletion.
 

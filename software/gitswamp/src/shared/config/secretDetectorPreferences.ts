@@ -2,7 +2,7 @@ export const SECRET_DETECTOR_EVENT = "gitswamp-secret-detector-changed";
 const KEY = "gitswamp-secret-detector-enabled";
 
 export function secretDetectorEnabled(): boolean {
-  try { return localStorage.getItem(KEY) !== "false"; } catch { return true; }
+  try { return localStorage.getItem(KEY) === "true"; } catch { return false; }
 }
 
 export function storeSecretDetectorEnabled(enabled: boolean): void {
