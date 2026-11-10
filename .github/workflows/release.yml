@@ -61,7 +61,7 @@ jobs:
             artifact: darwin-x86_64
             tauri_args: --target x86_64-apple-darwin
           - name: macOS Apple Silicon
-            runner: macos-14
+            runner: macos-15
             artifact: darwin-aarch64
             tauri_args: --target aarch64-apple-darwin
     defaults:
