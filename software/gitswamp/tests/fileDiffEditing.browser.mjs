@@ -16,13 +16,25 @@ const mocks = {
 const html = `<!doctype html><html><head><style>
 html,body,#app{margin:0;height:100%;}button.test-file{padding:8px 16px;color:white;background:#32455e;}
 </style></head><body><div id="app"></div><script type="module">
-import {createApp,h,ref} from '/node_modules/.vite/deps/vue.js';
+import {createApp,h,ref} from '/node_modules/.vite-diff-test/deps/vue.js';
 import Viewer from '/src/shared/ui/FileDiffViewer.vue';
 import TimeMachine from '/src/view/commit/CommitTimeMachinePanel.vue';
 import CommitDetails from '/src/view/commit/CommitDetails.vue';
 import '/src/styles/index.css';
 const files={'a.ts':'const alpha = 1;\\n// first file\\n','b.ts':'const beta = 2;\\n// second file\\n'};
+window.lineActions = [];
+const longLine = 'const veryLong = "' + 'content '.repeat(420) + '";\\n';
+let additions = [longLine, 'const second = true;\\n'];
 window.testInvoke = async (command,args) => {
+ if(command==='apply_diff_line') {
+   window.lineActions.push(args);
+   if (!args.staged && args.expected.line_type === 'addition') additions = additions.filter(line => line !== args.expected.content);
+   return;
+ }
+ if(command==='get_working_diff' && args.filePath==='staging.ts') {
+   const lines=[{line_type:'context',old_line_no:1,new_line_no:1,content:'// context\\n'},{line_type:'deletion',old_line_no:2,new_line_no:null,content:'const oldValue = true;\\n'},...additions.map((content,i)=>({line_type:'addition',old_line_no:null,new_line_no:i+2,content}))];
+   return {path:args.filePath,is_binary:false,hunks:[{old_start:1,old_lines:2,new_start:1,new_lines:1+additions.length,header:'@@ -1,2 +1,3 @@',lines}]};
+ }
  if(command==='get_working_diff') return {path:args.filePath,is_binary:false,hunks:[{old_start:1,old_lines:2,new_start:1,new_lines:2,header:'@@ -1,2 +1,2 @@',lines:[{line_type:'context',old_line_no:1,new_line_no:1,content:'const syntax = true;\\n'},{line_type:'context',old_line_no:2,new_line_no:2,content:'// worker preview\\n'}]}]};
  if(command==='get_file_content') return files[args.filePath] || '';
  if(command==='save_file_content'){files[args.filePath]=args.content;return '';}
@@ -33,17 +45,19 @@ window.testInvoke = async (command,args) => {
  if(command==='get_available_editors') return [];
  throw Error(command);
 };
-const selected=ref('a.ts'),machine=ref(false),details=ref(false),commitFiles=ref([]),filesLoading=ref(false);
+const selected=ref('a.ts'),staged=ref(false),machine=ref(false),details=ref(false),commitFiles=ref([]),filesLoading=ref(false);
 const commit={sha:'1234567',short_sha:'1234567',message:'Large commit',author_name:'Test',author_email:'test@example.com',timestamp:1793380000,refs:[],parent_shas:[]};
 createApp({render:()=>h('main',{style:'height:100%;display:flex;flex-direction:column;'},[
- h('nav',{},['a.ts','b.ts'].map(name=>h('button',{class:'test-file',onClick:()=>{details.value=false;machine.value=false;selected.value=name}},name)).concat(
+ h('nav',{},['a.ts','b.ts','staging.ts'].map(name=>h('button',{class:'test-file',onClick:()=>{details.value=false;machine.value=false;staged.value=false;selected.value=name}},name)).concat(
+ h('button',{class:'test-file',onClick:()=>{staged.value=true}},'Staged changes'),
  h('button',{class:'test-file',onClick:()=>{details.value=false;machine.value=true}},'Time Machine'),
  h('button',{class:'test-file',onClick:()=>{details.value=true;machine.value=false;filesLoading.value=true;setTimeout(()=>{commitFiles.value=Array.from({length:2048},(_,i)=>({path:'file-'+String(i).padStart(4,'0')+'.ts',status:'added',additions:1,deletions:0}));filesLoading.value=false;},300)}},'Large commit'))),
- h('section',{style:'flex:1;min-height:0;'},[details.value ? h(CommitDetails,{repoPath:'repo',commit,selectedCommits:[commit],commitFiles:commitFiles.value,commitFilesLoading:filesLoading.value,isWorkingChanges:false,stagedFiles:[],unstagedFiles:[]}) : machine.value ? h(TimeMachine,{repoPath:'repo'}) : h(Viewer,{repoPath:'repo',filePath:selected.value})])
+ h('section',{style:'flex:1;min-height:0;'},[details.value ? h(CommitDetails,{repoPath:'repo',commit,selectedCommits:[commit],commitFiles:commitFiles.value,commitFilesLoading:filesLoading.value,isWorkingChanges:false,stagedFiles:[],unstagedFiles:[]}) : machine.value ? h(TimeMachine,{repoPath:'repo'}) : h(Viewer,{repoPath:'repo',filePath:selected.value,staged:staged.value,expectedBranch:'feature/topic'})])
 ])}).mount('#app');
 </script></body></html>`;
 const server = await createServer({
-  root, configFile: false,
+  root, configFile: false, cacheDir: "node_modules/.vite-diff-test",
+  define: { __APP_VERSION__: JSON.stringify("test") },
   plugins: [{
     name: "editing-test-mocks", enforce: "pre",
     resolveId(id) {
@@ -71,7 +85,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__editing_test__`);
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__editing_test__`, { waitUntil: "domcontentloaded", timeout: 90000 });
   await page.waitForFunction(() => document.querySelector('.hljs-keyword'));
   await page.getByTitle("Edit file", { exact: true }).click();
   const input = page.getByRole("textbox", { name: "File content" });
@@ -116,8 +130,49 @@ try {
   });
   await page.locator('[data-commit-file-path="file-2047.ts"]').waitFor();
   await page.screenshot({path:path.join(root,'src-tauri/target/large-commit-window.png')});
+
+  await page.getByRole('button',{name:'staging.ts',exact:true}).click();
+  const port = page.locator('.diff-text-scrollport');
+  const added = port.locator('[data-diff-line="2"]');
+  const stageLine = page.getByRole('button',{name:'Stage line',exact:true});
+  await added.hover({position:{x:160,y:8}});
+  await stageLine.waitFor();
+  assert.equal(await stageLine.count(), 1);
+  const hunkButtons = port.getByRole('button',{name:/^(Stage|Discard) Hunk$/});
+  assert.equal(await hunkButtons.count(), 2);
+  const oldRight = (await stageLine.boundingBox()).x;
+  assert.ok(await port.evaluate(el => { el.scrollLeft = 1500; return el.scrollLeft > 1000; }));
+  await page.waitForFunction(() => Math.abs(document.querySelector('.diff-hunk-header').getBoundingClientRect().left) < 2);
+  assert.equal((await stageLine.boundingBox()).x, oldRight);
+  const viewRight = await port.evaluate(el => el.getBoundingClientRect().left + el.clientWidth);
+  for (const button of await hunkButtons.all()) {
+    const box = await button.boundingBox();
+    assert.ok(box.x > viewRight - 230 && box.x + box.width <= viewRight);
+  }
+  await page.screenshot({path:path.join(root,'src-tauri/target/diff-line-staging.png')});
+  await stageLine.click();
+  await page.waitForFunction(() => window.lineActions.length === 1 && !document.querySelector('[data-diff-line="3"]'));
+  const stage = await page.evaluate(() => window.lineActions[0]);
+  assert.equal(stage.lineIndex, 2);
+  assert.equal(stage.staged, false);
+  assert.equal(stage.expectedBranch, 'feature/topic');
+  assert.match(stage.expected.content, /^const veryLong/);
+
+  await page.getByRole('button',{name:'Staged changes',exact:true}).click();
+  await page.getByTitle('Split view',{exact:true}).click();
+  const oldLine = port.locator('.split-diff-scroll [data-diff-line="1"]');
+  const newLine = port.locator('.split-diff-scroll [data-diff-line="2"]');
+  const unstage = page.getByRole('button',{name:'Unstage line',exact:true});
+  await oldLine.hover();
+  assert.ok((await unstage.boundingBox()).x < viewRight * .6);
+  await unstage.click();
+  await page.waitForFunction(() => window.lineActions.length === 2);
+  await newLine.press('Enter');
+  await page.waitForFunction(() => window.lineActions.length === 3);
+  const actions = await page.evaluate(() => window.lineActions.slice(1).map(({staged,expected})=>[staged,expected.line_type]));
+  assert.deepEqual(actions, [[true,'deletion'],[true,'addition']]);
   assert.deepEqual(errors, []);
-  console.log('PASS: worker syntax coloring, save/switch, scroll alignment, large-file fallback, Time Machine and responsive 2048-file list.');
+  console.log('PASS: editor, large-file fallback, Time Machine, 2048-file list, line staging and pinned diff controls.');
 } finally {
   await browser?.close();
   await server.close();
