@@ -446,7 +446,7 @@ function applyMobileState() {
     nodes.primary.href = apk.href;
     nodes.primary.removeAttribute("data-build-key");
     if (nodes.primaryLabel) nodes.primaryLabel.textContent = "Download Android test APK";
-    if (nodes.primarySub) nodes.primarySub.textContent = "v0.1.0 · 21 MB · debug build";
+    if (nodes.primarySub) nodes.primarySub.textContent = "v0.1.0 · 3,5 MB · debug build";
     setIcon(qs("use", nodes.primary), "i-android");
   } else if (nodes.primary) {
     nodes.primary.href = RELEASES_PAGE;
