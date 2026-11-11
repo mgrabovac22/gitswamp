@@ -18,6 +18,7 @@ import { isImageFilePath } from "@/shared/config/imagePreview";
 import BinaryDiffViewer from "@/shared/ui/BinaryDiffViewer.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 import CodeTextEditor from "@/shared/ui/CodeTextEditor.vue";
+import DiffLineAction from "@/shared/ui/DiffLineAction.vue";
 import logoCrocGif from "@/assets/logo_croc.gif";
 import logoCrocLoadingGif from "@/assets/logo_croc_loading.gif";
 
@@ -58,7 +59,10 @@ const splitPaneRefs = shallowRef(new Map<string, HTMLElement>());
 const currentHunkIndex = ref(0);
 const saving = ref(false);
 const hasUnsavedChanges = ref(false);
-defineExpose({ hasUnsavedChanges, saving });
+const diffMutationBusy = ref(false);
+const diffScrollport = shallowRef<HTMLElement | null>(null);
+const lineAction = shallowRef<InstanceType<typeof DiffLineAction> | null>(null);
+defineExpose({ hasUnsavedChanges, saving: computed(() => saving.value || diffMutationBusy.value) });
 const fileJourneyOpen = ref(false);
 const highlightedLineCache = shallowRef(new Map<string, string>());
 const toast = useToast();
@@ -148,10 +152,6 @@ function isBlameByDefaultEnabled(): boolean {
 function getFileContentCacheKey(): string | null {
   if (props.commitSha) {
     return `${props.repoPath}|${props.filePath}|commit:${props.commitSha}`;
-  }
-
-  if (props.staged) {
-    return `${props.repoPath}|${props.filePath}|staged`;
   }
 
   return null;
@@ -852,7 +852,7 @@ watch(blamePanelVisible, (visible) => {
   void loadFileBlame();
 });
 
-async function reload() {
+async function reload(keepViewport = false) {
   if (viewMode.value === "edit") return;
   const sequence = ++diffLoadSequence;
   const identity = fileIdentity.value;
@@ -860,7 +860,7 @@ async function reload() {
 
   resetDiffColoringBudget();
   
-  loading.value = true;
+  loading.value = !keepViewport || !diff.value;
   error.value = null;
   
   try {
@@ -895,6 +895,7 @@ async function reload() {
 
     if (diff.value) {
       lastFileHash = hashDiffStructure(diff.value);
+      currentHunkIndex.value = Math.min(currentHunkIndex.value, Math.max(0, diff.value.hunks.length - 1));
     }
 
     highlightedLineCache.value.clear();
@@ -1223,52 +1224,30 @@ function discardEditChanges() {
   hasUnsavedChanges.value = false;
 }
 
-async function revertHunk(hunkIdx: number) {
-  if (!diff.value || !isWorkingChanges.value) return;
-  try {
-    await invoke("revert_hunk", {
-      path: props.repoPath,
-      expectedBranch: props.expectedBranch,
-      filePath: props.filePath,
-      hunkIndex: hunkIdx,
-      staged: props.staged ?? false,
-    });
-    emit("refresh");
-    await reload();
-  } catch (e) {
-    error.value = `Failed to revert hunk: ${e}`;
-  }
-}
+watch([diff, viewMode], () => lineAction.value?.clear(), { flush: "sync" });
 
-async function stageHunk(hunkIdx: number) {
-  if (!diff.value || !isUnstaged.value) return;
+async function mutateDiff(command: "revert_hunk" | "stage_hunk" | "unstage_hunk" | "apply_diff_line", hunkIndex: number, lineIndex?: number) {
+  if (!diff.value || !isWorkingChanges.value || diffMutationBusy.value || loading.value) return;
+  const staged = Boolean(props.staged);
+  const expected = lineIndex === undefined ? undefined : diff.value.hunks[hunkIndex]?.lines[lineIndex];
+  if (command === "apply_diff_line" && expected?.line_type !== "addition" && expected?.line_type !== "deletion") return;
+  const identity = fileIdentity.value;
+  diffMutationBusy.value = true;
   try {
-    await invoke("stage_hunk", {
+    await invoke(command, {
       path: props.repoPath,
       expectedBranch: props.expectedBranch,
       filePath: props.filePath,
-      hunkIndex: hunkIdx,
+      hunkIndex,
+      ...(command === "revert_hunk" || command === "apply_diff_line" ? { staged } : {}),
+      ...(command === "apply_diff_line" ? { lineIndex, expected } : {}),
     });
     emit("refresh");
-    await reload();
   } catch (e) {
-    error.value = `Failed to stage hunk: ${e}`;
-  }
-}
-
-async function unstageHunk(hunkIdx: number) {
-  if (!diff.value || !isWorkingChanges.value || !props.staged) return;
-  try {
-    await invoke("unstage_hunk", {
-      path: props.repoPath,
-      expectedBranch: props.expectedBranch,
-      filePath: props.filePath,
-      hunkIndex: hunkIdx,
-    });
-    emit("refresh");
-    await reload();
-  } catch (e) {
-    error.value = `Failed to unstage hunk: ${e}`;
+    if (identity === fileIdentity.value) toast.error(String(e));
+  } finally {
+    if (identity === fileIdentity.value && (viewMode.value === "diff" || viewMode.value === "split-diff")) await reload(true);
+    diffMutationBusy.value = false;
   }
 }
 
@@ -1277,10 +1256,12 @@ function startFileWatch() {
   
   fileWatchInterval = setInterval(async () => {
     if (!isUnstaged.value || viewMode.value === "edit" || viewMode.value === "time-lapse") return;
-    if (loading.value || loadingFileContent.value || fileWatchRequestInFlight) return;
+    if (loading.value || loadingFileContent.value || fileWatchRequestInFlight || diffMutationBusy.value) return;
     fileWatchRequestInFlight = true;
     const identity = fileIdentity.value;
-    const isCurrent = () => identity === fileIdentity.value && viewMode.value !== "edit" && viewMode.value !== "time-lapse";
+    const sequence = diffLoadSequence;
+    const isCurrent = () => identity === fileIdentity.value && sequence === diffLoadSequence && !diffMutationBusy.value
+      && viewMode.value !== "edit" && viewMode.value !== "time-lapse";
     
     try {
       if (diff.value?.is_binary || viewMode.value === "image-diff") {
@@ -2783,8 +2764,8 @@ watch(
       </div>
     </div>
 
-    <div class="flex-1 min-h-0 flex bg-[var(--diff-bg)] font-mono text-[12px] leading-[1.4]">
-      <div class="flex-1 min-w-0 overflow-auto">
+    <div class="relative flex-1 min-h-0 flex bg-[var(--diff-bg)] font-mono text-[12px] leading-[1.4]">
+      <div ref="diffScrollport" class="flex-1 min-w-0 overflow-auto" :class="{ 'diff-text-scrollport': viewMode === 'diff' || viewMode === 'split-diff' }">
       <div v-if="loading" class="flex items-center justify-center h-full">
         <div class="diff-loader-shell">
           <img :src="logoCrocGif" alt="Loading" class="diff-loader-logo" />
@@ -2803,7 +2784,7 @@ watch(
 
       <div v-else-if="error" class="flex flex-col items-center justify-center h-full gap-2">
         <div class="text-red-400">{{ error }}</div>
-        <button @click="reload" class="text-xs text-[var(--diff-link)] hover:underline">Retry</button>
+        <button @click="reload()" class="text-xs text-[var(--diff-link)] hover:underline">Retry</button>
       </div>
 
       <div
@@ -2851,14 +2832,15 @@ watch(
         </div>
 
         <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
-          <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[var(--diff-hunk-bg)] px-3 py-1.5 sticky top-0 z-10 border-y border-[var(--diff-border)]">
-            <span class="text-xs text-[var(--diff-link)]">
+          <div :id="`hunk-${hunkIdx}`" class="diff-hunk-header flex items-center justify-between gap-2 bg-[var(--diff-hunk-bg)] px-3 py-1.5 sticky top-0 left-0 z-10 border-y border-[var(--diff-border)]">
+            <span class="min-w-0 truncate text-xs text-[var(--diff-link)]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
             </span>
-            <div v-if="isWorkingChanges" class="flex items-center gap-1">
+            <div v-if="isWorkingChanges" class="ml-auto flex shrink-0 items-center gap-1">
               <button
                 v-if="isUnstaged"
-                @click="stageHunk(hunkIdx)"
+                :disabled="diffMutationBusy"
+                @click="mutateDiff('stage_hunk', hunkIdx)"
                 class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
               >
                 <Paintbrush class="w-3 h-3" />
@@ -2866,7 +2848,8 @@ watch(
               </button>
               <button
                 v-else-if="props.staged"
-                @click="unstageHunk(hunkIdx)"
+                :disabled="diffMutationBusy"
+                @click="mutateDiff('unstage_hunk', hunkIdx)"
                 class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
               >
                 <Undo2 class="w-3 h-3" />
@@ -2874,7 +2857,8 @@ watch(
               </button>
               <button
                 v-if="isUnstaged"
-                @click="revertHunk(hunkIdx)"
+                :disabled="diffMutationBusy"
+                @click="mutateDiff('revert_hunk', hunkIdx)"
                 class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
               >
                 <Undo2 class="w-3 h-3" />
@@ -2883,9 +2867,11 @@ watch(
             </div>
           </div>
 
-          <div>
+          <div :data-diff-hunk="hunkIdx">
             <template v-for="(line, lineIdx) in hunk.lines" :key="lineIdx">
-              <div :class="['flex', lineClass(line.line_type)]">
+              <div :class="['flex', lineClass(line.line_type)]"
+                :data-diff-line="isWorkingChanges && line.line_type !== 'context' ? lineIdx : undefined"
+                :tabindex="isWorkingChanges && line.line_type !== 'context' ? 0 : undefined">
                 <div
                   v-if="showBlamePanel"
                   class="w-[230px] flex-shrink-0 px-2 py-0.5 border-r border-[var(--diff-border)] bg-[var(--secondary)]/35 overflow-hidden"
@@ -2967,14 +2953,15 @@ watch(
         </div>
 
         <template v-for="(hunk, hunkIdx) in diff.hunks" :key="hunkIdx">
-          <div :id="`hunk-${hunkIdx}`" class="flex items-center justify-between bg-[var(--diff-hunk-bg)] px-3 py-1.5 sticky top-0 z-10 border-y border-[var(--diff-border)]">
-            <span class="text-xs text-[var(--diff-link)]">
+          <div :id="`hunk-${hunkIdx}`" class="diff-hunk-header flex items-center justify-between gap-2 bg-[var(--diff-hunk-bg)] px-3 py-1.5 sticky top-0 left-0 z-10 border-y border-[var(--diff-border)]">
+            <span class="min-w-0 truncate text-xs text-[var(--diff-link)]">
               @@ -{{ hunk.old_start }},{{ hunk.old_lines }} +{{ hunk.new_start }},{{ hunk.new_lines }} @@
             </span>
-            <div v-if="isWorkingChanges" class="flex items-center gap-1">
+            <div v-if="isWorkingChanges" class="ml-auto flex shrink-0 items-center gap-1">
               <button
                 v-if="isUnstaged"
-                @click="stageHunk(hunkIdx)"
+                :disabled="diffMutationBusy"
+                @click="mutateDiff('stage_hunk', hunkIdx)"
                 class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
               >
                 <Paintbrush class="w-3 h-3" />
@@ -2982,7 +2969,8 @@ watch(
               </button>
               <button
                 v-else-if="props.staged"
-                @click="unstageHunk(hunkIdx)"
+                :disabled="diffMutationBusy"
+                @click="mutateDiff('unstage_hunk', hunkIdx)"
                 class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
               >
                 <Undo2 class="w-3 h-3" />
@@ -2990,7 +2978,8 @@ watch(
               </button>
               <button
                 v-if="isUnstaged"
-                @click="revertHunk(hunkIdx)"
+                :disabled="diffMutationBusy"
+                @click="mutateDiff('revert_hunk', hunkIdx)"
                 class="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--diff-border)] bg-[var(--secondary)] hover:opacity-85 text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
               >
                 <Undo2 class="w-3 h-3" />
@@ -3000,6 +2989,7 @@ watch(
           </div>
 
           <div
+            :data-diff-hunk="hunkIdx"
             :class="[
               'border-b border-[var(--diff-border)] grid',
               showBlamePanel ? 'grid-cols-[230px_minmax(0,1fr)_minmax(0,1fr)]' : 'grid-cols-2'
@@ -3031,6 +3021,8 @@ watch(
                 <div
                   v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                   :key="`${hunkIdx}-old-${rowIdx}`"
+                  :data-diff-line="isWorkingChanges && row.oldType === 'deletion' ? row.oldRef?.lineIdx : undefined"
+                  :tabindex="isWorkingChanges && row.oldType === 'deletion' ? 0 : undefined"
                   :class="['flex min-h-[18px]', splitCellClass(row.oldType)]"
                 >
                   <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
@@ -3050,6 +3042,8 @@ watch(
                 <div
                   v-for="(row, rowIdx) in splitDiffRowsByHunk[hunkIdx]"
                   :key="`${hunkIdx}-new-${rowIdx}`"
+                  :data-diff-line="isWorkingChanges && row.newType === 'addition' ? row.newRef?.lineIdx : undefined"
+                  :tabindex="isWorkingChanges && row.newType === 'addition' ? 0 : undefined"
                   :class="['flex min-h-[18px]', splitCellClass(row.newType)]"
                 >
                   <div class="diff-line-no w-11 flex-shrink-0 text-right pr-1.5 text-[var(--diff-line-number)] select-none border-r border-[var(--diff-border)] text-[10px] leading-[18px]">
@@ -3288,6 +3282,9 @@ watch(
       </div>
 
       </div>
+      <DiffLineAction v-if="isWorkingChanges && diff && !diff.is_binary && (viewMode === 'diff' || viewMode === 'split-diff')"
+        ref="lineAction" :scrollport="diffScrollport" :staged="Boolean(staged)" :busy="diffMutationBusy"
+        @apply="(hunkIndex, lineIndex) => mutateDiff('apply_diff_line', hunkIndex, lineIndex)" />
     </div>
 
     <div
@@ -3314,6 +3311,11 @@ watch(
 </template>
 
 <style scoped>
+.diff-text-scrollport { container-type: inline-size; }
+.diff-hunk-header { width: 100cqw; }
+.diff-hunk-header button:disabled { opacity: .5; }
+[data-diff-line]:focus-visible { outline: 1px solid var(--diff-link); outline-offset: -1px; }
+
 .diff-loader-shell {
   display: flex;
   flex-direction: column;

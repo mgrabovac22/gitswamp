@@ -17,6 +17,7 @@ use commands::credentials::{
     save_token,
 };
 use commands::diff::{
+    apply_diff_line,
     get_binary_diff_info, get_commit_diff, get_file_blame, get_file_bytes, get_file_content,
     get_staged_diff_summary, get_staged_file_content, get_working_diff, has_conflict_markers,
     revert_hunk, save_file_content, stage_hunk, unstage_hunk,
@@ -207,6 +208,7 @@ pub fn run() {
             revert_hunk,
             stage_hunk,
             unstage_hunk,
+            apply_diff_line,
             has_conflict_markers,
             append_app_log,
             get_app_log_path,
