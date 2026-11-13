@@ -9,6 +9,7 @@ pub mod diff;
 pub mod ghost;
 pub mod http;
 pub mod interactive_rebase;
+pub mod lfs;
 pub mod logs;
 pub mod operation_preview;
 pub mod operations;

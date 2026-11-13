@@ -92,7 +92,7 @@ impl IntegrationService {
         result
     }
 
-    fn basic_auth_header(username: &str, password: &str) -> String {
+    pub(super) fn basic_auth_header(username: &str, password: &str) -> String {
         let payload = format!("{}:{}", username, password);
         let encoded = Self::base64_encode(payload.as_bytes());
         format!("Basic {}", encoded)

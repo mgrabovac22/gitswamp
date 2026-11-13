@@ -565,6 +565,11 @@ impl RemoteService {
             .map_err(|e| format!("No remote 'origin': {}", e.message()))?;
 
         let remote_url = remote.url().unwrap_or_default().to_string();
+        let mut lfs_refs = vec![refspec.trim_start_matches('+').split(':').next().unwrap_or("HEAD")];
+        lfs_refs.extend(tag_refspecs.iter().filter_map(|spec| spec.split(':').next()));
+        let lfs_auth = token.map(|token| split_bitbucket_credentials(&remote_url, token)
+            .unwrap_or_else(|| (Self::auth_username_candidates(&remote_url, None).into_iter().next().unwrap_or_else(|| "git".into()), token.into())));
+        super::lfs::upload_refs(&repo, "origin", &remote_url, lfs_auth.as_ref().map(|(user, secret)| (user.as_str(), secret.as_str())), &lfs_refs)?;
         if let Some(t) = token {
             if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
                 let attempts: Vec<(String, String)> =
@@ -983,6 +988,10 @@ impl RemoteService {
                 format!("Could not remove the old temporary remote. Push cancelled: {}", error.message())
             })?;
         }
+        let lfs_refs: Vec<_> = refspecs.iter().filter_map(|spec| spec.split(':').next()).collect();
+        let lfs_auth = split_bitbucket_credentials(origin_url, token)
+            .unwrap_or_else(|| (Self::auth_username_candidates(origin_url, None).into_iter().next().unwrap_or_else(|| "git".into()), token.into()));
+        super::lfs::upload_refs(repo, TEMP_PUSH_REMOTE_PLATFORM, origin_url, Some((&lfs_auth.0, &lfs_auth.1)), &lfs_refs)?;
         let mut remote = repo.remote_anonymous(origin_url)
             .map_err(|error| format!("Failed to create push connection: {}", error.message()))?;
         let mut push_opts = git2::PushOptions::new();

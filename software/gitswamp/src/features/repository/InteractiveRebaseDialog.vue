@@ -23,6 +23,7 @@ const dialog = ref<HTMLDialogElement>();
 const plan = ref<Plan>();
 const rows = ref<(Commit & { action: Action; reword: string })[]>([]);
 const combinedDrafts = ref<Record<string, string>>({});
+const remembered = ref<Record<string, Action>>({});
 const loading = ref(true);
 const error = ref("");
 const dragged = ref<string | null>(null);
@@ -67,6 +68,21 @@ const validation = computed(() => {
   return "";
 });
 const changed = computed(() => rows.value.some((row, index) => row.action !== "pick" || row.sha !== plan.value?.commits[index].sha));
+const selectedCount = computed(() => rows.value.filter(row => row.action !== "drop").length);
+
+function include(row: (typeof rows.value)[number], checked: boolean) {
+  if (checked) {
+    row.action = remembered.value[row.sha] ?? "pick";
+    delete remembered.value[row.sha];
+  } else {
+    if (row.action !== "drop") remembered.value[row.sha] = row.action;
+    row.action = "drop";
+  }
+}
+
+function includeAll(checked: boolean) {
+  for (const row of rows.value) include(row, checked);
+}
 
 onMounted(async () => {
   dialog.value?.showModal();
@@ -150,7 +166,13 @@ function submit() {
     <div v-if="loading" class="rebase-placeholder" role="status"><Loader2 :size="16" class="animate-spin" /> Loading commits</div>
     <div v-else-if="error" class="rebase-placeholder" role="alert">{{ error }}</div>
     <template v-else>
-      <div class="rebase-list-label"><span>{{ rows.length }} {{ rows.length === 1 ? 'commit' : 'commits' }}</span><span>Oldest first</span></div>
+      <div class="rebase-list-label">
+        <span>{{ selectedCount }} of {{ rows.length }} selected · Oldest first</span>
+        <span class="rebase-select-all">
+          <button type="button" :disabled="busy || selectedCount === rows.length" @click="includeAll(true)">Select all</button>
+          <button type="button" :disabled="busy || selectedCount === 0" @click="includeAll(false)">Clear</button>
+        </span>
+      </div>
       <ol class="rebase-list" aria-label="Commits to rebase">
         <li v-for="(row, index) in rows" :key="row.sha" class="rebase-row"
           :data-dropped="row.action === 'drop'" :data-grouped="groups.rootBySha.has(row.sha) || groups.childrenByRoot.has(row.sha)"
@@ -158,6 +180,10 @@ function submit() {
           :data-drop="dropTarget?.sha === row.sha ? (dropTarget.after ? 'after' : 'before') : undefined"
           @dragover="dragOver($event, row.sha)" @drop.prevent="drop">
           <div class="rebase-row-main">
+            <label class="rebase-select" :title="row.action === 'drop' ? 'Include this commit' : 'Exclude this commit'">
+              <input type="checkbox" :checked="row.action !== 'drop'" :disabled="busy" :aria-label="`${row.action === 'drop' ? 'Include' : 'Exclude'} ${subject(row)}`"
+                @change="include(row, ($event.target as HTMLInputElement).checked)" />
+            </label>
             <button type="button" class="rebase-grip" :draggable="!busy" :disabled="busy" :aria-label="`Reorder ${subject(row)}`"
               title="Drag to reorder, or press Up or Down" @dragstart="startDrag($event, row.sha)" @dragend="endDrag"
               @keydown.up.prevent="move(row.sha, index - 1)" @keydown.down.prevent="move(row.sha, index + 1)"><GripVertical :size="16" /></button>
@@ -183,6 +209,7 @@ function submit() {
 
     <footer class="rebase-footer">
       <p v-if="validation || executionError" class="rebase-error" role="alert">{{ validation || executionError }}</p>
+      <p v-else-if="plan && !changed">Tick commits or change an action to enable Start.</p>
       <p v-else-if="plan">Rewrites local commit history. No changes are pushed.</p>
       <div class="rebase-buttons">
         <button type="button" :disabled="busy" @click="close">Cancel</button>
@@ -203,7 +230,11 @@ function submit() {
 .rebase-heading p { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--muted-foreground); }
 .rebase-heading strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--foreground); }
 .rebase-icon { color: var(--primary); flex: none; }
-.rebase-list-label { display: flex; justify-content: space-between; padding: 10px 17px 4px; color: var(--muted-foreground); font-size: 11px; }
+.rebase-list-label { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 17px 4px; color: var(--muted-foreground); font-size: 11px; }
+.rebase-select-all { display: flex; gap: 4px; }
+.rebase-select-all button { padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted-foreground); background: var(--secondary); }
+.rebase-select-all button:not(:disabled):hover { color: var(--foreground); background: var(--accent); }
+.rebase-select-all button:disabled { opacity: .45; }
 .rebase-list { min-height: 0; overflow-y: auto; padding: 0 14px 10px; list-style: none; }
 .rebase-row { position: relative; border: 1px solid var(--border); border-radius: 5px; margin-top: 4px; }
 .rebase-row[data-grouped='true'] { border-inline-start: 2px solid var(--primary); background: var(--secondary); }
@@ -212,7 +243,9 @@ function submit() {
 .rebase-row[data-drop]::after { content: ''; position: absolute; inset-inline: 0; height: 2px; background: var(--primary); }
 .rebase-row[data-drop='before']::after { top: -3px; }
 .rebase-row[data-drop='after']::after { bottom: -3px; }
-.rebase-row-main { display: grid; grid-template-columns: 23px 55px minmax(0, 1fr) 88px; align-items: center; gap: 5px; padding: 4px 7px; min-height: 34px; font-size: 12px; }
+.rebase-row-main { display: grid; grid-template-columns: 18px 23px 55px minmax(0, 1fr) 88px; align-items: center; gap: 5px; padding: 4px 7px; min-height: 34px; font-size: 12px; }
+.rebase-select { display: grid; place-items: center; }
+.rebase-select input { width: 14px; height: 14px; accent-color: var(--primary); }
 .rebase-grip { height: 24px; display: grid; place-items: center; color: var(--muted-foreground); cursor: grab; }
 .rebase-grip:active { cursor: grabbing; }
 .rebase-row code { font-size: 11px; color: var(--muted-foreground); }
@@ -229,7 +262,7 @@ function submit() {
 .rebase-buttons .rebase-start { background: var(--primary); color: var(--primary-foreground, white); border-color: var(--primary); }
 .rebase-buttons button:disabled { opacity: .5; }
 @media (max-width: 420px) {
-  .rebase-row-main { grid-template-columns: 19px 48px minmax(0, 1fr) 72px; gap: 3px; padding-inline: 5px; }
+  .rebase-row-main { grid-template-columns: 16px 18px 46px minmax(0, 1fr) 70px; gap: 3px; padding-inline: 5px; }
   .rebase-list { padding-inline: 8px; }
 }
 </style>

@@ -36,6 +36,7 @@ const props = defineProps<{
   graphIsolationBranch?: string;
   mergeActive?: boolean;
   cherryPickActive?: boolean;
+  rebaseActive?: boolean;
   visualRebaseActive?: boolean;
   visualRebaseConflicted?: boolean;
   identityGuard?: {
@@ -53,6 +54,7 @@ const emit = defineEmits<{
   exitGraphIsolation: [];
   abortMerge: [];
   abortCherryPick: [];
+  abortRebase: [];
   continueVisualRebase: [];
   skipVisualRebase: [];
   abortVisualRebase: [];
@@ -116,7 +118,7 @@ onUnmounted(() => {
           variant="ghost"
           size="sm"
           class="h-8 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] gap-1.5 transition-all text-xs"
-          :disabled="loading || visualRebaseActive"
+          :disabled="loading || visualRebaseActive || rebaseActive"
           @click="emit('pull')"
         >
           <Loader2 v-if="loading && activeAction === 'pull'" class="w-3.5 h-3.5 animate-spin" />
@@ -127,7 +129,7 @@ onUnmounted(() => {
           variant="ghost"
           size="sm"
           class="h-8 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] gap-1.5 transition-all text-xs"
-          :disabled="loading || visualRebaseActive"
+          :disabled="loading || visualRebaseActive || rebaseActive"
           @click="emit('push')"
         >
           <Loader2 v-if="loading && activeAction === 'push'" class="w-3.5 h-3.5 animate-spin" />
@@ -170,6 +172,11 @@ onUnmounted(() => {
           <CircleX class="w-3.5 h-3.5" />
           {{ cherryPickActive ? 'Abort cherry-pick' : 'Abort merge' }}
         </AppButton>
+        <template v-if="rebaseActive">
+          <AppButton variant="ghost" size="sm" class="h-8 shrink-0 gap-1.5 text-xs text-[var(--destructive)]" :disabled="loading" @click="emit('abortRebase')">
+            <CircleX class="w-3.5 h-3.5" /> Abort rebase
+          </AppButton>
+        </template>
         <template v-if="visualRebaseActive">
           <AppButton variant="ghost" size="sm" class="h-8 shrink-0 gap-1.5 text-xs" :disabled="loading || visualRebaseConflicted"
             :title="visualRebaseConflicted ? 'Resolve all conflicts before continuing' : 'Continue interactive rebase'" @click="emit('continueVisualRebase')">

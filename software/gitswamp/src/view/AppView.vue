@@ -145,7 +145,7 @@ const {
   openRepository: (path, options) => git.openRepository(path, options),
 });
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client" | "branch-workspace";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client" | "branch-workspace" | "lfs";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = CommitInfo | { commit: CommitInfo | null; additive?: boolean } | null;
 type OptionsInitialSection = "integrations" | "git" | "preferences" | "advanced" | "organisations";
@@ -198,6 +198,11 @@ interface CloneProgressEventPayload {
 }
 
 const historyViewMode = ref<HistoryViewMode>("graph");
+const GitLfsManager = defineAsyncComponent(() => import("@/features/repository/GitLfsManager.vue"));
+const lfsRequest = ref<{ path: string; files: string[] } | null>(null);
+const lfsBusy = ref(false);
+let lfsReturnView: HistoryViewMode = "graph";
+let lfsReturnTab: string | null = null;
 const workspaceViewOpen = computed(() => historyViewMode.value === "branch-workspace" && !isLanding.value);
 const workspaceViewBusy = ref(false);
 const removedWorktree = ref<{ path: string } | null>(null);
@@ -249,6 +254,9 @@ const interactiveRebase = ref<{ path: string; base: string } | null>(null);
 const interactiveRebaseBusy = ref(false);
 const interactiveRebaseError = ref("");
 const visualRebaseActive = computed(() => !!git.repositoryOperation.value?.visual_rebase);
+const normalRebaseActive = computed(() => git.repositoryOperation.value?.kind === "rebase" && !visualRebaseActive.value);
+let normalRebaseHadConflicts = false;
+let normalRebaseContinueToast: number | null = null;
 
 const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
@@ -2902,6 +2910,14 @@ function runHttpCommand(command: HttpClientCommand) {
 }
 
 function setHistoryViewMode(mode: HistoryViewMode) {
+  if (lfsBusy.value && mode !== "lfs") return;
+  if (mode === "lfs") {
+    if (workspaceViewBusy.value || historyViewMode.value === "lfs") return;
+    if (!lfsRequest.value) lfsReturnView = historyViewMode.value;
+    historyViewMode.value = mode;
+    return;
+  }
+  lfsRequest.value = null;
   const leavingWorkspaces = historyViewMode.value === "branch-workspace" && mode !== "branch-workspace";
   if (leavingWorkspaces && workspaceViewBusy.value) return;
   historyViewMode.value = mode;
@@ -2929,11 +2945,33 @@ function setHistoryViewMode(mode: HistoryViewMode) {
   }
 }
 
-async function openWorkspaceRepository(location: WorkspaceLocation) {
+async function openRequestedLfs(request: { path: string; files: string[] }) {
+  await nextTick();
+  lfsReturnView = historyViewMode.value === "lfs" ? "graph" : historyViewMode.value;
+  lfsReturnTab = null;
+  if (!sameWorkspacePath(git.repoPath.value, request.path)) {
+    lfsReturnTab = activeTabId.value;
+    await openWorkspaceRepository({ path: request.path, branch: "", isPrimary: false }, false);
+  }
+  if (!sameWorkspacePath(git.repoPath.value, request.path)) return;
+  lfsRequest.value = request;
+  setHistoryViewMode("lfs");
+}
+
+function closeLfsManager() {
+  if (lfsBusy.value) return;
+  const destination = lfsReturnView;
+  if (lfsRequest.value && lfsReturnTab && tabs.value.some(tab => tab.id === lfsReturnTab)) selectTab(lfsReturnTab);
+  setHistoryViewMode(destination);
+  if (destination === "graph") onSelectWorkingChanges();
+  lfsReturnTab = null;
+}
+
+async function openWorkspaceRepository(location: WorkspaceLocation, markWorktree = true) {
   if (workspaceViewBusy.value) return;
   const sourcePath = git.repoPath.value;
   const existing = tabs.value.find(tab => sameWorkspacePath(tab.path, location.path));
-  const tag = isOriginalWorktree(sourcePath, location) ? undefined : { sourcePath, branch: location.branch };
+  const tag = !markWorktree || isOriginalWorktree(sourcePath, location) ? undefined : { sourcePath, branch: location.branch };
   setHistoryViewMode("graph");
   if (existing) {
     if (tag) { existing.worktree = tag; existing.label = tag.branch; }
@@ -2948,7 +2986,7 @@ async function openWorkspaceRepository(location: WorkspaceLocation) {
 }
 
 function selectRepositoryTab(id: string) {
-  if (workspaceViewBusy.value || pendingWorktreeRemoval.value) return;
+  if (lfsBusy.value || workspaceViewBusy.value || pendingWorktreeRemoval.value) return;
   selectTab(id);
 }
 
@@ -2958,7 +2996,7 @@ function requestWorkspaceRemoval(request: WorkspaceRemovalRequest) {
 }
 
 function closeRepositoryTab(id: string) {
-  if (workspaceViewBusy.value || pendingWorktreeRemoval.value) return;
+  if (lfsBusy.value || workspaceViewBusy.value || pendingWorktreeRemoval.value) return;
   const tab = tabs.value.find(item => item.id === id);
   if (tab?.worktree) {
     requestWorkspaceRemoval({
@@ -3965,7 +4003,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
-  if (pendingWorktreeRemoval.value || interactiveRebase.value) return;
+  if (pendingWorktreeRemoval.value || interactiveRebase.value || lfsBusy.value) return;
   handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
 
@@ -4096,6 +4134,7 @@ watch([tabs, activeTabId], () => {
 
 watch(activeTabId, () => {
   interactiveRebase.value = null;
+  if (historyViewMode.value === "lfs") setHistoryViewMode("graph");
   if (historyViewMode.value === "branch-workspace") historyViewMode.value = "graph";
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
@@ -5020,6 +5059,18 @@ function confirmVisualRebaseAction(action: "skip" | "abort") {
   ], 20000, action === "skip" ? "The current commit and any conflict resolutions for it will be discarded." : "Git will restore the original branch tip and discard changes made during the rebase.");
 }
 
+function confirmNormalRebaseAbort() {
+  const path = git.repoPath.value;
+  const context = git.destructiveContext.value;
+  toast.action("warning", "Abort rebase?", [
+    { label: "Abort rebase", style: "danger", onClick: () => {
+      if (path !== git.repoPath.value || context !== git.destructiveContext.value) return;
+      void handleRebaseConflictAbort();
+    } },
+    { label: "Cancel", style: "neutral", onClick: () => {} },
+  ], 20000, "Git will restore the branch to its state before the rebase.");
+}
+
 function handleRequestRebase(payload: { source: string; sourceRemote: boolean; target: string }) {
   if (!payload.source || !payload.target || payload.source === payload.target) return;
   toast.action(
@@ -5119,6 +5170,52 @@ async function handleRebaseConflictAbort() {
     rebaseConflictBusy.value = false;
   }
 }
+
+function clearRebaseContinueToast() {
+  if (normalRebaseContinueToast !== null) {
+    toast.remove(normalRebaseContinueToast);
+    normalRebaseContinueToast = null;
+  }
+}
+
+function showRebaseContinueToast() {
+  clearRebaseContinueToast();
+  normalRebaseContinueToast = toast.action(
+    "success",
+    "Rebase conflicts resolved.",
+    [{
+      label: "Continue rebase",
+      style: "primary",
+      onClick: () => {
+        normalRebaseContinueToast = null;
+        void handleRebaseConflictContinue();
+      },
+    }],
+    60000,
+    "Continue when you are ready to apply the remaining commits.",
+  );
+}
+
+watch(
+  () => [normalRebaseActive.value, git.hasConflicts.value] as const,
+  ([active, conflicted]) => {
+    if (!active) {
+      normalRebaseHadConflicts = false;
+      clearRebaseContinueToast();
+      return;
+    }
+    if (conflicted) {
+      normalRebaseHadConflicts = true;
+      clearRebaseContinueToast();
+      return;
+    }
+    if (normalRebaseHadConflicts && !rebaseConflictBusy.value) {
+      normalRebaseHadConflicts = false;
+      showRebaseContinueToast();
+    }
+  },
+  { flush: "post", immediate: true },
+);
 
 async function handleCheckoutRemoteBranch(name: string) {
   const branchName = normalizeBranchName(name);
@@ -5366,8 +5463,8 @@ function submitCreateTag() {
       @select-tab="selectRepositoryTab"
       @close-tab="closeRepositoryTab"
       @close-workspace-view="setHistoryViewMode('graph')"
-      @new-tab="!workspaceViewBusy && newTab()"
-      @reopen-closed-tab="!workspaceViewBusy && reopenClosedTab()"
+      @new-tab="!workspaceViewBusy && !lfsBusy && newTab()"
+      @reopen-closed-tab="!workspaceViewBusy && !lfsBusy && reopenClosedTab()"
       @open-repository="browseAndOpen"
       @toggle-terminal="toggleTerminalPanel"
       @set-history-view="setHistoryViewMode($event)"
@@ -5429,7 +5526,7 @@ function submitCreateTag() {
 
     <template v-else-if="git.repoInfo.value">
       <AppHeader
-        v-if="historyViewMode !== 'branch-workspace'"
+        v-if="historyViewMode !== 'branch-workspace' && historyViewMode !== 'lfs'"
         :loading="git.loading.value"
         :active-action="activeRemoteAction"
         :ghost-active="git.ghostBranchState.value.active"
@@ -5441,6 +5538,8 @@ function submitCreateTag() {
         :graph-isolation-branch="graphIsolationBranch"
         :merge-active="git.repositoryOperation.value?.kind === 'merge'"
         :cherry-pick-active="git.repositoryOperation.value?.kind === 'cherry-pick'"
+        :rebase-active="normalRebaseActive"
+        @abort-rebase="confirmNormalRebaseAbort()"
         :visual-rebase-active="visualRebaseActive"
         :visual-rebase-conflicted="git.hasConflicts.value"
         @continue-visual-rebase="runVisualRebaseAction('continue')"
@@ -5463,7 +5562,7 @@ function submitCreateTag() {
         @settings="openOptions('preferences')"
       />
       <div
-        v-if="isEmptyRepository && historyViewMode !== 'branch-workspace'"
+        v-if="isEmptyRepository && historyViewMode !== 'branch-workspace' && historyViewMode !== 'lfs'"
         class="flex items-center gap-3 px-4 py-2.5 bg-[var(--secondary)]/60 border-b border-[var(--border)]"
       >
         <div class="text-xs text-[var(--muted-foreground)]">
@@ -5477,7 +5576,10 @@ function submitCreateTag() {
           {{ initializingEmptyRepository ? "Initializing..." : "Initialize with README" }}
         </button>
       </div>
-      <RepositoryWorkspace
+      <GitLfsManager v-if="historyViewMode === 'lfs'" :key="git.repoPath.value" class="flex-1"
+        :repo-path="git.repoPath.value" :requested-files="lfsRequest?.files" :blocked="git.loading.value"
+        @close="closeLfsManager" @busy="lfsBusy = $event" @changed="git.refreshStatus()" />
+      <RepositoryWorkspace v-show="historyViewMode !== 'lfs'"
         :git="git"
         :commit-files-loading="commitFilesLoading"
         :commit-files-error="commitFilesError"
@@ -5508,7 +5610,7 @@ function submitCreateTag() {
         :diff-fallback-old-path="diffFallbackOldPath"
         :conflict-resolver-path="conflictResolverPath"
         :details-panel-collapsed="detailsPanelCollapsed"
-        :history-view-mode="historyViewMode"
+        :history-view-mode="historyViewMode === 'lfs' ? (lfsReturnView === 'branch-workspace' ? 'graph' : lfsReturnView) : historyViewMode"
         :time-machine-focus-sha="timeMachineFocusSha"
         :viewing-working-changes="viewingWorkingChanges"
         :viewing-stash="viewingStash"
@@ -5620,7 +5722,7 @@ function submitCreateTag() {
       @close:rename="showRenameDialog = false"
       @submit:rename="submitRenameBranch()"
       @close:rebase-conflict="closeRebaseConflictDialog()"
-      @submit:rebase-continue="handleRebaseConflictContinue()"
+      @submit:rebase-continue="closeRebaseConflictDialog(true)"
       @submit:rebase-skip="handleRebaseConflictSkip()"
       @submit:rebase-abort="handleRebaseConflictAbort()"
     />
@@ -5685,7 +5787,7 @@ function submitCreateTag() {
 
     <ThemeAmbience />
     <ToastContainer />
-    <SecretCommitDialog :repo-path="git.repoPath.value" />
+    <SecretCommitDialog :repo-path="git.repoPath.value" @open-lfs="openRequestedLfs" />
     <WorktreeRemovalDialog v-if="pendingWorktreeRemoval" :location="pendingWorktreeRemoval.location"
       :busy="removingWorktree" :error="worktreeRemovalError" @cancel="worktreeRemoval.cancel"
       @keep="worktreeRemoval.closeOnly" @remove="worktreeRemoval.remove" />

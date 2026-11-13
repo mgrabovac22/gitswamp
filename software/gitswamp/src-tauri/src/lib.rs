@@ -26,6 +26,7 @@ use commands::ghost::{
     discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch,
 };
 use commands::http::http_send_request;
+use commands::lfs::{change_lfs_rule, convert_staged_lfs, get_lfs_overview, setup_lfs, transfer_lfs};
 use commands::interactive_rebase::{get_interactive_rebase_plan, interactive_rebase_action, start_interactive_rebase};
 use commands::logs::{append_app_log, get_app_log_path};
 use commands::operation_preview::get_operation_preview;
@@ -92,6 +93,11 @@ pub fn run() {
             get_author_deletion_stats,
             get_commit_tree_paths,
             get_commit_coauthors,
+            get_lfs_overview,
+            setup_lfs,
+            change_lfs_rule,
+            convert_staged_lfs,
+            transfer_lfs,
             get_conflict_hotspots,
             get_conflict_preview,
             get_operation_preview,

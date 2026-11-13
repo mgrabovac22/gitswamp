@@ -13,7 +13,7 @@ const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDia
 const ToolsDialog = defineAsyncComponent(() => import("@/features/toolbox/ToolsDialog.vue"));
 
 type MenuSection = "file" | "edit" | "view" | "tools" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client" | "branch-workspace";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client" | "branch-workspace" | "lfs";
 
 interface MenuAction {
   id: string;
@@ -253,6 +253,13 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       description: "Work on branches side by side",
       disabled: !hasActiveRepo.value,
       run: () => emit("setHistoryView", "branch-workspace"),
+    },
+    {
+      id: "view-lfs",
+      label: "Git LFS Manager",
+      description: "Manage large files and Git LFS tracking rules.",
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "lfs"),
     },
     {
       id: "view-fast-scripts",

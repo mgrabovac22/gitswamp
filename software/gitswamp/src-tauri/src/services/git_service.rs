@@ -1463,6 +1463,9 @@ impl GitService {
 
     pub fn status(path: &str) -> Result<Vec<FileStatusInfo>, String> {
         let repo = GitRepository::open(path)?;
+        if super::lfs::configured_repository(&repo) {
+            return super::lfs::status(repo.workdir().and_then(Path::to_str).unwrap_or(path));
+        }
         let repo_root = Path::new(path);
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
@@ -1719,6 +1722,7 @@ impl GitService {
         }
 
         let repo = GitRepository::open(path)?;
+        if super::lfs::stage_if_lfs(&repo, file_paths)? { return Ok(()); }
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
         let pathspec: Vec<&Path> = file_paths.iter().map(Path::new).collect();
         index
@@ -1767,6 +1771,14 @@ impl GitService {
         let repo = GitRepository::open(path)?;
         if super::interactive_rebase::is_active(&repo) {
             return Err("Use Amend Last Commit while editing, or Continue rebase after resolving conflicts.".into());
+        }
+        if matches!(
+            repo.state(),
+            git2::RepositoryState::Rebase
+                | git2::RepositoryState::RebaseInteractive
+                | git2::RepositoryState::RebaseMerge
+        ) {
+            return Err("A rebase is in progress. Resolve conflicts, then use Continue rebase in the toolbar.".into());
         }
         let is_merge = repo.state() == git2::RepositoryState::Merge;
         let is_cherry_pick = repo.state() == git2::RepositoryState::CherryPick;
@@ -3694,6 +3706,123 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn rebase_conflict_is_continued_from_the_toolbar_instead_of_a_new_commit() {
+        let path = unique_temp_repo_path("rebase-conflict-continue");
+        std::fs::create_dir_all(&path).unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        Repository::init(&path).unwrap().set_head("refs/heads/main").unwrap();
+        GitService::initialize_empty_repo(&path_str).unwrap();
+        let commit_file = |content: &str| {
+            std::fs::write(path.join("notes.txt"), content).unwrap();
+            GitService::stage_file(&path_str, "notes.txt").unwrap();
+            GitService::create_commit_with_options(&path_str, content.trim(), false).unwrap()
+        };
+        commit_file("base\n");
+        GitService::create_branch(&path_str, "feature", None).unwrap();
+        GitService::checkout_branch(&path_str, "feature").unwrap();
+        commit_file("incoming\n");
+        GitService::checkout_branch(&path_str, "main").unwrap();
+        commit_file("local\n");
+
+        let conflict = GitService::rebase_branch_onto(&path_str, "feature", false, "main").unwrap_err();
+        assert!(conflict.contains("conflicts"), "{}", conflict);
+        {
+            let repo = Repository::open(&path).unwrap();
+            assert_ne!(repo.state(), git2::RepositoryState::Clean);
+            assert!(repo.index().unwrap().has_conflicts());
+        }
+
+        GitService::resolve_conflict_file(&path_str, "notes.txt", "theirs").unwrap();
+        let blocked = GitService::create_commit_with_options(&path_str, "Resolved conflict", false).unwrap_err();
+        assert!(blocked.contains("Continue rebase"), "{}", blocked);
+
+        GitService::rebase_continue(&path_str).unwrap();
+        let repo = Repository::open(&path).unwrap();
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+        assert!(!repo.index().unwrap().has_conflicts());
+        let head = repo.head().unwrap();
+        assert_eq!(head.shorthand(), Some("feature"));
+        assert_eq!(head.peel_to_commit().unwrap().summary(), Some("incoming"));
+        assert_eq!(std::fs::read_to_string(path.join("notes.txt")).unwrap().replace("\r\n", "\n"), "incoming");
+        drop(head);
+        drop(repo);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn rebase_conflict_can_be_aborted_from_the_toolbar() {
+        let path = unique_temp_repo_path("rebase-conflict-abort");
+        std::fs::create_dir_all(&path).unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        Repository::init(&path).unwrap().set_head("refs/heads/main").unwrap();
+        GitService::initialize_empty_repo(&path_str).unwrap();
+        let commit_file = |content: &str| {
+            std::fs::write(path.join("notes.txt"), content).unwrap();
+            GitService::stage_file(&path_str, "notes.txt").unwrap();
+            GitService::create_commit_with_options(&path_str, content.trim(), false).unwrap()
+        };
+        commit_file("base\n");
+        GitService::create_branch(&path_str, "feature", None).unwrap();
+        GitService::checkout_branch(&path_str, "feature").unwrap();
+        let feature_tip = commit_file("incoming\n");
+        GitService::checkout_branch(&path_str, "main").unwrap();
+        let main_tip = commit_file("local\n");
+
+        let conflict = GitService::rebase_branch_onto(&path_str, "feature", false, "main").unwrap_err();
+        assert!(conflict.contains("conflicts"), "{}", conflict);
+        GitService::resolve_conflict_file(&path_str, "notes.txt", "theirs").unwrap();
+
+        GitService::rebase_abort(&path_str).unwrap();
+        let repo = Repository::open(&path).unwrap();
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+        assert!(!repo.index().unwrap().has_conflicts());
+        assert_eq!(repo.head().unwrap().shorthand(), Some("feature"));
+        assert_eq!(repo.find_branch("feature", git2::BranchType::Local).unwrap().get().target().unwrap().to_string(), feature_tip);
+        assert_eq!(repo.find_branch("main", git2::BranchType::Local).unwrap().get().target().unwrap().to_string(), main_tip);
+        assert_eq!(std::fs::read_to_string(path.join("notes.txt")).unwrap().replace("\r\n", "\n"), "incoming\n");
+        drop(repo);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn rebase_skip_drops_the_conflicting_patch_and_continues_the_rebase() {
+        let path = unique_temp_repo_path("rebase-conflict-skip");
+        std::fs::create_dir_all(&path).unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        Repository::init(&path).unwrap().set_head("refs/heads/main").unwrap();
+        GitService::initialize_empty_repo(&path_str).unwrap();
+        let commit_file = |file: &str, content: &str| {
+            std::fs::write(path.join(file), content).unwrap();
+            GitService::stage_file(&path_str, file).unwrap();
+            GitService::create_commit_with_options(&path_str, content.trim(), false).unwrap()
+        };
+        commit_file("notes.txt", "base\n");
+        GitService::create_branch(&path_str, "feature", None).unwrap();
+        GitService::checkout_branch(&path_str, "feature").unwrap();
+        commit_file("notes.txt", "incoming\n");
+        commit_file("after.txt", "after\n");
+        GitService::checkout_branch(&path_str, "main").unwrap();
+        commit_file("notes.txt", "local\n");
+
+        let conflict = GitService::rebase_branch_onto(&path_str, "feature", false, "main").unwrap_err();
+        assert!(conflict.contains("conflicts"), "{}", conflict);
+
+        GitService::rebase_skip(&path_str).unwrap();
+        let repo = Repository::open(&path).unwrap();
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+        assert!(!repo.index().unwrap().has_conflicts());
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.summary(), Some("after"));
+        assert_eq!(head.parent(0).unwrap().summary(), Some("local"));
+        assert_eq!(std::fs::read_to_string(path.join("notes.txt")).unwrap().replace("\r\n", "\n"), "local\n");
+        assert_eq!(std::fs::read_to_string(path.join("after.txt")).unwrap().replace("\r\n", "\n"), "after\n");
+        assert_eq!(repo.head().unwrap().shorthand(), Some("feature"));
+        drop(head);
+        drop(repo);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]

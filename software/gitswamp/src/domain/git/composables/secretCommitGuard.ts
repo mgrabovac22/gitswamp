@@ -15,6 +15,7 @@ export async function checkCommitSecrets(path: string, isCurrent: () => boolean,
       if (isCurrent()) await refreshStatus();
       return null;
     }
+    if (report.large_files?.length) return null;
   }
   return { secretCheck: enabled, secretApproval: report.snapshot };
 }

@@ -167,6 +167,8 @@ const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10
 const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
 const mergeInProgress = computed(() => props.repositoryOperation?.kind === "merge");
 const cherryPickInProgress = computed(() => props.repositoryOperation?.kind === "cherry-pick");
+const rebaseInProgress = computed(() => props.repositoryOperation?.kind === "rebase");
+const rebaseEditing = computed(() => !!props.repositoryOperation?.visual_rebase_editing);
 let appliedOperationMessageKey = "";
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
@@ -595,7 +597,7 @@ const amendHasChanges = computed(() => {
 });
 const canSubmitCommit = computed(() => {
   if (!commitSummary.value.trim() || props.hasConflicts || props.operationBusy) return false;
-  if (props.repositoryOperation?.visual_rebase && !props.repositoryOperation.visual_rebase_editing) return false;
+  if (rebaseInProgress.value && !rebaseEditing.value) return false;
   if (amendPreviousCommit.value) {
     return !!props.headCommit && amendHasChanges.value;
   }
@@ -2681,7 +2683,7 @@ onUnmounted(() => {
           @click="onCommit"
         >
           <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
-          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (repositoryOperation?.visual_rebase ? 'Continue rebase from the toolbar' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes')))) }}</span>
+          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (rebaseInProgress ? 'Continue rebase in the toolbar' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes')))) }}</span>
         </AppButton>
       </div>
     </div>
