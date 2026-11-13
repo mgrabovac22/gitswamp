@@ -3,6 +3,8 @@ import type { RemoteInfo } from "./remoteInfo"
 export interface RepositoryOperationInfo {
   kind: "merge" | "rebase" | "cherry-pick" | "revert" | "bisect" | "apply-mailbox" | "unknown"
   message: string
+  visual_rebase?: boolean
+  visual_rebase_editing?: boolean
 }
 
 export interface RepoInfo {

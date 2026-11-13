@@ -8,6 +8,7 @@ pub mod credentials;
 pub mod diff;
 pub mod ghost;
 pub mod http;
+pub mod interactive_rebase;
 pub mod logs;
 pub mod operation_preview;
 pub mod operations;

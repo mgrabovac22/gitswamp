@@ -23,6 +23,7 @@ import { safeStorageGet, safeStorageSet } from "@/app/storage/safeStorage";
 import { shouldRestoreSession } from "@/app/preferences/sessionPreferences";
 import { useAppAppearance } from "@/app/preferences/useAppAppearance";
 import { useGit } from "@/domain/git/UseGit";
+import { checkCommitSecrets } from "@/domain/git/composables/secretCommitGuard";
 import { useToast } from "@/shared/notifications/useToast";
 import { publishOperationPreview } from "@/shared/notifications/gitOperationPreview";
 import { useRepositoryOperationNotice } from "@/shared/notifications/useRepositoryOperationNotice";
@@ -243,6 +244,11 @@ const showRebaseConflictDialog = ref(false);
 const rebaseConflictSource = ref("");
 const rebaseConflictTarget = ref("");
 const rebaseConflictBusy = ref(false);
+const InteractiveRebaseDialog = defineAsyncComponent(() => import("@/features/repository/InteractiveRebaseDialog.vue"));
+const interactiveRebase = ref<{ path: string; base: string } | null>(null);
+const interactiveRebaseBusy = ref(false);
+const interactiveRebaseError = ref("");
+const visualRebaseActive = computed(() => !!git.repositoryOperation.value?.visual_rebase);
 
 const viewingWorkingChanges = ref(false);
 const viewingStash = ref(false);
@@ -3959,7 +3965,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
-  if (pendingWorktreeRemoval.value) return;
+  if (pendingWorktreeRemoval.value || interactiveRebase.value) return;
   handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
 
@@ -4089,6 +4095,7 @@ watch([tabs, activeTabId], () => {
 }, { deep: true });
 
 watch(activeTabId, () => {
+  interactiveRebase.value = null;
   if (historyViewMode.value === "branch-workspace") historyViewMode.value = "graph";
   detailsPanelCollapsed.value = true;
   showDiffViewer.value = false;
@@ -4928,6 +4935,91 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
   );
 }
 
+type VisualRebaseOutcome = "completed" | "editing" | "conflict";
+
+function openInteractiveRebase(base: string) {
+  if (git.loading.value || !git.repoPath.value) return;
+  interactiveRebaseError.value = "";
+  interactiveRebase.value = { path: git.repoPath.value, base };
+}
+
+async function refreshAfterVisualRebase(path: string) {
+  if (path !== git.repoPath.value) return;
+  await git.refreshRepoInfo();
+  if (path !== git.repoPath.value) return;
+  await Promise.all([git.refreshCommits(), git.refreshStatus(), git.refreshBranches()]);
+}
+
+async function startInteractiveRebase(payload: { head: string; branch: string; steps: unknown[] }) {
+  const request = interactiveRebase.value;
+  if (!request || request.path !== git.repoPath.value || git.loading.value || interactiveRebaseBusy.value) return;
+  interactiveRebaseBusy.value = git.loading.value = true;
+  interactiveRebaseError.value = "";
+  try {
+    const outcome = await invoke<VisualRebaseOutcome>("start_interactive_rebase", { ...request, ...payload });
+    await refreshAfterVisualRebase(request.path);
+    interactiveRebase.value = null;
+    if (request.path === git.repoPath.value) showVisualRebaseOutcome(outcome);
+  } catch (error) {
+    await refreshAfterVisualRebase(request.path);
+    if (request.path === git.repoPath.value && visualRebaseActive.value) {
+      interactiveRebase.value = null;
+      onSelectWorkingChanges();
+      toast.error(String(error));
+    } else {
+      interactiveRebaseError.value = String(error);
+    }
+  } finally {
+    interactiveRebaseBusy.value = false;
+    if (request.path === git.repoPath.value) git.loading.value = false;
+  }
+}
+
+function showVisualRebaseOutcome(outcome: VisualRebaseOutcome) {
+  onSelectWorkingChanges();
+  if (outcome === "conflict") {
+    toast.warning("Interactive rebase paused. Resolve conflicts, then continue or skip the commit.");
+  } else if (outcome === "editing") {
+    toast.info("Interactive rebase paused for editing. Amend the commit, then continue.");
+  } else {
+    toast.success("Interactive rebase complete.");
+  }
+}
+
+async function runVisualRebaseAction(action: "continue" | "skip" | "abort") {
+  const path = git.repoPath.value;
+  if (!path || git.loading.value || !visualRebaseActive.value) return;
+  git.loading.value = true;
+  try {
+    const approval = action === "continue" && git.stagedFiles.value.length > 0
+      ? await checkCommitSecrets(path, () => path === git.repoPath.value && visualRebaseActive.value, git.refreshStatus)
+      : {};
+    if (!approval || path !== git.repoPath.value) return;
+    const outcome = await invoke<VisualRebaseOutcome>("interactive_rebase_action", { path, action, ...approval });
+    await refreshAfterVisualRebase(path);
+    if (path !== git.repoPath.value) return;
+    if (action === "abort") toast.success("Interactive rebase aborted.");
+    else showVisualRebaseOutcome(outcome);
+  } catch (error) {
+    await refreshAfterVisualRebase(path);
+    if (path === git.repoPath.value) toast.error(String(error));
+  } finally {
+    if (path === git.repoPath.value) git.loading.value = false;
+  }
+}
+
+function confirmVisualRebaseAction(action: "skip" | "abort") {
+  const path = git.repoPath.value;
+  const context = git.destructiveContext.value;
+  const label = action === "skip" ? "Skip commit" : "Abort rebase";
+  toast.action("warning", `${label}?`, [
+    { label, style: "danger", onClick: () => {
+      if (path === git.repoPath.value && context === git.destructiveContext.value) return runVisualRebaseAction(action);
+    } },
+    { label: "Cancel", style: "neutral", onClick: () => {} },
+  ], 20000, action === "skip" ? "The current commit and any conflict resolutions for it will be discarded." : "Git will restore the original branch tip and discard changes made during the rebase.");
+}
+
 function handleRequestRebase(payload: { source: string; sourceRemote: boolean; target: string }) {
   if (!payload.source || !payload.target || payload.source === payload.target) return;
   toast.action(
@@ -5349,6 +5441,11 @@ function submitCreateTag() {
         :graph-isolation-branch="graphIsolationBranch"
         :merge-active="git.repositoryOperation.value?.kind === 'merge'"
         :cherry-pick-active="git.repositoryOperation.value?.kind === 'cherry-pick'"
+        :visual-rebase-active="visualRebaseActive"
+        :visual-rebase-conflicted="git.hasConflicts.value"
+        @continue-visual-rebase="runVisualRebaseAction('continue')"
+        @skip-visual-rebase="confirmVisualRebaseAction('skip')"
+        @abort-visual-rebase="confirmVisualRebaseAction('abort')"
         @abort-cherry-pick="confirmAbortCherryPick"
         @abort-merge="confirmAbortMerge"
         @pull="handlePull"
@@ -5452,6 +5549,7 @@ function submitCreateTag() {
         @rescue-lost-commit="rescueLostCommit($event)"
         @request-merge="handleRequestMerge($event)"
         @request-rebase="handleRequestRebase($event)"
+        @request-interactive-rebase="openInteractiveRebase($event)"
         @checkout-remote-branch="handleCheckoutRemoteBranch($event)"
         @pull="handlePull"
         @push="handlePush"
@@ -5473,6 +5571,9 @@ function submitCreateTag() {
       @close="showGhostMaterializeDialog = false"
       @submit="handleSubmitGhostMaterialize"
     />
+
+    <InteractiveRebaseDialog v-if="interactiveRebase" :repo-path="interactiveRebase.path" :base="interactiveRebase.base"
+      :busy="interactiveRebaseBusy" :execution-error="interactiveRebaseError" @close="interactiveRebase = null" @start="startInteractiveRebase" />
 
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"

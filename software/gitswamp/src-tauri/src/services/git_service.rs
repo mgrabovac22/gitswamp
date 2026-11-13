@@ -743,9 +743,12 @@ impl GitService {
             })
             .unwrap_or(fallback_message);
 
+        let visual_rebase = kind == "rebase" && super::interactive_rebase::is_active(repo);
         Some(RepositoryOperationInfo {
             kind: kind.to_string(),
             message,
+            visual_rebase,
+            visual_rebase_editing: visual_rebase && super::interactive_rebase::can_amend(repo),
         })
     }
 
@@ -1762,6 +1765,9 @@ impl GitService {
         allow_empty: bool,
     ) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        if super::interactive_rebase::is_active(&repo) {
+            return Err("Use Amend Last Commit while editing, or Continue rebase after resolving conflicts.".into());
+        }
         let is_merge = repo.state() == git2::RepositoryState::Merge;
         let is_cherry_pick = repo.state() == git2::RepositoryState::CherryPick;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
@@ -1881,6 +1887,7 @@ impl GitService {
 
     pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let trimmed = branch_name.trim();
         if trimmed.is_empty() {
             return Err("Branch name cannot be empty.".to_string());
@@ -1946,6 +1953,7 @@ impl GitService {
 
     pub fn cherry_pick(path: &str, sha: &str) -> Result<CommitOperationResult, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         repo.cherrypick(&commit, None)
@@ -1980,6 +1988,7 @@ impl GitService {
 
     pub fn revert_commit(path: &str, sha: &str) -> Result<CommitOperationResult, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         repo.revert(&commit, None)
@@ -2007,6 +2016,7 @@ impl GitService {
 
     pub fn reset_to_commit(path: &str, sha: &str, mode: &str, visualise: bool) -> Result<ResetCommitResult, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo
             .find_commit(oid)
@@ -2151,6 +2161,7 @@ impl GitService {
 
     pub fn checkout_commit(path: &str, sha: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let oid = git2::Oid::from_str(sha).map_err(|e| e.message().to_string())?;
         let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         let obj = commit.as_object();
@@ -2461,9 +2472,11 @@ impl GitService {
     ) -> Result<Vec<CommitInfo>, String> {
         let repo = GitRepository::open(path)?;
         let q = query.trim().to_lowercase();
-        if q.is_empty() {
+        let coauthor = q.strip_prefix("coauthor:").or_else(|| q.strip_prefix("co-author:")).map(str::trim);
+        if q.is_empty() || coauthor == Some("") || max_count == 0 {
             return Ok(Vec::new());
         }
+        let search_sha = coauthor.is_none() && q.len() <= 40 && q.bytes().all(|byte| byte.is_ascii_hexdigit());
 
         let mut revwalk = repo.revwalk().map_err(|e| e.message().to_string())?;
         if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
@@ -2492,33 +2505,31 @@ impl GitService {
             .as_secs() as i64;
 
         let mut result = Vec::new();
-        let mut seen = HashSet::new();
-
         for oid in revwalk.flatten() {
-            if !seen.insert(oid) {
-                continue;
-            }
-
             let commit = match repo.find_commit(oid) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
 
-            let sha = oid.to_string();
-            let short_sha = sha[..7.min(sha.len())].to_string();
-            let message = commit.message().unwrap_or("").trim().to_string();
-            let author_name = commit.author().name().unwrap_or("Unknown").to_string();
-            let author_email = commit.author().email().unwrap_or("").to_string();
-
-            if !message.to_lowercase().contains(&q)
+            if let Some(query) = coauthor {
+                if !super::commit_coauthors::matches(&commit, query) { continue; }
+            }
+            let message = commit.message().unwrap_or("").trim();
+            let author = commit.author();
+            let author_name = author.name().unwrap_or("Unknown");
+            let author_email = author.email().unwrap_or("");
+            // Ordinary message search already includes the literal Co-authored-by trailers.
+            if coauthor.is_none()
+                && !message.to_lowercase().contains(&q)
                 && !author_name.to_lowercase().contains(&q)
                 && !author_email.to_lowercase().contains(&q)
-                && !sha.starts_with(&q)
-                && !short_sha.starts_with(&q)
+                && !(search_sha && oid.to_string().starts_with(&q))
             {
                 continue;
             }
 
+            let sha = oid.to_string();
+            let short_sha = sha[..7.min(sha.len())].to_string();
             let timestamp = commit.time().seconds();
             let parent_shas: Vec<String> = commit.parent_ids().map(|id| id.to_string()).collect();
             let refs = ref_map.get(&sha).cloned().unwrap_or_default();
@@ -2526,9 +2537,9 @@ impl GitService {
             result.push(CommitInfo {
                 sha,
                 short_sha,
-                message,
-                author_name,
-                author_email,
+                message: message.to_owned(),
+                author_name: author_name.to_owned(),
+                author_email: author_email.to_owned(),
                 committer_name: commit.committer().name().unwrap_or("Unknown").to_string(),
                 committer_email: commit.committer().email().unwrap_or("").to_string(),
                 timestamp,
@@ -3031,6 +3042,9 @@ impl GitService {
         let repo = GitRepository::open(path)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let head_reference_name = head.name().map(str::to_string);
+        if super::interactive_rebase::is_active(&repo) && !super::interactive_rebase::can_amend(&repo) {
+            return Err("Use Continue rebase to apply the resolved commit.".into());
+        }
         let head_is_branch = head.is_branch();
         let head_commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
         let mut index = repo.index().map_err(|e| e.message().to_string())?;

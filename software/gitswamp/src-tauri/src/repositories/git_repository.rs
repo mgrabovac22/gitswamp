@@ -85,6 +85,22 @@ impl GitRepository {
         Self::run_git_cmd(Some(path), args)
     }
 
+    pub fn git_cli_with_env(path: &str, args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Result<String, String> {
+        let mut command = std::process::Command::new(Self::git_executable());
+        command.args(args).current_dir(path).env("GIT_TERMINAL_PROMPT", "0").envs(env.iter().copied());
+        #[cfg(windows)]
+        command.env("PATH", Self::full_path_live()).creation_flags(CREATE_NO_WINDOW);
+        let output = command.output().map_err(|error| format!("Could not launch Git: {error}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.success() {
+            Ok(format!("{stdout}{stderr}").trim().to_owned())
+        } else {
+            let detail = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
+            Err(if detail.is_empty() { format!("Git exited with {}.", output.status) } else { detail.to_owned() })
+        }
+    }
+
     pub fn run_shell_command(path: &str, command: &str) -> Result<String, String> {
         if command.trim().is_empty() {
             return Ok(String::new());

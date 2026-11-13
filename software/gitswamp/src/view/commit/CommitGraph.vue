@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
-import { Check, Columns3, GitBranchPlus, PencilLine, RotateCcw } from "lucide-vue-next";
+import { Check, Columns3, GitBranchPlus, ListRestart, PencilLine, RotateCcw } from "lucide-vue-next";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -84,6 +84,7 @@ const emit = defineEmits<{
   selectStash: [stash: StashInfo];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
+  requestInteractiveRebase: [sha: string];
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
   focusHead: [];
@@ -1066,6 +1067,7 @@ function applyShaContextAction(action: string, sha: string): boolean {
     case "checkout": emit("checkout", sha); return true;
     case "branch": emit("createBranchAt", sha); return true;
     case "cherry-pick": emit("cherryPick", sha); return true;
+    case "interactive-rebase": emit("requestInteractiveRebase", sha); return true;
     case "revert": emit("revert", sha); return true;
     case "reset-soft": emit("resetSoft", sha); return true;
     case "reset-mixed": emit("resetMixed", sha); return true;
@@ -1459,7 +1461,7 @@ onUnmounted(() => {
           ref="searchInputEl"
           v-model="searchInput"
           @input="onSearch"
-          placeholder="Search commits, messages, authors, SHA..."
+          placeholder="Search commits, authors, co-authors, SHA..."
           class="flex-1 bg-transparent text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none select-text"
         />
         <button v-if="searchInput" @click="clearSearch" class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors">
@@ -2175,6 +2177,7 @@ onUnmounted(() => {
           <button class="ctx-item" @click="ctxAction('branch')"><span class="ctx-icon">🌿</span><span class="ctx-main">Create branch here</span><span class="ctx-sub">Create new branch from this commit</span></button>
           <button class="ctx-item" @click="ctxAction('time-machine-blame')"><span class="ctx-icon">🕰</span><span class="ctx-main">Time Machine Blame</span><span class="ctx-sub">Open Time Machine focused on this commit frame</span></button>
           <button class="ctx-item" @click="ctxAction('cherry-pick')"><span class="ctx-icon">🍒</span><span class="ctx-main">Cherry-pick commit</span><span class="ctx-sub">Apply this commit on top of current branch</span></button>
+          <button v-if="headSha && !ctxIsHeadCommit()" class="ctx-item" @click="ctxAction('interactive-rebase')"><ListRestart class="ctx-icon h-4 w-4" /><span class="ctx-main">Interactive Rebase from Here</span><span class="ctx-sub">Rewrite commits after {{ ctxCommit?.short_sha }}</span></button>
           <button class="ctx-item" @click="ctxAction('revert')"><span class="ctx-icon">↩</span><span class="ctx-main">Revert commit</span><span class="ctx-sub">Create new commit that undoes this one</span></button>
         </div>
 

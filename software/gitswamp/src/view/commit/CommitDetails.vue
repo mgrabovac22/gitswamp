@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
+import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -63,6 +63,7 @@ import type {
 
 const props = defineProps<{
   commit: CommitInfo | null;
+  panelHidden?: boolean;
   selectedCommits?: CommitInfo[];
   canAmendSelectedCommit?: boolean;
   headCommit?: CommitInfo | null;
@@ -393,6 +394,24 @@ function setActiveTab(tab: "changes" | "info") {
   userSelectedTab.value = true;
 }
 const isMultiCommitSelection = computed(() => (props.selectedCommits?.length || 0) > 1);
+
+type Coauthor = { name: string; email: string };
+const coauthors = shallowRef<Coauthor[]>([]);
+const coauthorSha = computed(() => {
+  if (props.panelHidden || activeTab.value !== "info" || props.isWorkingChanges || props.isStash || isMultiCommitSelection.value) return null;
+  const commit = props.commit;
+  return commit && /co-authored-by/i.test(commit.message) ? commit.sha : null;
+});
+watch([() => props.repoPath, coauthorSha], async ([path, sha], _, onCleanup) => {
+  coauthors.value = [];
+  if (!path || !sha) return;
+  let current = true;
+  onCleanup(() => { current = false; });
+  try {
+    const result = await invoke<Coauthor[]>("get_commit_coauthors", { path, sha });
+    if (current) coauthors.value = result;
+  } catch { /* Optional metadata should not interrupt the commit details. */ }
+});
 const primaryCommitShaForDiff = computed(() => {
   if (props.commit?.sha) {
     return props.commit.sha;
@@ -496,10 +515,11 @@ const expandedStaged = ref(true);
 const expandedUnstaged = ref(true);
 const toast = useToast();
 
-watch(() => props.amendModeRequested, (enabled) => {
-  if (enabled) enterAmendMode();
-  else leaveAmendMode();
-}, { immediate: true });
+watch(() => [props.amendModeRequested, props.repositoryOperation?.visual_rebase_editing, props.headCommit?.sha] as const,
+  ([requested, editing, head]) => {
+    if ((requested || editing) && head) enterAmendMode();
+    else leaveAmendMode();
+  }, { immediate: true, flush: "post" });
 
 type ExternalEditorId = "notepad" | "vscode" | "visualstudio" | "androidstudio" | "intellij";
 
@@ -575,6 +595,7 @@ const amendHasChanges = computed(() => {
 });
 const canSubmitCommit = computed(() => {
   if (!commitSummary.value.trim() || props.hasConflicts || props.operationBusy) return false;
+  if (props.repositoryOperation?.visual_rebase && !props.repositoryOperation.visual_rebase_editing) return false;
   if (amendPreviousCommit.value) {
     return !!props.headCommit && amendHasChanges.value;
   }
@@ -2660,7 +2681,7 @@ onUnmounted(() => {
           @click="onCommit"
         >
           <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
-          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes'))) }}</span>
+          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (repositoryOperation?.visual_rebase ? 'Continue rebase from the toolbar' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes')))) }}</span>
         </AppButton>
       </div>
     </div>
@@ -3006,6 +3027,19 @@ onUnmounted(() => {
               <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Committer</div>
               <div class="text-sm text-[var(--foreground)] font-medium">{{ commit.committer_name || 'Unknown' }}</div>
               <div class="text-[10px] text-[var(--muted-foreground)]">{{ commit.committer_email || '—' }}</div>
+            </div>
+          </div>
+
+          <div v-if="coauthors.length" class="space-y-2" role="group" aria-label="Co-authors">
+            <div v-for="coauthor in coauthors" :key="coauthor.email" class="flex items-center gap-3">
+              <div aria-hidden="true" class="w-8 h-8 rounded-full bg-[var(--secondary)] text-[var(--primary)] flex items-center justify-center text-xs font-bold flex-shrink-0">
+                {{ displayIdentityInitial(coauthor.name) }}
+              </div>
+              <div class="min-w-0">
+                <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Co-author</div>
+                <div class="text-sm text-[var(--foreground)] font-medium break-words">{{ coauthor.name }}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] break-words">{{ coauthor.email }}</div>
+              </div>
             </div>
           </div>
         </div>

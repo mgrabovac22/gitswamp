@@ -88,7 +88,15 @@ Pending actions are cancelled when a changed repository context or a conflicting
 
 These checks do not replace backups or cover every external filesystem change. Keep important work committed or otherwise backed up.
 
+## Interactive Rebase
+
+Right-click a commit in the graph and select **Interactive Rebase from Here**. The selected commit stays unchanged; the dialog lists the commits after it up to HEAD, oldest first. Drag the grip or focus it and press Up or Down to reorder. Use the action dropdown to pick, reword, edit, squash, fix up or drop commits. Edit Reword messages in place and use the combined message field for a Squash group. Fixup does not add its own message.
+
+Start from a clean working tree on a local branch. The visual editor supports linear ranges and does not flatten merges. **Edit** pauses after applying a commit; use the Changes panel to stage and amend, then **Continue rebase** in the toolbar. For a conflict, resolve and stage the files before continuing, or choose **Skip commit**. **Abort rebase** restores the original branch tip. Nothing is pushed automatically. The existing branch-to-branch rebase is unchanged.
+
 ## Edit Files and Inspect History
+
+The commit **Info** tab lists valid `Co-authored-by` identities below the author and committer. Search by name or email as usual, or use `coauthor:NAME` to match only the co-author trailers.
 
 In a text diff under **Working Changes**, hover an added or removed line and use **+** to stage it or **−** to unstage it. In split view, use the action on the side containing the change. You can also focus the line and press Enter. Stage, unstage and discard hunk controls stay visible when scrolling horizontally.
 

@@ -18,6 +18,33 @@ const { createSyntaxQueue } = load(read("shared/config/code-view/syntaxQueue.ts"
 const { useWindowedRows } = load(read("shared/ui/useWindowedRows.ts"));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+test("commit search runs one native scan at a time and skips obsolete queries", async () => {
+  const script = read("domain/git/composables/gitRefreshActions.ts");
+  const ast = ts.createSourceFile("refresh.ts", script, ts.ScriptTarget.Latest, true);
+  const factory = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "createRefreshActions");
+  const selected = factory.body.statements.filter(node => ts.isFunctionDeclaration(node)
+    ? ["searchCommits", "clearSearch"].includes(node.name?.text)
+    : ts.isVariableStatement(node) && node.declarationList.declarations.every(decl => ["pendingSearch", "searchRequestId"].includes(decl.name.getText(ast))));
+  const state = {repoPath: ref("repo"), searchQuery: ref(""), searchResults: ref(null), hasMoreSearchResults: ref(false), error: ref(null)};
+  const scans = [];
+  const api = load(selected.map(node => node.getText(ast)).join("\n") + "\nmodule.exports = { searchCommits, clearSearch };", {
+    state, ensureCommitLoaded: async () => {},
+    callTauri: (_, {query}) => new Promise(resolve => scans.push({query, resolve})),
+  });
+  const first = api.searchCommits("coauthor:an");
+  const second = api.searchCommits("coauthor:ana");
+  const latest = api.searchCommits("coauthor:ana@example.invalid");
+  assert.deepEqual(scans.map(scan => scan.query), ["coauthor:an"]);
+  scans[0].resolve([{sha:"obsolete"}]);
+  await Promise.all([first, second]);
+  assert.deepEqual(scans.map(scan => scan.query), ["coauthor:an", "coauthor:ana@example.invalid"]);
+  assert.equal(state.searchResults.value, null);
+  api.clearSearch();
+  scans[1].resolve([{sha:"cleared"}]);
+  await latest;
+  assert.equal(state.searchResults.value, null);
+});
+
 test("syntax is deduplicated, batched off the render path and cached", async () => {
   const sent = [];
   let updates = 0;

@@ -40,10 +40,11 @@ pub fn initialize_empty_repo(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn search_commits(
+pub async fn search_commits(
     path: String,
     query: String,
     max_count: Option<usize>,
 ) -> Result<Vec<crate::models::CommitInfo>, String> {
-    GitService::search_commits(&path, &query, max_count.unwrap_or(200))
+    tauri::async_runtime::spawn_blocking(move || GitService::search_commits(&path, &query, max_count.unwrap_or(200)))
+        .await.map_err(|e| e.to_string())?
 }

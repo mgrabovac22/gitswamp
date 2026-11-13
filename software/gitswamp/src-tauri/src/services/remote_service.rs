@@ -462,6 +462,7 @@ impl RemoteService {
     }
 
     pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
+        super::interactive_rebase::require_inactive(&GitRepository::open(path)?)?;
         Self::fetch_all(path, token)?;
         let plan = Self::pull_plan(path)?;
         if matches!(&plan, PullPlan::UpToDate) {
@@ -538,6 +539,7 @@ impl RemoteService {
 
     fn push_internal(path: &str, token: Option<&str>, force: bool) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let branch_name = head.shorthand().unwrap_or("main").to_string();
         let commit_id = head
@@ -787,6 +789,7 @@ impl RemoteService {
 
     pub fn reset_branch_to_remote(path: &str, branch: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let local_ref_name = format!("refs/heads/{}", branch);
         let local_commit = repo
             .find_reference(&local_ref_name)

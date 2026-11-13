@@ -1,5 +1,12 @@
 use crate::models::CommitInfo;
 use crate::services::git_service::GitService;
+use crate::services::commit_coauthors::{self, Coauthor};
+
+#[tauri::command]
+pub async fn get_commit_coauthors(path: String, sha: String) -> Result<Vec<Coauthor>, String> {
+    tauri::async_runtime::spawn_blocking(move || commit_coauthors::get(&path, &sha))
+        .await.map_err(|e| e.to_string())?
+}
 
 #[tauri::command]
 pub async fn get_commits(

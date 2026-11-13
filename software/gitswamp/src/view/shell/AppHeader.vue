@@ -11,6 +11,7 @@ import {
   UserCircle2,
   GitBranch,
   CircleX,
+  ListRestart,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -35,6 +36,8 @@ const props = defineProps<{
   graphIsolationBranch?: string;
   mergeActive?: boolean;
   cherryPickActive?: boolean;
+  visualRebaseActive?: boolean;
+  visualRebaseConflicted?: boolean;
   identityGuard?: {
     enabled: boolean;
     mismatch: boolean;
@@ -50,6 +53,9 @@ const emit = defineEmits<{
   exitGraphIsolation: [];
   abortMerge: [];
   abortCherryPick: [];
+  continueVisualRebase: [];
+  skipVisualRebase: [];
+  abortVisualRebase: [];
   branch: [];
   ghostBranch: [];
   materializeGhostBranch: [];
@@ -110,7 +116,7 @@ onUnmounted(() => {
           variant="ghost"
           size="sm"
           class="h-8 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] gap-1.5 transition-all text-xs"
-          :disabled="loading"
+          :disabled="loading || visualRebaseActive"
           @click="emit('pull')"
         >
           <Loader2 v-if="loading && activeAction === 'pull'" class="w-3.5 h-3.5 animate-spin" />
@@ -121,7 +127,7 @@ onUnmounted(() => {
           variant="ghost"
           size="sm"
           class="h-8 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] gap-1.5 transition-all text-xs"
-          :disabled="loading"
+          :disabled="loading || visualRebaseActive"
           @click="emit('push')"
         >
           <Loader2 v-if="loading && activeAction === 'push'" class="w-3.5 h-3.5 animate-spin" />
@@ -164,6 +170,16 @@ onUnmounted(() => {
           <CircleX class="w-3.5 h-3.5" />
           {{ cherryPickActive ? 'Abort cherry-pick' : 'Abort merge' }}
         </AppButton>
+        <template v-if="visualRebaseActive">
+          <AppButton variant="ghost" size="sm" class="h-8 shrink-0 gap-1.5 text-xs" :disabled="loading || visualRebaseConflicted"
+            :title="visualRebaseConflicted ? 'Resolve all conflicts before continuing' : 'Continue interactive rebase'" @click="emit('continueVisualRebase')">
+            <ListRestart class="w-3.5 h-3.5" /> Continue rebase
+          </AppButton>
+          <AppButton v-if="visualRebaseConflicted" variant="ghost" size="sm" class="h-8 shrink-0 text-xs" :disabled="loading" @click="emit('skipVisualRebase')">Skip commit</AppButton>
+          <AppButton variant="ghost" size="sm" class="h-8 shrink-0 gap-1.5 text-xs text-[var(--destructive)]" :disabled="loading" @click="emit('abortVisualRebase')">
+            <CircleX class="w-3.5 h-3.5" /> Abort rebase
+          </AppButton>
+        </template>
       </div>
     </div>
 
