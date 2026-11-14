@@ -48,6 +48,42 @@ pub(super) const GITHUB_MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
 
 pub struct SecretService;
 
+pub(super) struct CompositionSecrets {
+    scan: SecretScan,
+    budget: Budget,
+    enabled: bool,
+}
+
+impl CompositionSecrets {
+    pub(super) fn new(snapshot: &str, enabled: bool) -> Self {
+        Self {
+            scan: SecretScan { findings: vec![], skipped: vec![], snapshot: snapshot.into(), large_files: vec![] },
+            budget: Budget::new(Limits::default()),
+            enabled,
+        }
+    }
+
+    pub(super) fn inspect(&mut self, repo: &Repository, path: &str, id: Oid, size: usize, tracked: bool) {
+        if size as u64 > GITHUB_MAX_FILE_BYTES {
+            self.scan.large_files.push(LargeStagedFile { path: path.into(), size: size as u64 });
+            return;
+        }
+        if !self.enabled || !continue_scan(&mut self.scan, &self.budget) { return; }
+        self.budget.entries += 1;
+        if let Err(reason) = self.budget.reserve(size) {
+            skip(&mut self.scan, path, reason);
+        } else {
+            match repo.find_blob(id) {
+                Ok(blob) if blob.size() <= self.budget.limits.file_bytes =>
+                    detect(blob.content(), path, tracked, &mut self.scan, &self.budget),
+                _ => skip(&mut self.scan, path, "Proposed content could not be read."),
+            }
+        }
+    }
+
+    pub(super) fn finish(self) -> SecretScan { self.scan }
+}
+
 #[derive(Clone, Copy)]
 struct Limits {
     file_bytes: usize,

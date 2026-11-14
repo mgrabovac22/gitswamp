@@ -1,4 +1,5 @@
 pub mod commit_coauthors;
+pub mod commit_composer;
 pub mod conflict_preview;
 pub mod diff_service;
 pub mod git_service;
