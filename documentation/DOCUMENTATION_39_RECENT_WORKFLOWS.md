@@ -20,6 +20,20 @@ Staged files larger than **100 MiB** block commits in GitSwamp even when secret 
 
 Secret scanning is heuristic, not a guarantee that every credential will be found. It inspects at most 1 MiB per text file and 16 MiB per scan, up to 2048 files with a cooperative five-second budget. Unchecked content is reported before committing instead of being declared clean. Binary content is not decoded as text. Background checks are debounced and inspect only the staged and unstaged files in Working Changes. Hover or focus a warning triangle to see the type and line number; the matched value is never displayed. Very large index metadata can be refused for a bounded review.
 
+## Compose Commits
+
+From **Working Changes**, open **Visual Commit Builder** (the hammer) and choose **Compose commits automatically** in its header. The experimental dialog proposes an ordered series from the current changes without an AI service. Edit each subject and description, reorder the commits, or move related change sets between commits. The current Commit Analyzer settings are used to validate the messages.
+
+In the composer, the hammer beside the selected commit opens structured controls for its type, scope, summary and breaking-change marker. **Commit tag** adds a tag such as `#123` or `#release` to that message. Use **Tag all commits > Apply to all** to set or clear the same tag in every draft, then override individual drafts as needed. These are message labels, not Git tag references.
+
+The composer uses filenames, project layout and a bounded sample of changed lines. It keeps exact renames, related source and tests, manifests and lockfiles, and other detected dependencies together. Fully unstaged files can be included; if a file has both staged and unstaged edits, only its staged version is committed. Stage files with a custom Git clean filter (including LFS) manually before composing. The normal secret-review preference and 100 MiB file limit still apply.
+
+When the diff provides enough evidence, drafts describe added, changed or removed declarations, dependency names, SQL objects, configuration keys, CSS selectors, CI jobs and documentation headings. They do not copy configuration values, dependency versions or route URLs. For unknown syntax, binary files or diffs outside the analysis budget, drafts fall back to paths and the Git changes the composer can verify. This is a local heuristic, not a language parser or a build check.
+
+Preview uses a temporary index and Git objects and does not change the working files, live index or branch. Before creating commits, GitSwamp checks that the reviewed changes still match and verifies that the final tree matches the plan. The composer creates only local commits and does not compile or run project tests. It supports up to 500 changed paths per plan.
+
+**Branch Workspace** (`Alt+Shift+1`) and **Git LFS Manager** (`Alt+Shift+2`) are the final two entries under **Menu > View**.
+
 ## Visualise Git Operations
 
 **Options > Advanced > Background Maintenance > Visualise operations** is off by default. When enabled, it previews newly detected conflicts over the current graph. The current and incoming code excerpts slide over each other, and lines inside Git's conflict markers turn red. Binary or delete conflicts may not have text ranges. Each file stays visible for three seconds, after which the preview advances or closes. **X** or Escape ends the preview immediately. It never resolves conflicts or changes the index.
