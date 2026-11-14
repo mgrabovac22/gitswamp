@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
+import { computed, defineAsyncComponent, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -23,6 +23,7 @@ import {
   FolderTree,
   Files,
   Hammer,
+  Layers,
   Map as MapIcon,
   Bug,
   RotateCcw,
@@ -36,6 +37,7 @@ import SecretFindingBadge from "@/shared/ui/SecretFindingBadge.vue";
 import { splitFilePath } from "@/shared/codeView";
 import { useWindowedRows } from "@/shared/ui/useWindowedRows";
 import { useToast } from "@/shared/notifications/useToast";
+import { COMMIT_TYPES, formatCommitSubject } from "@/domain/analyzer/commitSubject";
 import {
   createCommitLintEngine,
   inferScopeFromPaths,
@@ -130,6 +132,25 @@ const amendResetAuthor = ref(false);
 const amendSignoff = ref(false);
 const regularCommitDraft = ref({ subject: "", description: "" });
 const showCommitBuilder = ref(false);
+const CommitCompositionDialog = defineAsyncComponent(() => import("@/features/repository/CommitCompositionDialog.vue"));
+const compositionPath = ref("");
+const canCompose = computed(() => !!props.repoPath && props.isWorkingChanges && !props.operationBusy &&
+  !props.hasConflicts && !props.repositoryOperation && !amendPreviousCommit.value &&
+  !!(props.stagedFiles.length || props.unstagedFiles.length));
+
+function openComposition() {
+  if (!canCompose.value) return;
+  showCommitBuilder.value = false;
+  compositionPath.value = props.repoPath;
+}
+
+function finishComposition(count: number) {
+  const path = compositionPath.value;
+  compositionPath.value = "";
+  if (props.repoPath !== path) return;
+  emit("refreshState");
+  toast.success(count === 1 ? "Created 1 commit." : `Created ${count} commits.`);
+}
 const commitBuilderType = ref("Fix");
 const commitBuilderScope = ref("");
 const commitBuilderIssue = ref("");
@@ -637,7 +658,6 @@ const commitLintIndicatorClass = computed(() => {
   return "text-[var(--muted-foreground)] border-[var(--border)] bg-[var(--secondary)]";
 });
 
-const commitBuilderTypes = ["Fix", "Feat", "Refactor", "Docs", "Style", "Test", "Chore", "Perf", "Build", "Ci", "Revert"] as const;
 const commitBuilderScopes = computed(() => {
   const scopes = [
     stagedDiffSummary.value.inferred_scope,
@@ -684,8 +704,7 @@ const commitBuilderPreview = computed(() => {
   const summary = commitBuilderSummary.value.trim() || commitSummary.value.trim() || "describe change";
   const issueTag = normalizedCommitBuilderIssueTag.value;
   const cleanSummary = issueTag ? summary.replace(/^#\d+\s+/, "") : summary;
-  const taggedSummary = issueTag ? `${issueTag} ${cleanSummary}` : cleanSummary;
-  return scope ? `${type}(${scope}): ${taggedSummary}` : `${type}: ${taggedSummary}`;
+  return formatCommitSubject(type, scope, false, cleanSummary, issueTag);
 });
 
 const normalizedCommitBuilderIssueTag = computed(() => normalizeIssueTag(commitBuilderIssue.value));
@@ -1922,6 +1941,7 @@ async function openSelectedFileWithEditor(editorId: ExternalEditorId) {
 }
 
 function handleGlobalKeyDown(event: KeyboardEvent) {
+  if (compositionPath.value || (event.target instanceof Element && event.target.closest("dialog[data-commit-composer]"))) return;
   if (event.key === "Escape") {
     showCommitBuilder.value = false;
     commitAnalyzerTooltipVisible.value = false;
@@ -3487,7 +3507,13 @@ onUnmounted(() => {
             <Hammer class="h-3.5 w-3.5 text-[var(--primary)]" />
             <div class="text-xs font-semibold text-[var(--foreground)]">Visual Commit Builder</div>
           </div>
-          <CloseIconButton size="sm" subtle title="Close commit builder" @click="showCommitBuilder = false" />
+          <div class="flex items-center gap-1">
+            <button type="button" title="Compose commits automatically" aria-label="Compose commits automatically"
+              :disabled="!canCompose"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--primary)]/40 bg-[var(--primary)]/10 text-[var(--primary)] transition-colors enabled:cursor-pointer enabled:hover:border-[var(--primary)] enabled:hover:bg-[var(--primary)]/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+              @click="openComposition"><Layers :size="15" /></button>
+            <CloseIconButton size="sm" subtle title="Close commit builder" @click="showCommitBuilder = false" />
+          </div>
         </div>
 
         <div class="grid grid-cols-3 gap-2">
@@ -3497,7 +3523,7 @@ onUnmounted(() => {
               v-model="commitBuilderType"
               class="h-8 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-xs text-[var(--foreground)] outline-none"
             >
-              <option v-for="type in commitBuilderTypes" :key="type" :value="type">{{ type }}</option>
+              <option v-for="type in COMMIT_TYPES" :key="type" :value="type">{{ type }}</option>
             </select>
           </label>
           <label class="space-y-1">
@@ -3565,6 +3591,11 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <CommitCompositionDialog v-if="compositionPath && compositionPath === repoPath" :key="compositionPath"
+        :repo-path="compositionPath" @close="compositionPath = ''" @committed="finishComposition" />
     </Teleport>
 
     <Teleport to="body">
