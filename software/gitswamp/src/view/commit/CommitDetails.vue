@@ -37,7 +37,7 @@ import SecretFindingBadge from "@/shared/ui/SecretFindingBadge.vue";
 import { splitFilePath } from "@/shared/codeView";
 import { useWindowedRows } from "@/shared/ui/useWindowedRows";
 import { useToast } from "@/shared/notifications/useToast";
-import { COMMIT_TYPES, formatCommitSubject } from "@/domain/analyzer/commitSubject";
+import { COMMIT_TYPES, closingIssueTag, formatCommitSubject, splitClosingIssue, withClosingIssue } from "@/domain/analyzer/commitSubject";
 import {
   createCommitLintEngine,
   inferScopeFromPaths,
@@ -154,6 +154,7 @@ function finishComposition(count: number) {
 const commitBuilderType = ref("Fix");
 const commitBuilderScope = ref("");
 const commitBuilderIssue = ref("");
+const commitBuilderClosing = ref("");
 const commitBuilderSummary = ref("");
 const commitBuilderBody = ref("");
 const commitLintEngine = createCommitLintEngine();
@@ -708,6 +709,10 @@ const commitBuilderPreview = computed(() => {
 });
 
 const normalizedCommitBuilderIssueTag = computed(() => normalizeIssueTag(commitBuilderIssue.value));
+const builderClosingIssue = computed(() => closingIssueTag(commitBuilderIssue.value));
+watch(builderClosingIssue, issue => {
+  if (commitBuilderClosing.value !== issue) commitBuilderClosing.value = "";
+});
 
 function capitalizeCommitBuilderType(type: string): string {
   const trimmed = type.trim();
@@ -795,7 +800,9 @@ function openCommitBuilder() {
   commitBuilderScope.value = parsed?.scope || commitBuilderScope.value || stagedDiffSummary.value.inferred_scope || commitBuilderScopes.value[0] || "";
   commitBuilderIssue.value = parsed?.issue || commitBuilderIssue.value || "";
   commitBuilderSummary.value = parsed?.summary || commitSummary.value;
-  commitBuilderBody.value = commitDescription.value;
+  const closing = splitClosingIssue(commitDescription.value, builderClosingIssue.value);
+  commitBuilderBody.value = closing.body;
+  commitBuilderClosing.value = closing.issue;
   showCommitBuilder.value = true;
   void nextTick(updateCommitFloatingPanels);
 }
@@ -811,7 +818,7 @@ function saveCommitBuilder() {
     return;
   }
   commitSummary.value = commitBuilderPreview.value;
-  commitDescription.value = commitBuilderBody.value.trim();
+  commitDescription.value = withClosingIssue(commitBuilderBody.value.trim(), commitBuilderClosing.value);
   showCommitBuilder.value = false;
   queueCommitLintAnalysis();
 }
@@ -3569,6 +3576,13 @@ onUnmounted(() => {
             placeholder="Optional body..."
           />
         </label>
+
+        <label v-if="builderClosingIssue" class="mt-2 flex items-center gap-2 text-xs text-[var(--foreground)]">
+          <input type="checkbox" :checked="commitBuilderClosing === builderClosingIssue"
+            @change="commitBuilderClosing = ($event.target as HTMLInputElement).checked ? builderClosingIssue : ''" />
+          Close issue {{ builderClosingIssue }}
+        </label>
+        <code v-if="commitBuilderClosing" class="mt-1 block text-[10px] text-[var(--muted-foreground)]">Closes {{ commitBuilderClosing }}</code>
 
         <div class="mt-2 rounded border border-[var(--border)] bg-[var(--input-background)] px-2 py-1.5 font-mono text-[10px] text-[var(--foreground)]">
           {{ commitBuilderPreview }}
