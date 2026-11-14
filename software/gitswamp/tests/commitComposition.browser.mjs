@@ -105,10 +105,18 @@ try {
   await modal.getByLabel("Tag all commits").fill("release");
   await modal.getByRole("button", { name: "Apply to all" }).click();
   assert.match(await docs.innerText(), /#release/);
+  assert.equal(await modal.getByRole("checkbox", { name: /Close issue/ }).count(), 0);
   await modal.getByLabel("Commit tag", { exact: true }).fill("#123");
   await list.getByRole("button", { name: /Fix\(account\): #123 Preserve session after login/ }).waitFor();
   assert.match(await docs.innerText(), /#release/);
   await modal.getByLabel("Description").fill("Keep the existing session when the login state changes.");
+  await modal.getByRole("checkbox", { name: "Close issue #123", exact: true }).check();
+  assert.match(await modal.getByText("Closes #123", { exact: true }).innerText(), /Closes #123/);
+  await modal.getByLabel("Commit tag", { exact: true }).fill("#456");
+  assert.equal(await modal.getByRole("checkbox", { name: "Close issue #456", exact: true }).isChecked(), false);
+  await modal.getByLabel("Commit tag", { exact: true }).fill("#123");
+  assert.equal(await modal.getByRole("checkbox", { name: "Close issue #123", exact: true }).isChecked(), false);
+  await modal.getByRole("checkbox", { name: "Close issue #123", exact: true }).check();
   await modal.getByRole("button", { name: "Move commit down", exact: true }).click();
   await page.screenshot({ path: path.join(root, "src-tauri/target/commit-composer-desktop.png") });
   await page.evaluate(() => document.documentElement.classList.remove("light"));
@@ -118,17 +126,32 @@ try {
   await page.setViewportSize({ width: 390, height: 760 });
   assert.ok(await modal.evaluate(el => el.scrollWidth <= el.clientWidth));
   await page.screenshot({ path: path.join(root, "src-tauri/target/commit-composer-compact.png") });
-  await modal.getByLabel("Move change set").selectOption({ label: "1. Docs: Document account setup" });
-  await modal.getByRole("button", { name: "Create 1 commit", exact: true }).click();
+  await confirm.click();
   await modal.waitFor({ state: "hidden" });
   const data = await page.evaluate(() => window.applied);
   assert.equal(data.snapshot, "fixture");
   assert.equal(data.drafts[0].subject, "Docs: #release Document account setup");
-  assert.deepEqual(data.drafts[0].units, [1, 0]);
+  assert.deepEqual(data.drafts[0].units, [1]);
+  assert.doesNotMatch(data.drafts[0].description, /Closes/);
+  assert.doesNotMatch(data.drafts[1].subject, /Closes/);
+  assert.match(data.drafts[1].description, /\n\nCloses #123$/);
+  assert.equal(data.drafts[1].description.match(/Closes #123/g).length, 1);
   assert.equal(await page.evaluate(() => window.refreshed), true);
+  await page.setViewportSize({ width: 1120, height: 800 });
+  await page.getByTitle("Visual commit builder", { exact: true }).click();
+  await page.getByPlaceholder("#123", { exact: true }).fill("123");
+  await page.getByPlaceholder("Optional body...").fill("Keep repository checks intact.\n\nFixes #123");
+  await page.getByPlaceholder("discard only unstaged file changes").fill("Protect existing changes");
+  await page.getByRole("checkbox", { name: "Close issue #123", exact: true }).check();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  assert.doesNotMatch(await page.getByPlaceholder("Commit message...", { exact: true }).inputValue(), /Closes/);
+  assert.equal(await page.getByPlaceholder("Description (optional)...", { exact: true }).inputValue(), "Keep repository checks intact.\n\nCloses #123");
   assert.deepEqual(errors, []);
-  console.log("PASS: shortcuts, selection, visual editing, bulk and per-commit tags, reordering, compact layout and confirmed message.");
 } finally {
-  await browser?.close();
-  await server.close();
+  const closing = Promise.all([browser?.close(), server.close()]);
+  server.httpServer?.closeAllConnections();
+  await Promise.race([closing, new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("Playwright fixture did not shut down.")), 10000).unref();
+  })]).catch(error => { console.error(error); process.exit(1); });
 }
+console.log("PASS: shortcuts, selection, editing, issue closing in Description only, reordering and compact layout.");
