@@ -1,3 +1,4 @@
+pub(super) mod behavior;
 mod evidence;
 
 use std::collections::{BTreeMap, HashMap};
@@ -6,6 +7,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::{Change, Group, Unit};
+use behavior::{Behavior, Signal};
 use evidence::{Action, Evidence, Topic};
 
 const SUGGESTED_GROUPS: usize = 8;
@@ -349,6 +351,7 @@ pub(super) struct Hints {
     performance: u16,
     formatting: u16,
     evidence: Evidence,
+    pub(super) behavior: behavior::Summary,
     relative_links: Vec<String>,
 }
 
@@ -851,7 +854,7 @@ fn matches_import(path: &str, import: &str) -> bool {
         })
 }
 
-fn atomic_units(files: &[Change]) -> Vec<Unit> {
+pub(super) fn atomic_units(files: &[Change]) -> Vec<Unit> {
     let mut sets = Sets::new(files.len());
     let areas: Vec<_> = files.iter().map(|file| area(&file.path)).collect();
     let stems: Vec<_> = files
@@ -1092,7 +1095,30 @@ fn primary(files: &[&Change]) -> Kind {
         .unwrap_or(Kind::Other)
 }
 
-fn group_key(files: &[&Change]) -> (u8, String, Kind) {
+fn main_behavior(file: &Change) -> Option<Behavior<'_>> {
+    let mut best = None;
+    let mut score = 0;
+    for change in file.hints.behavior.changes() {
+        let current = u16::from(change.strength.min(5)) * 4
+            + u16::from(!change.scope.is_empty()) * 3
+            + u16::from(change.added)
+            + u16::from(behavior_specific(change.signal));
+        if current > score {
+            score = current;
+            best = Some(change);
+        }
+    }
+    best
+}
+
+fn behavior_specific(signal: Signal) -> bool {
+    !matches!(
+        signal,
+        Signal::ErrorHandling | Signal::RequestHandling | Signal::FileIo | Signal::Rendering
+    )
+}
+
+fn group_key(files: &[&Change]) -> (u8, String, Kind, u8) {
     let kind = primary(files);
     let anchor = files.iter().find(|f| f.kind == kind).unwrap();
     let module = area(&anchor.path);
@@ -1112,7 +1138,23 @@ fn group_key(files: &[&Change]) -> (u8, String, Kind) {
         Kind::Ci => 5,
         Kind::Docs => 6,
     };
-    (order, key, kind)
+    let family = if kind == Kind::Source {
+        let mut changes = files
+            .iter()
+            .filter(|file| file.kind == Kind::Source)
+            .filter_map(|file| {
+                main_behavior(file)
+                    .filter(|change| !change.scope.is_empty() && behavior_specific(change.signal))
+                    .map(|change| change.signal.family())
+            });
+        changes
+            .next()
+            .filter(|family| changes.all(|next| next == *family))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    (order, key, kind, family)
 }
 
 fn title(kind: Kind, files: &[&Change]) -> (&'static str, &'static str) {
@@ -1224,6 +1266,61 @@ fn subject_fact<'a>(kind: Kind, files: &[&'a Change]) -> Option<(Topic, Action, 
         })
 }
 
+fn subject_behavior<'a>(kind: Kind, files: &[&'a Change]) -> Option<Behavior<'a>> {
+    files
+        .iter()
+        .filter(|file| file.kind == kind && file.status == "modified")
+        .filter_map(|file| main_behavior(file))
+        .filter(|change| !change.scope.is_empty() || behavior_specific(change.signal))
+        .max_by_key(|change| {
+            (
+                behavior_specific(change.signal),
+                !change.scope.is_empty(),
+                change.strength,
+            )
+        })
+}
+
+fn behavior_sentence(change: Behavior<'_>) -> String {
+    let what = change.signal.label();
+    let action = if change.updated {
+        "Updates"
+    } else if change.added {
+        "Adds"
+    } else {
+        "Removes"
+    };
+    if change.scope.is_empty() {
+        format!("{action} {what}.")
+    } else {
+        format!("{action} {what} in `{}`.", change.scope)
+    }
+}
+
+fn label_kind(kind: Kind) -> Option<&'static str> {
+    match kind {
+        Kind::Test => Some("tests or test fixtures"),
+        Kind::Docs => Some("documentation"),
+        Kind::Build | Kind::Lock => Some("build or dependency files"),
+        Kind::Config => Some("configuration"),
+        Kind::Schema | Kind::Migration => Some("schema or migration files"),
+        Kind::Ci => Some("CI workflows"),
+        Kind::Style => Some("styles"),
+        _ => None,
+    }
+}
+
+fn fact_sentence(topic: Topic, action: Action, name: &str) -> String {
+    let fact = visible_fact(topic, action, name);
+    let (verb, detail) = fact.split_once(' ').unwrap_or((&fact, ""));
+    let verb = match verb {
+        "add" => "Adds",
+        "remove" => "Removes",
+        _ => "Updates",
+    };
+    format!("{verb} {detail}.")
+}
+
 fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
     let kind = primary(files);
     let anchor = files.iter().find(|file| file.kind == kind).unwrap();
@@ -1231,13 +1328,39 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
     let scope = scope_for(files, kind);
     let anchor_target = readable(&anchor.path);
     let scope_label = readable_word(&scope);
+    let representative = subject_behavior(kind, files);
+    let fact = subject_fact(kind, files);
     let target = if anchor.status == "renamed" && files.len() == 1 {
         verb = "Rename";
         format!(
             "{} to {anchor_target}",
             anchor.old_path.as_deref().map(readable).unwrap_or_default()
         )
-    } else if let Some((topic, action, name)) = subject_fact(kind, files) {
+    } else if let Some(change) = representative.filter(|change| {
+        !matches!(fact, Some((Topic::Route, _, _)))
+            && (!matches!(fact, Some((Topic::Symbol, Action::Add, _))) || !change.added)
+    }) {
+        verb = if change.updated {
+            "Update"
+        } else if change.added {
+            "Add"
+        } else {
+            "Remove"
+        };
+        if kind == Kind::Source {
+            prefix = match change.signal {
+                Signal::NullGuard | Signal::BoundsGuard if change.added => "Fix",
+                Signal::Routing | Signal::EventHandling if change.added => "Feat",
+                _ => "Refactor",
+            };
+        }
+        let name = if change.scope.is_empty() {
+            anchor_target.clone()
+        } else {
+            readable_word(change.scope)
+        };
+        format!("{} in {name}", change.signal.label())
+    } else if let Some((topic, action, name)) = fact {
         verb = match (topic, action) {
             (Topic::Table | Topic::Index | Topic::View, Action::Add) => "Create",
             (Topic::Table | Topic::Index | Topic::View, Action::Remove) => "Drop",
@@ -1255,9 +1378,9 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
             _ => format!("{} {name}", topic.label()),
         }
     } else if files.len() > 1 && !matches!(scope.as_str(), "core" | "repo") {
-        scope_label
+        scope_label.clone()
     } else {
-        anchor_target
+        anchor_target.clone()
     };
     let target = if target.is_empty() {
         "repository files"
@@ -1282,6 +1405,86 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
         .trim_end_matches([' ', '.'])
         .to_owned();
     let mut description = String::new();
+    let mut described = Vec::new();
+    if let Some(change) = representative {
+        described.push((change.signal, change.scope, change.added, change.updated));
+        description.push_str(&behavior_sentence(change));
+    } else if let Some((topic, action, name)) = fact {
+        description.push_str(&fact_sentence(topic, action, name));
+    } else if files.len() == 1 && anchor.status == "renamed" {
+        description.push_str(&format!(
+            "Renames `{}` to `{}`.",
+            anchor.old_path.as_deref().unwrap_or(&anchor.path),
+            anchor.path
+        ));
+    }
+    let mut details = 0;
+    for file in files {
+        for change in file
+            .hints
+            .behavior
+            .changes()
+            .filter(|change| !change.scope.is_empty() || behavior_specific(change.signal))
+        {
+            if details >= 3 {
+                break;
+            }
+            let key = (change.signal, change.scope, change.added, change.updated);
+            if described.contains(&key) {
+                continue;
+            }
+            described.push(key);
+            if !description.is_empty() {
+                description.push(' ');
+            }
+            description.push_str(&behavior_sentence(change));
+            details += 1;
+        }
+    }
+    let mut supporting = Vec::new();
+    for file in files.iter().filter(|file| file.kind != kind) {
+        if let Some(label) = label_kind(file.kind) {
+            if !supporting.contains(&label) {
+                supporting.push(label);
+            }
+        }
+    }
+    if !supporting.is_empty() && !description.is_empty() {
+        description.push_str(&format!(
+            " The commit also includes {}.",
+            supporting.join(", ")
+        ));
+    }
+    if description.is_empty() {
+        let target = if anchor_target.is_empty() {
+            scope_label.as_str()
+        } else {
+            anchor_target.as_str()
+        };
+        let activity = match kind {
+            Kind::Source => "implementation",
+            Kind::Test => "test coverage or fixtures",
+            Kind::Docs => "documentation",
+            Kind::Style => "styles",
+            Kind::Build | Kind::Lock => "build and dependency definitions",
+            Kind::Config => "configuration",
+            Kind::Ci => "CI workflow definitions",
+            Kind::Schema | Kind::Migration => "data definitions",
+            Kind::Git => "repository settings",
+            Kind::Asset => "assets",
+            Kind::Generated => "generated artifacts",
+            Kind::Other => "repository files",
+        };
+        let action = match anchor.status {
+            "added" => "Adds",
+            "deleted" => "Removes",
+            _ => "Updates",
+        };
+        description.push_str(&format!("{action} {activity} for {target}."));
+    }
+    if !description.is_empty() {
+        description.push_str("\n\n");
+    }
     let mut displayed: Vec<_> = files.iter().copied().enumerate().collect();
     displayed.sort_by_key(|(i, file)| (file.kind != kind, useful_facts(file).next().is_none(), *i));
     for (_, file) in displayed.into_iter().take(8) {
@@ -1296,7 +1499,7 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
             };
             description.push_str(&format!("- {action} {}", file.path));
             let mut clues: Vec<_> = useful_facts(file)
-                .take(4)
+                .take(3)
                 .map(|(topic, action, name)| visible_fact(topic, action, name))
                 .collect();
             if file.added + file.removed > 0 {
@@ -1396,6 +1599,7 @@ pub(super) fn compose(files: &[Change]) -> (Vec<Unit>, Vec<Group>) {
                     a.0 .0 != b.0 .0,
                     a.0 .1 != b.0 .1,
                     a.0 .2 != b.0 .2,
+                    a.0 .3 != b.0 .3,
                     a.1.len() + b.1.len(),
                 )
             })
