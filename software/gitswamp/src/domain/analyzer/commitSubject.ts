@@ -11,6 +11,28 @@ export function normalizeCommitTag(input: string): string | null {
   return INLINE_TAG.test(tag) ? tag : null;
 }
 
+export function closingIssueTag(input: string): string {
+  const tag = normalizeCommitTag(input);
+  return tag && /^#[1-9][0-9]*$/.test(tag) ? tag : "";
+}
+
+export function withClosingIssue(description: string, issue: string): string {
+  const body = description.trimEnd();
+  if (!closingIssueTag(issue)) return body;
+  const existing = new RegExp(`^\\s*(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\\s+${issue}\\s*$`, "i");
+  const clean = body.split("\n").filter(line => !existing.test(line)).join("\n").trimEnd();
+  return clean ? `${clean}\n\nCloses ${issue}` : `Closes ${issue}`;
+}
+
+export function splitClosingIssue(description: string, issue: string) {
+  const body = description.trimEnd();
+  const suffix = closingIssueTag(issue) && `Closes ${issue}`;
+  if (suffix && (body === suffix || body.endsWith(`\n\n${suffix}`))) {
+    return { body: body.slice(0, -suffix.length).trimEnd(), issue };
+  }
+  return { body, issue: "" };
+}
+
 export function splitCommitSubject(subject: string) {
   const text = subject.trim();
   const header = HEADER.exec(text);

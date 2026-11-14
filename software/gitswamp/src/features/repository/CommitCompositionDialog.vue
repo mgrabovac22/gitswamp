@@ -3,7 +3,7 @@ import { computed, onMounted, ref, shallowRef } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowDown, ArrowUp, ChevronRight, GitCommitHorizontal, Hammer, Hash, Layers, Loader2, Plus, RefreshCw } from "lucide-vue-next";
 import { createCommitLintEngine, inferScopeFromPaths } from "@/domain/analyzer/commitAnalyzer";
-import { COMMIT_TYPES, formatCommitSubject, normalizeCommitTag, splitCommitSubject, withCommitTag } from "@/domain/analyzer/commitSubject";
+import { COMMIT_TYPES, closingIssueTag, formatCommitSubject, normalizeCommitTag, splitCommitSubject, withClosingIssue, withCommitTag } from "@/domain/analyzer/commitSubject";
 import { getStoredCommitAnalyzerSettings } from "@/shared/config/commitAnalyzerPreferences";
 import { secretDetectorEnabled } from "@/shared/config/secretDetectorPreferences";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -15,7 +15,7 @@ type Plan = {
   branch: string; snapshot: string; changes: Change[]; units: Unit[]; groups: Draft[]; limited: boolean;
   review: { findings: { path: string; line: number; kind: string }[]; skipped: string[]; large_files: { path: string; size: number }[] };
 };
-type Row = Draft & { id: number; tag: string };
+type Row = Draft & { id: number; tag: string; closeIssue: string };
 
 const props = defineProps<{ repoPath: string }>();
 const emit = defineEmits<{ close: []; committed: [count: number] }>();
@@ -37,6 +37,7 @@ let secretCheck = false;
 
 const row = computed(() => rows.value.find(group => group.id === selected.value));
 const builder = computed(() => splitCommitSubject(row.value?.subject ?? ""));
+const issue = computed(() => closingIssueTag(row.value?.tag || builder.value.tag));
 const normalizedSharedTag = computed(() => normalizeCommitTag(sharedTag.value));
 const activeIndex = computed(() => rows.value.findIndex(group => group.id === selected.value));
 const warnings = computed(() => !!(plan.value?.review.findings.length || plan.value?.review.skipped.length));
@@ -47,9 +48,11 @@ const summaries = computed(() => rows.value.map(group => {
   const paths = files.map(file => file.path);
   const tag = normalizeCommitTag(group.tag);
   const subject = withCommitTag(group.subject, tag ?? "");
+  const issue = closingIssueTag(tag || splitCommitSubject(group.subject).tag);
+  const description = withClosingIssue(group.description, issue === group.closeIssue ? issue : "");
   const findings = analyzer.analyze({
     message: subject,
-    description: group.description,
+    description,
     stagedFiles: files.map(file => ({ path: file.path, status: file.status, staged: true })),
     diffSummary: {
       filesChanged: files.length,
@@ -62,7 +65,7 @@ const summaries = computed(() => rows.value.map(group => {
     },
     settings,
   });
-  return { id: group.id, files: files.length, findings, subject,
+  return { id: group.id, files: files.length, findings, subject, description,
     invalid: tag === null || !splitCommitSubject(group.subject).summary || subject.length > 72 ||
       /[\u0000-\u001f\u007f]/.test(group.subject) || !group.units.length || !!findings?.errors.length };
 }));
@@ -84,7 +87,7 @@ async function generate() {
     plan.value = result;
     rows.value = result.groups.map(draft => {
       const parts = splitCommitSubject(draft.subject);
-      return { ...draft, subject: parts.subject, tag: parts.tag, id: ++nextId };
+      return { ...draft, subject: parts.subject, tag: parts.tag, closeIssue: "", id: ++nextId };
     });
     selected.value = rows.value[0]?.id ?? 0;
   } catch (failure) {
@@ -106,8 +109,19 @@ function applySharedTag() {
   appliedTag.value = normalizedSharedTag.value;
   for (const group of rows.value) {
     group.subject = splitCommitSubject(group.subject).subject;
+    if (group.closeIssue !== closingIssueTag(normalizedSharedTag.value)) group.closeIssue = "";
     group.tag = normalizedSharedTag.value;
   }
+}
+
+function editTag(group: Row, value: string) {
+  group.tag = value;
+  if (group.closeIssue !== closingIssueTag(value)) group.closeIssue = "";
+}
+
+function editSubject(group: Row, value: string) {
+  group.subject = value;
+  if (group.closeIssue !== closingIssueTag(group.tag || splitCommitSubject(value).tag)) group.closeIssue = "";
 }
 
 function reorder(offset: number) {
@@ -122,7 +136,7 @@ function move(unit: number, destination: string) {
   if (!row.value || !destination) return;
   const source = row.value;
   const target = destination === "new"
-    ? { id: ++nextId, units: [], subject: "", description: "", tag: appliedTag.value } as Row
+    ? { id: ++nextId, units: [], subject: "", description: "", tag: appliedTag.value, closeIssue: "" } as Row
     : rows.value.find(group => group.id === Number(destination));
   if (!target || target.id === source.id) return;
   if (destination === "new") {
@@ -137,7 +151,7 @@ function move(unit: number, destination: string) {
 }
 
 function addGroup() {
-  const group = { id: ++nextId, units: [], subject: "", description: "", tag: appliedTag.value };
+  const group = { id: ++nextId, units: [], subject: "", description: "", tag: appliedTag.value, closeIssue: "" };
   rows.value.push(group);
   selected.value = group.id;
 }
@@ -155,7 +169,7 @@ async function confirm() {
   try {
     const commits = await invoke<string[]>("apply_commit_composition", {
       path: props.repoPath, snapshot: plan.value.snapshot, secretCheck, secretApproval: acceptedWarnings.value,
-      drafts: rows.value.map(({ description, units }, index) => ({ subject: summaries.value[index].subject, description, units })),
+      drafts: rows.value.map(({ units }, index) => ({ subject: summaries.value[index].subject, description: summaries.value[index].description, units })),
     });
     emit("committed", commits.length);
   } catch (failure) {
@@ -238,9 +252,9 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
               <input :value="builder.summary" maxlength="72" :disabled="saving" @change="editBuilder({ summary: ($event.target as HTMLInputElement).value })" />
             </label>
           </fieldset>
-          <label v-else class="composer-field">Subject <input v-model="row.subject" maxlength="72" :disabled="saving" /></label>
+          <label v-else class="composer-field">Subject <input :value="row.subject" maxlength="72" :disabled="saving" @input="editSubject(row, ($event.target as HTMLInputElement).value)" /></label>
           <label class="composer-field composer-tag"><span><Hash :size="13" /> Commit tag</span>
-            <input v-model="row.tag" placeholder="#123" maxlength="33" :disabled="saving" :aria-invalid="normalizeCommitTag(row.tag) === null" />
+            <input :value="row.tag" placeholder="#123" maxlength="33" :disabled="saving" :aria-invalid="normalizeCommitTag(row.tag) === null" @input="editTag(row, ($event.target as HTMLInputElement).value)" />
           </label>
           <div v-if="useBuilder || row.tag" class="composer-preview">
             <code>{{ activeSummary?.subject }}</code>
@@ -248,6 +262,12 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
           </div>
           <p v-if="normalizeCommitTag(row.tag) === null" class="composer-error composer-lint">Use letters, numbers, dots, underscores, slashes or hyphens in the tag.</p>
           <label class="composer-field">Description <textarea v-model="row.description" maxlength="8000" rows="3" :disabled="saving" /></label>
+          <label v-if="issue" class="composer-breaking">
+            <input type="checkbox" :checked="row.closeIssue === issue" :disabled="saving"
+              @change="row.closeIssue = ($event.target as HTMLInputElement).checked ? issue : ''" />
+            Close issue {{ issue }}
+          </label>
+          <code v-if="issue && row.closeIssue === issue" class="composer-closing">Closes {{ issue }}</code>
           <ul v-if="activeSummary?.findings?.findings.length" class="composer-lint" aria-label="Commit message checks">
             <li v-for="finding in activeSummary.findings.findings" :key="finding.id" :class="{ 'composer-error': finding.severity === 'error' }">{{ finding.message }}</li>
           </ul>
@@ -312,7 +332,7 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-heading h2 { font-size: 16px; font-weight: 700; margin: 0; }
 .composer-heading span { font-size: 11px; color: var(--muted-foreground); }
 .experiment { font-size: 11px; font-weight: 650; color: #086243; background: #dcfce7; border: 1px solid #76cf9e; padding: 3px 6px; border-radius: 4px; flex-shrink: 0; }
-.composer-grid { display: grid; grid-template-columns: minmax(195px, 34%) minmax(0, 1fr); min-height: 280px; max-height: min(530px, 58vh); }
+.composer-grid { display: grid; grid-template-columns: minmax(195px, 34%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 280px; max-height: min(530px, 58vh); overflow: hidden; }
 .composer-history { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
 .composer-history > header { display: flex; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-weight: 650; }
 .composer-list, .composer-editor { min-width: 0; min-height: 0; overflow: auto; }
@@ -344,6 +364,7 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-preview code { min-width: 0; overflow-wrap: anywhere; }
 .composer-preview span { flex-shrink: 0; }
 .composer-field textarea { resize: vertical; }
+.composer-closing { display: block; margin-bottom: 8px; color: var(--muted-foreground); font-size: 11px; }
 .composer-lint { margin: 6px 0 8px; font-size: 11px; color: var(--muted-foreground); }
 .composer-error { color: var(--destructive); overflow-wrap: anywhere; }
 .composer-files li { display: flex; align-items: center; justify-content: space-between; gap: 6px; border-top: 1px solid var(--border); padding: 7px 0; font-size: 11px; }
