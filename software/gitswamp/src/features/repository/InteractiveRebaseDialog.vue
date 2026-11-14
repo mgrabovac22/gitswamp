@@ -9,7 +9,7 @@ const emit = defineEmits<{ close: []; start: [payload: { head: string; branch: s
 type Action = "pick" | "reword" | "edit" | "squash" | "fixup" | "drop";
 type Commit = { sha: string; message: string };
 type Step = { sha: string; action: Action; message?: string; combinedMessage?: string };
-type Plan = { head: string; branch: string; commits: Commit[] };
+type Plan = { head: string; branch: string; onto: string; upstream: string; fastForward: boolean; commits: Commit[] };
 
 const actions: { id: Action; label: string; title: string }[] = [
   { id: "pick", label: "Pick", title: "Keep the commit" },
@@ -67,7 +67,10 @@ const validation = computed(() => {
   if ([...combinedFields.value.values()].some(field => !(combinedDrafts.value[field.root] ?? field.message).trim())) return "Enter a message for each Squash group.";
   return "";
 });
-const changed = computed(() => rows.value.some((row, index) => row.action !== "pick" || row.sha !== plan.value?.commits[index].sha));
+const ontoMode = computed(() => !!plan.value && plan.value.onto !== plan.value.upstream);
+const ontoShort = computed(() => (plan.value?.onto || props.base).slice(0, 7));
+const upstreamShort = computed(() => (plan.value?.upstream || props.base).slice(0, 7));
+const changed = computed(() => ontoMode.value || rows.value.some((row, index) => row.action !== "pick" || row.sha !== plan.value?.commits[index].sha));
 const selectedCount = computed(() => rows.value.filter(row => row.action !== "drop").length);
 
 function include(row: (typeof rows.value)[number], checked: boolean) {
@@ -158,13 +161,14 @@ function submit() {
       <ListRestart :size="20" class="rebase-icon" />
       <div class="min-w-0">
         <h2 id="rebase-title">Interactive Rebase</h2>
-        <p><GitBranch :size="13" /> <strong>{{ plan?.branch || 'Current branch' }}</strong><span>From</span><code>{{ base.slice(0, 7) }}</code></p>
+        <p><GitBranch :size="13" /> <strong>{{ plan?.branch || 'Current branch' }}</strong><template v-if="ontoMode"><span>Onto</span><code>{{ ontoShort }}</code><span>from</span><code>{{ upstreamShort }}</code></template><template v-else><span>From</span><code>{{ upstreamShort }}</code></template></p>
       </div>
       <CloseIconButton class="ml-auto" title="Close interactive rebase" :disabled="busy" @click="close" />
     </header>
 
     <div v-if="loading" class="rebase-placeholder" role="status"><Loader2 :size="16" class="animate-spin" /> Loading commits</div>
     <div v-else-if="error" class="rebase-placeholder" role="alert">{{ error }}</div>
+    <p v-else-if="plan?.fastForward" class="rebase-placeholder">No local commits to replay. {{ plan.branch }} can fast-forward to {{ ontoShort }}.</p>
     <template v-else>
       <div class="rebase-list-label">
         <span>{{ selectedCount }} of {{ rows.length }} selected · Oldest first</span>
@@ -210,11 +214,11 @@ function submit() {
     <footer class="rebase-footer">
       <p v-if="validation || executionError" class="rebase-error" role="alert">{{ validation || executionError }}</p>
       <p v-else-if="plan && !changed">Tick commits or change an action to enable Start.</p>
-      <p v-else-if="plan">Rewrites local commit history. No changes are pushed.</p>
+      <p v-else-if="plan">{{ plan.fastForward ? 'No history is rewritten. No changes are pushed.' : 'Rewrites local commit history. No changes are pushed.' }}</p>
       <div class="rebase-buttons">
         <button type="button" :disabled="busy" @click="close">Cancel</button>
         <button type="button" class="rebase-start" :disabled="busy || loading || !changed || !!validation" @click="submit">
-          <Loader2 v-if="busy" :size="14" class="animate-spin" />{{ busy ? 'Rebasing…' : 'Start rebase' }}
+          <Loader2 v-if="busy" :size="14" class="animate-spin" />{{ busy ? 'Updating…' : plan?.fastForward ? 'Fast-forward' : 'Start rebase' }}
         </button>
       </div>
     </footer>

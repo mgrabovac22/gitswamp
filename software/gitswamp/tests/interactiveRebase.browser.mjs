@@ -14,7 +14,7 @@ import {createApp,h,ref} from '/node_modules/.vite-rebase-test/deps/vue.js';
 import Graph from '/src/view/commit/CommitGraph.vue';
 import Rebase from '/src/features/repository/InteractiveRebaseDialog.vue';
 import '/src/styles/index.css';
-const base='0'.repeat(40), a='1'.repeat(40), b='2'.repeat(40), c='3'.repeat(40), d='4'.repeat(40);
+const base='0'.repeat(40), a='1'.repeat(40), b='2'.repeat(40), c='3'.repeat(40), d='4'.repeat(40), remote='5'.repeat(40);
 const commits=[
  {sha:d,message:'Remove temporary notes',refs:['HEAD -> feature/topic']},
  {sha:c,message:'Clean up unused import',refs:[]},
@@ -22,16 +22,20 @@ const commits=[
  {sha:a,message:'Add workspace entry point\\n\\nPreserve this detail.',refs:[]},
  {sha:base,message:'Base commit',refs:[]},
 ].map((commit,index,all)=>({...commit,short_sha:commit.sha.slice(0,7),author_name:'Test',author_email:'test@example.invalid',timestamp:1793380000-index,parent_shas:all[index+1]?[all[index+1].sha]:[]}));
-const requested=ref(null),busy=ref(false);
+const requested=ref(null),busy=ref(false),fastForward=ref(false);
+const incoming={...commits[0],sha:remote,short_sha:remote.slice(0,7),message:'Incoming change',refs:['origin/feature/topic']};
+window.setFastForward=()=>{fastForward.value=true};
+window.finishRebase=()=>{busy.value=false;requested.value=null};
 window.testInvoke=async (command,args)=>{
  if(command==='get_interactive_rebase_plan') {
    window.requestedBase=args.base;
-   return {head:d,branch:'feature/topic',commits:commits.slice(0,4).reverse()};
+   const advance=args.base===remote && fastForward.value;
+   return {head:d,branch:'feature/topic',onto:args.base,upstream:advance?d:base,fastForward:advance,commits:advance?[]:commits.slice(0,4).reverse()};
  }
  throw Error(command);
 };
 createApp({render:()=>h('main',{style:'height:100%;display:flex;flex-direction:column'},[
- h(Graph,{repoPath:'repo',commits,selected:null,hasWorkingChanges:false,currentBranch:'feature/topic',headSha:d,onRequestInteractiveRebase:sha=>requested.value=sha}),
+ h(Graph,{repoPath:'repo',commits:[{...incoming,parent_shas:[fastForward.value?d:base]},...commits],selected:null,hasWorkingChanges:false,currentBranch:'feature/topic',headSha:d,onRequestInteractiveRebase:sha=>requested.value=sha}),
  requested.value?h(Rebase,{repoPath:'repo',base:requested.value,busy:busy.value,executionError:'',onStart:payload=>{window.payload=payload;busy.value=true},onClose:()=>requested.value=null}):null
 ])}).mount('#app');
 </script></body></html>`;
@@ -77,6 +81,30 @@ try {
   assert.equal(await start.isDisabled(), true);
   await page.keyboard.press("Escape");
   await modal.waitFor({ state: "hidden" });
+  const remoteSha = "5".repeat(40);
+  const remoteRow = page.locator(`#commit-row-${remoteSha}`);
+  await remoteRow.getByTitle("feature/topic", { exact: true }).click({ button: "right" });
+  await page.getByRole("button", { name: /Interactive Rebase onto origin\/feature\/topic/ }).click();
+  await list.waitFor();
+  assert.equal(await page.evaluate(() => window.requestedBase), remoteSha);
+  assert.equal(await list.getByRole("listitem").count(), 4);
+  assert.equal(await list.getByText("Incoming change").count(), 0);
+  await start.click();
+  assert.deepEqual(await page.evaluate(() => window.payload.steps.map(step => step.action)), Array(4).fill("pick"));
+  await page.evaluate(() => window.finishRebase());
+  await modal.waitFor({ state: "hidden" });
+
+  await page.evaluate(() => window.setFastForward());
+  await remoteRow.click({ button: "right", position: { x: 480, y: 14 } });
+  await page.getByRole("button", { name: /Interactive Rebase onto Here/ }).click();
+  await modal.getByText(/No local commits to replay/).waitFor();
+  assert.equal(await list.count(), 0);
+  await modal.getByRole("button", { name: "Fast-forward", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.requestedBase), remoteSha);
+  assert.deepEqual(await page.evaluate(() => window.payload.steps), []);
+  await page.evaluate(() => window.finishRebase());
+  await modal.waitFor({ state: "hidden" });
+
   await open();
   const choose = label => modal.getByRole("combobox", { name: `Action for ${label}`, exact: true });
   await choose("Add workspace entry point").selectOption("squash");
@@ -113,7 +141,7 @@ try {
   await page.keyboard.press("Escape");
   assert.ok(await modal.isVisible());
   assert.deepEqual(errors, []);
-  console.log("PASS: graph menu, separate modal, reorder by drag and keyboard, validation, inline messages and squash grouping.");
+  console.log("PASS: graph menus, remote onto and fast-forward, reorder by drag and keyboard, validation, inline messages and squash grouping.");
 } finally {
   await browser?.close();
   await server.close();

@@ -43,6 +43,9 @@ pub struct RebaseCommit {
 pub struct RebasePlan {
     branch: String,
     head: String,
+    onto: String,
+    upstream: String,
+    fast_forward: bool,
     commits: Vec<RebaseCommit>,
 }
 
@@ -86,6 +89,7 @@ pub struct RebaseStep {
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     Completed,
+    FastForwarded,
     Editing,
     Conflict,
 }
@@ -143,18 +147,18 @@ fn build_plan(repo: &Repository, base: &str) -> Result<RebasePlan, String> {
         .to_owned();
     let mut commit = head_ref.peel_to_commit().map_err(|e| e.to_string())?;
     let head = commit.id().to_string();
-    let base = Oid::from_str(base).map_err(|_| "Invalid base commit.")?;
-    if base == commit.id() {
-        return Err("There are no commits after the selected commit.".into());
+    let onto = Oid::from_str(base).map_err(|_| "Invalid base commit.")?;
+    repo.find_commit(onto)
+        .map_err(|_| "The selected commit no longer exists.")?;
+    if onto == commit.id() {
+        return Err("There are no commits to rebase onto the selected commit.".into());
     }
-    if !repo
-        .graph_descendant_of(commit.id(), base)
-        .map_err(|e| e.to_string())?
-    {
-        return Err("Choose a commit in the current branch's history.".into());
-    }
+    let upstream = repo.merge_base(commit.id(), onto).map_err(|_| {
+        "The selected commit has no common history with the checked-out branch.".to_string()
+    })?;
+    let fast_forward = upstream == commit.id();
     let mut commits = Vec::new();
-    while commit.id() != base {
+    while commit.id() != upstream {
         if commit.parent_count() != 1 {
             return Err("This range contains a merge commit. Choose a base after the merge to preserve the branch structure.".into());
         }
@@ -170,6 +174,9 @@ fn build_plan(repo: &Repository, base: &str) -> Result<RebasePlan, String> {
     Ok(RebasePlan {
         branch,
         head,
+        onto: onto.to_string(),
+        upstream: upstream.to_string(),
+        fast_forward,
         commits,
     })
 }
@@ -324,15 +331,27 @@ pub fn start(
     }
     require_clean(&repo)?;
     validate(&plan, steps)?;
-    if steps
-        .iter()
-        .zip(&plan.commits)
-        .all(|(step, commit)| step.action == Action::Pick && step.sha == commit.sha)
+    if plan.fast_forward {
+        // No local commits need rewriting. Let Git move the checked-out branch safely.
+        GitRepository::git_cli_with_env(
+            path,
+            &["merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", &plan.onto],
+            &[],
+        )?;
+        return Ok(Outcome::FastForwarded);
+    }
+    if plan.onto == plan.upstream
+        && steps
+            .iter()
+            .zip(&plan.commits)
+            .all(|(step, commit)| step.action == Action::Pick && step.sha == commit.sha)
     {
         return Ok(Outcome::Completed);
     }
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let comment = prepare(temp.path(), &plan, steps)?;
+    let onto = plan.onto.as_str();
+    let upstream = plan.upstream.as_str();
     // Pin the selected range and disable config that could change the plan or other refs.
     run(
         &repo,
@@ -357,7 +376,9 @@ pub fn start(
             "--no-fork-point",
             "--reapply-cherry-picks",
             "--empty=keep",
-            base,
+            "--onto",
+            onto,
+            upstream,
         ],
     )
 }
@@ -672,6 +693,76 @@ mod tests {
     }
 
     #[test]
+    fn visual_rebase_replays_the_branch_onto_an_ahead_branch() {
+        let f = Fixture::new();
+        let base = f.commit("base", "base", "Base");
+        let a = f.commit("a", "A", "A");
+        f.git(&["checkout", "-b", "ahead", &base]);
+        let other = f.commit("other", "Other", "Other");
+        f.git(&["update-ref", "refs/remotes/origin/main", &other]);
+        f.git(&["checkout", "main"]);
+        assert!(matches!(
+            f.start(&other, &[step(&a, Action::Pick)]).unwrap(),
+            Outcome::Completed
+        ));
+        assert_eq!(f.git(&["rev-parse", "HEAD^"]), other);
+        assert_eq!(f.git(&["log", "-3", "--format=%s"]), "A\nOther\nBase");
+        assert_eq!(f.git(&["show", "HEAD:a"]), "A");
+        assert_eq!(f.git(&["show", "HEAD:other"]), "Other");
+        assert_eq!(f.git(&["rev-parse", "ahead"]), other);
+        assert_eq!(f.git(&["rev-parse", "refs/remotes/origin/main"]), other);
+    }
+
+    #[test]
+    fn visual_rebase_fast_forwards_a_behind_only_branch_and_preserves_ignored_files() {
+        let f = Fixture::new();
+        let base = f.commit(".gitignore", "ignored.txt\n", "Base");
+        f.git(&["checkout", "-b", "ahead", &base]);
+        fs::write(Path::new(&f.path).join("ignored.txt"), "Tracked remotely").unwrap();
+        f.git(&["add", "-f", "ignored.txt"]);
+        f.git(&["commit", "-m", "Remote change"]);
+        let remote = f.git(&["rev-parse", "HEAD"]);
+        f.git(&["update-ref", "refs/remotes/origin/main", &remote]);
+        f.git(&["checkout", "main"]);
+        let reviewed = plan(&f.path, &remote).unwrap();
+        assert!(reviewed.fast_forward);
+        assert!(reviewed.commits.is_empty());
+        let file = Path::new(&f.path).join("ignored.txt");
+        fs::write(&file, "Keep this local file").unwrap();
+        assert!(f.start(&remote, &[]).is_err());
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), base);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "Keep this local file");
+        fs::remove_file(file).unwrap();
+        assert!(matches!(f.start(&remote, &[]).unwrap(), Outcome::FastForwarded));
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), remote);
+        assert_eq!(f.git(&["symbolic-ref", "--short", "HEAD"]), "main");
+        assert_eq!(f.git(&["rev-parse", "refs/remotes/origin/main"]), remote);
+        assert!(!is_active(&GitRepository::open(&f.path).unwrap()));
+    }
+
+    #[test]
+    fn visual_rebase_onto_origin_resolves_conflicts_without_moving_remote_tip() {
+        let f = Fixture::new();
+        let base = f.commit("notes.txt", "Base\n", "Base");
+        let local = f.commit("notes.txt", "Local\n", "Local edit");
+        f.git(&["checkout", "-b", "ahead", &base]);
+        let remote = f.commit("notes.txt", "Remote\n", "Remote edit");
+        f.git(&["update-ref", "refs/remotes/origin/main", &remote]);
+        f.git(&["checkout", "main"]);
+        let steps = [step(&local, Action::Pick)];
+        assert!(matches!(f.start(&remote, &steps).unwrap(), Outcome::Conflict));
+        assert!(matches!(follow_up(&f.path, FollowUp::Abort, false, None).unwrap(), Outcome::Completed));
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), local);
+        assert!(matches!(f.start(&remote, &steps).unwrap(), Outcome::Conflict));
+        fs::write(Path::new(&f.path).join("notes.txt"), "Resolved\n").unwrap();
+        f.git(&["add", "notes.txt"]);
+        assert!(matches!(follow_up(&f.path, FollowUp::Continue, false, None).unwrap(), Outcome::Completed));
+        assert_eq!(f.git(&["rev-parse", "HEAD^"]), remote);
+        assert_eq!(f.git(&["rev-parse", "refs/remotes/origin/main"]), remote);
+        assert_eq!(f.git(&["show", "HEAD:notes.txt"]), "Resolved");
+    }
+
+    #[test]
     fn visual_rebase_can_drop_every_commit() {
         let f = Fixture::new();
         let base = f.commit("base", "base", "Base");
@@ -764,7 +855,17 @@ mod tests {
         f.git(&["checkout", "-b", "other", &base]);
         let other = f.commit("other", "other", "Other");
         f.git(&["checkout", "main"]);
-        assert!(plan(&f.path, &other).is_err());
+        let onto_plan = plan(&f.path, &other).unwrap();
+        assert_eq!(onto_plan.onto, other);
+        assert_eq!(onto_plan.upstream, base);
+        assert_eq!(
+            onto_plan
+                .commits
+                .iter()
+                .map(|commit| commit.sha.as_str())
+                .collect::<Vec<_>>(),
+            vec![a.as_str()]
+        );
         f.git(&["merge", "--no-ff", "--no-edit", "other"]);
         assert!(plan(&f.path, &base).err().unwrap().contains("merge commit"));
     }

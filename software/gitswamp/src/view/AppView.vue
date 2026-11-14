@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut } from "@/features/shell/keyboardShortcuts";
 import TitleBar from "@/view/shell/TitleBar.vue";
 import SecretCommitDialog from "@/shared/ui/SecretCommitDialog.vue";
 import ConflictAppearanceDialog from "@/features/repository/ConflictAppearanceDialog.vue";
@@ -3674,7 +3675,17 @@ const commandPaletteActions = computed<CommandPaletteAction[]>(() => {
       description: "Open up to four branch worktrees side by side.",
       keywords: ["branches", "worktrees"],
       disabled: !hasRepo,
+      shortcut: EXTRA_VIEW_SHORTCUTS["branch-workspace"].keys,
       run: () => setHistoryViewMode("branch-workspace"),
+    },
+    {
+      id: "view-lfs",
+      label: "Git LFS Manager",
+      description: "Manage large files and Git LFS tracking rules.",
+      keywords: ["lfs", "storage", "large files"],
+      shortcut: EXTRA_VIEW_SHORTCUTS.lfs.keys,
+      disabled: !hasRepo,
+      run: () => setHistoryViewMode("lfs"),
     },
     {
       id: "view-fast-scripts",
@@ -3789,6 +3800,13 @@ function isAltOnlyShortcut(event: KeyboardEvent): boolean {
 }
 
 function handleHistoryViewShortcut(event: KeyboardEvent, key: string): boolean {
+  const extra = extraViewShortcut(event);
+  if (extra) {
+    if (!hasActiveRepositoryPath()) return false;
+    event.preventDefault();
+    setHistoryViewMode(extra);
+    return true;
+  }
   if (!isAltOnlyShortcut(event)) {
     return false;
   }
@@ -4003,6 +4021,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
+  if (event.defaultPrevented || (event.target instanceof Element && event.target.closest("dialog[data-commit-composer]"))) return;
   if (pendingWorktreeRemoval.value || interactiveRebase.value || lfsBusy.value) return;
   handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
@@ -4974,7 +4993,7 @@ function handleRequestMerge(payload: { source: string; sourceRemote: boolean; ta
   );
 }
 
-type VisualRebaseOutcome = "completed" | "editing" | "conflict";
+type VisualRebaseOutcome = "completed" | "editing" | "conflict" | "fastforwarded";
 
 function openInteractiveRebase(base: string) {
   if (git.loading.value || !git.repoPath.value) return;
@@ -5020,6 +5039,8 @@ function showVisualRebaseOutcome(outcome: VisualRebaseOutcome) {
     toast.warning("Interactive rebase paused. Resolve conflicts, then continue or skip the commit.");
   } else if (outcome === "editing") {
     toast.info("Interactive rebase paused for editing. Amend the commit, then continue.");
+  } else if (outcome === "fastforwarded") {
+    toast.success("Branch fast-forwarded to the selected commit.");
   } else {
     toast.success("Interactive rebase complete.");
   }
