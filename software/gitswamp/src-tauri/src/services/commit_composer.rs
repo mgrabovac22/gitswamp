@@ -203,7 +203,7 @@ fn entry(file: git2::DiffFile<'_>) -> Option<(Oid, u32)> {
 }
 
 impl Snapshot {
-    fn build(repo: &Repository) -> Result<Self, String> {
+    fn build(repo: &Repository, analyze_behavior: bool) -> Result<Self, String> {
         let (branch, head_id) = head(repo)?;
         let root = repo
             .workdir()
@@ -353,7 +353,14 @@ impl Snapshot {
                 return Err(format!("Staged and unstaged edits overlap at {file}. Commit or unstage it manually first."));
             }
         }
-        let (changes, limited) = read_changes(&scratch, base.as_ref(), &target, &staged, &partial)?;
+        let (changes, limited) = read_changes(
+            &scratch,
+            base.as_ref(),
+            &target,
+            &staged,
+            &partial,
+            analyze_behavior,
+        )?;
         drop((base, target, index_diff));
         if changes.is_empty() {
             return Err("There are no working changes to compose.".into());
@@ -422,6 +429,7 @@ fn read_changes(
     target: &Tree<'_>,
     staged: &HashSet<String>,
     partial: &HashSet<String>,
+    analyze_behavior: bool,
 ) -> Result<(Vec<Change>, bool), String> {
     let mut options = DiffOptions::new();
     options.skip_binary_check(true).include_typechange(true);
@@ -478,13 +486,50 @@ fn read_changes(
                 if let Some(patch) = Patch::from_diff(&diff, i).map_err(git_err)? {
                     (_, added, removed) = patch.line_stats().map_err(git_err)?;
                     limited |= patch.num_hunks() > 64;
+                    let track_behavior = analyze_behavior
+                        && matches!(kind, rules::Kind::Source | rules::Kind::Test)
+                        && rules::behavior::supported(&path);
+                    let read_text = |entry: Option<(Oid, u32)>| {
+                        entry
+                            .filter(|(_, mode)| matches!(mode, 0o100644 | 0o100755))
+                            .map(|(oid, _)| repo.find_blob(oid))
+                            .transpose()
+                            .map_err(git_err)
+                    };
+                    let old_text = if track_behavior {
+                        read_text(old)?
+                    } else {
+                        None
+                    };
+                    let new_text = if track_behavior {
+                        read_text(new)?
+                    } else {
+                        None
+                    };
+                    let mut previous = old_text
+                        .as_ref()
+                        .filter(|blob| !blob.is_binary())
+                        .map(|blob| rules::behavior::Cursor::new(&path, blob.content()));
+                    let mut next = new_text
+                        .as_ref()
+                        .filter(|blob| !blob.is_binary())
+                        .map(|blob| rules::behavior::Cursor::new(&path, blob.content()));
                     for hunk in 0..patch.num_hunks().min(64) {
                         let (_, lines) = patch.hunk(hunk).map_err(git_err)?;
                         limited |= lines > 200;
                         for line in 0..lines.min(200) {
                             let line = patch.line_in_hunk(hunk, line).map_err(git_err)?;
                             if line.origin() == '+' || line.origin() == '-' {
-                                hints.observe(&path, kind, line.content(), line.origin() == '+');
+                                let added = line.origin() == '+';
+                                hints.observe(&path, kind, line.content(), added);
+                                let (cursor, number) = if added {
+                                    (&mut next, line.new_lineno())
+                                } else {
+                                    (&mut previous, line.old_lineno())
+                                };
+                                if let (Some(cursor), Some(number)) = (cursor, number) {
+                                    hints.behavior.observe(cursor.line_at(number), added);
+                                }
                             }
                         }
                     }
@@ -521,7 +566,7 @@ pub fn plan(path: &str, include_secrets: bool) -> Result<Composition, String> {
     let _guard = COMPOSER
         .lock()
         .map_err(|_| "Commit composer is unavailable.")?;
-    let snapshot = Snapshot::build(&Git::open(path)?)?;
+    let snapshot = Snapshot::build(&Git::open(path)?, true)?;
     let fingerprint = snapshot.fingerprint(include_secrets);
     let review = snapshot.review(include_secrets, &fingerprint)?;
     let (units, groups) = rules::compose(&snapshot.changes);
@@ -698,11 +743,11 @@ pub fn apply(
         .lock()
         .map_err(|_| "Commit composer is unavailable.")?;
     let repo = Git::open(path)?;
-    let snapshot = Snapshot::build(&repo)?;
+    let snapshot = Snapshot::build(&repo, false)?;
     if snapshot.fingerprint(include_secrets) != expected {
         return Err(STALE.into());
     }
-    let (units, _) = rules::compose(&snapshot.changes);
+    let units = rules::atomic_units(&snapshot.changes);
     validate_drafts(&units, drafts)?;
     let review = snapshot.review(include_secrets, expected)?;
     if !review.large_files.is_empty() {
@@ -1057,6 +1102,76 @@ mod tests {
             "{messages}"
         );
         assert!(!messages.contains("old-value") && !messages.contains("new-value"));
+        f.apply(&plan);
+        assert_eq!(f.git(&["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn composes_behavior_from_hunks_and_splits_unrelated_features_in_one_folder() {
+        let f = Fixture::new(true);
+        f.write("src/ui/account.ts", "export function selectAccount(account) {\n  const initial = 1;\n  const next = initial;\n  const saved = next;\n  const value = saved;\n  return account.id + value;\n}\n");
+        f.write(
+            "src/ui/dashboard.js",
+            "function bindDashboard(el) {\n  return el;\n}\n",
+        );
+        f.write(
+            "client/request.py",
+            "async def request_status():\n    return await wait_for(fetch(), 10)\n",
+        );
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Add baseline"]);
+        f.write("src/ui/account.ts", "export function selectAccount(account) {\n  const initial = 1;\n  const next = initial;\n  const saved = next;\n  const value = saved;\n  if (account == null) return;\n  return account.id + value;\n}\n");
+        f.write("src/ui/dashboard.js", "function bindDashboard(el) {\n  el.addEventListener('click', refresh);\n  return el;\n}\n");
+        f.write(
+            "client/request.py",
+            "async def request_status():\n    return await wait_for(fetch(), 30)\n",
+        );
+        let plan = plan(f.path(), false).unwrap();
+        let group_for = |path: &str| {
+            plan.groups
+                .iter()
+                .find(|group| {
+                    group.units.iter().any(|id| {
+                        plan.units[*id]
+                            .changes
+                            .iter()
+                            .any(|file| plan.changes[*file].path == path)
+                    })
+                })
+                .unwrap()
+        };
+        let account = group_for("src/ui/account.ts");
+        let dashboard = group_for("src/ui/dashboard.js");
+        let request = group_for("client/request.py");
+        assert!(
+            account
+                .subject
+                .contains("Add null checks in select account"),
+            "{}",
+            account.subject
+        );
+        assert!(
+            account
+                .description
+                .starts_with("Adds null checks in `selectAccount`."),
+            "{}",
+            account.description
+        );
+        assert!(
+            dashboard
+                .subject
+                .contains("Add event handlers in bind dashboard"),
+            "{}",
+            dashboard.subject
+        );
+        assert_ne!(account.units, dashboard.units);
+        assert!(
+            request
+                .description
+                .starts_with("Updates timeouts in `request_status`."),
+            "{}",
+            request.description
+        );
         f.apply(&plan);
         assert_eq!(f.git(&["status", "--porcelain"]), "");
     }
