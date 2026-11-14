@@ -26,9 +26,13 @@ From **Working Changes**, open **Visual Commit Builder** (the hammer) and choose
 
 In the composer, the hammer beside the selected commit opens structured controls for its type, scope, summary and breaking-change marker. **Commit tag** adds a tag such as `#123` or `#release` to that message. Use **Tag all commits > Apply to all** to set or clear the same tag in every draft, then override individual drafts as needed. These are message labels, not Git tag references.
 
+**Close issue** appears for a numeric tag such as `#123`, in both the composer and the Visual Commit Builder. When selected it puts `Closes #123` on a separate line at the end of the description, not in the subject. GitSwamp does not call the issue tracker; GitHub closes the referenced issue when the commit reaches the default branch.
+
 The composer uses filenames, project layout and a bounded sample of changed lines. It keeps exact renames, related source and tests, manifests and lockfiles, and other detected dependencies together. Fully unstaged files can be included; if a file has both staged and unstaged edits, only its staged version is committed. Stage files with a custom Git clean filter (including LFS) manually before composing. The normal secret-review preference and 100 MiB file limit still apply.
 
 When the diff provides enough evidence, drafts describe added, changed or removed declarations, dependency names, SQL objects, configuration keys, CSS selectors, CI jobs and documentation headings. They do not copy configuration values, dependency versions or route URLs. For unknown syntax, binary files or diffs outside the analysis budget, drafts fall back to paths and the Git changes the composer can verify. This is a local heuristic, not a language parser or a build check.
+
+For JavaScript, TypeScript, Python, C#, C, C++ and Java, the preview also compares changed lines within their enclosing function or method. It can describe changes to validation, null or bounds checks, request handling, state updates, caching, resource cleanup and other implementation details in sentences before the file summary. Independent changes in the same folder can be proposed as separate commits. The deeper analysis runs only while building the preview, uses the existing diff-size limits, and does not run again on confirmation.
 
 Preview uses a temporary index and Git objects and does not change the working files, live index or branch. Before creating commits, GitSwamp checks that the reviewed changes still match and verifies that the final tree matches the plan. The composer creates only local commits and does not compile or run project tests. It supports up to 500 changed paths per plan.
 
