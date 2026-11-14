@@ -1,6 +1,7 @@
 pub mod appdata;
 pub mod branches;
 pub mod clone_init;
+pub mod commit_composer;
 pub mod commit_files;
 pub mod commits;
 pub mod conflicts;
