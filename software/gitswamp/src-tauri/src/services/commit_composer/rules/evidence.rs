@@ -159,7 +159,7 @@ fn key_name(word: &str) -> Option<&str> {
     .then_some(word)
 }
 
-fn symbol<'a>(line: &'a str, ext: &str) -> Option<&'a str> {
+pub(super) fn symbol<'a>(line: &'a str, ext: &str) -> Option<&'a str> {
     let mut words = line.split_ascii_whitespace();
     while let Some(word) = words.next() {
         match word {
