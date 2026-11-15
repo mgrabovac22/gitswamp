@@ -13,9 +13,7 @@ use tempfile::{NamedTempFile, TempDir};
 use super::super::secret_service::{
     safe_file, safe_relative, CompositionSecrets, GITHUB_MAX_FILE_BYTES,
 };
-use super::{
-    chunks, git_err, head, rules, Change, MAX_INDEX, PATCH_FILE_LIMIT, STALE,
-};
+use super::{chunks, git_err, head, rules, Change, MAX_INDEX, PATCH_FILE_LIMIT, STALE};
 use crate::repositories::git_repository::GitRepository as Git;
 
 const MAX_FILES: usize = 2000;
