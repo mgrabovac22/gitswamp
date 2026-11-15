@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, ChevronRight, CircleHelp, GitCommitHorizontal, Hammer, Hash, Layers, Loader2, Plus, RefreshCw, Undo2 } from "lucide-vue-next";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, CircleHelp, GitCommitHorizontal, Hammer, Hash, Layers, Loader2, Plus, RefreshCw, Undo2 } from "lucide-vue-next";
 import { createCommitLintEngine, inferScopeFromPaths } from "@/domain/analyzer/commitAnalyzer";
 import { COMMIT_TYPES, closingIssueTag, formatCommitSubject, normalizeCommitTag, splitCommitSubject, withClosingIssue, withCommitTag } from "@/domain/analyzer/commitSubject";
 import { getStoredCommitAnalyzerSettings } from "@/shared/config/commitAnalyzerPreferences";
@@ -13,7 +13,8 @@ type Change = { path: string; oldPath?: string; status: string; staged: boolean;
 type Unit = { id: number; changes: number[] };
 type Draft = { subject: string; description: string; units: number[] };
 type Plan = {
-  branch: string; snapshot: string; changes: Change[]; units: Unit[]; groups: Draft[]; limited: boolean; dependencyNotice?: string;
+  branch: string; snapshot: string; changes: Change[]; units: Unit[]; groups: Draft[];
+  maxGroups: number; limited: boolean; requiresBuildVerification: boolean; dependencyNotice?: string;
   review: { findings: { path: string; line: number; kind: string }[]; skipped: string[]; large_files: { path: string; size: number }[] };
 };
 type Row = Draft & { id: number; tag: string; closeIssue: string; moved?: boolean };
@@ -28,9 +29,13 @@ const emit = defineEmits<{ close: []; committed: [count: number] }>();
 const dialog = ref<HTMLDialogElement>();
 const plan = shallowRef<Plan>();
 const rows = ref<Row[]>([]);
+const maxGroups = computed(() => plan.value?.maxGroups ?? 0);
 const selected = ref(0);
 const selectedChange = ref<number>();
 const diffPanel = ref<HTMLElement>();
+const fileList = ref<HTMLUListElement>();
+const filePage = ref(0);
+const FILE_PAGE_SIZE = 50;
 const preview = shallowRef<ChangePreview>();
 const previewError = ref("");
 const previewLoading = ref(false);
@@ -53,6 +58,10 @@ let secretCheck = false;
 let previewQueue = Promise.resolve();
 
 const row = computed(() => rows.value.find(group => group.id === selected.value));
+const fileRows = computed(() => row.value?.units.flatMap(unit =>
+  plan.value?.units[unit]?.changes.map((change, index) => ({ unit, change, index })) ?? []) ?? []);
+const filePageCount = computed(() => Math.max(1, Math.ceil(fileRows.value.length / FILE_PAGE_SIZE)));
+const visibleFiles = computed(() => fileRows.value.slice(filePage.value * FILE_PAGE_SIZE, (filePage.value + 1) * FILE_PAGE_SIZE));
 const builder = computed(() => splitCommitSubject(row.value?.subject ?? ""));
 const issue = computed(() => closingIssueTag(row.value?.tag || builder.value.tag));
 const normalizedSharedTag = computed(() => normalizeCommitTag(sharedTag.value));
@@ -100,10 +109,16 @@ const status = (value: string) => statuses[value] ?? ["?", value];
 const canReview = computed(() => plan.value && !loading.value && !saving.value && rows.value.length &&
   !summaries.value.some(group => group.invalid) && !plan.value.review.large_files.length);
 const canConfirm = computed(() => canReview.value && (!warnings.value || acceptedWarnings.value) &&
+  (!plan.value?.requiresBuildVerification || rows.value.length === 1 || verifyBuild.value) &&
   (!verifyBuild.value || !!buildCommand.value.trim()));
 watch([buildCommand, verifyBuild, () => rows.value.map(group => group.units.join(",")).join(";")],
   () => { buildStatus.value = ""; }, { flush: "sync" });
-watch(selected, () => { selectedChange.value = undefined; });
+watch(selected, () => { selectedChange.value = undefined; filePage.value = 0; });
+watch(filePageCount, count => { filePage.value = Math.min(filePage.value, count - 1); });
+watch(filePage, () => {
+  selectedChange.value = undefined;
+  if (fileList.value) fileList.value.scrollTop = 0;
+});
 watch([selectedChange, () => plan.value?.snapshot], ([change, snapshot], _, onCleanup) => {
   preview.value = undefined;
   previewError.value = "";
@@ -196,7 +211,7 @@ function reorder(offset: number) {
 }
 
 function move(unit: number, destination: string) {
-  if (!row.value || !destination) return;
+  if (!row.value || !destination || (destination === "new" && rows.value.length >= maxGroups.value)) return;
   const source = row.value;
   const target = destination === "new"
     ? { id: ++nextId, units: [], subject: "", description: "", tag: appliedTag.value, closeIssue: "" } as Row
@@ -218,6 +233,7 @@ function move(unit: number, destination: string) {
 }
 
 function addGroup() {
+  if (rows.value.length >= maxGroups.value) return;
   const group = { id: ++nextId, units: [], subject: "", description: "", tag: appliedTag.value, closeIssue: "" };
   rows.value.push(group);
   selected.value = group.id;
@@ -410,10 +426,16 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
           </ul>
           <p v-if="row.moved" class="composer-lint" role="status">Files moved. Review the subject and description.</p>
           <div v-if="row.units.length" class="composer-changes">
-            <header class="composer-changes-header"><strong>Changed files</strong><span>{{ activeSummary?.files }}</span></header>
-            <ul class="composer-files" aria-label="Changed files">
-              <template v-for="unit in row.units" :key="unit">
-                <li v-for="(change, index) in plan.units[unit].changes" :key="change">
+            <header class="composer-changes-header">
+              <strong>Changed files</strong><span>{{ activeSummary?.files }}</span>
+              <div v-if="filePageCount > 1" class="composer-file-pages" role="group" aria-label="File pages">
+                <button type="button" title="Previous files" aria-label="Previous files" :disabled="saving || filePage === 0" @click="filePage--"><ChevronLeft :size="14" /></button>
+                <span aria-live="polite">{{ filePage + 1 }} / {{ filePageCount }}</span>
+                <button type="button" title="Next files" aria-label="Next files" :disabled="saving || filePage + 1 >= filePageCount" @click="filePage++"><ChevronRight :size="14" /></button>
+              </div>
+            </header>
+            <ul ref="fileList" class="composer-files" aria-label="Changed files">
+                <li v-for="{ unit, change, index } in visibleFiles" :key="change">
                   <button type="button" class="composer-file" :aria-pressed="selectedChange === change"
                     :disabled="saving" :title="plan.changes[change].path"
                     @click="selectedChange = selectedChange === change ? undefined : change">
@@ -437,11 +459,10 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
                     <option v-for="entry in destinations" :key="entry.group.id" :value="entry.group.id">
                       {{ entry.index + 1 }}. {{ entry.summary.subject || 'Untitled commit' }}
                     </option>
-                    <option v-if="rows.length < 20" value="new">New commit</option>
+                    <option v-if="rows.length < maxGroups" value="new">New commit</option>
                   </select>
                   <span v-else class="composer-linked">Moves together</span>
                 </li>
-              </template>
             </ul>
             <section v-if="activeChange" ref="diffPanel" class="composer-diff" aria-label="File diff">
               <header><strong>Diff</strong><code :title="activeChange.path">{{ activeChange.path }}</code></header>
@@ -464,7 +485,7 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
         </section>
       </div>
       <div v-if="plan.limited || plan.dependencyNotice || warnings || plan.review.large_files.length" class="composer-notices">
-        <p v-if="plan.limited">Some diffs were classified by path only.</p>
+        <p v-if="plan.limited">Files over 2 MiB were grouped by path. Their full changes are included.</p>
         <p v-if="plan.dependencyNotice">{{ plan.dependencyNotice }}</p>
         <p v-for="file in plan.review.large_files" :key="file.path" class="composer-error">{{ file.path }} exceeds 100 MiB. Stage it with Git LFS Manager first.</p>
         <details v-if="warnings">
@@ -499,7 +520,7 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
     <footer class="composer-footer">
       <div class="composer-actions">
         <button type="button" title="Regenerate plan" aria-label="Regenerate plan" :disabled="loading || saving" @click="generate"><RefreshCw :size="15" /></button>
-        <button v-if="plan" type="button" title="Add commit" aria-label="Add commit" :disabled="saving || rows.length >= 20" @click="addGroup"><Plus :size="16" /></button>
+        <button v-if="plan" type="button" title="Add commit" aria-label="Add commit" :disabled="saving || rows.length >= maxGroups" @click="addGroup"><Plus :size="16" /></button>
       </div>
       <div class="composer-actions">
         <button type="button" :disabled="saving" @click="close">Cancel</button>
@@ -567,6 +588,9 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-changes { border-top: 1px solid var(--border); }
 .composer-changes-header, .composer-diff > header { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 12px; }
 .composer-changes-header span, .composer-linked { color: var(--muted-foreground); font-size: 11px; }
+.composer-file-pages { margin-inline-start: auto; display: flex; align-items: center; gap: 5px; }
+.composer-file-pages button { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid var(--border); border-radius: 4px; }
+.composer-file-pages button:not(:disabled):hover { background: var(--secondary); }
 .composer-files { max-height: min(225px, 27vh); overflow: auto; }
 .composer-files li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(82px, 120px); align-items: center; gap: 8px; border-top: 1px solid var(--border); padding: 3px 3px 3px 0; font-size: 11px; }
 .composer-files select { width: 100%; min-height: 28px; text-overflow: ellipsis; }
