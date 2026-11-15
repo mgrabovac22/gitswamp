@@ -3,6 +3,7 @@ pub mod bitbucket;
 pub mod bitbucket_ssh_key;
 pub mod branch;
 pub mod commit;
+pub mod commit_composition;
 pub mod commit_file;
 pub mod conflict_hotspot;
 pub mod diff;
