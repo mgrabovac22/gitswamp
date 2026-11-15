@@ -34,6 +34,22 @@ Every local operation has a preview and requires confirmation. Mutations require
 
 If a multi-step merge stops, completed steps are reported and remaining steps are not run. Resolve or abort the pending merge with the normal GitSwamp controls, then reopen the workflow, select the source branch and preview again. Steps already integrated are skipped. Preferences use the existing app storage and do not write to Git configuration. If that storage is unavailable, the dialog reports that choices last only for the current session.
 
+## GitHub Pull Requests and Issues
+
+Open **Pull Requests** or **Issues** in the repository sidebar and select an item. The detail view keeps the description and comments in the conversation, with assignees, labels, milestones and related work alongside it. A pull request also shows the compare and base branches and GitHub's reported merge status. Use **Commits** and **Files changed** to inspect the available preview, or open the full item on GitHub. **Review comments** shows PR comments attached to changed lines, with a link to their GitHub context.
+
+To create a pull request, use the creation action in **Pull Requests** or open the form from **GitSwamp Handoff**. **Base** is the branch receiving the changes; **Compare** is the published branch containing your changes. Click either picker to search. The suggested branch, GitHub's default, and common branches (`dev`, `main`, `master`, `develop`) are shown before the alphabetical list when available. The search includes branches beyond the first visible page. Use the arrow keys and Enter to select, or Escape to close a picker. A branch selected on one side is excluded on the other.
+
+GitSwamp prefers the published current branch (or its tracking branch on the selected remote) as **Compare**. For **Base**, it uses the configured workflow when it applies: for example, a Gitflow feature or fix goes to development, while a release or hotfix goes to the primary branch. When there is no applicable workflow target, it prefers the repository's GitHub default branch. A Handoff draft keeps its reviewed branch pair and optional notes. Changing a branch does not overwrite a title you already edited.
+
+The comparison checks the published tips on GitHub and shows how many commits the compare branch is ahead or behind. A verified comparison with no commits ahead blocks creation. If GitHub cannot compare the pair, it still makes the final decision when you submit the form. This comparison does not run CI, check approvals, or merge the pull request. If the GitHub branch list is unavailable, the form uses the selected remote's locally fetched branches. For a local-only branch, push it before using it as **Compare**.
+
+From an issue or pull request's **Conversation**, type in **Add a comment** and click **Comment**. The new comment appears after GitHub confirms it. **Load more comments** retrieves more of the thread, and **Refresh comments** starts again from the first page. Posting uses the connected GitHub account and requires permission on the repository. If posting fails, the editor keeps the draft. After a network timeout, refresh before retrying to check whether the comment was already accepted. Use GitHub itself to reply to a review comment on a specific line or to submit a formal review. GitSwamp displays comment text without rendering embedded HTML.
+
+## Options Search
+
+Open **Options** and type in **Search settings**, directly below the header. Search covers the settings across all tabs, including provider-specific settings under **Integrations**. Try a partial name such as `auto fet`, a typo such as `secrt detectr`, or terms like `gitlab ssh`. Choose a result with the mouse or the arrow keys and Enter. GitSwamp opens its tab, scrolls to the setting, and highlights it briefly. Searching or selecting a result does not change the setting. Escape closes the suggestions.
+
 ## Compose Commits
 
 From **Working Changes**, open **Visual Commit Builder** (the hammer) and choose **Compose commits automatically** in its header. The experimental dialog proposes an ordered series from the current changes without an AI service. Edit each subject and description, reorder the commits, or move related change sets between commits. The current Commit Analyzer settings are used to validate the messages.
