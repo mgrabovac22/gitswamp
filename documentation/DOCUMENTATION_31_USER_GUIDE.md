@@ -105,6 +105,10 @@ See [Current workflows and troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md
 - Shows local repository context and recent repositories when offline or unauthenticated
 - Provides search for pull requests and assigned issues
 
+**GitHub work items:** The repository sidebar opens pull request and issue details, including their conversations. You can post a general comment without leaving GitSwamp. When creating a pull request, the **Base** and **Compare** pickers search the remote's published branches and suggest a base using your branching workflow and GitHub's default branch. See [GitHub pull requests and issues](DOCUMENTATION_39_RECENT_WORKFLOWS.md#github-pull-requests-and-issues).
+
+**Find a setting:** Open **Options** and type into **Search settings** below the header. Partial names, common aliases and typos work across tabs. Select a result to open and highlight the setting without changing it. See [Options Search](DOCUMENTATION_39_RECENT_WORKFLOWS.md#options-search).
+
 ### 3.2 Quick Menu (Hamburger ☰)
 
 Click the top-left hamburger icon to open the quick menu with 4 sections:
