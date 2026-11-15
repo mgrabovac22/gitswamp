@@ -1,6 +1,9 @@
+mod chunks;
+mod dependencies;
 mod rules;
+mod verification;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -38,6 +41,13 @@ pub struct Composition {
     groups: Vec<Group>,
     review: SecretScan,
     limited: bool,
+    dependency_notice: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct BuildPlan {
+    groups: Vec<Group>,
+    review: SecretScan,
 }
 
 #[derive(Serialize)]
@@ -51,6 +61,8 @@ struct Change {
     added: usize,
     removed: usize,
     kind: rules::Kind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk: Option<chunks::Chunk>,
     #[serde(skip)]
     new: Option<(Oid, u32)>,
     #[serde(skip)]
@@ -385,7 +397,7 @@ impl Snapshot {
 
     fn fingerprint(&self, include_secrets: bool) -> String {
         let mut hash = Sha256::new();
-        hash.update(b"commit-composer-v1\0");
+        hash.update(b"commit-composer-v2\0");
         hash.update(self.objects.as_os_str().as_encoded_bytes());
         hash.update([0]);
         hash.update(self.index_path.as_os_str().as_encoded_bytes());
@@ -400,16 +412,20 @@ impl Snapshot {
             hash.update(change.old_path.as_deref().unwrap_or("").as_bytes());
             hash.update([0]);
             hash.update([change.staged as u8, change.partial as u8]);
+            if let Some(chunk) = &change.chunk {
+                hash.update(chunk.old_start.to_le_bytes());
+                hash.update(chunk.new_start.to_le_bytes());
+            }
         }
         format!("{:x}", hash.finalize())
     }
 
-    fn review(&self, enabled: bool, fingerprint: &str) -> Result<SecretScan, String> {
-        let mut review = CompositionSecrets::new(fingerprint, enabled);
+    fn review(&self, review: &mut CompositionSecrets) -> Result<(), String> {
         let odb = self.repo.odb().map_err(git_err)?;
+        let mut seen = HashSet::new();
         for change in &self.changes {
             if let Some((id, mode)) = change.new {
-                if mode == 0o160000 {
+                if mode == 0o160000 || !seen.insert(&change.path) {
                     continue;
                 }
                 let (size, kind) = odb.read_header(id).map_err(git_err)?;
@@ -419,7 +435,7 @@ impl Snapshot {
                 review.inspect(&self.repo, &change.path, id, size, change.old.is_some());
             }
         }
-        Ok(review.finish())
+        Ok(())
     }
 }
 
@@ -452,6 +468,8 @@ fn read_changes(
     }
     let mut changes = Vec::new();
     let mut budget = PATCH_TOTAL_LIMIT;
+    let mut split_bytes = chunks::MAX_SPLIT_BYTES;
+    let mut extra_changes = chunks::MAX_EXTRA_CHANGES;
     let mut limited = false;
     let odb = repo.odb().map_err(git_err)?;
     for (i, delta) in diff.deltas().enumerate() {
@@ -471,6 +489,12 @@ fn read_changes(
         let old = entry(delta.old_file());
         let new = entry(delta.new_file());
         let kind = rules::kind(&path, new.or(old).map(|(_, mode)| mode).unwrap_or(0));
+        let staged_file =
+            staged.contains(&path) || old_path.as_ref().is_some_and(|p| staged.contains(p));
+        let partial_file =
+            partial.contains(&path) || old_path.as_ref().is_some_and(|p| partial.contains(p));
+        let language_support = matches!(kind, rules::Kind::Source | rules::Kind::Test)
+            && rules::behavior::supported(&path);
         let mut hints = rules::Hints::default();
         let mut added = 0;
         let mut removed = 0;
@@ -486,9 +510,16 @@ fn read_changes(
                 if let Some(patch) = Patch::from_diff(&diff, i).map_err(git_err)? {
                     (_, added, removed) = patch.line_stats().map_err(git_err)?;
                     limited |= patch.num_hunks() > 64;
-                    let track_behavior = analyze_behavior
+                    let track_behavior = analyze_behavior && language_support;
+                    let split = rules::behavior::splittable(&path)
                         && matches!(kind, rules::Kind::Source | rules::Kind::Test)
-                        && rules::behavior::supported(&path);
+                        && delta.status() == Delta::Modified
+                        && patch.num_hunks() > 1
+                        && patch.num_hunks() - 1 <= extra_changes
+                        && before + after <= split_bytes
+                        && old.zip(new).is_some_and(|((_, a), (_, b))| {
+                            a == b && matches!(a, 0o100644 | 0o100755)
+                        });
                     let read_text = |entry: Option<(Oid, u32)>| {
                         entry
                             .filter(|(_, mode)| matches!(mode, 0o100644 | 0o100755))
@@ -496,12 +527,12 @@ fn read_changes(
                             .transpose()
                             .map_err(git_err)
                     };
-                    let old_text = if track_behavior {
+                    let old_text = if track_behavior || split {
                         read_text(old)?
                     } else {
                         None
                     };
-                    let new_text = if track_behavior {
+                    let new_text = if track_behavior || split {
                         read_text(new)?
                     } else {
                         None
@@ -514,24 +545,72 @@ fn read_changes(
                         .as_ref()
                         .filter(|blob| !blob.is_binary())
                         .map(|blob| rules::behavior::Cursor::new(&path, blob.content()));
+                    let pieces = if split {
+                        split_bytes -= before + after;
+                        match (old_text.as_ref(), new_text.as_ref()) {
+                            (Some(a), Some(b)) => {
+                                chunks::identify(&path, &patch, a.content(), b.content())
+                                    .map_err(git_err)?
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let start = changes.len();
                     for hunk in 0..patch.num_hunks().min(64) {
                         let (_, lines) = patch.hunk(hunk).map_err(git_err)?;
                         limited |= lines > 200;
+                        let mut hunk_hints = rules::Hints::default();
+                        let mut hunk_added = 0;
+                        let mut hunk_removed = 0;
                         for line in 0..lines.min(200) {
                             let line = patch.line_in_hunk(hunk, line).map_err(git_err)?;
                             if line.origin() == '+' || line.origin() == '-' {
                                 let added = line.origin() == '+';
-                                hints.observe(&path, kind, line.content(), added);
+                                if added {
+                                    hunk_added += 1;
+                                } else {
+                                    hunk_removed += 1;
+                                }
+                                let hints = if pieces.is_some() {
+                                    &mut hunk_hints
+                                } else {
+                                    &mut hints
+                                };
+                                hints.observe(&path, kind, line.content(), added, analyze_behavior);
                                 let (cursor, number) = if added {
                                     (&mut next, line.new_lineno())
                                 } else {
                                     (&mut previous, line.old_lineno())
                                 };
-                                if let (Some(cursor), Some(number)) = (cursor, number) {
-                                    hints.behavior.observe(cursor.line_at(number), added);
+                                if track_behavior {
+                                    if let (Some(cursor), Some(number)) = (cursor, number) {
+                                        hints.observe_body(cursor.line_at(number), added);
+                                    }
                                 }
                             }
                         }
+                        if let Some(chunk) = pieces.as_ref().and_then(|pieces| pieces.get(hunk)) {
+                            changes.push(Change {
+                                path: path.clone(),
+                                old_path: None,
+                                status: "modified",
+                                staged: staged_file,
+                                partial: partial_file,
+                                added: hunk_added,
+                                removed: hunk_removed,
+                                kind,
+                                chunk: Some(chunk.clone()),
+                                old,
+                                new,
+                                hints: hunk_hints,
+                            });
+                        }
+                    }
+                    if changes.len() > start {
+                        extra_changes -= changes.len() - start - 1;
+                        continue;
                     }
                 }
             } else {
@@ -539,9 +618,8 @@ fn read_changes(
             }
         }
         changes.push(Change {
-            staged: staged.contains(&path) || old_path.as_ref().is_some_and(|p| staged.contains(p)),
-            partial: partial.contains(&path)
-                || old_path.as_ref().is_some_and(|p| partial.contains(p)),
+            staged: staged_file,
+            partial: partial_file,
             status: match delta.status() {
                 Delta::Added => "added",
                 Delta::Deleted => "deleted",
@@ -556,6 +634,7 @@ fn read_changes(
             added,
             removed,
             kind,
+            chunk: None,
             hints,
         });
     }
@@ -568,17 +647,136 @@ pub fn plan(path: &str, include_secrets: bool) -> Result<Composition, String> {
         .map_err(|_| "Commit composer is unavailable.")?;
     let snapshot = Snapshot::build(&Git::open(path)?, true)?;
     let fingerprint = snapshot.fingerprint(include_secrets);
-    let review = snapshot.review(include_secrets, &fingerprint)?;
-    let (units, groups) = rules::compose(&snapshot.changes);
+    let (units, mut groups) = rules::compose(&snapshot.changes);
+    let mut review = CompositionSecrets::new(&fingerprint, include_secrets);
+    snapshot.review(&mut review)?;
+    let mut dependencies = dependencies::Check::new(
+        &snapshot.repo,
+        snapshot.head,
+        snapshot.tree,
+        &snapshot.changes,
+    )?;
+    let target = snapshot.repo.find_tree(snapshot.tree).map_err(git_err)?;
+    if let Some(problem) = dependencies.verify(&target) {
+        return Err(format!(
+            "The proposed final state is missing a local dependency. {problem}"
+        ));
+    }
+    let (mut dependency_notice, mut intermediate) = arrange_groups(
+        &snapshot,
+        &units,
+        &mut groups,
+        &mut dependencies,
+        include_secrets,
+    )?;
+    if dependencies.limited {
+        dependency_notice = Some(
+            "The dependency review reached its limit. The preview kept all changes in one commit."
+                .into(),
+        );
+        groups = vec![rules::combined(
+            &snapshot.changes,
+            &units,
+            units.iter().map(|unit| unit.id).collect(),
+        )];
+        intermediate.clear();
+    }
+    review_intermediate(&snapshot, &intermediate, &mut review);
     Ok(Composition {
         branch: snapshot.branch["refs/heads/".len()..].into(),
         snapshot: fingerprint,
         changes: snapshot.changes,
         units,
         groups,
-        review,
+        review: review.finish(),
         limited: snapshot.limited,
+        dependency_notice,
     })
+}
+
+type Intermediate = BTreeMap<(String, Oid), usize>;
+
+fn arrange_groups(
+    snapshot: &Snapshot,
+    units: &[Unit],
+    groups: &mut Vec<Group>,
+    dependencies: &mut dependencies::Check<'_>,
+    inspect_intermediate: bool,
+) -> Result<(Option<String>, Intermediate), String> {
+    let mut notice = None;
+    loop {
+        let mut series = Series::new(snapshot)?;
+        let mut pieces = Intermediate::new();
+        let mut failed = None;
+        let mut last = None;
+        for (position, group) in groups.iter().enumerate() {
+            let (id, staged) = series.advance(units, &group.units)?;
+            last = Some(id);
+            if let Some(problem) =
+                dependencies.verify(&snapshot.repo.find_tree(id).map_err(git_err)?)
+            {
+                failed = Some((position, problem));
+                break;
+            }
+            if inspect_intermediate {
+                pieces.extend(staged);
+            }
+        }
+        let Some((position, problem)) = failed else {
+            if last != Some(snapshot.tree) {
+                return Err(
+                    "The proposed hunks do not reproduce the final reviewed Git tree.".into(),
+                );
+            }
+            return Ok((notice, pieces));
+        };
+        notice.get_or_insert_with(|| format!("Grouped dependent changes. {problem}"));
+        let provider = groups
+            .iter()
+            .enumerate()
+            .skip(position + 1)
+            .find(|(_, group)| {
+                group
+                    .units
+                    .iter()
+                    .flat_map(|id| &units[*id].changes)
+                    .any(|id| problem.is_provider(&snapshot.changes[*id]))
+            })
+            .map(|(index, _)| index);
+        if let Some(provider) = provider {
+            let dependency = groups.remove(provider);
+            let selected = groups[position]
+                .units
+                .iter()
+                .copied()
+                .chain(dependency.units)
+                .collect();
+            groups[position] = rules::combined_with_reason(
+                &snapshot.changes,
+                units,
+                selected,
+                "Keep these changes together so local references still resolve at this point in the series.",
+            );
+        } else if position + 1 < groups.len() {
+            let following = groups.remove(position + 1);
+            let selected = groups[position]
+                .units
+                .iter()
+                .copied()
+                .chain(following.units)
+                .collect();
+            groups[position] = rules::combined_with_reason(
+                &snapshot.changes,
+                units,
+                selected,
+                "Keep these changes together so local references still resolve at this point in the series.",
+            );
+        } else {
+            return Err(format!(
+                "The composed changes do not pass dependency review. {problem}"
+            ));
+        }
+    }
 }
 
 fn validate_drafts(units: &[Unit], drafts: &[Draft]) -> Result<(), String> {
@@ -608,59 +806,256 @@ fn validate_drafts(units: &[Unit], drafts: &[Draft]) -> Result<(), String> {
     Ok(())
 }
 
+pub fn find_buildable_groups(
+    path: &str,
+    expected: &str,
+    drafts: &[Draft],
+    include_secrets: bool,
+    command: &str,
+) -> Result<BuildPlan, String> {
+    use verification::CheckError;
+
+    let _guard = COMPOSER
+        .lock()
+        .map_err(|_| "Commit composer is unavailable.")?;
+    let snapshot = Snapshot::build(&Git::open(path)?, true)?;
+    if snapshot.fingerprint(include_secrets) != expected {
+        return Err(STALE.into());
+    }
+    let units = rules::atomic_units(&snapshot.changes);
+    validate_drafts(&units, drafts)?;
+    let verify = verification::Verification::new(command)?;
+    let mut dependencies = dependencies::Check::new(
+        &snapshot.repo,
+        snapshot.head,
+        snapshot.tree,
+        &snapshot.changes,
+    )?;
+    let mut state = Series::new(&snapshot)?;
+    let mut groups = Vec::new();
+    let mut pieces = Intermediate::new();
+    let mut pending = Vec::new();
+    let mut start = 0;
+    let mut last = None;
+    for (index, draft) in drafts.iter().enumerate() {
+        pending.extend(draft.units.iter().copied());
+        let (id, staged) = state.advance(&units, &draft.units)?;
+        last = Some(id);
+        let number = groups.len() + 1;
+        let tree = snapshot.repo.find_tree(id).map_err(git_err)?;
+        let problem = dependencies.verify(&tree);
+        if dependencies.limited && !groups.is_empty() {
+            return Err("Dependency review reached its limit. Combine the changes in one commit or stage a smaller batch.".into());
+        }
+        if index + 1 < drafts.len() && (problem.is_some() || dependencies.limited) {
+            continue;
+        }
+        if let Some(problem) = problem {
+            return Err(format!(
+                "The final state does not pass dependency review: {problem}"
+            ));
+        }
+        match verify.check(&snapshot.repo, &tree, number) {
+            Ok(()) => {}
+            Err(CheckError::Rejected(_)) if index + 1 < drafts.len() => continue,
+            Err(CheckError::Rejected(message)) => {
+                return Err(format!("The final state does not build with this command. Regrouping cannot fix the final tree.\n{message}"));
+            }
+            Err(error) => return Err(error.message()),
+        }
+        if include_secrets {
+            // A chunk that was selected in a failed prefix may still be present in this tree.
+            for file in pending.iter().flat_map(|unit| &units[*unit].changes) {
+                let file = &snapshot.changes[*file];
+                if file.chunk.is_some() {
+                    let entry = tree.get_path(Path::new(&file.path)).map_err(git_err)?;
+                    if file.new.is_some_and(|(final_id, _)| entry.id() != final_id) {
+                        let (size, _) = snapshot
+                            .repo
+                            .odb()
+                            .and_then(|odb| odb.read_header(entry.id()))
+                            .map_err(git_err)?;
+                        pieces.insert((file.path.clone(), entry.id()), size);
+                    }
+                }
+            }
+            pieces.extend(staged);
+        }
+        let selected = std::mem::take(&mut pending);
+        let group = if index == start {
+            Group {
+                subject: draft.subject.clone(),
+                description: draft.description.clone(),
+                units: selected,
+            }
+        } else {
+            rules::combined_with_reason(
+                &snapshot.changes,
+                &units,
+                selected,
+                "Keep these changes together so the intermediate snapshot passes the configured checks.",
+            )
+        };
+        groups.push(group);
+        start = index + 1;
+    }
+    if last != Some(snapshot.tree) {
+        return Err("The proposed hunks do not reproduce the final reviewed Git tree.".into());
+    }
+    if Snapshot::build(&Git::open(path)?, false)?.fingerprint(include_secrets) != expected {
+        return Err(STALE.into());
+    }
+    let mut review = CompositionSecrets::new(expected, include_secrets);
+    snapshot.review(&mut review)?;
+    review_intermediate(&snapshot, &pieces, &mut review);
+    Ok(BuildPlan {
+        groups,
+        review: review.finish(),
+    })
+}
+
+struct Series<'a> {
+    snapshot: &'a Snapshot,
+    index: Index,
+    active: BTreeMap<&'a str, Vec<&'a Change>>,
+}
+
+impl<'a> Series<'a> {
+    fn new(snapshot: &'a Snapshot) -> Result<Self, String> {
+        let mut index = Index::new().map_err(git_err)?;
+        if let Some(id) = snapshot.head {
+            index
+                .read_tree(
+                    &snapshot
+                        .repo
+                        .find_commit(id)
+                        .and_then(|c| c.tree())
+                        .map_err(git_err)?,
+                )
+                .map_err(git_err)?;
+        }
+        Ok(Self {
+            snapshot,
+            index,
+            active: BTreeMap::new(),
+        })
+    }
+
+    fn advance(
+        &mut self,
+        units: &[Unit],
+        selected: &[usize],
+    ) -> Result<(Oid, Intermediate), String> {
+        let files = selected.iter().flat_map(|id| {
+            units[*id]
+                .changes
+                .iter()
+                .map(|id| &self.snapshot.changes[*id])
+        });
+        let mut dirty = BTreeMap::new();
+        for file in files.clone() {
+            if file.chunk.is_some() {
+                self.active.entry(&file.path).or_default().push(file);
+                dirty.insert(file.path.as_str(), file);
+            } else if file.old.is_some() {
+                let previous = file.old_path.as_deref().unwrap_or(&file.path);
+                self.index
+                    .remove_path(Path::new(previous))
+                    .map_err(git_err)?;
+            }
+        }
+        for file in files.filter(|file| file.chunk.is_none()) {
+            if let Some((id, mode)) = file.new {
+                self.add(&file.path, id, mode)?;
+            }
+        }
+        let mut reviews = BTreeMap::new();
+        for (path, file) in dirty {
+            let (final_blob, mode) = file.new.ok_or("Hunk has no final file.")?;
+            let id = chunks::blob(&self.snapshot.repo, &self.active[path])?;
+            if id != final_blob {
+                let (size, _) = self
+                    .snapshot
+                    .repo
+                    .odb()
+                    .and_then(|odb| odb.read_header(id))
+                    .map_err(git_err)?;
+                reviews.insert((path.to_owned(), id), size);
+            }
+            self.add(path, id, mode)?;
+        }
+        Ok((
+            self.index
+                .write_tree_to(&self.snapshot.repo)
+                .map_err(git_err)?,
+            reviews,
+        ))
+    }
+
+    fn add(&mut self, path: &str, id: Oid, mode: u32) -> Result<(), String> {
+        self.index
+            .add(&git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode,
+                uid: 0,
+                gid: 0,
+                file_size: 0,
+                id,
+                flags: 0,
+                flags_extended: 0,
+                path: path.as_bytes().to_vec(),
+            })
+            .map_err(git_err)
+    }
+}
+
+fn review_intermediate(
+    snapshot: &Snapshot,
+    blobs: &BTreeMap<(String, Oid), usize>,
+    review: &mut CompositionSecrets,
+) {
+    for ((path, id), size) in blobs {
+        review.inspect(&snapshot.repo, path, *id, *size, true);
+    }
+}
+
 fn create_series(
     snapshot: &Snapshot,
     signature: &git2::Signature<'_>,
     units: &[Unit],
     drafts: &[Draft],
+    mut review: Option<&mut CompositionSecrets>,
 ) -> Result<Vec<Oid>, String> {
-    let mut index = Index::new().map_err(git_err)?;
+    let mut series = Series::new(snapshot)?;
+    let mut dependencies = dependencies::Check::new(
+        &snapshot.repo,
+        snapshot.head,
+        snapshot.tree,
+        &snapshot.changes,
+    )?;
     let mut parent = snapshot.head;
-    if let Some(id) = parent {
-        index
-            .read_tree(
-                &snapshot
-                    .repo
-                    .find_commit(id)
-                    .and_then(|c| c.tree())
-                    .map_err(git_err)?,
-            )
-            .map_err(git_err)?;
-    }
     let mut commits = Vec::new();
     let mut tree = None;
-    for draft in drafts {
-        let files = draft
-            .units
-            .iter()
-            .flat_map(|id| units[*id].changes.iter().map(|id| &snapshot.changes[*id]));
-        for file in files.clone() {
-            let previous = file.old_path.as_deref().unwrap_or(&file.path);
-            if file.old.is_some() {
-                index.remove_path(Path::new(previous)).map_err(git_err)?;
-            }
+    let mut reviewed = HashSet::new();
+    for (number, draft) in drafts.iter().enumerate() {
+        let (id, mut intermediate) = series.advance(units, &draft.units)?;
+        let current_tree = snapshot.repo.find_tree(id).map_err(git_err)?;
+        if let Some(problem) = dependencies.verify(&current_tree) {
+            return Err(format!(
+                "Commit {}: {problem} Keep the changes together or move the dependency earlier.",
+                number + 1
+            ));
         }
-        for file in files {
-            if let Some((id, mode)) = file.new {
-                index
-                    .add(&git2::IndexEntry {
-                        ctime: git2::IndexTime::new(0, 0),
-                        mtime: git2::IndexTime::new(0, 0),
-                        dev: 0,
-                        ino: 0,
-                        mode,
-                        uid: 0,
-                        gid: 0,
-                        file_size: 0,
-                        id,
-                        flags: 0,
-                        flags_extended: 0,
-                        path: file.path.as_bytes().to_vec(),
-                    })
-                    .map_err(git_err)?;
-            }
+        if dependencies.limited && drafts.len() > 1 {
+            return Err("The dependency review reached its limit. Keep these changes in one commit or stage a smaller batch.".into());
         }
-        let id = index.write_tree_to(&snapshot.repo).map_err(git_err)?;
+        if let Some(review) = review.as_deref_mut() {
+            intermediate.retain(|key, _| reviewed.insert(key.clone()));
+            review_intermediate(snapshot, &intermediate, review);
+        }
         let commit = parent
             .map(|oid| snapshot.repo.find_commit(oid))
             .transpose()
@@ -681,7 +1076,7 @@ fn create_series(
                 signature,
                 signature,
                 &message,
-                &snapshot.repo.find_tree(id).map_err(git_err)?,
+                &current_tree,
                 &commit.iter().collect::<Vec<_>>(),
             )
             .map_err(git_err)?;
@@ -732,12 +1127,24 @@ fn publish_objects(source: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn apply(
+#[cfg(test)]
+fn apply(
     path: &str,
     expected: &str,
     drafts: &[Draft],
     include_secrets: bool,
     approved: bool,
+) -> Result<Vec<String>, String> {
+    apply_with_verification(path, expected, drafts, include_secrets, approved, None)
+}
+
+pub fn apply_with_verification(
+    path: &str,
+    expected: &str,
+    drafts: &[Draft],
+    include_secrets: bool,
+    approved: bool,
+    build_command: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let _guard = COMPOSER
         .lock()
@@ -749,7 +1156,17 @@ pub fn apply(
     }
     let units = rules::atomic_units(&snapshot.changes);
     validate_drafts(&units, drafts)?;
-    let review = snapshot.review(include_secrets, expected)?;
+    let mut review = CompositionSecrets::new(expected, include_secrets);
+    snapshot.review(&mut review)?;
+    let signature = repo.signature().map_err(git_err)?;
+    let commits = create_series(
+        &snapshot,
+        &signature,
+        &units,
+        drafts,
+        include_secrets.then_some(&mut review),
+    )?;
+    let review = review.finish();
     if !review.large_files.is_empty() {
         return Err(
             "The plan contains files over 100 MiB. Stage them with Git LFS Manager first.".into(),
@@ -758,8 +1175,23 @@ pub fn apply(
     if (!review.findings.is_empty() || !review.skipped.is_empty()) && !approved {
         return Err("Review the secret scan warnings before confirming.".into());
     }
-    let signature = repo.signature().map_err(git_err)?;
-    let commits = create_series(&snapshot, &signature, &units, drafts)?;
+    if let Some(command) = build_command {
+        let verify = verification::Verification::new(command)?;
+        for (i, commit) in commits.iter().enumerate() {
+            let tree = snapshot
+                .repo
+                .find_commit(*commit)
+                .and_then(|commit| commit.tree())
+                .map_err(git_err)?;
+            verify
+                .check(&snapshot.repo, &tree, i + 1)
+                .map_err(|error| format!("{} No commits were published.", error.message()))?;
+        }
+        // The working copy can change while an external build is running.
+        if Snapshot::build(&Git::open(path)?, false)?.fingerprint(include_secrets) != expected {
+            return Err(STALE.into());
+        }
+    }
 
     let lock_path = snapshot.index_path.with_file_name("index.lock");
     let mut index_lock = OwnedLock::create(lock_path.clone(), &[])
@@ -874,6 +1306,19 @@ mod tests {
                 .iter()
                 .all(|path| unit.changes.iter().any(|i| plan.changes[*i].path == *path))
         })
+    }
+
+    fn draft_with<'a>(plan: &'a Composition, path: &str) -> &'a Group {
+        plan.groups
+            .iter()
+            .find(|group| {
+                group
+                    .units
+                    .iter()
+                    .flat_map(|unit| &plan.units[*unit].changes)
+                    .any(|index| plan.changes[*index].path == path)
+            })
+            .unwrap_or_else(|| panic!("No draft contains {path}"))
     }
 
     #[test]
@@ -1065,6 +1510,113 @@ mod tests {
     }
 
     #[test]
+    fn drafts_a_feature_across_layers_and_keeps_ambiguous_names_independent() {
+        let f = Fixture::new(true);
+        let controller = "src/orders/controllers/CheckoutController.cs";
+        let service = "src/orders/services/CheckoutService.cs";
+        let test = "tests/orders/CheckoutServiceTests.cs";
+        let docs = "docs/orders/checkout-guide.md";
+        let other = "src/admin/controllers/CheckoutController.cs";
+        let ambiguous = "tests/CheckoutTests.cs";
+        let separate_a = "src/orders/services/TaxRules.cs";
+        let separate_b = "src/orders/services/DiscountRules.cs";
+        for path in [
+            controller, service, test, other, ambiguous, separate_a, separate_b,
+        ] {
+            f.write(path, "// Fixture\n");
+        }
+        f.write(docs, "# Checkout examples\n");
+        let before = f.git(&["rev-parse", "HEAD"]);
+        let preview = plan(f.path(), false).unwrap();
+        let checkout = draft_with(&preview, controller);
+        assert_eq!(checkout.units, draft_with(&preview, service).units);
+        assert_eq!(checkout.units, draft_with(&preview, test).units);
+        assert_eq!(checkout.units, draft_with(&preview, docs).units);
+        assert_ne!(checkout.units, draft_with(&preview, other).units);
+        assert_ne!(checkout.units, draft_with(&preview, ambiguous).units);
+        assert_ne!(
+            draft_with(&preview, separate_a).units,
+            draft_with(&preview, separate_b).units
+        );
+        assert!(
+            !together(&preview, controller, test),
+            "review groups must remain editable"
+        );
+        assert!(checkout
+            .description
+            .contains("Keep the matching implementation"));
+        assert!(checkout.subject.contains("checkout implementation"));
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), before);
+        f.apply(&preview);
+        assert_eq!(f.git(&["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn drafts_ui_with_named_stories_and_locales_without_crossing_workspaces() {
+        let f = Fixture::new(true);
+        let screen = "apps/store/src/features/cart/CartScreen.tsx";
+        let story = "apps/store/src/features/cart/CartScreen.stories.tsx";
+        let hook = "apps/store/src/features/cart/hooks/useCart.ts";
+        let style = "apps/store/src/features/cart/CartScreen.module.css";
+        let locale = "apps/store/locales/hr/cart.json";
+        let common = "apps/store/locales/hr/common.json";
+        let admin = "apps/admin/locales/hr/cart.json";
+        f.write(screen, "export function CartScreen() {}\n");
+        f.write(story, "export const EmptyCart = {};\n");
+        f.write(hook, "export function useCart() {}\n");
+        f.write(style, ".empty { display: none; }\n");
+        for path in [locale, common, admin] {
+            f.write(path, "{\"title\":\"Cart\"}\n");
+        }
+        let preview = plan(f.path(), false).unwrap();
+        let ui = draft_with(&preview, screen);
+        assert_eq!(ui.units, draft_with(&preview, story).units);
+        assert_eq!(ui.units, draft_with(&preview, hook).units);
+        assert_eq!(ui.units, draft_with(&preview, style).units);
+        assert_eq!(ui.units, draft_with(&preview, locale).units);
+        assert_ne!(ui.units, draft_with(&preview, common).units);
+        assert_ne!(ui.units, draft_with(&preview, admin).units);
+    }
+
+    #[test]
+    fn drafts_a_migration_with_the_source_that_uses_its_exact_table() {
+        let f = Fixture::new(true);
+        let write = "src/data/InvoiceRepository.cs";
+        let unrelated = "src/data/PaymentRepository.cs";
+        let migration = "data/migrations/001.sql";
+        f.write(
+            write,
+            "var sql = \"INSERT INTO billing.invoices (id) VALUES (@id)\";\n",
+        );
+        f.write(
+            unrelated,
+            "var sql = \"SELECT id FROM reporting.invoices WHERE id = @id\";\n",
+        );
+        f.write(
+            migration,
+            "ALTER TABLE billing.invoices ADD COLUMN number TEXT;\n",
+        );
+        let preview = plan(f.path(), false).unwrap();
+        let invoice = draft_with(&preview, write);
+        assert_eq!(invoice.units, draft_with(&preview, migration).units);
+        assert_ne!(invoice.units, draft_with(&preview, unrelated).units);
+        assert!(invoice
+            .description
+            .contains("Keep the migration with the implementation"));
+        assert!(!together(&preview, write, migration));
+
+        f.write(
+            "src/reporting/ExportRepository.cs",
+            "var sql = \"SELECT id FROM billing.invoices WHERE id = @id\";\n",
+        );
+        let preview = plan(f.path(), false).unwrap();
+        assert_ne!(
+            draft_with(&preview, write).units,
+            draft_with(&preview, migration).units
+        );
+    }
+
+    #[test]
     fn explains_actual_changes_without_copying_values_into_messages() {
         let f = Fixture::new(true);
         f.write("app/settings.env", "retry_count=old-value\n");
@@ -1084,6 +1636,7 @@ mod tests {
             "ALTER TABLE accounts ADD COLUMN status TEXT;\n",
         );
         f.write("docs/guide.md", "## Configure branch protection\n");
+        f.git(&["add", "--", "app/settings.env", "src/app.py"]);
         let plan = plan(f.path(), false).unwrap();
         let messages = plan
             .groups
@@ -1107,6 +1660,62 @@ mod tests {
     }
 
     #[test]
+    fn drafts_contract_and_function_body_messages_from_staged_evidence() {
+        let f = Fixture::new(true);
+        let source = "core/rank.rs";
+        f.write(
+            source,
+            "fn rank_candidate(left: i32, right: i32) -> i32 {\n    left + right\n}\n",
+        );
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Add baseline"]);
+        f.write(
+            source,
+            "fn rank_candidate(left: i32, right: i32) -> i32 {\n    left - right\n}\n",
+        );
+        f.write(
+            "rpc/catalog.proto",
+            "rpc ListCatalog(Request) returns (Response);\n",
+        );
+        f.write(
+            "data/migrations/001.sql",
+            "ALTER TABLE catalog ADD COLUMN alias VARCHAR(32) DEFAULT 'private-test-value';\n",
+        );
+        f.git(&["add", "."]);
+        let proposed = plan(f.path(), false).unwrap();
+        let group = |path| {
+            proposed
+                .groups
+                .iter()
+                .find(|group| {
+                    group.units.iter().any(|id| {
+                        proposed.units[*id]
+                            .changes
+                            .iter()
+                            .any(|id| proposed.changes[*id].path == path)
+                    })
+                })
+                .unwrap()
+        };
+        assert!(group(source).subject.contains("Revise rank candidate"));
+        assert!(group(source)
+            .description
+            .contains("Changes the implementation in `rank_candidate`."));
+        assert!(group("rpc/catalog.proto")
+            .subject
+            .contains("Expose endpoint ListCatalog"));
+        let sql = &group("data/migrations/001.sql").description;
+        assert!(sql.contains("Adds the column `alias`."), "{sql}");
+        assert!(!sql.contains("private-test-value"));
+        assert!(proposed
+            .groups
+            .iter()
+            .all(|group| group.subject.encode_utf16().count() <= 72));
+        f.apply(&proposed);
+        assert_eq!(f.git(&["status", "--porcelain"]), "");
+    }
+
+    #[test]
     fn composes_behavior_from_hunks_and_splits_unrelated_features_in_one_folder() {
         let f = Fixture::new(true);
         f.write("src/ui/account.ts", "export function selectAccount(account) {\n  const initial = 1;\n  const next = initial;\n  const saved = next;\n  const value = saved;\n  return account.id + value;\n}\n");
@@ -1126,6 +1735,7 @@ mod tests {
             "client/request.py",
             "async def request_status():\n    return await wait_for(fetch(), 30)\n",
         );
+        f.git(&["add", "."]);
         let plan = plan(f.path(), false).unwrap();
         let group_for = |path: &str| {
             plan.groups
@@ -1174,6 +1784,452 @@ mod tests {
         );
         f.apply(&plan);
         assert_eq!(f.git(&["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn stages_independent_hunks_of_one_file_without_consuming_unstaged_bytes() {
+        let f = Fixture::new(true);
+        let baseline = "export function normalizeInput(value) {\n    return value.trim();\n}\n\n// context one\n// context two\n// context three\n// context four\n// context five\n// context six\n// context seven\n\nexport function configureTimer() {\n    return 1;\n}\n";
+        f.write("src/features.ts", baseline);
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Baseline"]);
+        let after = baseline
+            .replace(
+                "    return value.trim();",
+                "    if (value == null) return '';\n    return value.trim();",
+            )
+            .replace(
+                "    return 1;",
+                "    setTimeout(runTask, 20);\n    return 1;",
+            );
+        f.write("src/features.ts", &after);
+        f.git(&["add", "--", "src/features.ts"]);
+        f.write(
+            "src/features.ts",
+            &(after.clone() + "// Keep this unstaged\n"),
+        );
+        let head = f.git(&["rev-parse", "HEAD"]);
+        let plan = plan(f.path(), false).unwrap();
+        assert_eq!(plan.changes.len(), 2);
+        assert!(plan
+            .changes
+            .iter()
+            .all(|file| file.chunk.is_some() && file.partial));
+        assert_eq!(plan.groups.len(), 2);
+        let commits = f.apply(&plan);
+        let intermediate = f.git(&["show", &format!("{}:src/features.ts", commits[0])]);
+        assert_ne!(
+            intermediate.contains("setTimeout"),
+            intermediate.contains("value == null")
+        );
+        assert_eq!(f.git(&["show", "HEAD:src/features.ts"]), after.trim_end());
+        assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "");
+        assert!(f
+            .git(&["diff", "--", "src/features.ts"])
+            .contains("+// Keep this unstaged"));
+        assert_eq!(f.git(&["rev-parse", "HEAD~2"]), head);
+    }
+
+    #[test]
+    fn refuses_missing_local_dependency_and_unsafe_manual_export_order() {
+        let f = Fixture::new(true);
+        f.write("src/core.ts", "export function existing() {}\n\n// one\n// two\n// three\n// four\n// five\n// six\n// seven\n\nexport function keep() {\n  return 1;\n}\n");
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Baseline"]);
+        f.write("src/core.ts", "export function existing() {}\nexport function newFeature() {}\n\n// one\n// two\n// three\n// four\n// five\n// six\n// seven\n\nexport function keep() {\n  return 2;\n}\n");
+        f.write(
+            "src/use.ts",
+            "import { newFeature } from './core';\nnewFeature();\n",
+        );
+        f.write("docs/README.md", "# Document baseline\n");
+        f.git(&["add", "."]);
+        let proposed = plan(f.path(), false).unwrap();
+        let consumer = proposed
+            .units
+            .iter()
+            .find(|unit| {
+                unit.changes
+                    .iter()
+                    .any(|id| proposed.changes[*id].path == "src/use.ts")
+            })
+            .unwrap();
+        assert!(consumer
+            .changes
+            .iter()
+            .any(|id| proposed.changes[*id].path == "src/core.ts"
+                || proposed.changes[*id].path == "src/use.ts"));
+        f.apply(&proposed);
+        let original = f.git(&["rev-parse", "HEAD"]);
+        f.write("src/missing.ts", "import './missing-dependency';\n");
+        assert!(plan(f.path(), false)
+            .err()
+            .is_some_and(|error| error.contains("missing-dependency")));
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), original);
+    }
+
+    #[test]
+    fn blocks_reordering_a_caller_before_a_new_export() {
+        let f = Fixture::new(true);
+        f.write("src/feature.ts", "export const keep = 1;\n");
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Baseline"]);
+        f.write(
+            "src/feature.ts",
+            "export const keep = 1;\nexport const enabled = true;\n",
+        );
+        // Deliberately bypass the grouping heuristic so the commit-tree guard is tested directly.
+        f.write("src/caller.ts", "import { enabled } from './feature';\n");
+        f.git(&["add", "."]);
+        let original = f.git(&["rev-parse", "HEAD"]);
+        let snapshot = Snapshot::build(&Git::open(f.path()).unwrap(), false).unwrap();
+        let units: Vec<_> = (0..snapshot.changes.len())
+            .map(|id| Unit {
+                id,
+                changes: vec![id],
+            })
+            .collect();
+        let caller = snapshot
+            .changes
+            .iter()
+            .position(|file| file.path == "src/caller.ts")
+            .unwrap();
+        let provider = snapshot
+            .changes
+            .iter()
+            .position(|file| file.path == "src/feature.ts")
+            .unwrap();
+        let make = |id| Draft {
+            subject: "Refactor(core): Review dependency".into(),
+            description: String::new(),
+            units: vec![id],
+        };
+        let signature = Git::open(f.path()).unwrap().signature().unwrap();
+        let error = create_series(
+            &snapshot,
+            &signature,
+            &units,
+            &[make(caller), make(provider)],
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("imports enabled before"), "{error}");
+        assert_eq!(
+            create_series(
+                &snapshot,
+                &signature,
+                &units,
+                &[make(provider), make(caller)],
+                None
+            )
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), original);
+    }
+
+    #[test]
+    fn verifies_every_commit_before_moving_the_branch() {
+        let f = Fixture::new(true);
+        f.write("src/first.rs", "const VALUE: i32 = 7;\n");
+        f.write("src/second.rs", "const FALLBACK: i32 = 9;\n");
+        f.write("verify.rs", "include!(\"src/first.rs\");\nfn main() {}\n");
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Baseline"]);
+        f.write("src/first.rs", "const VALUE: i32 = invalid_name;\n");
+        f.write("src/second.rs", "const invalid_name: i32 = 7;\n");
+        f.write("docs/guide.md", "# Guide\n");
+        f.git(&["add", "."]);
+        let original = f.git(&["rev-parse", "HEAD"]);
+        let index = f.git(&["write-tree"]);
+        let snapshot = Snapshot::build(&Git::open(f.path()).unwrap(), false).unwrap();
+        let units = rules::atomic_units(&snapshot.changes);
+        let unit = |path: &str| {
+            units
+                .iter()
+                .position(|unit| {
+                    unit.changes
+                        .iter()
+                        .any(|id| snapshot.changes[*id].path == path)
+                })
+                .unwrap()
+        };
+        let consumer = unit("src/first.rs");
+        let provider = unit("src/second.rs");
+        let docs = unit("docs/guide.md");
+        assert_ne!(consumer, provider);
+        let make = |units| Draft {
+            subject: "Test(core): Check each staged snapshot".into(),
+            description: String::new(),
+            units,
+        };
+        #[cfg(windows)]
+        let command = "copy /b src\\second.rs+verify.rs combined.rs >nul && rustc --crate-name verify_sample combined.rs";
+        #[cfg(not(windows))]
+        let command = "cat src/second.rs verify.rs > combined.rs && rustc --crate-name verify_sample combined.rs";
+        let risky = [
+            make(vec![consumer]),
+            make(vec![provider]),
+            Draft {
+                subject: "Docs(guide): Add setup instructions".into(),
+                description: "Describe how to run the project.\n\nCloses #123".into(),
+                units: vec![docs],
+            },
+        ];
+        let result = apply_with_verification(
+            f.path(),
+            &snapshot.fingerprint(false),
+            &risky,
+            false,
+            false,
+            Some(command),
+        );
+        let error = result.expect_err("an intermediate commit should not compile");
+        assert!(
+            error.contains("Commit 1: Build verification failed") && error.contains("invalid_name"),
+            "{error}"
+        );
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), original);
+        assert_eq!(f.git(&["write-tree"]), index);
+        assert!(!f.0.path().join("combined.rs").exists());
+        let failed = find_buildable_groups(
+            f.path(),
+            &snapshot.fingerprint(false),
+            &risky,
+            false,
+            "exit 1",
+        );
+        assert!(
+            matches!(failed, Err(message) if message.contains("Regrouping cannot fix the final tree"))
+        );
+        let repaired = find_buildable_groups(
+            f.path(),
+            &snapshot.fingerprint(false),
+            &risky,
+            false,
+            command,
+        )
+        .unwrap();
+        assert_eq!(repaired.groups.len(), 2);
+        assert_eq!(repaired.groups[0].units, [consumer, provider]);
+        assert!(repaired.groups[0]
+            .description
+            .contains("Keep these changes together"));
+        assert!(repaired.groups[0]
+            .description
+            .lines()
+            .all(|line| line.len() <= 72));
+        assert_eq!(repaired.groups[1].subject, risky[2].subject);
+        assert_eq!(repaired.groups[1].description, risky[2].description);
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), original);
+        assert_eq!(f.git(&["write-tree"]), index);
+        let safe = repaired
+            .groups
+            .into_iter()
+            .map(|group| Draft {
+                subject: group.subject,
+                description: group.description,
+                units: group.units,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            apply_with_verification(
+                f.path(),
+                &snapshot.fingerprint(false),
+                &safe,
+                false,
+                false,
+                Some(command)
+            )
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(f.git(&["rev-parse", "HEAD~2"]), original);
+        assert_eq!(f.git(&["status", "--porcelain"]), "");
+        assert!(!f.0.path().join("combined.rs").exists());
+    }
+
+    #[test]
+    fn detects_local_asset_includes_and_unchanged_callers() {
+        for (caller, program, dependency) in [
+            (
+                "src/main.rs",
+                "const DEFAULT: &str = include_str!(\"default.toml\");\n",
+                "src/default.toml",
+            ),
+            (
+                "lib/Bootstrap.php",
+                "<?php\nrequire_once(__DIR__ . '/Config.php');\n",
+                "lib/Config.php",
+            ),
+            ("objc/View.m", "#import \"View.h\"\n", "objc/View.h"),
+        ] {
+            let f = Fixture::new(true);
+            f.write(caller, "");
+            f.git(&["add", "."]);
+            f.git(&["commit", "-m", "Add baseline"]);
+            f.write(caller, program);
+            f.write(dependency, "text\n");
+            f.git(&["add", "."]);
+            let proposed = plan(f.path(), false).unwrap();
+            let snapshot = Snapshot::build(&Git::open(f.path()).unwrap(), false).unwrap();
+            let caller_unit = proposed
+                .units
+                .iter()
+                .find(|unit| {
+                    unit.changes
+                        .iter()
+                        .any(|id| proposed.changes[*id].path == caller)
+                })
+                .unwrap();
+            if !caller_unit
+                .changes
+                .iter()
+                .any(|id| proposed.changes[*id].path == dependency)
+            {
+                let mut series = Series::new(&snapshot).unwrap();
+                let (id, _) = series.advance(&proposed.units, &[caller_unit.id]).unwrap();
+                let mut check = dependencies::Check::new(
+                    &snapshot.repo,
+                    snapshot.head,
+                    snapshot.tree,
+                    &snapshot.changes,
+                )
+                .unwrap();
+                assert!(
+                    check
+                        .verify(&snapshot.repo.find_tree(id).unwrap())
+                        .is_some(),
+                    "{caller}"
+                );
+            }
+            f.apply(&proposed);
+            f.git(&["rm", "--", dependency]);
+            assert!(matches!(
+                plan(f.path(), false),
+                Err(message) if message.contains("missing a local dependency") && message.contains(caller)
+            ));
+        }
+    }
+
+    #[test]
+    fn detects_missing_python_and_c_dependencies_between_git_trees() {
+        let f = Fixture::new(true);
+        f.write("tools/build.py", "from .settings import limit\n");
+        f.write("tools/settings.py", "limit = 1\n");
+        f.write("native/main.c", "#include \"features.h\"\n");
+        f.write("native/features.h", "int select_feature(void);\n");
+        f.git(&["add", "."]);
+        let snapshot = Snapshot::build(&Git::open(f.path()).unwrap(), false).unwrap();
+        let units: Vec<_> = (0..snapshot.changes.len())
+            .map(|id| Unit {
+                id,
+                changes: vec![id],
+            })
+            .collect();
+        let select = |path: &str| {
+            vec![snapshot
+                .changes
+                .iter()
+                .position(|file| file.path == path)
+                .unwrap()]
+        };
+        let mut check = dependencies::Check::new(
+            &snapshot.repo,
+            snapshot.head,
+            snapshot.tree,
+            &snapshot.changes,
+        )
+        .unwrap();
+        for (consumer, provider) in [
+            ("tools/build.py", "tools/settings.py"),
+            ("native/main.c", "native/features.h"),
+        ] {
+            let mut series = Series::new(&snapshot).unwrap();
+            let first = series.advance(&units, &select(consumer)).unwrap().0;
+            let problem = check
+                .verify(&snapshot.repo.find_tree(first).unwrap())
+                .unwrap()
+                .to_string();
+            assert!(problem.contains(consumer), "{problem}");
+            let second = series.advance(&units, &select(provider)).unwrap().0;
+            assert!(check
+                .verify(&snapshot.repo.find_tree(second).unwrap())
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn checks_unchanged_callers_when_a_local_module_is_deleted() {
+        let f = Fixture::new(true);
+        f.write("src/caller.ts", "import { value } from './feature';\n");
+        f.write("src/feature.ts", "export const value = 1;\n");
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Baseline"]);
+        f.git(&["rm", "--", "src/feature.ts"]);
+        let error = plan(f.path(), false)
+            .err()
+            .expect("an unchanged caller still imports this module");
+        assert!(
+            error.contains("src/caller.ts") && error.contains("src/feature"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn combines_the_provider_with_its_caller_without_absorbing_unrelated_steps() {
+        let f = Fixture::new(true);
+        f.write("src/feature.ts", "export const keep = 1;\n");
+        f.git(&["add", "."]);
+        f.git(&["commit", "-m", "Baseline"]);
+        f.write(
+            "src/feature.ts",
+            "export const keep = 1;\nexport const enabled = true;\n",
+        );
+        f.write("src/caller.ts", "import { enabled } from './feature';\n");
+        f.write("docs/guide.md", "# Describe a separate workflow\n");
+        f.git(&["add", "."]);
+        let snapshot = Snapshot::build(&Git::open(f.path()).unwrap(), false).unwrap();
+        let units: Vec<_> = (0..snapshot.changes.len())
+            .map(|id| Unit {
+                id,
+                changes: vec![id],
+            })
+            .collect();
+        let index = |path: &str| {
+            snapshot
+                .changes
+                .iter()
+                .position(|file| file.path == path)
+                .unwrap()
+        };
+        let (caller, docs, provider) = (
+            index("src/caller.ts"),
+            index("docs/guide.md"),
+            index("src/feature.ts"),
+        );
+        let mut groups: Vec<_> = [caller, docs, provider]
+            .into_iter()
+            .map(|id| rules::combined(&snapshot.changes, &units, vec![id]))
+            .collect();
+        let mut check = dependencies::Check::new(
+            &snapshot.repo,
+            snapshot.head,
+            snapshot.tree,
+            &snapshot.changes,
+        )
+        .unwrap();
+        let (notice, _) =
+            arrange_groups(&snapshot, &units, &mut groups, &mut check, false).unwrap();
+        assert!(notice.is_some());
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.units.clone())
+                .collect::<Vec<_>>(),
+            [vec![caller, provider], vec![docs]]
+        );
     }
 
     #[test]
