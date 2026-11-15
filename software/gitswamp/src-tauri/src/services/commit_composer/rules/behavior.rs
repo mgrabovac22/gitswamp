@@ -27,9 +27,27 @@ pub(super) enum Signal {
     FileIo,
     Rendering,
     TestAssertions,
+    DatabaseRead,
+    DatabaseWrite,
+    Transaction,
+    Authentication,
+    PasswordHandling,
+    TokenHandling,
+    SessionHandling,
+    BusinessRules,
+    Pagination,
+    DataFiltering,
+    DataOrdering,
+    FeatureFlags,
+    RateLimiting,
+    Observability,
+    JobDispatch,
+    DataRedaction,
+    Idempotency,
+    Lifecycle,
 }
 
-const SIGNALS: [Signal; 20] = [
+const SIGNALS: [Signal; 38] = [
     Signal::NullGuard,
     Signal::BoundsGuard,
     Signal::InputValidation,
@@ -50,6 +68,24 @@ const SIGNALS: [Signal; 20] = [
     Signal::FileIo,
     Signal::Rendering,
     Signal::TestAssertions,
+    Signal::DatabaseRead,
+    Signal::DatabaseWrite,
+    Signal::Transaction,
+    Signal::Authentication,
+    Signal::PasswordHandling,
+    Signal::TokenHandling,
+    Signal::SessionHandling,
+    Signal::BusinessRules,
+    Signal::Pagination,
+    Signal::DataFiltering,
+    Signal::DataOrdering,
+    Signal::FeatureFlags,
+    Signal::RateLimiting,
+    Signal::Observability,
+    Signal::JobDispatch,
+    Signal::DataRedaction,
+    Signal::Idempotency,
+    Signal::Lifecycle,
 ];
 
 impl Signal {
@@ -75,6 +111,24 @@ impl Signal {
             Self::FileIo => "file I/O",
             Self::Rendering => "rendering",
             Self::TestAssertions => "test assertions",
+            Self::DatabaseRead => "database queries",
+            Self::DatabaseWrite => "database writes",
+            Self::Transaction => "database transactions",
+            Self::Authentication => "identity checks",
+            Self::PasswordHandling => "password verification",
+            Self::TokenHandling => "token handling",
+            Self::SessionHandling => "session handling",
+            Self::BusinessRules => "business rule checks",
+            Self::Pagination => "pagination",
+            Self::DataFiltering => "data filtering",
+            Self::DataOrdering => "result ordering",
+            Self::FeatureFlags => "feature flag checks",
+            Self::RateLimiting => "rate limiting",
+            Self::Observability => "telemetry instrumentation",
+            Self::JobDispatch => "background job dispatch",
+            Self::DataRedaction => "data redaction",
+            Self::Idempotency => "idempotency checks",
+            Self::Lifecycle => "lifecycle hooks",
         }
     }
 
@@ -91,11 +145,22 @@ impl Signal {
             Self::ResourceCleanup | Self::Concurrency | Self::MemoryHandling | Self::FileIo => 5,
             Self::Caching | Self::Batching => 6,
             Self::TestAssertions => 7,
+            Self::DatabaseRead | Self::DatabaseWrite | Self::Transaction => 8,
+            Self::Authentication
+            | Self::PasswordHandling
+            | Self::TokenHandling
+            | Self::SessionHandling => 2,
+            Self::BusinessRules | Self::FeatureFlags => 9,
+            Self::Pagination | Self::DataFiltering | Self::DataOrdering => 10,
+            Self::RateLimiting | Self::Idempotency => 3,
+            Self::Observability => 11,
+            Self::JobDispatch | Self::Lifecycle => 4,
+            Self::DataRedaction => 2,
         }
     }
 }
 
-pub(in crate::services::commit_composer) fn supported(path: &str) -> bool {
+pub(in crate::services::commit_composer) fn splittable(path: &str) -> bool {
     matches!(
         extension(path),
         "js" | "jsx"
@@ -117,14 +182,46 @@ pub(in crate::services::commit_composer) fn supported(path: &str) -> bool {
             | "hpp"
             | "hh"
             | "hxx"
+            | "rs"
+            | "go"
+            | "kt"
+            | "kts"
+            | "php"
+            | "swift"
+            | "scala"
+            | "groovy"
     )
+}
+
+pub(in crate::services::commit_composer) fn supported(path: &str) -> bool {
+    splittable(path)
+        || matches!(
+            extension(path),
+            "dart"
+                | "zig"
+                | "m"
+                | "mm"
+                | "cu"
+                | "cuh"
+                | "ino"
+                | "ps1"
+                | "psm1"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "tcl"
+                | "pl"
+                | "pm"
+                | "raku"
+                | "sol"
+        )
 }
 
 #[derive(Clone, Copy)]
 pub(in crate::services::commit_composer) struct Line<'a> {
     pub(super) scope: &'a str,
-    pub(super) signals: u32,
-    signature: u32,
+    pub(super) signals: u64,
+    pub(super) signature: u32,
 }
 
 pub(in crate::services::commit_composer) struct Cursor<'a> {
@@ -157,6 +254,14 @@ impl<'a> Cursor<'a> {
     }
 
     pub(in crate::services::commit_composer) fn line_at(&mut self, target: u32) -> Line<'a> {
+        self.advance(target, true)
+    }
+
+    pub(in crate::services::commit_composer) fn scope_at(&mut self, target: u32) -> &'a str {
+        self.advance(target, false).scope
+    }
+
+    fn advance(&mut self, target: u32, analyze: bool) -> Line<'a> {
         let mut result = Line {
             scope: "",
             signals: 0,
@@ -165,7 +270,7 @@ impl<'a> Cursor<'a> {
         while self.line < target {
             let Some(raw) = self.lines.next() else { break };
             self.line += 1;
-            let inspected = self.inspect(raw, self.line == target);
+            let inspected = self.inspect(raw, analyze && self.line == target);
             if self.line == target {
                 result = inspected;
             }
@@ -175,6 +280,20 @@ impl<'a> Cursor<'a> {
 
     fn inspect(&mut self, raw: &'a [u8], changed: bool) -> Line<'a> {
         let python = matches!(self.ext, "py" | "pyi");
+        let hash_comment = matches!(
+            self.ext,
+            "py" | "pyi"
+                | "php"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "ps1"
+                | "psm1"
+                | "tcl"
+                | "pl"
+                | "pm"
+                | "raku"
+        );
         let first = raw
             .iter()
             .position(|byte| !byte.is_ascii_whitespace())
@@ -255,7 +374,9 @@ impl<'a> Cursor<'a> {
                 i += 1;
                 continue;
             }
-            if (!python && pair == Some(b"//")) || (python && b == b'#') {
+            if (!python && pair == Some(b"//"))
+                || (hash_comment && b == b'#' && pair != Some(b"#["))
+            {
                 break;
             }
             if !python && pair == Some(b"/*") {
@@ -332,7 +453,9 @@ impl<'a> Cursor<'a> {
         } else {
             0
         };
-        let signature = if signals == 0 {
+        let signature = if signals == 0
+            && (scope.is_empty() || !code[..pos].iter().any(u8::is_ascii_alphabetic))
+        {
             0
         } else {
             code[..pos]
@@ -390,8 +513,11 @@ fn valid_callable(name: &str) -> bool {
         )
 }
 
-fn classify(code: &[u8], ext: &str) -> u32 {
-    let c_family = matches!(ext, "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx");
+fn classify(code: &[u8], ext: &str) -> u64 {
+    let c_family = matches!(
+        ext,
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "cu" | "cuh" | "m" | "mm" | "ino"
+    );
     let web = matches!(
         ext,
         "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts"
@@ -401,7 +527,7 @@ fn classify(code: &[u8], ext: &str) -> u32 {
         r"(?:\b(?:if|return)\b.*(?:\b(?:null|nullptr|undefined)\b|\bis\s+(?:not\s+)?none\b)|\?\?|\?\.)",
         r"(?:>=\s*(?:len\s*\(|sizeof\s*\(|limit\b|count\b|length\b|size\b|\w+\.length\b)|\bcheckindex\s*\(|\.isoutofbounds\s*\()",
         r"\b(?:validate\w*|isvalid|tryparse|isnan|isfinite|checkvalidity)\s*\(",
-        r"(?:\b(?:haspermission|hasauthority|isuserinrole|canaccess|require_auth)\s*\(|\[authorize\b|@(?:preauthorize|secured|login_required)\b)",
+        r"(?:\b(?:haspermission|hasauthority|isuserinrole|canaccess|require_auth|authorizeasync|requireauthorization|check_permission)\s*\(|\[authorize\b|@(?:preauthorize|secured|login_required|rolesallowed|permission_required)\b)",
         r"\b(?:catch\s*[(\{]|except[\s:]|throw\s+new\b|raise\s+|finally\s*[:\{]|perror\s*\()",
         r"(?:\b(?:retry|retrywhen|retrying|backoff)\s*\(|@retryable\b|\b(?:retry_policy|retry_count|max_retries)\b)",
         r"(?:\b(?:settimeout|wait_for|ortimeout|withtimeout|cancelafter)\s*\(|abortsignal\.timeout\s*\(|\btimeout\s*=\s*[^=])",
@@ -418,6 +544,24 @@ fn classify(code: &[u8], ext: &str) -> u32 {
         r"(?:\b(?:fopen|fread|fwrite|read_all_text|readalltext|writealltext|readfilesync|writefilesync|read_text|write_text)\s*\(|\bstd::(?:ifstream|ofstream)|\bfiles\.(?:read|write))",
         r"\b(?:render|createelement|appendchild|setattribute|requestanimationframe|useeffect)\s*\(",
         r"(?:\bassert\s+|\b(?:assert|assert_eq|assertequals|asserttrue|assertfalse|expect)\s*\(|\bassert\.(?:equal|that|throws)\b|\bpytest\.raises\s*\()",
+        r"(?:\b(?:findunique|findmany|findone|findonebyid|findbyid|findallbyid|queryrow(?:context)?|executequery|executereader(?:async)?|sql_query|fetch_optional|fetch_all|loadasyncentities)\s*\(|\b(?:db|database|repository|session)\.(?:query|select|find|scalars)\s*\(|\.objects\.(?:get|filter|all)\s*\()",
+        r"(?:\b(?:savechanges(?:async)?|executeupdate|insertmany|insertone|upsert|create_many|update_many|delete_many|bulkinsert|executenonquery(?:async)?|execcontext)\s*\(|\b(?:db|database|repository|session)\.(?:insert|update|delete|save|add|flush)\s*\(|\.objects\.(?:create|get_or_create|update_or_create|bulk_create|bulk_update)\s*\()",
+        r"(?:\b(?:begintransaction(?:async)?|begintx|committransaction|rollbacktransaction|starttransaction|withtransaction)\s*\(|@transactional\b|\b(?:db|database|transaction|session|tx)\.(?:transaction|\$transaction|atomic|begin|commit|rollback|savepoint|after_commit)\s*\()",
+        r"(?:\b(?:authenticate|authenticateasync|passwordsigninasync|signinwithpassword|verifyidentity|getcurrentuser|requireauthenticateduser|requireauthenticated|current_user_can)\s*\(|\bpassport\.authenticate\s*\(|\bsecuritycontext(?:holder)?\.|\b(?:oauth2|oidc)\.(?:authenticate|verify_id_token)\s*\()",
+        r"(?:\b(?:check_password|verify_password|hash_password|checkpassword|verifypassword|hashpassword|verifypasswordhash|password_verify|password_hash|generatesalt)\s*\(|\b(?:bcrypt|argon2|passwordencoder)\.(?:hash|compare|verify|matches|encode|checkpw|hashpw)\s*\()",
+        r"(?:\b(?:refreshtoken|revoketoken|verifytoken|verifyaccesstoken|validatetoken|validatejwt|verify_jwt|jwt_sign|jwt_verify)\s*\(|\b(?:jwt|jsonwebtoken)\.(?:verify|sign|decode|encode)\s*\()",
+        r"\b(?:createsession|destroysession|revokesession|rotatesession|validatesession|regeneratesession|signoutasync|sessions\.revoke|session\.(?:regenerate|destroy|cycle_key|flush))\s*\(",
+        r"\b(?:cancheckout|canorder|checkeligibility|asserteligible|enforcepolicy|validatetransition|checkquota|applydiscount|calculatetax|checkstock|checkavailability|reserveinventory|checkinventory|validatestate|check_inventory|reserve_inventory|validate_transition|check_eligibility)\s*\(",
+        r"(?:\b(?:paginate|cursorpagination|pageable\.of|pagerequest\.of)\s*\(|\b(?:pagesize|page_size|nextcursor|next_cursor)\s*=\s*[^=]|\.(?:skip|take)\s*\(\s*(?:offset|limit|page\w*))",
+        r"\b(?:applyfilters|filterby|filter_by|whereclauses|whereclause)\s*\(|\.(?:where|filter_by)\s*\(",
+        r"\b(?:orderby(?:descending)?|order_by|sortby|sort_by|thenby|thenbydescending)\s*\(",
+        r"\b(?:featureflags?\.(?:enabled|isenabled|is_enabled|check)|isfeatureenabled|feature_enabled|hasfeatureflag|flagclient\.(?:variation|booleanvariation))\s*\(",
+        r"(?:\b(?:ratelimit|rate_limit|require_rate_limit|requireratelimiting|addratelimiter|use_ratelimit)\s*\(|\b(?:limiter|ratelimiter)\.(?:allow|acquire|tryacquire|acquireasync|try_acquire|limit)\s*\()",
+        r"(?:\b(?:startspan|start_span|start_as_current_span|addopentelemetry|record_exception|recordexception)\s*\(|\b(?:tracer|meter|metrics)\.(?:start|counter|histogram|record|increment|createcounter)\s*\()",
+        r"(?:\b(?:dispatch_job|enqueue_job|enqueuejob|perform_later|perform_async|apply_async|send_task|enqueue_task|dispatch_after_response)\s*\(|\b(?:jobqueue|task_queue|queue)\.(?:enqueue|dispatch|schedule)\s*\()",
+        r"\b(?:redact_secrets?|redactsecrets?|redactpersonaldata|mask_email|maskemail|sanitize_headers|sanitizeheaders|removecredentials|stripsensitivefields|scrub_sensitive_fields)\s*\(",
+        r"\b(?:check_idempotency|checkidempotency|ensure_idempotency|ensureidempotency|with_idempotency|withidempotency|mark_processed|markprocessed)\s*\(",
+        r"(?:\b(?:onmounted|onunmounted|onbeforemount|onbeforedestroy|add_event_handler|on_startup|on_shutdown|registershutdownhook|registershutdowncallback)\s*\(|@(?:postconstruct|predestroy)\b)",
     ]).unicode(false).dfa_size_limit(128 * 1024).build().expect("static commit composer rules"));
     let mut mask = 0;
     for item in rules.matches(code).into_iter() {
@@ -564,6 +708,166 @@ mod tests {
         summary.observe(line, false);
         summary.observe(line, true);
         assert_eq!(summary.changes().count(), 0);
+    }
+
+    #[test]
+    fn recognizes_domain_behavior_across_ecosystems() {
+        for (path, before, statement, scope, expected) in [
+            (
+                "account.go",
+                "func loadAccount() {",
+                "return db.QueryRowContext(ctx, sql, id)",
+                "loadAccount",
+                Signal::DatabaseRead,
+            ),
+            (
+                "store.rs",
+                "fn update_store() {",
+                "let tx = db.begin();",
+                "update_store",
+                Signal::Transaction,
+            ),
+            (
+                "SignIn.kt",
+                "fun login() {",
+                "val user = authenticate(credentials)",
+                "login",
+                Signal::Authentication,
+            ),
+            (
+                "Identity.php",
+                "function checkIdentity() {",
+                "return password_verify($password, $hash);",
+                "checkIdentity",
+                Signal::PasswordHandling,
+            ),
+            (
+                "Session.swift",
+                "func signOut() {",
+                "destroySession(session)",
+                "signOut",
+                Signal::SessionHandling,
+            ),
+            (
+                "Order.scala",
+                "def confirm() = {",
+                "checkQuota(order)",
+                "confirm",
+                Signal::BusinessRules,
+            ),
+            (
+                "OrderService.cs",
+                "public void SaveOrder() {",
+                "db.SaveChangesAsync();",
+                "SaveOrder",
+                Signal::DatabaseWrite,
+            ),
+            (
+                "catalog.py",
+                "def list_products():",
+                "    return query.order_by(Product.name)",
+                "list_products",
+                Signal::DataOrdering,
+            ),
+            (
+                "Product.java",
+                "public void list() {",
+                "var page = PageRequest.of(number, size);",
+                "list",
+                Signal::Pagination,
+            ),
+            (
+                "router.ts",
+                "function parseIdentity() {",
+                "return jwt.verify(token, key);",
+                "parseIdentity",
+                Signal::TokenHandling,
+            ),
+            (
+                "config.js",
+                "function canExport() {",
+                "return featureFlags.enabled(flag);",
+                "canExport",
+                Signal::FeatureFlags,
+            ),
+            (
+                "orders.py",
+                "def register_order():",
+                "    return Order.objects.update_or_create(id=key)",
+                "register_order",
+                Signal::DatabaseWrite,
+            ),
+            (
+                "orders.ts",
+                "async function reserveOrder() {",
+                "return db.$transaction(commitOrder);",
+                "reserveOrder",
+                Signal::Transaction,
+            ),
+            (
+                "OrderResource.java",
+                "public void addRoutes() {",
+                "@RolesAllowed(ROLES)",
+                "addRoutes",
+                Signal::Authorization,
+            ),
+        ] {
+            let source = format!("{before}\n{statement}\n");
+            let line = Cursor::new(path, source.as_bytes()).line_at(2);
+            assert_eq!(line.scope, scope, "{path}");
+            assert_ne!(line.signals & (1 << expected as u32), 0, "{path}");
+        }
+    }
+
+    #[test]
+    fn recognizes_operational_behavior_without_copying_arguments() {
+        for (path, declaration, statement, signal) in [
+            (
+                "checkout.ts",
+                "function submitOrder() {",
+                "return rateLimit(tenant);",
+                Signal::RateLimiting,
+            ),
+            (
+                "tasks.py",
+                "def start_import():",
+                "    worker.apply_async(args=(private,))",
+                Signal::JobDispatch,
+            ),
+            (
+                "Trace.java",
+                "public void observe() {",
+                "tracer.startSpan(name);",
+                Signal::Observability,
+            ),
+            (
+                "Mail.dart",
+                "String formatAddress(String address) {",
+                "return maskEmail(address);",
+                Signal::DataRedaction,
+            ),
+            (
+                "schedule.cs",
+                "public void SyncEvents() {",
+                "CheckIdempotency(eventId);",
+                Signal::Idempotency,
+            ),
+            (
+                "register.kt",
+                "fun bootstrap() {",
+                "registerShutdownHook(callback)",
+                Signal::Lifecycle,
+            ),
+        ] {
+            let code = format!("{declaration}\n{statement}\n");
+            let line = Cursor::new(path, code.as_bytes()).line_at(2);
+            assert_ne!(
+                line.signals & (1 << signal as u32),
+                0,
+                "{path}: {statement}"
+            );
+            assert!(!line.scope.is_empty(), "{path}: {declaration}");
+        }
     }
 }
 
