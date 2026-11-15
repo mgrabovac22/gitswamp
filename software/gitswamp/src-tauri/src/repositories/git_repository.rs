@@ -1,9 +1,10 @@
-use std::path::Path;
+use std::{fs, io::Read, path::Path};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 use git2::Repository;
+use tempfile::NamedTempFile;
 
 #[cfg(windows)]
 use crate::constants::{COMMON_GIT_PATHS, CREATE_NO_WINDOW};
@@ -11,6 +12,57 @@ use crate::constants::{COMMON_GIT_PATHS, CREATE_NO_WINDOW};
 pub struct GitRepository;
 
 impl GitRepository {
+    pub(crate) fn index_bytes(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        let mut bytes = Vec::new();
+        file.take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > limit {
+            return Err("This Git index is too large for the composer.".into());
+        }
+        Ok(Some(bytes))
+    }
+
+    pub(crate) fn publish_objects(source: &Path, target: &Path) -> Result<(), String> {
+        for dir in fs::read_dir(source).map_err(|e| e.to_string())? {
+            let dir = dir.map_err(|e| e.to_string())?;
+            let name = dir.file_name();
+            if !name
+                .to_str()
+                .is_some_and(|s| s.len() == 2 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
+                continue;
+            }
+            let destination = target.join(name);
+            fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
+            for item in fs::read_dir(dir.path()).map_err(|e| e.to_string())? {
+                let item = item.map_err(|e| e.to_string())?;
+                let final_path = destination.join(item.file_name());
+                if final_path.exists() || fs::hard_link(item.path(), &final_path).is_ok() {
+                    continue;
+                }
+                let mut output = NamedTempFile::new_in(&destination).map_err(|e| e.to_string())?;
+                std::io::copy(
+                    &mut fs::File::open(item.path()).map_err(|e| e.to_string())?,
+                    &mut output,
+                )
+                .map_err(|e| e.to_string())?;
+                output.as_file().sync_all().map_err(|e| e.to_string())?;
+                if let Err(error) = output.persist_noclobber(&final_path) {
+                    if error.error.kind() != std::io::ErrorKind::AlreadyExists {
+                        return Err(error.error.to_string());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn open(path: &str) -> Result<Repository, String> {
         Repository::open(path).map_err(|e| e.message().to_string())
     }
@@ -83,6 +135,33 @@ impl GitRepository {
 
     pub fn git_cli(path: &str, args: &[&str]) -> Result<String, String> {
         Self::run_git_cmd(Some(path), args)
+    }
+
+    pub fn git_cli_with_env(path: &str, args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Result<String, String> {
+        let output = Self::git_output(path, args, env)?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Ok(format!("{stdout}{stderr}").trim().to_owned())
+    }
+
+    pub fn git_command(path: &str, args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> std::process::Command {
+        let mut command = std::process::Command::new(Self::git_executable());
+        command.args(args).current_dir(path).env("GIT_TERMINAL_PROMPT", "0").envs(env.iter().copied());
+        #[cfg(windows)]
+        command.env("PATH", Self::full_path_live()).creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+
+    pub fn git_output(path: &str, args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Result<std::process::Output, String> {
+        let output = Self::git_command(path, args, env).output().map_err(|error| format!("Could not launch Git: {error}"))?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
+            Err(if detail.is_empty() { format!("Git exited with {}.", output.status) } else { detail.to_owned() })
+        }
     }
 
     pub fn run_shell_command(path: &str, command: &str) -> Result<String, String> {

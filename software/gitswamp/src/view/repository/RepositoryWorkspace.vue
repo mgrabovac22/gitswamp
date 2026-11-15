@@ -27,7 +27,7 @@ import type {
   RemoteUserInfo,
 } from "@/types";
 
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client" | "branch-workspace";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "remote-insights" | "conflict-resolve" | "lost-found" | "fast-scripts" | "http-client" | "branch-workspace" | "lfs";
 type RemoteInsightsViewMode = "pull-request-detail" | "pull-request-create" | "issue-detail" | "issue-create";
 type CommitSelectionPayload = { commit: CommitInfo | null; additive?: boolean };
 interface RemoteCreateOptions {
@@ -125,6 +125,7 @@ const emit = defineEmits<{
   rescueLostCommit: [payload: { sha: string; branchName: string }];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
+  requestInteractiveRebase: [sha: string];
   checkoutRemoteBranch: [name: string];
   pull: [];
   push: [];
@@ -582,6 +583,7 @@ function handleRefreshState() {
           @select-stash="emit('selectStash', $event)"
           @request-merge="emit('requestMerge', $event)"
           @request-rebase="emit('requestRebase', $event)"
+          @request-interactive-rebase="emit('requestInteractiveRebase', $event)"
           @time-machine-blame="emit('timeMachineBlame', $event)"
           @jump-to-search-result="handleJumpToSearchResult($event)"
         />
@@ -720,6 +722,7 @@ function handleRefreshState() {
           <CommitDetails
             v-model:amend-mode-requested="amendModeRequested"
             v-show="!props.detailsPanelCollapsed"
+            :panel-hidden="props.detailsPanelCollapsed"
             class="h-full"
             :commit="props.git.selectedCommit.value"
             :selected-commits="props.git.selectedCommits.value"

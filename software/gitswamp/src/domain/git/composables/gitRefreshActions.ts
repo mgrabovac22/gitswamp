@@ -21,6 +21,8 @@ export function createRefreshActions(state: GitState) {
   let commitRefreshRequestId = 0;
   let statusRequestId = 0;
   let repoInfoRequestId = 0;
+  let searchRequestId = 0;
+  let pendingSearch: Promise<CommitInfo[]> | null = null;
   const coordinator = new RepositoryRefreshCoordinator();
   const stashFilesCache = new Map<string, CommitFileInfo[]>();
   const STASH_FILES_CACHE_LIMIT = 60;
@@ -429,14 +431,21 @@ export function createRefreshActions(state: GitState) {
       return;
     }
 
+    const requestId = ++searchRequestId;
+    const isCurrent = () => requestId === searchRequestId && repoPath === state.repoPath.value;
+    state.searchQuery.value = query;
+    // Keep only one history scan active; queued searches that were replaced never start.
+    if (pendingSearch) await pendingSearch.catch(() => {});
+    if (!isCurrent()) return;
+    const request = callTauri<CommitInfo[]>("search_commits", {
+      path: repoPath,
+      query,
+      maxCount: 50000,
+    });
+    pendingSearch = request;
     try {
-      state.searchQuery.value = query;
-      const results = await callTauri<CommitInfo[]>("search_commits", {
-        path: repoPath,
-        query,
-        maxCount: 50000,
-      });
-      if (repoPath !== state.repoPath.value) return;
+      const results = await request;
+      if (!isCurrent()) return;
       state.searchResults.value = results;
       state.hasMoreSearchResults.value = false;
 
@@ -444,12 +453,14 @@ export function createRefreshActions(state: GitState) {
         await ensureCommitLoaded(results[0].sha);
       }
     } catch (e) {
-      if (repoPath !== state.repoPath.value) return;
-      state.error.value = String(e);
+      if (isCurrent()) state.error.value = String(e);
+    } finally {
+      if (pendingSearch === request) pendingSearch = null;
     }
   }
 
   function clearSearch() {
+    searchRequestId += 1;
     state.searchQuery.value = "";
     state.searchResults.value = null;
     state.hasMoreSearchResults.value = false;

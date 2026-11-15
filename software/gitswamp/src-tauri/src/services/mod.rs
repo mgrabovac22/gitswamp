@@ -1,8 +1,12 @@
+pub mod commit_coauthors;
+pub mod commit_composer;
 pub mod conflict_preview;
 pub mod diff_service;
 pub mod git_service;
 pub mod helpers;
 pub mod integration_service;
+pub mod interactive_rebase;
+pub mod lfs;
 pub mod line_staging;
 pub mod operation_preview;
 pub mod remote_service;

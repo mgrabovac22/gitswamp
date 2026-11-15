@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
+import { computed, defineAsyncComponent, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -23,6 +23,7 @@ import {
   FolderTree,
   Files,
   Hammer,
+  Layers,
   Map as MapIcon,
   Bug,
   RotateCcw,
@@ -36,6 +37,7 @@ import SecretFindingBadge from "@/shared/ui/SecretFindingBadge.vue";
 import { splitFilePath } from "@/shared/codeView";
 import { useWindowedRows } from "@/shared/ui/useWindowedRows";
 import { useToast } from "@/shared/notifications/useToast";
+import { COMMIT_TYPES, closingIssueTag, formatCommitSubject, splitClosingIssue, withClosingIssue } from "@/domain/analyzer/commitSubject";
 import {
   createCommitLintEngine,
   inferScopeFromPaths,
@@ -63,6 +65,7 @@ import type {
 
 const props = defineProps<{
   commit: CommitInfo | null;
+  panelHidden?: boolean;
   selectedCommits?: CommitInfo[];
   canAmendSelectedCommit?: boolean;
   headCommit?: CommitInfo | null;
@@ -129,9 +132,29 @@ const amendResetAuthor = ref(false);
 const amendSignoff = ref(false);
 const regularCommitDraft = ref({ subject: "", description: "" });
 const showCommitBuilder = ref(false);
+const CommitCompositionDialog = defineAsyncComponent(() => import("@/features/repository/CommitCompositionDialog.vue"));
+const compositionPath = ref("");
+const canCompose = computed(() => !!props.repoPath && props.isWorkingChanges && !props.operationBusy &&
+  !props.hasConflicts && !props.repositoryOperation && !amendPreviousCommit.value &&
+  !!(props.stagedFiles.length || props.unstagedFiles.length));
+
+function openComposition() {
+  if (!canCompose.value) return;
+  showCommitBuilder.value = false;
+  compositionPath.value = props.repoPath;
+}
+
+function finishComposition(count: number) {
+  const path = compositionPath.value;
+  compositionPath.value = "";
+  if (props.repoPath !== path) return;
+  emit("refreshState");
+  toast.success(count === 1 ? "Created 1 commit." : `Created ${count} commits.`);
+}
 const commitBuilderType = ref("Fix");
 const commitBuilderScope = ref("");
 const commitBuilderIssue = ref("");
+const commitBuilderClosing = ref("");
 const commitBuilderSummary = ref("");
 const commitBuilderBody = ref("");
 const commitLintEngine = createCommitLintEngine();
@@ -166,6 +189,8 @@ const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10
 const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
 const mergeInProgress = computed(() => props.repositoryOperation?.kind === "merge");
 const cherryPickInProgress = computed(() => props.repositoryOperation?.kind === "cherry-pick");
+const rebaseInProgress = computed(() => props.repositoryOperation?.kind === "rebase");
+const rebaseEditing = computed(() => !!props.repositoryOperation?.visual_rebase_editing);
 let appliedOperationMessageKey = "";
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
@@ -393,6 +418,24 @@ function setActiveTab(tab: "changes" | "info") {
   userSelectedTab.value = true;
 }
 const isMultiCommitSelection = computed(() => (props.selectedCommits?.length || 0) > 1);
+
+type Coauthor = { name: string; email: string };
+const coauthors = shallowRef<Coauthor[]>([]);
+const coauthorSha = computed(() => {
+  if (props.panelHidden || activeTab.value !== "info" || props.isWorkingChanges || props.isStash || isMultiCommitSelection.value) return null;
+  const commit = props.commit;
+  return commit && /co-authored-by/i.test(commit.message) ? commit.sha : null;
+});
+watch([() => props.repoPath, coauthorSha], async ([path, sha], _, onCleanup) => {
+  coauthors.value = [];
+  if (!path || !sha) return;
+  let current = true;
+  onCleanup(() => { current = false; });
+  try {
+    const result = await invoke<Coauthor[]>("get_commit_coauthors", { path, sha });
+    if (current) coauthors.value = result;
+  } catch { /* Optional metadata should not interrupt the commit details. */ }
+});
 const primaryCommitShaForDiff = computed(() => {
   if (props.commit?.sha) {
     return props.commit.sha;
@@ -496,10 +539,11 @@ const expandedStaged = ref(true);
 const expandedUnstaged = ref(true);
 const toast = useToast();
 
-watch(() => props.amendModeRequested, (enabled) => {
-  if (enabled) enterAmendMode();
-  else leaveAmendMode();
-}, { immediate: true });
+watch(() => [props.amendModeRequested, props.repositoryOperation?.visual_rebase_editing, props.headCommit?.sha] as const,
+  ([requested, editing, head]) => {
+    if ((requested || editing) && head) enterAmendMode();
+    else leaveAmendMode();
+  }, { immediate: true, flush: "post" });
 
 type ExternalEditorId = "notepad" | "vscode" | "visualstudio" | "androidstudio" | "intellij";
 
@@ -575,6 +619,7 @@ const amendHasChanges = computed(() => {
 });
 const canSubmitCommit = computed(() => {
   if (!commitSummary.value.trim() || props.hasConflicts || props.operationBusy) return false;
+  if (rebaseInProgress.value && !rebaseEditing.value) return false;
   if (amendPreviousCommit.value) {
     return !!props.headCommit && amendHasChanges.value;
   }
@@ -614,7 +659,6 @@ const commitLintIndicatorClass = computed(() => {
   return "text-[var(--muted-foreground)] border-[var(--border)] bg-[var(--secondary)]";
 });
 
-const commitBuilderTypes = ["Fix", "Feat", "Refactor", "Docs", "Style", "Test", "Chore", "Perf", "Build", "Ci", "Revert"] as const;
 const commitBuilderScopes = computed(() => {
   const scopes = [
     stagedDiffSummary.value.inferred_scope,
@@ -661,11 +705,14 @@ const commitBuilderPreview = computed(() => {
   const summary = commitBuilderSummary.value.trim() || commitSummary.value.trim() || "describe change";
   const issueTag = normalizedCommitBuilderIssueTag.value;
   const cleanSummary = issueTag ? summary.replace(/^#\d+\s+/, "") : summary;
-  const taggedSummary = issueTag ? `${issueTag} ${cleanSummary}` : cleanSummary;
-  return scope ? `${type}(${scope}): ${taggedSummary}` : `${type}: ${taggedSummary}`;
+  return formatCommitSubject(type, scope, false, cleanSummary, issueTag);
 });
 
 const normalizedCommitBuilderIssueTag = computed(() => normalizeIssueTag(commitBuilderIssue.value));
+const builderClosingIssue = computed(() => closingIssueTag(commitBuilderIssue.value));
+watch(builderClosingIssue, issue => {
+  if (commitBuilderClosing.value !== issue) commitBuilderClosing.value = "";
+});
 
 function capitalizeCommitBuilderType(type: string): string {
   const trimmed = type.trim();
@@ -753,7 +800,9 @@ function openCommitBuilder() {
   commitBuilderScope.value = parsed?.scope || commitBuilderScope.value || stagedDiffSummary.value.inferred_scope || commitBuilderScopes.value[0] || "";
   commitBuilderIssue.value = parsed?.issue || commitBuilderIssue.value || "";
   commitBuilderSummary.value = parsed?.summary || commitSummary.value;
-  commitBuilderBody.value = commitDescription.value;
+  const closing = splitClosingIssue(commitDescription.value, builderClosingIssue.value);
+  commitBuilderBody.value = closing.body;
+  commitBuilderClosing.value = closing.issue;
   showCommitBuilder.value = true;
   void nextTick(updateCommitFloatingPanels);
 }
@@ -769,7 +818,7 @@ function saveCommitBuilder() {
     return;
   }
   commitSummary.value = commitBuilderPreview.value;
-  commitDescription.value = commitBuilderBody.value.trim();
+  commitDescription.value = withClosingIssue(commitBuilderBody.value.trim(), commitBuilderClosing.value);
   showCommitBuilder.value = false;
   queueCommitLintAnalysis();
 }
@@ -1899,6 +1948,7 @@ async function openSelectedFileWithEditor(editorId: ExternalEditorId) {
 }
 
 function handleGlobalKeyDown(event: KeyboardEvent) {
+  if (compositionPath.value || (event.target instanceof Element && event.target.closest("dialog[data-commit-composer]"))) return;
   if (event.key === "Escape") {
     showCommitBuilder.value = false;
     commitAnalyzerTooltipVisible.value = false;
@@ -2660,7 +2710,7 @@ onUnmounted(() => {
           @click="onCommit"
         >
           <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
-          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes'))) }}</span>
+          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (rebaseInProgress ? 'Continue rebase in the toolbar' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes')))) }}</span>
         </AppButton>
       </div>
     </div>
@@ -3006,6 +3056,19 @@ onUnmounted(() => {
               <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Committer</div>
               <div class="text-sm text-[var(--foreground)] font-medium">{{ commit.committer_name || 'Unknown' }}</div>
               <div class="text-[10px] text-[var(--muted-foreground)]">{{ commit.committer_email || '—' }}</div>
+            </div>
+          </div>
+
+          <div v-if="coauthors.length" class="space-y-2" role="group" aria-label="Co-authors">
+            <div v-for="coauthor in coauthors" :key="coauthor.email" class="flex items-center gap-3">
+              <div aria-hidden="true" class="w-8 h-8 rounded-full bg-[var(--secondary)] text-[var(--primary)] flex items-center justify-center text-xs font-bold flex-shrink-0">
+                {{ displayIdentityInitial(coauthor.name) }}
+              </div>
+              <div class="min-w-0">
+                <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Co-author</div>
+                <div class="text-sm text-[var(--foreground)] font-medium break-words">{{ coauthor.name }}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] break-words">{{ coauthor.email }}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -3451,7 +3514,13 @@ onUnmounted(() => {
             <Hammer class="h-3.5 w-3.5 text-[var(--primary)]" />
             <div class="text-xs font-semibold text-[var(--foreground)]">Visual Commit Builder</div>
           </div>
-          <CloseIconButton size="sm" subtle title="Close commit builder" @click="showCommitBuilder = false" />
+          <div class="flex items-center gap-1">
+            <button type="button" title="Compose commits automatically" aria-label="Compose commits automatically"
+              :disabled="!canCompose"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--primary)]/40 bg-[var(--primary)]/10 text-[var(--primary)] transition-colors enabled:cursor-pointer enabled:hover:border-[var(--primary)] enabled:hover:bg-[var(--primary)]/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+              @click="openComposition"><Layers :size="15" /></button>
+            <CloseIconButton size="sm" subtle title="Close commit builder" @click="showCommitBuilder = false" />
+          </div>
         </div>
 
         <div class="grid grid-cols-3 gap-2">
@@ -3461,7 +3530,7 @@ onUnmounted(() => {
               v-model="commitBuilderType"
               class="h-8 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-xs text-[var(--foreground)] outline-none"
             >
-              <option v-for="type in commitBuilderTypes" :key="type" :value="type">{{ type }}</option>
+              <option v-for="type in COMMIT_TYPES" :key="type" :value="type">{{ type }}</option>
             </select>
           </label>
           <label class="space-y-1">
@@ -3508,6 +3577,13 @@ onUnmounted(() => {
           />
         </label>
 
+        <label v-if="builderClosingIssue" class="mt-2 flex items-center gap-2 text-xs text-[var(--foreground)]">
+          <input type="checkbox" :checked="commitBuilderClosing === builderClosingIssue"
+            @change="commitBuilderClosing = ($event.target as HTMLInputElement).checked ? builderClosingIssue : ''" />
+          Close issue {{ builderClosingIssue }}
+        </label>
+        <code v-if="commitBuilderClosing" class="mt-1 block text-[10px] text-[var(--muted-foreground)]">Closes {{ commitBuilderClosing }}</code>
+
         <div class="mt-2 rounded border border-[var(--border)] bg-[var(--input-background)] px-2 py-1.5 font-mono text-[10px] text-[var(--foreground)]">
           {{ commitBuilderPreview }}
         </div>
@@ -3529,6 +3605,11 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <CommitCompositionDialog v-if="compositionPath && compositionPath === repoPath" :key="compositionPath"
+        :repo-path="compositionPath" @close="compositionPath = ''" @committed="finishComposition" />
     </Teleport>
 
     <Teleport to="body">

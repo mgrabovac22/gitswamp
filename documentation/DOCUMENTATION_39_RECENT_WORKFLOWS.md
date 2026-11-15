@@ -16,9 +16,37 @@ For a repository initialized outside GitSwamp, stage your files and commit as us
 
 Before commit or amend, GitSwamp reviews the staged index, not the current working-file contents. A compact confirmation lists file paths, line numbers and finding types, never the matched secret values. Cancel preserves the commit message. **Add to .gitignore** only unstages newly added flagged files and appends literal paths to the root `.gitignore`; it keeps local files and never silently untracks existing files or stages `.gitignore`. Edit credentials out of tracked files instead. Confirmation is invalidated when the staged tree or HEAD changes.
 
-Staged files larger than **100 MiB** trigger a separate Git LFS recommendation even when secret detection is disabled. The check reads Git object sizes without loading large blobs. GitHub rejects regular Git files above this size; a local commit is still possible after explicit confirmation. The popup links to the official Git LFS guide. It does not install LFS, rewrite history or convert files automatically. Configure and stage LFS files with system Git in the terminal, including `.gitattributes`; a staged LFS pointer is small and does not trigger the size warning. Large blobs already present in older history may still need migration before a push can succeed.
+Staged files larger than **100 MiB** block commits in GitSwamp even when secret detection is disabled. The check reads Git object sizes without loading large blobs. Open **Git LFS Manager** from the warning or **Menu > View**, then use **Convert & Stage** for the selected files. This uses installed Git LFS to convert the staged contents into pointers and stage the corresponding `.gitattributes` rules without replacing your working files. The manager also lists LFS files and tracking rules and can upload or download LFS objects. It does not commit, push Git refs or rewrite history automatically. Oversized blobs already in older commits may still need migration before a push can succeed.
 
 Secret scanning is heuristic, not a guarantee that every credential will be found. It inspects at most 1 MiB per text file and 16 MiB per scan, up to 2048 files with a cooperative five-second budget. Unchecked content is reported before committing instead of being declared clean. Binary content is not decoded as text. Background checks are debounced and inspect only the staged and unstaged files in Working Changes. Hover or focus a warning triangle to see the type and line number; the matched value is never displayed. Very large index metadata can be refused for a bounded review.
+
+## Compose Commits
+
+From **Working Changes**, open **Visual Commit Builder** (the hammer) and choose **Compose commits automatically** in its header. The experimental dialog proposes an ordered series from the current changes without an AI service. Edit each subject and description, reorder the commits, or move related change sets between commits. The current Commit Analyzer settings are used to validate the messages.
+
+In the composer, the hammer beside the selected commit opens structured controls for its type, scope, summary and breaking-change marker. **Commit tag** adds a tag such as `#123` or `#release` to that message. Use **Tag all commits > Apply to all** to set or clear the same tag in every draft, then override individual drafts as needed. These are message labels, not Git tag references.
+
+**Close issue** appears for a numeric tag such as `#123`, in both the composer and the Visual Commit Builder. When selected it puts `Closes #123` on a separate line at the end of the description, not in the subject. GitSwamp does not call the issue tracker; GitHub closes the referenced issue when the commit reaches the default branch.
+
+The composer uses filenames, project layout and a bounded sample of changed lines. It keeps exact renames, related source and tests, manifests and lockfiles, and other detected dependencies together. Fully unstaged files can be included; if a file has both staged and unstaged edits, only its staged version is committed. Stage files with a custom Git clean filter (including LFS) manually before composing. The normal secret-review preference and 100 MiB file limit still apply.
+
+Drafts also group matching implementation layers and their tests, stories, styles, translations or feature documentation. The composer respects project boundaries and leaves ambiguous matches separate. It can propose a migration alongside the code that references its exact table when there is one clear match. In the preview, the newest commit is at the top and commits are created from bottom to top. Select a file to see its inline diff, or use its move menu to assign it to another commit. Only related hunks, overlapping paths and submodule metadata that must move together are kept linked. Unrelated files in the same directory can remain separate, up to 20 proposed commits.
+
+Generated messages keep a short `Type(scope): Summary` subject. The description explains the main change, then lists what each file adds, updates, removes or renames with the available evidence. For very large drafts the description notes when the file list is shortened; the full change list stays in the preview.
+
+When the diff provides enough evidence, drafts describe added, changed or removed declarations, dependency names, SQL objects, configuration keys, CSS selectors, CI jobs and documentation headings. They do not copy configuration values, dependency versions or route URLs. For unknown syntax, binary files or diffs outside the analysis budget, drafts fall back to paths and the Git changes the composer can verify. This is a local heuristic, not a language parser or a build check.
+
+For supported source languages, the preview also compares changed lines within their enclosing function or method. It can describe changes to validation, caching, rate limiting, telemetry, background jobs, redaction and other implementation details before the file summary. If a function body changes without a stronger signal, a draft can still name the affected function. Separate rules recognize named GraphQL operations and fields, Protobuf endpoints, SQL columns and constraints, HDL signals, PowerShell and Tcl commands, CMake targets and Bicep resources. Signals come from changed code and declarations; the composer does not copy arguments or configuration values into the message. Independent changes in the same folder can be proposed as separate commits. The deeper analysis runs only while building the preview and uses the existing diff-size limits.
+
+Preview uses a temporary index and Git objects and does not change the working files, live index or branch. Before creating commits, GitSwamp checks that the reviewed changes still match and verifies that the final tree matches the plan. The composer creates only local commits and does not run builds or tests by default. It supports up to 500 changed paths per plan.
+
+In supported source files, separate Git hunks in identifiable functions can be assigned to different commits. The change list shows the function and line range. New or deleted files, binary files, changes that overlap, and hunks whose relationship cannot be separated safely stay together. The composer checks supported local imports and includes on intermediate Git trees, including simple JavaScript and TypeScript named exports. It groups dependent steps or refuses an unsafe manual order. Dependency checks are bounded and cannot resolve every dynamic import, build flag or custom module resolver. When the check reaches its budget, the preview keeps the changes in one commit.
+
+**Verify every commit** is optional. Enter a trusted build or compile command for the project (for example, `cargo check --locked`), then confirm the series. The composer runs that command against each staged state separately in a fresh temporary source directory. Any failure stops the series before updating the branch or index. The directory is not a security sandbox and does not include ignored files, submodules or Git metadata. Use a command that has access to its required dependencies. A successful command verifies only that command and configuration; it does not prove that every target or test will succeed. The composer bounds the input size and build time, and keeps only a short output tail.
+
+With verification enabled, **Find buildable groups** tests the proposed prefixes in order. If a prefix fails, it adds the next group and retries rather than publishing a broken intermediate commit. Passing groups stay separate, and a failed final tree cannot be fixed by regrouping. Review the new subjects, descriptions and issue tags before confirming, or use **Undo regroup** to restore the previous draft. Only confirmation creates commits, and it verifies the final edited plan again.
+
+**Branch Workspace** (`Alt+Shift+1`) and **Git LFS Manager** (`Alt+Shift+2`) are the final two entries under **Menu > View**.
 
 ## Visualise Git Operations
 
@@ -88,7 +116,17 @@ Pending actions are cancelled when a changed repository context or a conflicting
 
 These checks do not replace backups or cover every external filesystem change. Keep important work committed or otherwise backed up.
 
+## Interactive Rebase
+
+Right-click a commit in the graph and select **Interactive Rebase from Here**. The selected commit stays unchanged; the dialog lists the commits after it up to HEAD, oldest first. Drag the grip or focus it and press Up or Down to reorder. Use the action dropdown to pick, reword, edit, squash, fix up or drop commits. Edit Reword messages in place and use the combined message field for a Squash group. Fixup does not add its own message.
+
+To move local work onto newer upstream commits, fetch first, then right-click the `origin` branch badge or its commit and select **Interactive Rebase onto** that target. Only commits on your local side of the common ancestor are replayed. If you have no local commits to replay, the dialog offers **Fast-forward** instead. Neither action moves the remote branch or pushes changes.
+
+Start from a clean working tree on a local branch. The visual editor supports linear ranges and does not flatten merges. **Edit** pauses after applying a commit; use the Changes panel to stage and amend, then **Continue rebase** in the toolbar. For a conflict, resolve and stage the files before continuing, or choose **Skip commit**. **Abort rebase** restores the original branch tip. Nothing is pushed automatically. The existing branch-to-branch rebase is unchanged.
+
 ## Edit Files and Inspect History
+
+The commit **Info** tab lists valid `Co-authored-by` identities below the author and committer. Search by name or email as usual, or use `coauthor:NAME` to match only the co-author trailers.
 
 In a text diff under **Working Changes**, hover an added or removed line and use **+** to stage it or **−** to unstage it. In split view, use the action on the side containing the change. You can also focus the line and press Enter. Stage, unstage and discard hunk controls stay visible when scrolling horizontally.
 

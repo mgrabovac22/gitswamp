@@ -11,6 +11,10 @@ pub struct RemoteInfo {
 pub struct RepositoryOperationInfo {
     pub kind: String,
     pub message: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub visual_rebase: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub visual_rebase_editing: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

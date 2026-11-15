@@ -7,8 +7,12 @@ mod services;
 use commands::appdata::{get_app_state_path, read_app_state, write_app_state};
 use commands::branches::{checkout_branch, create_branch, delete_branch, get_branches};
 use commands::clone_init::{clone_repo, init_repo, initialize_empty_repo, search_commits};
+use commands::commit_composer::{
+    apply_commit_composition, find_buildable_commit_groups, plan_commit_composition,
+    preview_commit_composition_change,
+};
 use commands::commit_files::get_commit_files;
-use commands::commits::{get_author_deletion_stats, get_commit_tree_paths, get_commits};
+use commands::commits::{get_author_deletion_stats, get_commit_coauthors, get_commit_tree_paths, get_commits};
 use commands::conflicts::{
     get_conflict_hotspots, get_conflict_pairs, get_conflict_preview, get_merge_preflight_risk, get_repository_tree_paths,
 };
@@ -26,6 +30,8 @@ use commands::ghost::{
     discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch,
 };
 use commands::http::http_send_request;
+use commands::lfs::{change_lfs_rule, convert_staged_lfs, get_lfs_overview, setup_lfs, transfer_lfs};
+use commands::interactive_rebase::{get_interactive_rebase_plan, interactive_rebase_action, start_interactive_rebase};
 use commands::logs::{append_app_log, get_app_log_path};
 use commands::operation_preview::get_operation_preview;
 use commands::operations::{
@@ -90,6 +96,12 @@ pub fn run() {
             get_commits,
             get_author_deletion_stats,
             get_commit_tree_paths,
+            get_commit_coauthors,
+            get_lfs_overview,
+            setup_lfs,
+            change_lfs_rule,
+            convert_staged_lfs,
+            transfer_lfs,
             get_conflict_hotspots,
             get_conflict_preview,
             get_operation_preview,
@@ -108,6 +120,10 @@ pub fn run() {
             unstage_file,
             unstage_files,
             create_commit,
+            plan_commit_composition,
+            preview_commit_composition_change,
+            find_buildable_commit_groups,
+            apply_commit_composition,
             abort_merge,
             abort_cherry_pick,
             restore_pull_safety_stash,
@@ -146,6 +162,9 @@ pub fn run() {
             reset_to_commit,
             rebase_branch_onto,
             rebase_continue,
+            get_interactive_rebase_plan,
+            start_interactive_rebase,
+            interactive_rebase_action,
             rebase_abort,
             rebase_skip,
             checkout_commit,

@@ -247,7 +247,7 @@ function submitStash() {
         <span class="text-[var(--foreground)] font-medium">{{ props.rebaseConflictTarget }}</span>.
       </p>
       <p class="text-xs text-[var(--muted-foreground)] leading-relaxed mb-4">
-        Resolve conflicts in files, then choose Continue. Use Skip to drop the current patch, or Abort to cancel the rebase and restore the previous state.
+        Choose Continue to close this panel and resolve the conflicts. A Continue rebase action appears after every conflict is cleared. Skip drops the current patch; Abort cancels the rebase and restores the previous state.
       </p>
 
       <div class="flex items-center justify-end gap-2">
@@ -261,6 +261,7 @@ function submitStash() {
         <button
           @click="emit('submit:rebaseSkip')"
           :disabled="props.rebaseConflictBusy"
+          title="Drop this patch and continue the rebase"
           class="px-3 py-1.5 text-xs rounded border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--secondary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           Skip
@@ -268,6 +269,7 @@ function submitStash() {
         <button
           @click="emit('submit:rebaseContinue')"
           :disabled="props.rebaseConflictBusy"
+          title="Close this panel and resolve conflicts"
           class="px-3 py-1.5 text-xs text-white bg-[var(--primary)] hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           Continue

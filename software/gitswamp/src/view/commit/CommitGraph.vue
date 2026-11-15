@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
-import { Check, Columns3, GitBranchPlus, PencilLine, RotateCcw } from "lucide-vue-next";
+import { Check, Columns3, GitBranchPlus, ListRestart, PencilLine, RotateCcw } from "lucide-vue-next";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -84,6 +84,7 @@ const emit = defineEmits<{
   selectStash: [stash: StashInfo];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
+  requestInteractiveRebase: [sha: string];
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
   focusHead: [];
@@ -844,6 +845,9 @@ function refAction(action: string) {
     case "rebase-current-onto-selected":
       emit("requestRebase", { source: props.currentBranch, sourceRemote: false, target: r.name });
       break;
+    case "interactive-rebase-current-onto-selected":
+      if (commitSha) emit("requestInteractiveRebase", commitSha);
+      break;
     case "checkout-and-isolate":
       checkoutAndIsolateRef(r);
       break;
@@ -1012,6 +1016,26 @@ function ctxIsHeadCommit(): boolean {
   return refs.some(r => r.name === props.currentBranch);
 }
 
+const ctxHeadHistoryRelation = computed(() => {
+  const target = ctxCommit.value?.sha;
+  const head = props.headSha;
+  if (!target || !head) return "unknown";
+  const bySha = new Map(props.commits.map((commit) => [commit.sha, commit]));
+  const pending = [head];
+  const seen = new Set<string>();
+  let incomplete = false;
+  while (pending.length > 0) {
+    const sha = pending.pop()!;
+    if (sha === target) return "ancestor";
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    const commit = bySha.get(sha);
+    if (!commit) incomplete = true;
+    else for (const parent of commit.parent_shas) pending.push(parent);
+  }
+  return incomplete ? "unknown" : "other";
+});
+
 function onWorkingChangesContextMenu(event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
@@ -1066,6 +1090,7 @@ function applyShaContextAction(action: string, sha: string): boolean {
     case "checkout": emit("checkout", sha); return true;
     case "branch": emit("createBranchAt", sha); return true;
     case "cherry-pick": emit("cherryPick", sha); return true;
+    case "interactive-rebase": emit("requestInteractiveRebase", sha); return true;
     case "revert": emit("revert", sha); return true;
     case "reset-soft": emit("resetSoft", sha); return true;
     case "reset-mixed": emit("resetMixed", sha); return true;
@@ -1459,7 +1484,7 @@ onUnmounted(() => {
           ref="searchInputEl"
           v-model="searchInput"
           @input="onSearch"
-          placeholder="Search commits, messages, authors, SHA..."
+          placeholder="Search commits, authors, co-authors, SHA..."
           class="flex-1 bg-transparent text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none select-text"
         />
         <button v-if="searchInput" @click="clearSearch" class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors">
@@ -2062,6 +2087,7 @@ onUnmounted(() => {
             <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
             <button v-if="canRebaseRefOntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('rebase-onto-current')"><span class="ctx-icon">↕</span><span class="ctx-main">Rebase onto {{ currentBranch }}</span><span class="ctx-sub">Checkout {{ refCtxRef.name }} and rebase it onto {{ currentBranch }}</span></button>
             <button v-if="canRebaseCurrentOntoRef(refCtxRef)" class="ctx-item" @click="refAction('rebase-current-onto-selected')"><span class="ctx-icon">⇅</span><span class="ctx-main">Rebase {{ currentBranch }} onto {{ refCtxRef.name }}</span><span class="ctx-sub">Keep selected branch as base and move current branch on top</span></button>
+            <button v-if="headSha && refCtxCommitSha && headSha !== refCtxCommitSha" class="ctx-item" @click="refAction('interactive-rebase-current-onto-selected')"><ListRestart class="ctx-icon h-4 w-4" /><span class="ctx-main">Interactive Rebase onto {{ refCtxRef.remote && !refCtxRef.local ? `origin/${refCtxRef.name}` : refCtxRef.name }}</span><span class="ctx-sub">Use this branch tip as the new base</span></button>
             <button v-if="refCtxRef.local && refCtxRef.remote" class="ctx-item" @click="refAction('set-upstream')"><span class="ctx-icon">🔗</span><span class="ctx-main">Set upstream</span><span class="ctx-sub">Link to origin/{{ refCtxRef.name }}</span></button>
             <button v-if="refCtxRef.local && refCtxRef.remote" class="ctx-item" @click="refAction('reset-to-remote')"><RotateCcw class="ctx-icon h-4 w-4" /><span class="ctx-main">Reset branch to remote</span><span class="ctx-sub">Match origin/{{ refCtxRef.name }}</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('delete-local')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local branch</span><span class="ctx-sub">Delete {{ refCtxRef.name }} from local repository</span></button>
@@ -2175,6 +2201,7 @@ onUnmounted(() => {
           <button class="ctx-item" @click="ctxAction('branch')"><span class="ctx-icon">🌿</span><span class="ctx-main">Create branch here</span><span class="ctx-sub">Create new branch from this commit</span></button>
           <button class="ctx-item" @click="ctxAction('time-machine-blame')"><span class="ctx-icon">🕰</span><span class="ctx-main">Time Machine Blame</span><span class="ctx-sub">Open Time Machine focused on this commit frame</span></button>
           <button class="ctx-item" @click="ctxAction('cherry-pick')"><span class="ctx-icon">🍒</span><span class="ctx-main">Cherry-pick commit</span><span class="ctx-sub">Apply this commit on top of current branch</span></button>
+          <button v-if="headSha && !ctxIsHeadCommit()" class="ctx-item" @click="ctxAction('interactive-rebase')"><ListRestart class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ ctxHeadHistoryRelation === 'ancestor' ? 'Interactive Rebase from Here' : ctxHeadHistoryRelation === 'other' ? 'Interactive Rebase onto Here' : 'Interactive Rebase…' }}</span><span class="ctx-sub">{{ ctxHeadHistoryRelation === 'ancestor' ? `Rewrite commits after ${ctxCommit?.short_sha}` : `Use ${ctxCommit?.short_sha} as the rebase target` }}</span></button>
           <button class="ctx-item" @click="ctxAction('revert')"><span class="ctx-icon">↩</span><span class="ctx-main">Revert commit</span><span class="ctx-sub">Create new commit that undoes this one</span></button>
         </div>
 
