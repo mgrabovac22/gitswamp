@@ -50,6 +50,29 @@ From an issue or pull request's **Conversation**, type in **Add a comment** and 
 
 Open **Options** and type in **Search settings**, directly below the header. Search covers the settings across all tabs, including provider-specific settings under **Integrations**. Try a partial name such as `auto fet`, a typo such as `secrt detectr`, or terms like `gitlab ssh`. Choose a result with the mouse or the arrow keys and Enter. GitSwamp opens its tab, scrolls to the setting, and highlights it briefly. Searching or selecting a result does not change the setting. Escape closes the suggestions.
 
+## GitLab, Azure DevOps and Bitbucket Tracking
+
+Open the repository whose primary remote points to the provider. GitSwamp uses `origin` when it exists. Expand the relevant sidebar section to load a page, then select an item to read its details. Use **Load more** for additional items. A failed fetch displays its error and can be retried. Tracking pages load on demand and are cleared when you change repositories.
+
+| Provider | What you can browse in GitSwamp | Connection |
+| --- | --- | --- |
+| GitLab.com | Open issues and merge requests in the remote project | GitLab token for private projects |
+| GitLab Self-Managed | Open issues and merge requests, including projects in subgroups | GitLab Self-Managed hostname and matching token in Options |
+| Azure DevOps Services | Active pull requests for the Git repository and recent work items for its Azure Boards project | PAT with Code Read and Work Items Read and the matching organisation in Options |
+| Bitbucket Cloud | Open pull requests for the remote repository | Bitbucket token with repository and pull request read access for private repositories |
+
+These views are read-only. Use **Open on GitLab**, **Open on Azure DevOps** or **Open on Bitbucket** for creation, comments, approvals and other edits. Native in-app GitHub comment posting is unchanged. Atlassian [removed the Bitbucket Cloud native Issue Tracker API](https://developer.atlassian.com/cloud/bitbucket/changelog/) on August 20, 2026. Jira is a separate service; GitSwamp does not infer a Jira project or send Bitbucket credentials to Jira.
+
+## Restore Selected Stash Files
+
+Right-click a stash and choose **View Changes**. In **Stashed files**, all files are selected by default. Click a file name to inspect its diff, or use the small checkbox to leave it out. **Clear selection** deselects everything; **Select all** restores the full selection. With no files selected, Apply and Pop are unavailable.
+
+- **Apply selected** restores the selected files while keeping the original stash intact.
+- **Pop selected** restores the selected files and keeps the remainder at the top of the stash list. With all files selected, a successful pop removes the stash. The usual Undo countdown still applies when enabled.
+- The restore unit is a whole file, including its staged and unstaged versions. Identical-content renames and file-to-directory replacements may require related paths to move together. Untracked files are restored only if they were included in the stash and selected.
+
+GitSwamp uses Git to apply the selection and checks the reviewed stash identity before a pop. If the restore fails, the stash is kept. Git may still have applied part of the selection or created conflicts: check **Working Changes** before retrying. The list shows all paths; inline line counts are limited for large stashes, and individual diffs open on demand.
+
 ## Compose Commits
 
 From **Working Changes**, open **Visual Commit Builder** (the hammer) and choose **Compose commits automatically** in its header. The experimental dialog proposes an ordered series from the current changes without an AI service. Edit each subject and description, reorder the commits, or move related change sets between commits. The current Commit Analyzer settings are used to validate the messages.
@@ -153,6 +176,12 @@ Right-click a commit in the graph and select **Interactive Rebase from Here**. T
 To move local work onto newer upstream commits, fetch first, then right-click the `origin` branch badge or its commit and select **Interactive Rebase onto** that target. Only commits on your local side of the common ancestor are replayed. If you have no local commits to replay, the dialog offers **Fast-forward** instead. Neither action moves the remote branch or pushes changes.
 
 Start from a clean working tree on a local branch. The visual editor supports linear ranges and does not flatten merges. **Edit** pauses after applying a commit; use the Changes panel to stage and amend, then **Continue rebase** in the toolbar. For a conflict, resolve and stage the files before continuing, or choose **Skip commit**. **Abort rebase** restores the original branch tip. Nothing is pushed automatically. The existing branch-to-branch rebase is unchanged.
+
+## Bug Autopsy and Git Bisect
+
+Commit or stash local work first. In **Options**, search for **Bug Autopsy** and enable it. Select a commit that reproduces the bug in the graph, open its **Info** panel and click **Start Bug Autopsy**. Select an older commit that you know worked and click **Use as worked commit**. Reproduce the same scenario after each checkout and mark it **Works** or **Broken**. At the end you can inspect the identified commit or return to the original branch. Choose endpoints on the same history path and confirm that the bug reproduces reliably before starting.
+
+For Git's command-line bisect, run `git bisect start BAD_SHA GOOD_SHA` in a clean worktree. Test each checkout, then run `git bisect good` or `git bisect bad`; use `git bisect skip` for an untestable commit. Run `git bisect reset` when finished. See the [Git bisect manual](https://git-scm.com/docs/git-bisect).
 
 ## Edit Files and Inspect History
 
