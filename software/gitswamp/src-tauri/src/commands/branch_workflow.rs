@@ -38,8 +38,15 @@ pub async fn execute_branch_workflow(
 }
 
 #[tauri::command]
-pub async fn verify_branch_handoff(path: String, config: Config, request: Request, token: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || branch_workflow::verify_handoff(&path, &config, &request, &token))
-        .await
-        .map_err(|error| error.to_string())?
+pub async fn verify_branch_handoff(
+    path: String,
+    config: Config,
+    request: Request,
+    token: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        branch_workflow::verify_handoff(&path, &config, &request, &token)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
