@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useProviderTracking, type TrackingContext } from "@/features/repository/remote/useProviderTracking";
 import { githubBranchComparison, githubBranches, githubDiscussion, type RemoteBranchCatalog } from "@/features/repository/remote/githubRemote";
 import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut, isBranchWorkflowShortcut } from "@/features/shell/keyboardShortcuts";
 import {
@@ -334,6 +335,33 @@ const compareRemoteBranches = computed(() => {
   return context ? (base: string, head: string, signal: AbortSignal) => githubBranchComparison(context, base, head, signal) : undefined;
 });
 const currentRemoteUpstream = computed(() => git.localBranches.value.find(branch => branch.is_head || branch.name === git.currentBranch.value)?.upstream ?? undefined);
+const trackingContext = computed<TrackingContext | null>(previous => {
+  const remote = getPrimaryRemote(git.repoInfo.value?.remotes || []);
+  const path = git.repoPath.value;
+  if (!remote || !path) return null;
+  const parsed = parseRemoteHostAndPath(remote.url);
+  if (!parsed) return null;
+  const saved = git.providerTokens.value;
+  const selfManaged = parseStoredGitlabSelfToken();
+  const authority = selfManaged?.domain;
+  const provider = parsed.host === "bitbucket.org" ? "bitbucket"
+    : parsed.host === "dev.azure.com" || parsed.host === "ssh.dev.azure.com" || parsed.host.endsWith(".visualstudio.com") ? "azure"
+    : remote.provider === "gitlab" || parsed.host === "gitlab.com" || (remote.provider !== "github" && !!authority && remoteMatchesDomain(parsed.host, parsed.hostWithPort, authority)) ? "gitlab" : null;
+  if (!provider) return null;
+  const credentials = provider === "bitbucket" ? { bitbucket: saved.bitbucket }
+    : provider === "azure" ? { azure: saved.azure, azureDomain: saved["azure-domain"] }
+    : parsed.host === "gitlab.com" ? { gitlab: saved.gitlab }
+    : { gitlabAuthority: authority, gitlabSelf: selfManaged?.token };
+  if (previous?.path === path && previous.remote === remote.name && previous.url === remote.url && previous.provider === provider
+    && Object.entries(credentials).every(([key, value]) => previous.credentials[key] === value)) return previous;
+  return { provider, path, remote: remote.name, url: remote.url, credentials };
+});
+const { issues: trackingIssues, pulls: trackingPulls, load: loadTracking, detail: trackingDetail } = useProviderTracking(trackingContext);
+const trackingProvider = computed(() => trackingContext.value?.provider);
+const trackingVersion = ref(0);
+const visibleRemoteIssues = computed(() => trackingProvider.value ? trackingIssues.value.items : githubIssues.value);
+const visibleRemotePulls = computed(() => trackingProvider.value ? trackingPulls.value.items : githubPullRequests.value);
+const remoteDetailError = ref("");
 const gitRpgProfile = ref<GitRpgProfile | null>(null);
 const gitRpgLoading = ref(false);
 const lostCommits = ref<LostCommitInfo[]>([]);
@@ -760,16 +788,11 @@ function getGitlabTokenForHost(host: string, hostWithPort: string = host): strin
   }
 
   const selfHostedToken = parseStoredGitlabSelfToken();
-  if (selfHostedToken && remoteMatchesDomain(host, hostWithPort, selfHostedToken.domain)) {
+  if (selfHostedToken && selfHostedToken.domain === hostWithPort) {
     return selfHostedToken.token;
   }
 
-  const selfHostedLegacy = git.providerTokens.value["gitlab-self"];
-  if (selfHostedLegacy && !selfHostedToken) {
-    return selfHostedLegacy;
-  }
-
-  return git.providerTokens.value.gitlab || null;
+  return null;
 }
 
 function collectChangedWorkingPaths(): string[] {
@@ -1646,6 +1669,7 @@ function ensureRemoteInsightSelection() {
 async function refreshOpenPullRequestBranches() {
   const remotes = git.repoInfo.value?.remotes || [];
   const primaryRemote = getPrimaryRemote(remotes);
+  const sequence = ++pullRequestFetchSequence;
 
   if (!primaryRemote || (primaryRemote.provider !== "github" && primaryRemote.provider !== "gitlab")) {
     openPullRequestBranches.value = [];
@@ -1654,13 +1678,13 @@ async function refreshOpenPullRequestBranches() {
     githubGists.value = [];
     githubPullRequestsHasMore.value = false;
     githubIssuesHasMore.value = false;
-    clearRemoteInsightDetails();
-    selectedPullRequestNumber.value = null;
-    selectedIssueNumber.value = null;
+    if (!trackingProvider.value) {
+      clearRemoteInsightDetails();
+      selectedPullRequestNumber.value = null;
+      selectedIssueNumber.value = null;
+    }
     return;
   }
-
-  const sequence = ++pullRequestFetchSequence;
 
   try {
     if (primaryRemote.provider === "github") {
@@ -1694,9 +1718,6 @@ async function refreshOpenPullRequestBranches() {
     githubGists.value = [];
     githubPullRequestsHasMore.value = false;
     githubIssuesHasMore.value = false;
-    clearRemoteInsightDetails();
-    selectedPullRequestNumber.value = null;
-    selectedIssueNumber.value = null;
     openPullRequestBranches.value = uniqueNormalizedBranches(branches);
   } catch {
     if (sequence !== pullRequestFetchSequence) return;
@@ -1706,9 +1727,11 @@ async function refreshOpenPullRequestBranches() {
     githubGists.value = [];
     githubPullRequestsHasMore.value = false;
     githubIssuesHasMore.value = false;
-    clearRemoteInsightDetails();
-    selectedPullRequestNumber.value = null;
-    selectedIssueNumber.value = null;
+    if (!trackingProvider.value) {
+      clearRemoteInsightDetails();
+      selectedPullRequestNumber.value = null;
+      selectedIssueNumber.value = null;
+    }
   }
 }
 
@@ -1742,6 +1765,7 @@ function getPrimaryGithubContext(): { apiBase: string; owner: string; repo: stri
 function clearRemoteInsightDetails(): void {
   remoteInsightDetailSequence += 1;
   remoteInsightDetailLoading.value = false;
+  remoteDetailError.value = "";
   githubIssueDetail.value = null;
   githubPullRequestDetail.value = null;
 }
@@ -1775,14 +1799,23 @@ async function loadSelectedIssueDetail(number: number): Promise<void> {
   const sequence = ++remoteInsightDetailSequence;
   remoteInsightDetailLoading.value = true;
   githubIssueDetail.value = null;
+  remoteDetailError.value = "";
 
   try {
-    const detail = await fetchGithubIssueDetail(number);
+    const detail = trackingProvider.value ? await trackingDetail<IssueInfo>("issue", number) : await fetchGithubIssueDetail(number);
     if (sequence !== remoteInsightDetailSequence || selectedIssueNumber.value !== number) return;
+    if (detail && trackingProvider.value === "azure") {
+      const template = document.createElement("template");
+      template.innerHTML = detail.description;
+      for (const node of template.content.querySelectorAll("script, style")) node.remove();
+      for (const node of template.content.querySelectorAll("p, div, li, br")) node.append("\n");
+      detail.description = template.content.textContent?.trim() ?? "";
+    }
     githubIssueDetail.value = detail;
-  } catch {
+  } catch (error) {
     if (sequence === remoteInsightDetailSequence) {
       githubIssueDetail.value = null;
+      remoteDetailError.value = String(error);
     }
   } finally {
     if (sequence === remoteInsightDetailSequence) {
@@ -1795,14 +1828,16 @@ async function loadSelectedPullRequestDetail(number: number): Promise<void> {
   const sequence = ++remoteInsightDetailSequence;
   remoteInsightDetailLoading.value = true;
   githubPullRequestDetail.value = null;
+  remoteDetailError.value = "";
 
   try {
-    const detail = await fetchGithubPullRequestDetail(number);
+    const detail = trackingProvider.value ? await trackingDetail<PullRequestInfo>("pull-request", number) : await fetchGithubPullRequestDetail(number);
     if (sequence !== remoteInsightDetailSequence || selectedPullRequestNumber.value !== number) return;
     githubPullRequestDetail.value = detail;
-  } catch {
+  } catch (error) {
     if (sequence === remoteInsightDetailSequence) {
       githubPullRequestDetail.value = null;
+      remoteDetailError.value = String(error);
     }
   } finally {
     if (sequence === remoteInsightDetailSequence) {
@@ -4343,14 +4378,23 @@ watch(() => git.selectedCommit.value, (commit) => {
 const selectedIssue = computed(() =>
   githubIssueDetail.value?.number === selectedIssueNumber.value
     ? githubIssueDetail.value
-    : githubIssues.value.find((item) => item.number === selectedIssueNumber.value) || null,
+    : visibleRemoteIssues.value.find((item) => item.number === selectedIssueNumber.value) || null,
 );
 
 const selectedPullRequest = computed(() =>
   githubPullRequestDetail.value?.number === selectedPullRequestNumber.value
     ? githubPullRequestDetail.value
-    : githubPullRequests.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
+    : visibleRemotePulls.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
 );
+
+watch(trackingContext, (next, previous) => {
+  if (!next && !previous) return;
+  trackingVersion.value++;
+  clearRemoteInsightDetails();
+  selectedPullRequestNumber.value = null;
+  selectedIssueNumber.value = null;
+  if (historyViewMode.value === "remote-insights") setHistoryViewMode("graph");
+});
 
 const identityGuardHeaderStatus = computed(() => {
   if (!identityGuardEnabled.value || !git.repoPath.value) {
@@ -5748,16 +5792,21 @@ function submitCreateTag() {
         :show-terminal="showTerminal"
         :terminal-allow-all="terminalAllowAll"
         :open-pull-request-branches="openPullRequestBranches"
-        :issues="githubIssues"
-        :pull-requests="githubPullRequests"
+        :issues="visibleRemoteIssues"
+        :pull-requests="visibleRemotePulls"
         :gists="githubGists"
         :lost-commits="lostCommits"
         :lost-commits-loading="lostCommitsLoading"
         :rescuing-lost-commit-sha="rescuingLostCommitSha"
-        :issues-has-more="githubIssuesHasMore"
-        :pull-requests-has-more="githubPullRequestsHasMore"
-        :issues-loading-all="githubIssuesLoadingAll"
-        :pull-requests-loading-all="githubPullRequestsLoadingAll"
+        :issues-has-more="trackingProvider ? !!trackingIssues.next : githubIssuesHasMore"
+        :pull-requests-has-more="trackingProvider ? !!trackingPulls.next : githubPullRequestsHasMore"
+        :issues-loading-all="trackingProvider ? trackingIssues.loading : githubIssuesLoadingAll"
+        :pull-requests-loading-all="trackingProvider ? trackingPulls.loading : githubPullRequestsLoadingAll"
+        :tracking-provider="trackingProvider"
+        :tracking-version="trackingVersion"
+        :tracking-issues-error="trackingIssues.error"
+        :tracking-pulls-error="trackingPulls.error"
+        :remote-insight-detail-error="remoteDetailError"
         :selected-issue="selectedIssue"
         :selected-pull-request="selectedPullRequest"
         :remote-insight-detail-loading="remoteInsightDetailLoading"
@@ -5813,8 +5862,9 @@ function submitCreateTag() {
         @select-stash="onSelectStash($event)"
         @select-issue="openIssueDetails($event)"
         @select-pull-request="openPullRequestDetails($event)"
-        @load-all-issues="loadAllGithubIssues"
-        @load-all-pull-requests="loadAllGithubPullRequests"
+        @load-all-issues="trackingProvider ? loadTracking('issue', true) : loadAllGithubIssues()"
+        @load-all-pull-requests="trackingProvider ? loadTracking('pull-request', true) : loadAllGithubPullRequests()"
+        @load-tracking="loadTracking($event)"
         @open-create-issue="openCreateIssuePanel"
         @open-create-pull-request="openCreatePullRequestPanel()"
         @branch-workflow="openBranchWorkflow()"

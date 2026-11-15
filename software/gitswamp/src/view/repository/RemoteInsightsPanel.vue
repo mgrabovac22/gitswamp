@@ -7,6 +7,7 @@ import RemoteConversation from "@/features/repository/remote/RemoteConversation.
 import { branchOnRemote, fetchedBranches, recommendedBase } from "@/features/repository/remote/branchOptions";
 import type { BranchComparison, RemoteBranchCatalog, RemoteDiscussionClient } from "@/features/repository/remote/githubRemote";
 import type { WorkflowConfig } from "@/features/repository/workflow/branchWorkflow";
+import type { TrackingProvider } from "@/features/repository/remote/useProviderTracking";
 import type { BranchInfo, IssueInfo, PullRequestInfo, RemoteIssueCreatePayload, RemotePullRequestCreatePayload, RemoteLabelInfo, RemoteMilestoneInfo, RemoteUserInfo } from "@/types";
 
 interface CreateOptions { labels: RemoteLabelInfo[]; milestones: RemoteMilestoneInfo[]; assignees: RemoteUserInfo[]; reviewers: RemoteUserInfo[] }
@@ -17,6 +18,8 @@ const props = defineProps<{
   pullRequest: PullRequestInfo | null;
   issue: IssueInfo | null;
   detailLoading?: boolean;
+  detailError?: string;
+  trackingProvider?: TrackingProvider;
   createOptions?: CreateOptions;
   createOptionsLoading?: boolean;
   creating?: boolean;
@@ -41,6 +44,7 @@ const emit = defineEmits<{
 
 const isPull = computed(() => props.mode.startsWith("pull-request"));
 const isCreate = computed(() => props.mode.endsWith("-create"));
+const providerName = computed(() => props.trackingProvider === "azure" ? "Azure DevOps" : props.trackingProvider === "bitbucket" ? "Bitbucket" : props.trackingProvider === "gitlab" ? "GitLab" : "GitHub");
 const item = computed(() => isPull.value ? props.pullRequest : props.issue);
 const scrollArea = ref<HTMLElement>();
 const tab = ref<Tab>("conversation");
@@ -155,8 +159,8 @@ const labelColor = (label: RemoteLabelInfo) => /^[a-f\d]{6}$/i.test(label.color)
   <div class="remote-panel">
     <header class="toolbar">
       <button class="secondary" type="button" @click="emit('close')"><ArrowLeft :size="15" /> Back to graph</button>
-      <span>{{ isPull ? 'Pull requests' : 'Issues' }}<template v-if="!isCreate && item"> / #{{ item.number }}</template></span>
-      <button v-if="!isCreate && item?.url" type="button" class="secondary github" @click="openInBrowser(item.url)"><ExternalLink :size="14" /> Open on GitHub</button>
+      <span>{{ isPull ? (trackingProvider === 'gitlab' ? 'Merge requests' : 'Pull requests') : (trackingProvider === 'azure' ? 'Work items' : 'Issues') }}<template v-if="!isCreate && item"> / #{{ item.number }}</template></span>
+      <button v-if="!isCreate && item?.url" type="button" class="secondary github" @click="openInBrowser(item.url)"><ExternalLink :size="14" /> Open on {{ providerName }}</button>
     </header>
 
     <div ref="scrollArea" class="remote-scroll">
@@ -211,8 +215,9 @@ const labelColor = (label: RemoteLabelInfo) => /^[a-f\d]{6}$/i.test(label.color)
             <span v-if="mergeStatus" class="muted">{{ mergeStatus }}</span>
             <span v-if="detailLoading" class="muted inline"><Loader2 :size="14" class="animate-spin" /> Loading details</span>
           </div>
+          <p v-if="detailError" class="muted" role="alert">{{ detailError }}</p>
         </header>
-        <nav v-if="isPull" aria-label="Pull request sections" class="tabs">
+        <nav v-if="isPull && !trackingProvider" aria-label="Pull request sections" class="tabs">
           <button type="button" :aria-pressed="tab === 'conversation'" @click="chooseTab('conversation')"><MessageSquare :size="15" /> Conversation</button>
           <button type="button" :aria-pressed="tab === 'commits'" @click="chooseTab('commits')"><GitCommitHorizontal :size="15" /> Commits <small v-if="pullRequest?.commitsCount != null">{{ pullRequest.commitsCount }}</small></button>
           <button type="button" :aria-pressed="tab === 'files'" @click="chooseTab('files')"><Files :size="15" /> Files changed <small v-if="pullRequest?.changedFiles != null">{{ pullRequest.changedFiles }}</small></button>

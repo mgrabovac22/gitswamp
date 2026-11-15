@@ -111,6 +111,7 @@ const emit = defineEmits<{
   stashPop: [index: number];
   stashApply: [index: number];
   stashDrop: [index: number];
+  restoreStashSelection: [stash: StashInfo, files: string[], pop: boolean];
   viewDiff: [{ path: string; sha: string | null; staged: boolean }];
   closeDiffViewer: [];
   amendCommitMessage: [newMessage: string];
@@ -203,6 +204,49 @@ function openStashDiff(filePath: string) {
   const stash = props.selectedStash;
   if (!stash) return;
   openDiff(filePath, stash.stash_sha || null, false);
+}
+
+const defaultStashSelected = ref(true);
+const stashSelectionOverrides = shallowRef(new Set<string>());
+const stashFileCount = computed(() => props.stashFiles?.length ?? 0);
+const selectedStashCount = computed(() => defaultStashSelected.value ? Math.max(0, stashFileCount.value - stashSelectionOverrides.value.size) : Math.min(stashFileCount.value, stashSelectionOverrides.value.size));
+const allStashFilesSelected = computed(() => selectedStashCount.value === stashFileCount.value);
+const stashFileLimit = ref(150);
+const stashFileQuery = ref("");
+const filteredStashFiles = computed(() => {
+  const files = props.stashFiles ?? [];
+  const term = stashFileQuery.value.trim().toLowerCase();
+  return term ? files.filter(file => file.path.toLowerCase().includes(term)) : files;
+});
+const visibleStashFiles = computed(() => filteredStashFiles.value.slice(0, stashFileLimit.value));
+watch([() => props.repoPath, () => props.selectedStash?.stash_sha], () => {
+  defaultStashSelected.value = true;
+  stashSelectionOverrides.value = new Set();
+  stashFileQuery.value = "";
+  stashFileLimit.value = 150;
+});
+watch(stashFileQuery, () => { stashFileLimit.value = 150; });
+
+function stashFileSelected(path: string) {
+  return defaultStashSelected.value !== stashSelectionOverrides.value.has(path);
+}
+
+function toggleStashFile(path: string, checked: boolean) {
+  const next = new Set(stashSelectionOverrides.value);
+  if (checked === defaultStashSelected.value) next.delete(path); else next.add(path);
+  stashSelectionOverrides.value = next;
+}
+
+function toggleAllStashFiles() {
+  defaultStashSelected.value = !allStashFilesSelected.value;
+  stashSelectionOverrides.value = new Set();
+}
+
+function restoreStash(pop: boolean) {
+  const stash = props.selectedStash;
+  if (!stash || !selectedStashCount.value) return;
+  const paths = props.stashFiles?.filter(file => stashFileSelected(file.path)).map(file => file.path) ?? [];
+  if (paths.length) emit("restoreStashSelection", stash, paths, pop);
 }
 
 function scrollSelectedCommitFileIntoView() {
@@ -3236,13 +3280,22 @@ onUnmounted(() => {
           </div>
 
           <template v-if="changesViewMode === 'files'">
+            <div class="px-4 py-1.5 flex flex-wrap justify-between items-center gap-2 text-[10px] text-[var(--muted-foreground)]">
+              <span>{{ selectedStashCount }} of {{ stashFiles.length }} selected</span>
+              <button type="button" class="rounded px-1 py-0.5 hover:bg-[var(--secondary)] hover:text-[var(--foreground)]" @click="toggleAllStashFiles">{{ allStashFilesSelected ? 'Clear selection' : 'Select all' }}</button>
+            </div>
+            <div v-if="stashFileCount > 150" class="px-4 pb-2"><input v-model="stashFileQuery" type="search" aria-label="Filter stash files" placeholder="Filter files" class="h-6 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-[10px]" /></div>
             <div
-              v-for="f in stashFiles"
+              v-for="f in visibleStashFiles"
               :key="f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
               @click="openStashDiff(f.path)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >
+              <label class="inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center" @click.stop>
+                <input type="checkbox" class="h-3 w-3 accent-[var(--primary)]" :aria-label="'Select ' + f.path" :checked="stashFileSelected(f.path)"
+                  @change="toggleStashFile(f.path, ($event.target as HTMLInputElement).checked)" />
+              </label>
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
@@ -3251,6 +3304,8 @@ onUnmounted(() => {
               <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
               <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
             </div>
+            <p v-if="!filteredStashFiles.length" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)]">No matching files</p>
+            <button v-if="filteredStashFiles.length > stashFileLimit" type="button" class="w-full border-t border-[var(--border)] py-2 text-[10px] hover:bg-[var(--secondary)]" @click="stashFileLimit += 150">Show more files</button>
           </template>
 
           <template v-else-if="changesViewMode === 'tree'">
@@ -3392,18 +3447,21 @@ onUnmounted(() => {
       </div>
 
       <div v-if="selectedStash" class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0 space-y-2">
+        <p v-if="!allStashFilesSelected && selectedStashCount" class="text-[10px] text-[var(--muted-foreground)]">{{ selectedStashCount }} selected · Unselected files stay in the stash.</p>
         <AppButton
           class="w-full bg-[#f59e0b] hover:bg-[#f59e0b]/90 text-white text-xs font-medium h-8"
-          @click="emit('stashPop', selectedStash.index)"
+          :disabled="!selectedStashCount"
+          @click="restoreStash(true)"
         >
-          Pop Stash
+          {{ allStashFilesSelected ? 'Pop Stash' : 'Pop selected' }}
         </AppButton>
         <div class="flex gap-2">
           <AppButton
             class="flex-1 bg-[var(--secondary)] hover:bg-[var(--secondary)]/80 text-[var(--foreground)] text-xs font-medium h-8"
-            @click="emit('stashApply', selectedStash.index)"
+            :disabled="!selectedStashCount"
+            @click="restoreStash(false)"
           >
-            Apply
+            {{ allStashFilesSelected ? 'Apply' : 'Apply selected' }}
           </AppButton>
           <AppButton
             class="flex-1 bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-medium h-8"

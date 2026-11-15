@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { BranchComparison, RemoteBranchCatalog, RemoteDiscussionClient } from "@/features/repository/remote/githubRemote";
+import type { TrackingKind, TrackingProvider } from "@/features/repository/remote/useProviderTracking";
 import type { WorkflowConfig } from "@/features/repository/workflow/branchWorkflow";
 import { computed, defineAsyncComponent, ref, watch } from "vue";
 import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
@@ -74,6 +75,11 @@ const props = defineProps<{
   selectedIssue?: IssueInfo | null;
   selectedPullRequest?: PullRequestInfo | null;
   remoteInsightDetailLoading?: boolean;
+  remoteInsightDetailError?: string;
+  trackingProvider?: TrackingProvider;
+  trackingIssuesError?: string;
+  trackingPullsError?: string;
+  trackingVersion?: number;
   remoteCreateOptions?: RemoteCreateOptions;
   remoteCreateOptionsLoading?: boolean;
   remoteCreating?: boolean;
@@ -109,6 +115,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   branchWorkflow: [];
+  loadTracking: [kind: TrackingKind];
   "update:showTerminal": [value: boolean];
   "update:terminalAllowAll": [value: boolean];
   "update:detailsPanelCollapsed": [value: boolean];
@@ -359,6 +366,15 @@ function scheduleStashPop(index: number) {
   });
 }
 
+function restoreStashSelection(stash: StashInfo, paths: string[], pop: boolean) {
+  if (!pop) return props.git.restoreSelectedStash(stash, paths, false);
+  scheduleDestructiveAction({
+    message: `Pop ${paths.length} selected stash files in 5 seconds.`,
+    detail: "Unselected changes stay in the stash. Click Undo to cancel.",
+    run: () => props.git.restoreSelectedStash(stash, paths, true),
+  });
+}
+
 function scheduleStashDrop(index: number) {
   scheduleDestructiveAction({
     message: `Drop stash@{${index}} in 5 seconds.`,
@@ -479,6 +495,11 @@ function handleRefreshState() {
         :selected-issue-number="props.selectedIssue?.number || null"
         :selected-pull-request-number="props.selectedPullRequest?.number || null"
         :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
+        :tracking-provider="props.trackingProvider"
+        :tracking-issues-error="props.trackingIssuesError"
+        :tracking-pulls-error="props.trackingPullsError"
+        :tracking-version="props.trackingVersion"
+        @load-tracking="emit('loadTracking', $event)"
         @checkout="props.git.checkoutBranch($event)"
         @checkout-remote="emit('checkoutRemoteBranch', $event)"
         @checkout-tag="props.git.checkoutCommit($event)"
@@ -695,6 +716,8 @@ function handleRefreshState() {
           :pull-request="props.selectedPullRequest || null"
           :issue="props.selectedIssue || null"
           :detail-loading="props.remoteInsightDetailLoading"
+          :detail-error="props.remoteInsightDetailError"
+          :tracking-provider="props.trackingProvider"
           :create-options="props.remoteCreateOptions"
           :workflow-draft="props.workflowPullRequest"
           :create-options-loading="props.remoteCreateOptionsLoading"
@@ -789,6 +812,7 @@ function handleRefreshState() {
             @stash-pop="scheduleStashPop($event)"
             @stash-apply="props.git.stashApply($event)"
             @stash-drop="scheduleStashDrop($event)"
+            @restore-stash-selection="restoreStashSelection"
             @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
             @refresh-state="handleRefreshState"

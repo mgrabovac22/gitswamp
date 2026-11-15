@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
 import { build } from "vite";
@@ -17,14 +17,25 @@ for (const [, id] of settingsSource.matchAll(/\["([a-z-]+)", "[A-Z]/g)) {
   assert.ok(optionsSource.includes(`data-option="${id}"`), `Missing setting anchor: ${id}`);
 }
 const entry = String.raw`
-import { createApp, h, ref } from 'vue';
+import { computed, createApp, h, ref } from 'vue';
 import Panel from '/src/view/repository/RemoteInsightsPanel.vue';
+import Sidebar from '/src/view/repository/RepositorySidebar.vue';
+import CommitDetails from '/src/view/commit/CommitDetails.vue';
 import Options from '/src/view/shell/OptionsDialog.vue';
 import { githubBranchComparison, githubBranches, githubDiscussion } from '/src/features/repository/remote/githubRemote.ts';
 import { workflowDefaults } from '/src/features/repository/workflow/branchWorkflow.ts';
+import { useProviderTracking } from '/src/features/repository/remote/useProviderTracking.ts';
 import '/src/styles/index.css';
 const context = { apiBase:'https://api.github.com', owner:'example', repo:'project', token:'test' };
 const mode = ref('pull-request-create'), options = ref(false), catalog = ref(null), handoff = ref(null);
+const demo = ref('panel');
+const stashNumber = ref(0);
+const stashFiles = ['docs/overview.md','src/auth.ts'].map(path=>({path,status:'modified',additions:1,deletions:0}));
+window.demo = value => { demo.value = value; };
+window.switchStash = () => { stashNumber.value++; };
+window.trackingRequests = [];
+const trackingContext = computed(() => ['gitlab','azure','bitbucket'].includes(demo.value) ? { path:demo.value, remote:'origin', url:'', provider:demo.value, credentials:{} } : null);
+const tracking = useProviderTracking(trackingContext);
 window.showMode = value => { mode.value = value; };
 window.enableHandoff = () => { handoff.value = { source:'feature/login', target:'main', description:'Reviewed in Handoff.' }; };
 window.showOptions = () => { options.value = true; };
@@ -61,14 +72,25 @@ void githubBranches(context,controller.signal).then(value => { catalog.value = v
 const discussion = githubDiscussion(context,'repo-1',()=>{window.authRequested=true;});
 const issue = { number:21,id:21,title:'Login is slow',state:'open',author:'tester',description:'Steps to reproduce',url:'https://github.com/example/project/issues/21',createdAt:'2026-01-01',updatedAt:'2026-01-01' };
 const pullRequest = { ...issue,id:12,number:12,title:'Improve login',description:'Speed up login',url:'https://github.com/example/project/pull/12',sourceBranch:'feature/login',targetBranch:'develop',mergeable:true,mergeableState:'clean',linkedCommits:[{sha:'123456789',title:'Validate login',url:'https://github.com/example/project/commit/123456789'}],files:[{filename:'src/login.ts',url:'https://github.com/example/project/pull/12/files',status:'modified',additions:2,deletions:1}] };
+window.mockInvoke = async (command, payload) => {
+  if (command === 'get_available_external_editors') return [];
+  if (command !== 'remote_tracking') return null;
+  window.trackingRequests.push(payload);
+  return {items:[payload.request.kind === 'issue' ? {...issue,title:'Tracked work item'} : {...pullRequest,title:'Tracked request'}],next:null};
+};
 createApp({render:()=>[
-  h(Panel,{mode:mode.value,issue,pullRequest,workflow:workflowDefaults('gitflow','main','develop'),workflowDraft:handoff.value,currentBranch:'feature/login',remoteName:'origin',remoteBranches:[],branchCatalog:catalog.value,discussion,
-    compareBranches:(base,head,signal)=>githubBranchComparison(context,base,head,signal),onCreatePullRequest:payload=>window.pr=payload}),
+  demo.value === 'panel' ? h(Panel,{mode:mode.value,issue,pullRequest,workflow:workflowDefaults('gitflow','main','develop'),workflowDraft:handoff.value,currentBranch:'feature/login',remoteName:'origin',remoteBranches:[],branchCatalog:catalog.value,discussion,
+    compareBranches:(base,head,signal)=>githubBranchComparison(context,base,head,signal),onCreatePullRequest:payload=>window.pr=payload})
+  : demo.value === 'stash' ? h(CommitDetails,{repoPath:'fixture',isWorkingChanges:false,isStash:true,commit:null,commitFiles:[],stagedFiles:[],unstagedFiles:[],stashFiles,
+    selectedStash:{index:stashNumber.value,stash_sha:'sha-'+stashNumber.value,message:'stash fixture',branch:'main',timestamp:'',parent_sha:'parent'},
+    onRestoreStashSelection:(stash,files,pop)=>{window.restored={index:stash.index,files,pop};}})
+  : h(Sidebar,{key:demo.value,repoPath:demo.value,remoteProvider:demo.value,trackingProvider:demo.value,branches:[],remoteBranches:[],stashes:[],tags:[],currentBranch:'main',issues:tracking.issues.value.items,pullRequests:tracking.pulls.value.items,
+    issuesLoadingAll:tracking.issues.value.loading,pullRequestsLoadingAll:tracking.pulls.value.loading,onLoadTracking:tracking.load}),
   options.value ? h(Options,{onClose:()=>{ options.value = false; }}) : null,
 ]}).mount('#app');`;
 
 const mock = {
-  "@tauri-apps/api/core": "export const invoke=async()=>null; export const isTauri=()=>false; export class Channel {}; export class Resource {}; export const convertFileSrc=x=>x;",
+  "@tauri-apps/api/core": "export const invoke=async (...args)=>window.mockInvoke?.(...args); export const isTauri=()=>false; export class Channel {}; export class Resource {}; export const convertFileSrc=x=>x;",
   "@tauri-apps/plugin-opener": "export const openUrl=async()=>{}; export const openPath=async()=>{}; export const revealItemInDir=async()=>{};",
   "@tauri-apps/plugin-dialog": "export const open=async()=>null; export const save=async()=>null; export const confirm=async()=>false;",
   "@tauri-apps/api/event": "export const listen=async()=>()=>{}; export const emit=async()=>{};",
@@ -190,6 +212,9 @@ try {
   assert.equal(await search.getAttribute("aria-expanded"),"false");
   await search.fill("visualze operatons");
   await page.getByRole("option",{name:/Visualise operations/}).waitFor();
+  const searchWidth = (await page.locator(".settings-search-field").boundingBox()).width;
+  const resultWidth = (await page.getByRole("listbox",{name:"Settings results"}).boundingBox()).width;
+  assert.ok(searchWidth > 900 && resultWidth >= searchWidth * .48 && resultWidth < searchWidth * .53);
   await page.screenshot({path:path.join(root,"src-tauri/target/options-search.png")});
   await search.press("Enter");
   await page.waitForFunction(()=>document.activeElement?.getAttribute('data-option')==='visualise');
@@ -199,10 +224,51 @@ try {
     const option = el.getBoundingClientRect();
     return scroll.scrollTop > 0 && option.top >= bounds.top && option.bottom <= bounds.bottom;
   }));
+  await page.getByTitle("Close options",{exact:true}).click();
+  await page.evaluate(()=>window.demo('stash'));
+  const auth = page.getByRole("checkbox",{name:"Select src/auth.ts",exact:true});
+  const docs = page.getByRole("checkbox",{name:"Select docs/overview.md",exact:true});
+  await auth.waitFor();
+  assert.ok(await auth.isChecked() && await docs.isChecked());
+  assert.ok((await auth.boundingBox()).width <= 14);
+  await auth.uncheck();
+  await page.getByRole("button",{name:"Apply selected",exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>window.restored),{index:0,files:["docs/overview.md"],pop:false});
+  await page.getByRole("button",{name:"Pop selected",exact:true}).click();
+  assert.equal(await page.evaluate(()=>window.restored.pop),true);
+  await docs.uncheck();
+  assert.ok(await page.getByRole("button",{name:"Pop selected",exact:true}).isDisabled());
+  await page.evaluate(()=>window.switchStash());
+  assert.ok(await auth.isChecked() && await docs.isChecked());
+
+  await page.evaluate(()=>window.demo('gitlab'));
+  assert.equal(await page.evaluate(()=>window.trackingRequests.length),0);
+  await page.getByRole("button",{name:/MERGE REQUESTS/i}).click();
+  await page.getByText("Tracked request",{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.trackingRequests[0].request.kind),"pull-request");
+  await page.evaluate(()=>window.demo('azure'));
+  await page.getByRole("button",{name:/WORK ITEMS/i}).click();
+  await page.getByText("Tracked work item",{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.trackingRequests.at(-1).path),"azure");
+  await page.evaluate(()=>window.demo('bitbucket'));
+  assert.equal(await page.getByRole("button",{name:/ISSUES/i}).count(),0);
+  await page.getByRole("button",{name:/PULL REQUESTS/i}).click();
+  await page.getByText("Tracked request",{exact:true}).waitFor();
   assert.deepEqual(errors,[]);
+
+  await page.route(/^https?:\/\//, route=>route.abort());
+  await page.goto(pathToFileURL(path.resolve(root,"../../docs/index.html")).href);
+  const featureGrid = page.locator(".feature-groups");
+  assert.equal(await featureGrid.locator("article").count(),9);
+  for (const width of [1240,390]) {
+    await page.setViewportSize({width,height:830});
+    await page.getByRole("heading",{name:"Branch workflows",exact:true}).scrollIntoViewIfNeeded();
+    assert.ok(await featureGrid.evaluate(el=>el.scrollWidth<=el.clientWidth && [...el.children].every(card=>card.scrollWidth<=card.clientWidth)));
+    assert.equal(await featureGrid.evaluate(el=>getComputedStyle(el).gridTemplateColumns.split(" ").length),width===1240?3:1);
+  }
 } finally {
   const closing = Promise.all([browser?.close(),new Promise(resolve=>server.close(resolve))]);
   server.closeAllConnections();
   await closing;
 }
-console.log("PASS: published branch pagination, workflow suggestions, compare, Handoff, PR and issue comments, and Options search.");
+console.log("PASS: PR and issue tools, Options search, stash selection, on-demand provider tracking and the GitHub Pages feature grid.");
