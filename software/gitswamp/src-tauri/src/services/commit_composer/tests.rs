@@ -751,6 +751,160 @@ fn stages_independent_hunks_of_one_file_without_consuming_unstaged_bytes() {
 }
 
 #[test]
+fn analyzes_large_diffs_without_a_shared_file_budget() {
+    let f = Fixture::new(true);
+    for n in 0..6 {
+        let text = format!(
+            "// {}\nexport function buildSearchIndex{n}() {{ return {n}; }}\n",
+            "x".repeat(1_500_000)
+        );
+        f.write(&format!("modules/item{n}/search.ts"), &text);
+    }
+    f.write("docs/guide.md", "# Search configuration\n");
+    f.git(&["add", "."]);
+    let expected = f.git(&["write-tree"]);
+    let preview = plan(f.path(), false).unwrap();
+    assert!(!preview.limited && !preview.requires_build_verification);
+    assert!(!suggested_together(
+        &preview,
+        "modules/item5/search.ts",
+        "docs/guide.md"
+    ));
+    for n in 0..6 {
+        let path = format!("modules/item{n}/search.ts");
+        assert!(preview
+            .changes
+            .iter()
+            .any(|change| change.path == path && change.added == 2));
+        let draft = draft_with(&preview, &path);
+        assert!(
+            draft.description.contains(&format!("buildSearchIndex{n}")),
+            "{}",
+            draft.description
+        );
+    }
+    assert!(f.apply(&preview).len() > 1);
+    assert_eq!(f.git(&["rev-parse", "HEAD^{tree}"]), expected);
+}
+
+#[test]
+fn checks_unchanged_callers_past_the_old_reverse_scan_and_import_limits() {
+    let f = Fixture::new(true);
+    for n in 0..310 {
+        f.write(
+            &format!("src/helpers/file{n:03}.ts"),
+            "export const value = 1;\n",
+        );
+    }
+    let names: Vec<_> = (0..24).map(|n| format!("helper{n:02}")).collect();
+    let mut provider = names
+        .iter()
+        .map(|name| format!("export const {name} = 1;\n"))
+        .collect::<String>();
+    provider.push_str("export const requiredLast = 1;\n");
+    f.write("src/provider.ts", &provider);
+    f.write(
+        "src/z-caller.ts",
+        &format!(
+            "import {{ {}, requiredLast }} from './provider';\n",
+            names.join(", ")
+        ),
+    );
+    f.git(&["add", "."]);
+    f.git(&["commit", "-m", "Baseline"]);
+    f.write(
+        "src/provider.ts",
+        provider
+            .strip_suffix("export const requiredLast = 1;\n")
+            .unwrap(),
+    );
+    f.write("docs/guide.md", "# Explain setup\n");
+    let error = plan(f.path(), false).err().unwrap();
+    assert!(
+        error.contains("z-caller.ts imports requiredLast"),
+        "{error}"
+    );
+
+    f.write(
+        "src/z-caller.ts",
+        &format!("import {{ {} }} from './provider';\n", names.join(", ")),
+    );
+    let fixed = plan(f.path(), false).unwrap();
+    assert!(!fixed.requires_build_verification);
+    assert!(!suggested_together(
+        &fixed,
+        "src/provider.ts",
+        "docs/guide.md"
+    ));
+    assert!(f.apply(&fixed).len() > 1);
+}
+
+#[test]
+fn dependency_review_continues_after_the_import_cache_fills() {
+    let f = Fixture::new(true);
+    let names: Vec<_> = (0..1450).map(|n| format!("exportedHelper{n:04}")).collect();
+    let provider: String = names
+        .iter()
+        .map(|name| format!("export const {name} = 1;\n"))
+        .collect();
+    f.write("src/provider.ts", &provider);
+    let callers = format!("import {{ {} }} from './provider';\n", names.join(", "));
+    for n in 0..46 {
+        f.write(&format!("src/caller{n:02}.ts"), &callers);
+    }
+    f.write(
+        "src/caller46.ts",
+        "import { missingFromProvider } from './provider';\n",
+    );
+    f.git(&["add", "."]);
+    let snapshot = Snapshot::build(&Git::open(f.path()).unwrap(), false).unwrap();
+    let tree = snapshot.repo.find_tree(snapshot.tree).unwrap();
+    let mut review = dependencies::Check::new(
+        &snapshot.repo,
+        snapshot.head,
+        snapshot.tree,
+        &snapshot.changes,
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let error = review.verify(&tree).unwrap().to_string();
+        assert!(
+            error.contains("caller46.ts imports missingFromProvider"),
+            "{error}"
+        );
+        assert!(!review.limited);
+    }
+}
+
+#[test]
+fn retains_independent_groups_when_one_source_is_too_large_for_static_review() {
+    let f = Fixture::new(true);
+    f.write(
+        "src/large.ts",
+        &format!("// {}\n", "x".repeat(PATCH_FILE_LIMIT)),
+    );
+    f.write("docs/guide.md", "# Explain setup\n");
+    let before = f.git(&["rev-parse", "HEAD"]);
+    let draft = plan(f.path(), false).unwrap();
+    assert!(draft.limited && draft.requires_build_verification);
+    let groups = Fixture::drafts(&draft);
+    assert_eq!(groups.len(), 2);
+    let error = apply(f.path(), &draft.snapshot, &groups, false, false).unwrap_err();
+    assert!(error.contains("Enable Verify every commit"), "{error}");
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), before);
+    let checked = apply_with_verification(
+        f.path(),
+        &draft.snapshot,
+        &groups,
+        false,
+        false,
+        Some("git --version"),
+    )
+    .unwrap();
+    assert_eq!(checked.len(), 2);
+}
+
+#[test]
 fn refuses_missing_local_dependency_and_unsafe_manual_export_order() {
     let f = Fixture::new(true);
     f.write("src/core.ts", "export function existing() {}\n\n// one\n// two\n// three\n// four\n// five\n// six\n// seven\n\nexport function keep() {\n  return 1;\n}\n");
@@ -830,6 +984,7 @@ fn blocks_reordering_a_caller_before_a_new_export() {
         &units,
         &[make(caller), make(provider)],
         None,
+        false,
     )
     .unwrap_err();
     assert!(error.contains("imports enabled before"), "{error}");
@@ -839,7 +994,8 @@ fn blocks_reordering_a_caller_before_a_new_export() {
             &signature,
             &units,
             &[make(provider), make(caller)],
-            None
+            None,
+            false,
         )
         .unwrap()
         .len(),
