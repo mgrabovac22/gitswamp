@@ -549,7 +549,12 @@ fn compare(
                         conflict_paths.extend(entries.take(8).filter_map(|conflict| {
                             let conflict = conflict.ok()?;
                             let entry = conflict.our.or(conflict.their).or(conflict.ancestor)?;
-                            Some(String::from_utf8_lossy(&entry.path).chars().take(320).collect())
+                            Some(
+                                String::from_utf8_lossy(&entry.path)
+                                    .chars()
+                                    .take(320)
+                                    .collect(),
+                            )
                         }));
                     }
                 }
@@ -595,14 +600,39 @@ fn checkpoint(repo: &Repository, incoming: Oid, target: Oid) -> Option<Checkpoin
                         .and_then(|name| name.to_str())
                         .unwrap_or("")
                         .to_ascii_lowercase();
-                    if path.starts_with(".github/workflows") || matches!(name.as_str(), ".gitlab-ci.yml" | "jenkinsfile" | "azure-pipelines.yml") {
+                    if path.starts_with(".github/workflows")
+                        || matches!(
+                            name.as_str(),
+                            ".gitlab-ci.yml" | "jenkinsfile" | "azure-pipelines.yml"
+                        )
+                    {
                         review_areas.insert("CI and deployment");
                     }
-                    if path.components().any(|part| matches!(part.as_os_str().to_str(), Some("migrations" | "alembic" | "flyway" | "liquibase")))
-                        || matches!(name.as_str(), "schema.prisma" | "schema.sql") {
+                    if path.components().any(|part| {
+                        matches!(
+                            part.as_os_str().to_str(),
+                            Some("migrations" | "alembic" | "flyway" | "liquibase")
+                        )
+                    }) || matches!(name.as_str(), "schema.prisma" | "schema.sql")
+                    {
                         review_areas.insert("Schema and migrations");
                     }
-                    if matches!(name.as_str(), "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "cargo.toml" | "cargo.lock" | "go.mod" | "go.sum" | "pyproject.toml" | "uv.lock" | "pom.xml" | "build.gradle" | "build.gradle.kts") {
+                    if matches!(
+                        name.as_str(),
+                        "package.json"
+                            | "package-lock.json"
+                            | "pnpm-lock.yaml"
+                            | "yarn.lock"
+                            | "cargo.toml"
+                            | "cargo.lock"
+                            | "go.mod"
+                            | "go.sum"
+                            | "pyproject.toml"
+                            | "uv.lock"
+                            | "pom.xml"
+                            | "build.gradle"
+                            | "build.gradle.kts"
+                    ) {
                         review_areas.insert("Dependencies and build");
                     }
                     path.components().any(|part| {
@@ -634,17 +664,32 @@ fn recent_commits(repo: &Repository, incoming: Oid, target: Oid) -> Vec<CommitEx
         walk.hide(target)?;
         Ok::<_, git2::Error>(walk)
     })();
-    walk.into_iter().flatten().take(6).filter_map(|oid| {
-        let commit = repo.find_commit(oid.ok()?).ok()?;
-        let bytes = commit.message_bytes();
-        let message = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]);
-        let subject = message.lines().next().unwrap_or_default().trim().chars()
-            .filter(|character| !character.is_control()).take(120).collect::<String>();
-        Some(CommitExcerpt {
-            sha: commit.id().to_string()[..8].to_owned(),
-            subject: if subject.is_empty() { "Untitled commit".into() } else { subject },
+    walk.into_iter()
+        .flatten()
+        .take(6)
+        .filter_map(|oid| {
+            let commit = repo.find_commit(oid.ok()?).ok()?;
+            let bytes = commit.message_bytes();
+            let message = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]);
+            let subject = message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(120)
+                .collect::<String>();
+            Some(CommitExcerpt {
+                sha: commit.id().to_string()[..8].to_owned(),
+                subject: if subject.is_empty() {
+                    "Untitled commit".into()
+                } else {
+                    subject
+                },
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn tag_step(
@@ -829,7 +874,9 @@ fn resolve(
                         target_tip(&repo, target)?
                     };
                     pins.push(before.to_string());
-                    if matches!(request.action, Action::Finish) && !contains(&repo, before, incoming)? {
+                    if matches!(request.action, Action::Finish)
+                        && !contains(&repo, before, incoming)?
+                    {
                         ensure_branch_available(&repo, target)?;
                         if repo.merge_base(before, incoming).is_err() {
                             return Err("No merge base is available. Fetch more history or verify the branches first.".into());
@@ -848,7 +895,14 @@ fn resolve(
                         });
                     }
                     if analyze && !matches!(request.action, Action::Cleanup) {
-                        comparisons.push(compare(&repo, incoming, before, target, true, is_handoff && config.strategy == Strategy::Swamp)?);
+                        comparisons.push(compare(
+                            &repo,
+                            incoming,
+                            before,
+                            target,
+                            true,
+                            is_handoff && config.strategy == Strategy::Swamp,
+                        )?);
                     }
                 }
                 if is_handoff {
@@ -860,9 +914,23 @@ fn resolve(
                         (None, _) => "no-remote",
                         (_, None) => "not-published",
                         (_, Some(id)) if id == incoming => "in-sync",
-                        (_, Some(id)) if analyze && contains(&repo, incoming, id).unwrap_or(false) => "local-ahead",
-                        (_, Some(id)) if analyze && contains(&repo, id, incoming).unwrap_or(false) => "remote-ahead",
-                        _ => if repo.is_shallow() { "unknown" } else { "different" },
+                        (_, Some(id))
+                            if analyze && contains(&repo, incoming, id).unwrap_or(false) =>
+                        {
+                            "local-ahead"
+                        }
+                        (_, Some(id))
+                            if analyze && contains(&repo, id, incoming).unwrap_or(false) =>
+                        {
+                            "remote-ahead"
+                        }
+                        _ => {
+                            if repo.is_shallow() {
+                                "unknown"
+                            } else {
+                                "different"
+                            }
+                        }
                     };
                     let published = tracked_source == Some(incoming) && tracked_target.is_some();
                     let checkpoint = if analyze && config.strategy == Strategy::Swamp {
@@ -961,7 +1029,12 @@ pub fn preview(path: &str, config: &Config, request: &Request) -> Result<Plan, S
     resolve(path, config, request, true).map(|(plan, _)| plan)
 }
 
-pub fn verify_handoff(path: &str, config: &Config, request: &Request, token: &str) -> Result<(), String> {
+pub fn verify_handoff(
+    path: &str,
+    config: &Config,
+    request: &Request,
+    token: &str,
+) -> Result<(), String> {
     let (plan, _) = resolve(path, config, request, false)?;
     if plan.token != token || !plan.handoff.is_some_and(|handoff| handoff.published) {
         return Err(STALE.into());

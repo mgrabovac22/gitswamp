@@ -265,6 +265,11 @@ fn handoff_uses_the_selected_remote_and_never_performs_local_integration() {
     f.git(&["branch", "change/search"]);
     f.git(&["switch", "change/search"]);
     f.commit("tests/search.test.ts", "test search\n", "Cover search");
+    f.commit(
+        "db/migrations/001.sql",
+        "CREATE TABLE search (id INTEGER);\n",
+        "Add schema",
+    );
     let main = f.git(&["rev-parse", "main"]);
     let branch = f.git(&["rev-parse", "change/search"]);
     f.git(&[
@@ -287,7 +292,18 @@ fn handoff_uses_the_selected_remote_and_never_performs_local_integration() {
     let plan = preview(f.path(), &cfg, &review).unwrap();
     let handoff = plan.handoff.unwrap();
     assert!(handoff.published && plan.steps.is_empty());
-    assert_eq!(handoff.checkpoint.unwrap().test_paths, 1);
+    assert!(handoff.target_fetched);
+    assert_eq!(handoff.source_sync, "in-sync");
+    let checkpoint = handoff.checkpoint.unwrap();
+    assert_eq!(checkpoint.test_paths, 1);
+    assert!(checkpoint.review_areas.contains(&"Schema and migrations"));
+    assert_eq!(checkpoint.commits.len(), 2);
+    assert!(verify_handoff(f.path(), &cfg, &review, &plan.token).is_ok());
+    f.git(&["update-ref", "refs/remotes/origin/change/search", &main]);
+    assert!(verify_handoff(f.path(), &cfg, &review, &plan.token).is_err());
+    let ahead = preview(f.path(), &cfg, &review).unwrap().handoff.unwrap();
+    assert_eq!(ahead.source_sync, "local-ahead");
+    assert!(!ahead.published);
     assert!(execute(f.path(), &cfg, &review, &plan.token).is_err());
     assert!(preview(
         f.path(),
@@ -302,4 +318,29 @@ fn handoff_uses_the_selected_remote_and_never_performs_local_integration() {
     )
     .is_err());
     assert_eq!(f.git(&["rev-parse", "main"]), main);
+}
+
+#[test]
+fn handoff_previews_conflicts_against_the_fetched_target_without_touching_the_index() {
+    let f = Fixture::new("main", true);
+    let cfg = config(Strategy::Swamp);
+    let main = f.git(&["rev-parse", "main"]);
+    f.git(&["switch", "-c", "feature/search"]);
+    f.commit("shared.txt", "source\n", "Add search");
+    let source = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["switch", "-c", "remote-target", &main]);
+    f.commit("shared.txt", "target\n", "Update target");
+    let target = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["switch", "feature/search"]);
+    f.git(&["remote", "add", "origin", "https://example.invalid/project"]);
+    f.git(&["update-ref", "refs/remotes/origin/main", &target]);
+    f.git(&["update-ref", "refs/remotes/origin/feature/search", &source]);
+    let mut review = request(Action::Handoff, "feature/search", "");
+    review.remote = Some("origin".into());
+    let plan = preview(f.path(), &cfg, &review).unwrap();
+    assert_eq!(plan.comparisons[0].conflicts, Some(true));
+    assert_eq!(plan.comparisons[0].conflict_paths, ["shared.txt"]);
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), source);
+    assert_eq!(f.git(&["rev-parse", "main"]), main);
+    assert!(f.git(&["status", "--porcelain"]).is_empty());
 }
