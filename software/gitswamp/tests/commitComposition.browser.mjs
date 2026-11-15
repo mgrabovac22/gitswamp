@@ -20,18 +20,25 @@ const changes=[
   {path:'tests/login.test.ts',status:'added',staged:false,partial:false,added:4,removed:0,kind:'test'},
   {path:'src/auth/login.ts',status:'modified',staged:true,partial:false,added:5,removed:2,kind:'source',chunk:{oldStart:30,oldLines:5,newStart:33,newLines:8,scope:'configureTimeout'}},
 ];
-const units=[{id:0,changes:[0,1]},{id:1,changes:[2]}];
+const units=[{id:0,changes:[0]},{id:1,changes:[2]},{id:2,changes:[1]}];
 window.testInvoke = async (command, args)=>{
   if (command==='plan_commit_composition') {
     window.plans = (window.plans || 0) + 1;
     return {
     branch:'main',snapshot:'fixture',changes,units,limited:false,
     groups:[
-      {subject:'Fix(auth): Handle missing login state',description:'Handle a missing session.',units:[0]},
+      {subject:'Fix(auth): Handle missing login state',description:'Handle a missing session.',units:[0,2]},
       {subject:'Docs: Document account setup',description:'Describe the login flow.',units:[1]},
     ],
     review:{findings:[],skipped:[],large_files:[]},
     };
+  }
+  if (command==='preview_commit_composition_change') {
+    window.previewed=args;
+    return {binary:false, limited:false, lines:[
+      {line_type:'deletion',old_line_no:10,content:'const session = oldSession;'},
+      {line_type:'addition',new_line_no:10,content:'const session = restoreSession();'},
+    ]};
   }
   if (command==='apply_commit_composition') {
     window.applied=args;
@@ -87,16 +94,35 @@ try {
   const modal = page.getByRole("dialog", { name: "Compose commits" });
   const subject = modal.getByLabel("Subject");
   const confirm = modal.getByRole("button", { name: "Create 2 commits", exact: true });
-  await modal.getByText("Staged only", { exact: true }).waitFor();
-  await modal.getByText("restoreSession · L10–17", { exact: true }).waitFor();
   await modal.getByText("Experimental feature", { exact: true }).waitFor();
   const list = modal.getByRole("region", { name: "Proposed commits" });
   const docs = list.getByRole("button", { name: /Document account setup/ });
+  const fix = list.getByRole("button", { name: /Handle missing login state/ });
+  await docs.waitFor();
+  assert.equal(await list.locator("li").first().locator("button").getAttribute("title"), "Docs: Document account setup");
+  await list.getByRole("button", { name: "Commit order", exact: true }).hover();
+  await list.getByRole("tooltip").getByText(/created from bottom to top/).waitFor();
+  assert.equal(await page.evaluate(() => window.previewed), undefined);
   await docs.click();
   await modal.getByText("configureTimeout · L33–40", { exact: true }).waitFor();
   assert.equal(await docs.getAttribute("aria-current"), "step");
   assert.match(await subject.inputValue(), /Document account setup/);
-  await list.getByRole("button", { name: /Handle missing login state/ }).click();
+  await fix.click();
+  await modal.getByText("Staged only", { exact: true }).waitFor();
+  await modal.getByText("restoreSession · L10–17", { exact: true }).waitFor();
+  const changed = modal.getByRole("list", { name: "Changed files" });
+  await changed.getByRole("button", { name: /Modified.*src\/auth\/login.ts/ }).click();
+  const diff = modal.getByRole("region", { name: "File diff" });
+  await diff.getByText("const session = restoreSession();", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.previewed.change), 0);
+  assert.equal(await diff.locator('[data-line="deletion"]').count(), 1);
+  const moveFile = changed.getByRole("combobox", { name: "Move tests/login.test.ts", exact: true });
+  await moveFile.selectOption({ label: "2. Docs: Document account setup" });
+  assert.equal(await changed.getByRole("button", { name: /tests\/login.test.ts/ }).count(), 0);
+  assert.equal(await changed.getByRole("button", { name: /src\/auth\/login.ts/ }).count(), 1);
+  await docs.click();
+  await changed.getByRole("button", { name: /Added.*tests\/login.test.ts/ }).waitFor();
+  await fix.click();
   assert.equal(await page.getByText("Visual Commit Builder", { exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => window.plans), 1);
   assert.equal(await page.evaluate(() => window.shortcut("!", "Digit1", { altKey: true, shiftKey: true })), "branch-workspace");
@@ -126,7 +152,18 @@ try {
   await modal.getByLabel("Commit tag", { exact: true }).fill("#123");
   assert.equal(await modal.getByRole("checkbox", { name: "Close issue #123", exact: true }).isChecked(), false);
   await modal.getByRole("checkbox", { name: "Close issue #123", exact: true }).check();
-  await modal.getByRole("button", { name: "Move commit down", exact: true }).click();
+  await modal.getByRole("button", { name: "Move commit up", exact: true }).click();
+  assert.match(await list.locator("li").first().innerText(), /Preserve session after login/);
+  await changed.getByRole("button", { name: /src\/auth\/login.ts/ }).click();
+  await diff.getByText("const session = restoreSession();", { exact: true }).waitFor();
+  assert.ok(await modal.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight));
+  await diff.evaluate(el => new Promise((resolve, reject) => {
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.intersectionRatio > 0.9) { observer.disconnect(); clearTimeout(timeout); resolve(); }
+    }, { root: el.closest(".composer-editor"), threshold: [0.9, 1] });
+    const timeout = setTimeout(() => { observer.disconnect(); reject(new Error("The selected diff stayed below the editor viewport.")); }, 2000);
+    observer.observe(el);
+  }));
   await page.screenshot({ path: path.join(root, "src-tauri/target/commit-composer-desktop.png") });
   await page.evaluate(() => document.documentElement.classList.remove("light"));
   assert.equal(await list.getByRole("button", { name: /Preserve session after login/ }).evaluate(el => getComputedStyle(el).cursor), "pointer");
@@ -153,7 +190,7 @@ try {
   assert.equal(data.buildCommand, "cargo check --locked");
   assert.equal(data.snapshot, "fixture");
   assert.equal(data.drafts[0].subject, "Docs: #release Document account setup");
-  assert.deepEqual(data.drafts[0].units, [1]);
+  assert.deepEqual(data.drafts[0].units, [1, 2]);
   assert.doesNotMatch(data.drafts[0].description, /Closes/);
   assert.doesNotMatch(data.drafts[1].subject, /Closes/);
   assert.match(data.drafts[1].description, /\n\nCloses #123$/);
@@ -176,4 +213,4 @@ try {
     setTimeout(() => reject(new Error("Playwright fixture did not shut down.")), 10000).unref();
   })]).catch(error => { console.error(error); process.exit(1); });
 }
-console.log("PASS: shortcuts, editing, issue closing, reordering, regroup preview and undo, and compact layout.");
+console.log("PASS: graph order, per-file moves and diff, editing, regrouping and compact layout.");
