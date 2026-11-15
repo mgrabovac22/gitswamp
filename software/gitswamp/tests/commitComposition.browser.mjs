@@ -16,9 +16,9 @@ import {extraViewShortcut} from '/src/features/shell/keyboardShortcuts.ts';
 import '/src/styles/index.css';
 window.shortcut = (key,code,init)=>extraViewShortcut(new KeyboardEvent('keydown',{key,code,...init}));
 const changes=[
-  {path:'src/auth/login.ts',status:'modified',staged:true,partial:true,added:5,removed:2,kind:'source'},
+  {path:'src/auth/login.ts',status:'modified',staged:true,partial:true,added:5,removed:2,kind:'source',chunk:{oldStart:10,oldLines:5,newStart:10,newLines:8,scope:'restoreSession'}},
   {path:'tests/login.test.ts',status:'added',staged:false,partial:false,added:4,removed:0,kind:'test'},
-  {path:'docs/usage.md',status:'modified',staged:false,partial:false,added:5,removed:2,kind:'docs'},
+  {path:'src/auth/login.ts',status:'modified',staged:true,partial:false,added:5,removed:2,kind:'source',chunk:{oldStart:30,oldLines:5,newStart:33,newLines:8,scope:'configureTimeout'}},
 ];
 const units=[{id:0,changes:[0,1]},{id:1,changes:[2]}];
 window.testInvoke = async (command, args)=>{
@@ -36,6 +36,13 @@ window.testInvoke = async (command, args)=>{
   if (command==='apply_commit_composition') {
     window.applied=args;
     return args.drafts.map((_, i)=>String(i));
+  }
+  if (command==='find_buildable_commit_groups') {
+    window.regrouped=args;
+    return {
+      groups:[{subject:'Fix(auth): Keep dependent session changes together',description:'Keep login and timeout handling together so the build passes.',units:args.drafts.flatMap(draft=>draft.units)}],
+      review:{findings:[],skipped:[],large_files:[]},
+    };
   }
   if (command==='get_staged_diff_summary') return {total_lines_added:5,total_lines_removed:2,files_changed:1,file_types:['ts'],has_test_changes:false,has_migration_changes:false,inferred_scope:'auth'};
   if (command==='get_empty_directories' || command==='get_available_external_editors') return [];
@@ -81,10 +88,12 @@ try {
   const subject = modal.getByLabel("Subject");
   const confirm = modal.getByRole("button", { name: "Create 2 commits", exact: true });
   await modal.getByText("Staged only", { exact: true }).waitFor();
+  await modal.getByText("restoreSession · L10–17", { exact: true }).waitFor();
   await modal.getByText("Experimental feature", { exact: true }).waitFor();
   const list = modal.getByRole("region", { name: "Proposed commits" });
   const docs = list.getByRole("button", { name: /Document account setup/ });
   await docs.click();
+  await modal.getByText("configureTimeout · L33–40", { exact: true }).waitFor();
   assert.equal(await docs.getAttribute("aria-current"), "step");
   assert.match(await subject.inputValue(), /Document account setup/);
   await list.getByRole("button", { name: /Handle missing login state/ }).click();
@@ -126,9 +135,22 @@ try {
   await page.setViewportSize({ width: 390, height: 760 });
   assert.ok(await modal.evaluate(el => el.scrollWidth <= el.clientWidth));
   await page.screenshot({ path: path.join(root, "src-tauri/target/commit-composer-compact.png") });
+  await modal.getByRole("checkbox", { name: "Verify every commit", exact: true }).check();
+  assert.equal(await confirm.isDisabled(), true);
+  await modal.getByRole("textbox", { name: "Build command", exact: true }).fill("cargo check --locked");
+  await modal.getByRole("button", { name: "Find buildable groups", exact: true }).click();
+  await modal.getByRole("button", { name: "Create 1 commit", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.applied), undefined);
+  assert.equal(await page.evaluate(() => window.regrouped.buildCommand), "cargo check --locked");
+  assert.match(await modal.getByLabel("Description").inputValue(), /so the build passes/);
+  assert.ok(await modal.evaluate(el => el.scrollWidth <= el.clientWidth));
+  await modal.getByRole("button", { name: "Undo regroup", exact: true }).click();
+  await confirm.waitFor();
+  assert.match(await modal.getByLabel("Description").inputValue(), /Keep the existing session/);
   await confirm.click();
   await modal.waitFor({ state: "hidden" });
   const data = await page.evaluate(() => window.applied);
+  assert.equal(data.buildCommand, "cargo check --locked");
   assert.equal(data.snapshot, "fixture");
   assert.equal(data.drafts[0].subject, "Docs: #release Document account setup");
   assert.deepEqual(data.drafts[0].units, [1]);
@@ -154,4 +176,4 @@ try {
     setTimeout(() => reject(new Error("Playwright fixture did not shut down.")), 10000).unref();
   })]).catch(error => { console.error(error); process.exit(1); });
 }
-console.log("PASS: shortcuts, selection, editing, issue closing in Description only, reordering and compact layout.");
+console.log("PASS: shortcuts, editing, issue closing, reordering, regroup preview and undo, and compact layout.");
