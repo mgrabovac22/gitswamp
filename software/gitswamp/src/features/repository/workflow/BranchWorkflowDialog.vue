@@ -136,6 +136,7 @@ async function refreshPreview(fetchFirst: boolean) {
   try {
     if (fetchFirst) await props.fetchRefs?.();
     request.value.name = request.value.name.trim();
+    if (request.value.action === "handoff") request.value.remote = props.remoteName;
     plan.value = await invoke<WorkflowPlan>("preview_branch_workflow", {
       path: props.repoPath, config: config.value, request: request.value,
     });
