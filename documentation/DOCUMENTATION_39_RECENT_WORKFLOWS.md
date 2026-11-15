@@ -20,6 +20,20 @@ Staged files larger than **100 MiB** block commits in GitSwamp even when secret 
 
 Secret scanning is heuristic, not a guarantee that every credential will be found. It inspects at most 1 MiB per text file and 16 MiB per scan, up to 2048 files with a cooperative five-second budget. Unchecked content is reported before committing instead of being declared clean. Binary content is not decoded as text. Background checks are debounced and inspect only the staged and unstaged files in Working Changes. Hover or focus a warning triangle to see the type and line number; the matched value is never displayed. Very large index metadata can be refused for a bounded review.
 
+## Branching Workflow
+
+Open **Branch > Branching workflow**, right-click the commit graph, or press **Ctrl+Alt+B** (**Command+Option+B** on macOS). The same dialog opens whichever entry you use. The repository initializer has an optional strategy step. After cloning, GitSwamp can suggest a strategy based on the fetched refs; a shallow history alone is not treated as a new repository. Neither suggestion nor saving a strategy creates or rewrites branches.
+
+- **GitSwamp Handoff:** Work on a short change or repair branch. The handoff compares the tip with the fetched target, flags detectable conflicts, and shows changed paths and test paths touched. It does not run tests or replace CI. For supported GitHub remotes it opens the existing pull request form with the source and target already selected. No direct merge to the primary branch is performed.
+- **GitHub Flow:** Create feature and fix branches, hand them off for pull request review, and optionally clean up a fully integrated local branch.
+- **Trunk-Based:** Use one trunk with optional short-lived feature and bugfix branches. Local integration is fast-forward only; release branches and tags are separate actions.
+- **Gitflow:** Start features from development, releases from development, and hotfixes from production. Finish a release or hotfix into both configured branches before optionally tagging production. A maintenance branch can start from a prior release tag and remains separate.
+- **Manual Git:** Disable the strategy without changing the repository.
+
+Every local operation has a preview and requires confirmation. Mutations require a clean working tree and verify the relevant refs again before execution. GitSwamp does not automatically stash, push, overwrite a tag, or force-delete a branch. Cleanup requires that all target branches contain the source tip; fetched remote counterparts are retained. Squash and rebase merges may not establish ancestry, so the workflow does not delete those branches automatically.
+
+If a multi-step merge stops, completed steps are reported and remaining steps are not run. Resolve or abort the pending merge with the normal GitSwamp controls, then reopen the workflow, select the source branch and preview again. Steps already integrated are skipped. Preferences use the existing app storage and do not write to Git configuration. If that storage is unavailable, the dialog reports that choices last only for the current session.
+
 ## Compose Commits
 
 From **Working Changes**, open **Visual Commit Builder** (the hammer) and choose **Compose commits automatically** in its header. The experimental dialog proposes an ordered series from the current changes without an AI service. Edit each subject and description, reorder the commits, or move related change sets between commits. The current Commit Analyzer settings are used to validate the messages.
