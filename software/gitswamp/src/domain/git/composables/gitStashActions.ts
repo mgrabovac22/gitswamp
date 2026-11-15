@@ -3,10 +3,12 @@ import { publishOperationPreview } from "@/shared/notifications/gitOperationPrev
 
 import { callTauri } from "./gitCall";
 import type { GitState } from "./gitState";
+import type { StashInfo } from "@/types";
 
 type RefreshDeps = {
   refreshStatus: () => Promise<void>;
   refreshStashes: () => Promise<void>;
+  selectStash: (stash: StashInfo | null) => Promise<void>;
 };
 
 export function createStashActions(state: GitState, refresh: RefreshDeps, toast: ReturnType<typeof useToast>) {
@@ -48,13 +50,19 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
           + "\n"
           + result,
       );
-      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
+      if (repoPath !== state.repoPath.value) return;
+      state.fileStatuses.value = includeUntracked ? [] : state.fileStatuses.value.filter(file => !file.staged && (file.status === "new" || file.status === "untracked"));
+      const validated = Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
+      toast.remove(loadingToast);
       toast.success(includeUntracked ? "Stash created with untracked files." : "Tracked changes stashed.", 2500);
       previewStash(repoPath, "stash-save", "Stash");
+      await validated;
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git stash push\nError: " + e);
       toast.error("Failed to create stash: " + String(e));
+      if (repoPath === state.repoPath.value) await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
     } finally {
       toast.remove(loadingToast);
       stashOperationInProgress = false;
@@ -154,10 +162,41 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
     }
   }
 
+  async function restoreSelectedStash(stash: StashInfo, paths: string[], pop: boolean) {
+    const repoPath = state.repoPath.value;
+    if (!repoPath || !paths.length || stashOperationInProgress) return;
+    if (state.hasConflicts.value) { toast.warning("Resolve existing conflicts before restoring stash files."); return; }
+    stashOperationInProgress = true;
+    state.error.value = null;
+    const pending = toast.loading("Restoring selected stash files…");
+    try {
+      const result = await callTauri<{ message: string; remainder?: string }>("restore_selected_stash", {
+        path: repoPath, index: stash.index, sha: stash.stash_sha, paths, pop,
+      });
+      if (repoPath !== state.repoPath.value) return;
+      await Promise.all([refresh.refreshStatus(), ...(pop ? [refresh.refreshStashes()] : [])]);
+      if (repoPath !== state.repoPath.value) return;
+      if (pop && state.selectedStash.value?.stash_sha === stash.stash_sha) {
+        await refresh.selectStash(state.stashes.value.find(item => item.stash_sha === result.remainder) ?? null);
+      }
+      toast.success(result.message);
+      previewStash(repoPath, "stash-restore", `${paths.length} selected files`);
+    } catch (error) {
+      if (repoPath !== state.repoPath.value) return;
+      state.error.value = String(error);
+      toast.error(String(error));
+      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
+    } finally {
+      toast.remove(pending);
+      stashOperationInProgress = false;
+    }
+  }
+
   return {
     stashPush,
     stashPop,
     stashApply,
     stashDrop,
+    restoreSelectedStash,
   };
 }
