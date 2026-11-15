@@ -124,6 +124,7 @@ pub(super) fn create_series(
     units: &[Unit],
     drafts: &[Draft],
     mut review: Option<&mut CompositionSecrets>,
+    build_verification: bool,
 ) -> Result<Vec<Oid>, String> {
     let mut series = Series::new(snapshot)?;
     let mut dependencies = dependencies::Check::new(
@@ -145,8 +146,8 @@ pub(super) fn create_series(
                 number + 1
             ));
         }
-        if dependencies.limited && drafts.len() > 1 {
-            return Err("The dependency review reached its limit. Keep these changes in one commit or stage a smaller batch.".into());
+        if dependencies.limited && drafts.len() > 1 && !build_verification {
+            return Err("Static dependency analysis is incomplete. Enable Verify every commit before creating this series.".into());
         }
         if let Some(review) = review.as_deref_mut() {
             intermediate.retain(|key, _| reviewed.insert(key.clone()));
