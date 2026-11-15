@@ -98,13 +98,12 @@ function open(url: string) { if (url) void openUrl(url).catch(() => {}); }
         <div class="body" :class="{ muted: !body }">{{ body || 'No description provided.' }}</div>
       </div>
     </article>
-    <div class="activity">
+    <div v-if="client" class="activity">
       <div><MessageSquare :size="15" /><h3>{{ kind === 'conversation' ? 'Comments' : 'Comments on changed lines' }}</h3></div>
       <button v-if="client" type="button" class="refresh" :disabled="loading || sending" aria-label="Refresh comments" title="Refresh comments" @click="load(true)"><RotateCw :size="15" /></button>
     </div>
     <p v-if="loading && !comments.length" class="muted loading" role="status"><Loader2 :size="15" class="animate-spin" /> Loading comments</p>
-    <p v-else-if="!client" class="muted">GitHub discussion is unavailable.</p>
-    <p v-else-if="!comments.length && !loadError" class="muted">No comments yet.</p>
+    <p v-else-if="client && !comments.length && !loadError" class="muted">No comments yet.</p>
     <article v-for="comment in comments" :key="comment.id" class="thread">
       <span class="avatar" aria-hidden="true">{{ comment.author.slice(0, 1).toUpperCase() }}</span>
       <div class="entry">
