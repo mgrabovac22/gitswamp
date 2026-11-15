@@ -1,3 +1,4 @@
+pub mod branch_workflow;
 pub mod commit_coauthors;
 pub mod commit_composer;
 pub mod conflict_preview;
