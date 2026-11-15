@@ -1,15 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::rc::Rc;
 
 use git2::{ObjectType, Oid, Repository, Tree, TreeWalkMode, TreeWalkResult};
 
-use super::{git_err, Change, PATCH_FILE_LIMIT, PATCH_TOTAL_LIMIT};
+use super::{git_err, Change, PATCH_FILE_LIMIT};
 
-const MAX_REFERENCES: usize = 64;
-const MAX_CACHED_REFERENCES: usize = 4096;
-const MAX_CHECKED_REFERENCES: usize = 16_384;
-const MAX_REVERSE_PATHS: usize = 256;
-const MAX_WALK_ENTRIES: usize = 4000;
+const MAX_REFERENCES: usize = 2048;
+const MAX_EXPORTS: usize = 8192;
+const IMPORT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+const EXPORT_CACHE_NAMES: usize = 16_384;
 const JS: &[&str] = &[
     ".ts",
     ".tsx",
@@ -111,11 +111,11 @@ fn family(path: &str) -> Option<Resolver> {
     }
 }
 
-fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> Vec<Import> {
+fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> (Vec<Import>, bool) {
     let mut result = BTreeSet::new();
     let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
     let Ok(text) = std::str::from_utf8(bytes) else {
-        return vec![];
+        return (vec![], true);
     };
     let mut block_comment = false;
     let mut js_import = String::new();
@@ -287,7 +287,8 @@ fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> Vec<Import> {
             }
         }
     }
-    result.into_iter().take(MAX_REFERENCES).collect()
+    let limited = result.len() >= MAX_REFERENCES;
+    (result.into_iter().collect(), limited)
 }
 
 fn literal_include(line: &str, resolver: Resolver) -> Option<&str> {
@@ -355,7 +356,7 @@ fn resolve(tree: Option<&Tree<'_>>, import: &Import) -> Option<Oid> {
         .find_map(|suffix| at(tree, &format!("{stem}{suffix}")))
 }
 
-fn exports(bytes: &[u8]) -> Option<BTreeSet<String>> {
+fn exports(bytes: &[u8], limited: &mut bool) -> Option<BTreeSet<String>> {
     let text = std::str::from_utf8(bytes).ok()?;
     let mut names = BTreeSet::new();
     for line in text.lines().map(str::trim) {
@@ -410,7 +411,8 @@ fn exports(bytes: &[u8]) -> Option<BTreeSet<String>> {
                 }
             }
         }
-        if names.len() > MAX_REFERENCES {
+        if names.len() > MAX_EXPORTS {
+            *limited = true;
             return None;
         }
     }
@@ -422,12 +424,10 @@ pub(super) struct Check<'a> {
     final_tree: Tree<'a>,
     base_tree: Option<Tree<'a>>,
     paths: Vec<String>,
-    base: BTreeMap<String, BTreeSet<Import>>,
-    cache: HashMap<(String, Oid), Vec<Import>>,
+    cache: HashMap<(String, Oid), Rc<[Import]>>,
     exports: HashMap<Oid, Option<BTreeSet<String>>>,
-    remaining: usize,
-    cache_remaining: usize,
-    checks_remaining: usize,
+    cached_import_bytes: usize,
+    cached_export_names: usize,
     pub(super) limited: bool,
 }
 
@@ -450,108 +450,105 @@ impl<'a> Check<'a> {
             .filter(|path| family(path).is_some())
             .map(str::to_owned)
             .collect();
-        // A removal can break a caller that has no diff of its own.
-        let reverse_search = changes.iter().any(|file| {
-            file.old.is_some()
-                && (file.new.is_none()
+        // Unchanged callers only need checking when they reference an affected provider.
+        let affected: BTreeSet<_> = changes.iter().filter(|file| {
+            file.new.is_none()
                     || file.old_path.is_some()
                     || (file.hints.removes_symbol()
-                        && family(&file.path) == Some(Resolver::JavaScript)))
-        });
+                        && family(&file.path) == Some(Resolver::JavaScript))
+        }).filter_map(|file| file.old.map(|(id, _)| id)).collect();
         let mut limited = false;
-        if reverse_search {
+        if !affected.is_empty() {
             if let Some(base) = &base_tree {
-                let mut entries = 0;
-                let mut extra = 0;
+                let odb = repo.odb().map_err(git_err)?;
                 base.walk(TreeWalkMode::PreOrder, |root, entry| {
-                    entries += 1;
-                    if entries > MAX_WALK_ENTRIES || extra >= MAX_REVERSE_PATHS {
+                    let Some(name) = entry.name().filter(|_| entry.kind() == Some(ObjectType::Blob)) else {
+                        return TreeWalkResult::Ok;
+                    };
+                    let Some(resolver) = family(name) else { return TreeWalkResult::Ok };
+                    let path = format!("{root}{name}");
+                    if paths.contains(&path) { return TreeWalkResult::Ok; }
+                    let id = entry.id();
+                    if !odb.read_header(id).is_ok_and(|(size, _)| size <= PATCH_FILE_LIMIT) {
                         limited = true;
-                        return TreeWalkResult::Abort;
+                        return TreeWalkResult::Ok;
                     }
-                    if let Some(name) = entry.name().filter(|name| {
-                        entry.kind() == Some(ObjectType::Blob) && family(name).is_some()
-                    }) {
-                        if paths.insert(format!("{root}{name}")) {
-                            extra += 1;
+                    if let Ok(blob) = repo.find_blob(id) {
+                        if !blob.is_binary() {
+                            let (references, incomplete) = imports(&path, blob.content(), resolver);
+                            limited |= incomplete;
+                            if references.iter().any(|reference| resolve(Some(base), reference).is_some_and(|id| affected.contains(&id))) {
+                                paths.insert(path);
+                            }
                         }
-                    }
+                    } else { limited = true; }
                     TreeWalkResult::Ok
                 })
                 .map_err(git_err)?;
             }
         }
-        let mut check = Self {
+        Ok(Self {
             repo,
             final_tree,
             base_tree,
             paths: paths.into_iter().collect(),
-            base: BTreeMap::new(),
             cache: HashMap::new(),
             exports: HashMap::new(),
-            remaining: PATCH_TOTAL_LIMIT,
-            cache_remaining: MAX_CACHED_REFERENCES,
-            checks_remaining: MAX_CHECKED_REFERENCES,
+            cached_import_bytes: 0,
+            cached_export_names: 0,
             limited,
-        };
-        for path in check.paths.clone() {
-            let Some(id) = at(check.base_tree.as_ref(), &path) else {
-                continue;
-            };
-            let missing = check
-                .read_imports(&path, id)
-                .into_iter()
-                .filter(|import| {
-                    let target = resolve(check.base_tree.as_ref(), import);
-                    target.is_none()
-                        || import.symbol.as_ref().is_some_and(|name| {
-                            check.exported(target.unwrap(), name) == Some(false)
-                        })
-                })
-                .collect();
-            check.base.insert(path, missing);
-        }
-        Ok(check)
+        })
     }
 
     fn read(&mut self, oid: Oid) -> Option<git2::Blob<'a>> {
-        let (size, _) = self.repo.odb().ok()?.read_header(oid).ok()?;
-        if size > PATCH_FILE_LIMIT || size > self.remaining {
+        if !self.repo.odb().and_then(|odb| odb.read_header(oid)).is_ok_and(|(size, _)| size <= PATCH_FILE_LIMIT) {
             self.limited = true;
             return None;
         }
-        self.remaining -= size;
-        self.repo
-            .find_blob(oid)
-            .ok()
-            .filter(|blob| !blob.is_binary())
+        match self.repo.find_blob(oid) {
+            Ok(blob) => Some(blob).filter(|blob| !blob.is_binary()),
+            Err(_) => {
+                self.limited = true;
+                None
+            }
+        }
     }
 
-    fn read_imports(&mut self, path: &str, oid: Oid) -> Vec<Import> {
+    fn read_imports(&mut self, path: &str, oid: Oid) -> Rc<[Import]> {
         let key = (path.to_owned(), oid);
         if let Some(value) = self.cache.get(&key) {
             return value.clone();
         }
-        let value = self
+        let (value, incomplete) = self
             .read(oid)
             .and_then(|blob| family(path).map(|f| imports(path, blob.content(), f)))
             .unwrap_or_default();
-        if self.cache.len() < 768 && value.len() <= self.cache_remaining {
-            self.cache_remaining -= value.len();
-            self.cache.insert(key, value.clone());
+        self.limited |= incomplete;
+        let value: Rc<[Import]> = value.into();
+        let bytes = key.0.len() + 96 + value.iter().map(|item| {
+            std::mem::size_of::<Import>() + item.target.capacity() + item.symbol.as_ref().map_or(0, String::capacity)
+        }).sum::<usize>();
+        if bytes <= IMPORT_CACHE_BYTES {
+            if self.cached_import_bytes + bytes > IMPORT_CACHE_BYTES {
+                self.cache.clear();
+                self.cached_import_bytes = 0;
+            }
+            self.cached_import_bytes += bytes;
+            self.cache.insert(key, Rc::clone(&value));
         }
         value
     }
 
     fn exported(&mut self, oid: Oid, symbol: &str) -> Option<bool> {
         if !self.exports.contains_key(&oid) {
-            let exports = self.read(oid).and_then(|blob| exports(blob.content()));
-            if self.exports.len() < 256 {
-                self.exports.insert(oid, exports);
-            } else {
-                self.limited = true;
-                return exports.map(|names| names.contains(symbol));
+            let exports = self.read(oid).and_then(|blob| exports(blob.content(), &mut self.limited));
+            let names = exports.as_ref().map_or(1, |names| names.len().max(1));
+            if self.exports.len() >= 256 || self.cached_export_names + names > EXPORT_CACHE_NAMES {
+                self.exports.clear();
+                self.cached_export_names = 0;
             }
+            self.cached_export_names += names;
+            self.exports.insert(oid, exports);
         }
         self.exports
             .get(&oid)?
@@ -559,33 +556,34 @@ impl<'a> Check<'a> {
             .map(|names| names.contains(symbol))
     }
 
+    fn already_missing(&mut self, path: &str, reference: &Import) -> bool {
+        let target = resolve(self.base_tree.as_ref(), reference);
+        let missing = target.is_none() || reference.symbol.as_ref().is_some_and(|symbol| {
+            self.exported(target.unwrap(), symbol) == Some(false)
+        });
+        missing && at(self.base_tree.as_ref(), path).is_some_and(|id| {
+            self.read_imports(path, id).binary_search(reference).is_ok()
+        })
+    }
+
     pub(super) fn verify(&mut self, tree: &Tree<'_>) -> Option<Problem> {
         for path in self.paths.clone() {
             let Some(id) = at(Some(tree), &path) else {
                 continue;
             };
-            for import in self.read_imports(&path, id) {
-                if self.checks_remaining == 0 {
-                    self.limited = true;
-                    return None;
-                }
-                self.checks_remaining -= 1;
-                let target = resolve(Some(tree), &import);
-                let final_target = resolve(Some(&self.final_tree), &import);
-                let already_missing = self
-                    .base
-                    .get(&path)
-                    .is_some_and(|refs| refs.contains(&import));
+            let references = self.read_imports(&path, id);
+            for import in references.iter() {
+                let target = resolve(Some(tree), import);
                 let absent = match (target, import.symbol.as_deref()) {
                     (None, None) => {
-                        (!already_missing && import.resolver == Resolver::JavaScript)
-                            || final_target.is_some()
-                            || resolve(self.base_tree.as_ref(), &import).is_some()
+                        resolve(Some(&self.final_tree), import).is_some()
+                            || resolve(self.base_tree.as_ref(), import).is_some()
+                            || (import.resolver == Resolver::JavaScript && !self.already_missing(&path, import))
                     }
                     (Some(target), Some(symbol)) => {
                         self.exported(target, symbol) == Some(false)
-                            && (!already_missing
-                                || final_target
+                            && (!self.already_missing(&path, import)
+                                || resolve(Some(&self.final_tree), import)
                                     .is_some_and(|id| self.exported(id, symbol) == Some(true)))
                     }
                     _ => false,
@@ -601,7 +599,7 @@ impl<'a> Check<'a> {
                         ),
                     };
                     return Some(Problem {
-                        target: import.target,
+                        target: import.target.clone(),
                         source: path,
                         message,
                     });
