@@ -51,6 +51,8 @@ const HttpClientPanel = defineAsyncComponent(() => import("@/features/repository
 const BranchWorkspaceView = defineAsyncComponent(() => import("@/features/repository/workspace/BranchWorkspaceView.vue"));
 
 const props = defineProps<{
+  workflowLabel?: string;
+  workflowPullRequest?: { source: string; target: string; description?: string } | null;
   git: any;
   commitFilesLoading?: boolean;
   commitFilesError?: string | null;
@@ -95,6 +97,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  branchWorkflow: [];
   "update:showTerminal": [value: boolean];
   "update:terminalAllowAll": [value: boolean];
   "update:detailsPanelCollapsed": [value: boolean];
@@ -526,6 +529,8 @@ function handleRefreshState() {
         />
 
         <CommitGraph
+          :workflow-label="props.workflowLabel"
+          @branch-workflow="emit('branchWorkflow')"
           v-else-if="props.historyViewMode === 'graph'"
           :class="showDetailsPanel ? '' : 'flex-1'"
           :repo-path="props.git.repoPath.value"
@@ -680,6 +685,7 @@ function handleRefreshState() {
           :issue="props.selectedIssue || null"
           :detail-loading="props.remoteInsightDetailLoading"
           :create-options="props.remoteCreateOptions"
+          :workflow-draft="props.workflowPullRequest"
           :create-options-loading="props.remoteCreateOptionsLoading"
           :remote-branches="props.git.remoteBranches.value"
           :current-branch="props.git.currentBranch.value"
