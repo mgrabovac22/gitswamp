@@ -157,6 +157,7 @@ pub fn plan(path: &str, include_secrets: bool) -> Result<Composition, String> {
         max_groups: MAX_GROUPS,
         review: review.finish(),
         limited: snapshot.limited,
+        requires_build_verification: dependencies.limited,
         dependency_notice,
     })
 }
