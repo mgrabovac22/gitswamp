@@ -2779,8 +2779,8 @@ impl GitService {
         StashService::stash_drop(path, index)
     }
 
-    pub fn stash_files(path: &str, index: usize) -> Result<Vec<CommitFileInfo>, String> {
-        StashService::stash_files(path, index)
+    pub fn stash_files(path: &str, index: usize, sha: Option<&str>) -> Result<Vec<CommitFileInfo>, String> {
+        StashService::stash_files(path, index, sha)
     }
 
     pub fn tags(path: &str) -> Result<Vec<TagInfo>, String> {
