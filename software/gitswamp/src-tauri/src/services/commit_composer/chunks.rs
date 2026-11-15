@@ -5,9 +5,9 @@ use serde::Serialize;
 
 use super::{git_err, rules::behavior::Cursor, Change};
 
-pub(super) const MAX_SPLIT_BYTES: usize = 512 * 1024;
-pub(super) const MAX_EXTRA_CHANGES: usize = 120;
-const MAX_FILE_HUNKS: usize = 16;
+pub(super) const MAX_SPLIT_BYTES: usize = 2 * 1024 * 1024;
+pub(super) const MAX_EXTRA_CHANGES: usize = 512;
+const MAX_FILE_HUNKS: usize = 32;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,7 +74,7 @@ pub(super) fn identify(
     let mut chunks = Vec::with_capacity(count);
     for hunk in 0..count {
         let (range, lines) = patch.hunk(hunk)?;
-        if lines > 200 {
+        if lines > 1200 {
             return Ok(None);
         }
         let mut scope = None;
