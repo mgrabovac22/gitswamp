@@ -54,7 +54,7 @@ use commands::operations::{
     verify_github_token, verify_gitlab_token, write_text_file,
 };
 use commands::repository::get_repo_info;
-use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
+use commands::stash::{restore_selected_stash, stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
 use commands::status::{
     scan_secrets, ignore_secret_files,
     abort_cherry_pick, abort_merge, add_gitkeep, amend_commit, create_commit, discard_file, discard_files,
@@ -152,6 +152,8 @@ pub fn run() {
             stash_apply,
             stash_drop,
             stash_files,
+            restore_selected_stash,
+            commands::remote_tracking::remote_tracking,
             get_tags,
             get_lost_commits,
             run_git_command,
