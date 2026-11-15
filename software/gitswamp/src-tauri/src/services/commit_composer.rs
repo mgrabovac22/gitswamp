@@ -38,6 +38,7 @@ pub struct Composition {
     max_groups: usize,
     review: SecretScan,
     limited: bool,
+    requires_build_verification: bool,
     dependency_notice: Option<String>,
 }
 
