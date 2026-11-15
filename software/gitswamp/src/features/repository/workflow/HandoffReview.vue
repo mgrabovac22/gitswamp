@@ -65,7 +65,7 @@ async function copy() {
     <p v-if="copyStatus" class="muted" role="status">{{ copyStatus }}</p>
     <label v-if="ready && supportsPullRequest" class="include"><input v-model="includeNotes" type="checkbox" :disabled="busy" /> Include handoff notes in PR</label>
     <footer>
-      <button type="button" :disabled="busy" @click="emit('back')">Back</button>
+      <button type="button" :disabled="busy" @click="emit('back')">Change source</button>
       <button type="button" class="primary" :disabled="busy || !ready || !supportsPullRequest" @click="emit('open', includeNotes ? report : undefined)">
         <Loader2 v-if="busy" :size="14" class="animate-spin" /> Open pull request form
       </button>
