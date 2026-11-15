@@ -24,8 +24,7 @@ export function createRefreshActions(state: GitState) {
   let searchRequestId = 0;
   let pendingSearch: Promise<CommitInfo[]> | null = null;
   const coordinator = new RepositoryRefreshCoordinator();
-  const stashFilesCache = new Map<string, CommitFileInfo[]>();
-  const STASH_FILES_CACHE_LIMIT = 60;
+  let stashRequestId = 0;
 
   function scheduleCommitWaveFrame(callback: () => void) {
     if (typeof globalThis.requestAnimationFrame === "function") {
@@ -382,6 +381,7 @@ export function createRefreshActions(state: GitState) {
   }
 
   async function selectStash(stash: StashInfo | null) {
+    const request = ++stashRequestId;
     state.selectedStash.value = stash;
     state.selectedCommit.value = null;
     state.selectedCommits.value = [];
@@ -393,32 +393,21 @@ export function createRefreshActions(state: GitState) {
       return;
     }
 
-    const cacheKey = `${repoPath}\u0000${stash.stash_sha || stash.index}`;
-    const cached = stashFilesCache.get(cacheKey);
-    if (cached) {
-      state.selectedStashFiles.value = cached;
-      return;
-    }
+    state.selectedStashFiles.value = [];
+    const stillSelected = () => request === stashRequestId && repoPath === state.repoPath.value && state.selectedStash.value?.stash_sha === stash.stash_sha;
 
     try {
-      const files = await callTauri<CommitFileInfo[]>("stash_files", { path: repoPath, index: stash.index });
-      if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;
-      stashFilesCache.set(cacheKey, files);
-      if (stashFilesCache.size > STASH_FILES_CACHE_LIMIT) {
-        const oldestKey = stashFilesCache.keys().next().value;
-        if (oldestKey !== undefined) {
-          stashFilesCache.delete(oldestKey);
-        }
-      }
-      state.selectedStashFiles.value = files;
+      const files = await callTauri<CommitFileInfo[]>("stash_files", { path: repoPath, index: stash.index, sha: stash.stash_sha });
+      if (stillSelected()) state.selectedStashFiles.value = files;
     } catch (e) {
-      if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;
+      if (!stillSelected()) return;
       state.error.value = String(e);
       state.selectedStashFiles.value = [];
     }
   }
 
   function clearStashSelection() {
+    stashRequestId++;
     state.selectedStash.value = null;
     state.selectedStashFiles.value = [];
   }
