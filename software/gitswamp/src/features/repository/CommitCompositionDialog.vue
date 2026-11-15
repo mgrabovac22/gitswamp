@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef } from "vue";
+import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, ChevronRight, GitCommitHorizontal, Hammer, Hash, Layers, Loader2, Plus, RefreshCw } from "lucide-vue-next";
+import { ArrowDown, ArrowUp, ChevronRight, GitCommitHorizontal, Hammer, Hash, Layers, Loader2, Plus, RefreshCw, Undo2 } from "lucide-vue-next";
 import { createCommitLintEngine, inferScopeFromPaths } from "@/domain/analyzer/commitAnalyzer";
 import { COMMIT_TYPES, closingIssueTag, formatCommitSubject, normalizeCommitTag, splitCommitSubject, withClosingIssue, withCommitTag } from "@/domain/analyzer/commitSubject";
 import { getStoredCommitAnalyzerSettings } from "@/shared/config/commitAnalyzerPreferences";
 import { secretDetectorEnabled } from "@/shared/config/secretDetectorPreferences";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
 
-type Change = { path: string; oldPath?: string; status: string; staged: boolean; partial: boolean; added: number; removed: number; kind: string };
+type Change = { path: string; oldPath?: string; status: string; staged: boolean; partial: boolean; added: number; removed: number; kind: string;
+  chunk?: { oldStart: number; oldLines: number; newStart: number; newLines: number; scope: string } };
 type Unit = { id: number; changes: number[] };
 type Draft = { subject: string; description: string; units: number[] };
 type Plan = {
-  branch: string; snapshot: string; changes: Change[]; units: Unit[]; groups: Draft[]; limited: boolean;
+  branch: string; snapshot: string; changes: Change[]; units: Unit[]; groups: Draft[]; limited: boolean; dependencyNotice?: string;
   review: { findings: { path: string; line: number; kind: string }[]; skipped: string[]; large_files: { path: string; size: number }[] };
 };
 type Row = Draft & { id: number; tag: string; closeIssue: string };
@@ -24,9 +25,14 @@ const plan = shallowRef<Plan>();
 const rows = ref<Row[]>([]);
 const selected = ref(0);
 const loading = ref(true);
-const saving = ref(false);
+const pending = ref<"regroup" | "create" | "">("");
+const saving = computed(() => !!pending.value);
 const error = ref("");
+const buildStatus = ref("");
+const previous = shallowRef<{ plan: Plan; rows: Row[]; selected: number; appliedTag: string; sharedTag: string }>();
 const acceptedWarnings = ref(false);
+const verifyBuild = ref(false);
+const buildCommand = ref("");
 const useBuilder = ref(false);
 const sharedTag = ref("");
 const appliedTag = ref("");
@@ -46,6 +52,7 @@ const filesFor = (ids: number[]) => ids.flatMap(id => plan.value?.units[id]?.cha
 const summaries = computed(() => rows.value.map(group => {
   const files = filesFor(group.units);
   const paths = files.map(file => file.path);
+  const uniqueFiles = new Map(files.map(file => [file.path, file]));
   const tag = normalizeCommitTag(group.tag);
   const subject = withCommitTag(group.subject, tag ?? "");
   const issue = closingIssueTag(tag || splitCommitSubject(group.subject).tag);
@@ -53,9 +60,9 @@ const summaries = computed(() => rows.value.map(group => {
   const findings = analyzer.analyze({
     message: subject,
     description,
-    stagedFiles: files.map(file => ({ path: file.path, status: file.status, staged: true })),
+    stagedFiles: [...uniqueFiles.values()].map(file => ({ path: file.path, status: file.status, staged: true })),
     diffSummary: {
-      filesChanged: files.length,
+      filesChanged: uniqueFiles.size,
       inferredScope: inferScopeFromPaths(paths),
       fileTypes: [...new Set(paths.map(path => path.split(".").pop() || ""))],
       hasTestChanges: files.some(file => file.kind === "test"),
@@ -65,17 +72,28 @@ const summaries = computed(() => rows.value.map(group => {
     },
     settings,
   });
-  return { id: group.id, files: files.length, findings, subject, description,
+  return { id: group.id, files: uniqueFiles.size, findings, subject, description,
     invalid: tag === null || !splitCommitSubject(group.subject).summary || subject.length > 72 ||
       /[\u0000-\u001f\u007f]/.test(group.subject) || !group.units.length || !!findings?.errors.length };
 }));
 const activeSummary = computed(() => summaries.value[activeIndex.value]);
-const canConfirm = computed(() => plan.value && !loading.value && !saving.value && rows.value.length &&
-  !summaries.value.some(group => group.invalid) && !plan.value.review.large_files.length && (!warnings.value || acceptedWarnings.value));
+const canReview = computed(() => plan.value && !loading.value && !saving.value && rows.value.length &&
+  !summaries.value.some(group => group.invalid) && !plan.value.review.large_files.length);
+const canConfirm = computed(() => canReview.value && (!warnings.value || acceptedWarnings.value) &&
+  (!verifyBuild.value || !!buildCommand.value.trim()));
+watch([buildCommand, verifyBuild, () => rows.value.map(group => group.units.join(",")).join(";")],
+  () => { buildStatus.value = ""; }, { flush: "sync" });
+
+function newRow(draft: Draft): Row {
+  const parts = splitCommitSubject(draft.subject);
+  return { ...draft, subject: parts.subject, tag: parts.tag, closeIssue: "", id: ++nextId };
+}
 
 async function generate() {
   loading.value = true;
   error.value = "";
+  buildStatus.value = "";
+  previous.value = undefined;
   plan.value = undefined;
   rows.value = [];
   acceptedWarnings.value = false;
@@ -85,10 +103,7 @@ async function generate() {
   try {
     const result = await invoke<Plan>("plan_commit_composition", { path: props.repoPath, secretCheck });
     plan.value = result;
-    rows.value = result.groups.map(draft => {
-      const parts = splitCommitSubject(draft.subject);
-      return { ...draft, subject: parts.subject, tag: parts.tag, closeIssue: "", id: ++nextId };
-    });
+    rows.value = result.groups.map(newRow);
     selected.value = rows.value[0]?.id ?? 0;
   } catch (failure) {
     error.value = String(failure);
@@ -162,20 +177,83 @@ function removeEmpty() {
   selected.value = rows.value[0]?.id ?? 0;
 }
 
+function draftsForReview(): Draft[] {
+  return rows.value.map(({ units }, index) => {
+    const { subject, description } = summaries.value[index];
+    return { subject, description, units };
+  });
+}
+
+async function findBuildableGroups() {
+  const current = plan.value;
+  if (!current || !canReview.value || !verifyBuild.value || !buildCommand.value.trim()) return;
+  const original = rows.value;
+  pending.value = "regroup";
+  error.value = "";
+  buildStatus.value = "";
+  try {
+    const result = await invoke<Pick<Plan, "groups" | "review">>("find_buildable_commit_groups", {
+      path: props.repoPath, snapshot: current.snapshot, secretCheck,
+      buildCommand: buildCommand.value.trim(), drafts: draftsForReview(),
+    });
+    const removed = original.length - result.groups.length;
+    plan.value = { ...current, review: result.review };
+    acceptedWarnings.value = false;
+    if (!removed) {
+      buildStatus.value = "Every commit passed the build. No groups were changed.";
+      return;
+    }
+    if (!previous.value) {
+      previous.value = {
+        plan: current, selected: selected.value, appliedTag: appliedTag.value, sharedTag: sharedTag.value,
+        rows: original.map(group => ({ ...group, units: [...group.units] })),
+      };
+    }
+    const byFirstUnit = new Map(original.map(group => [group.units[0], group]));
+    const next = result.groups.map(group => {
+      const old = byFirstUnit.get(group.units[0]);
+      if (old?.units.length === group.units.length) return old;
+      return { ...newRow(group), tag: appliedTag.value };
+    });
+    rows.value = next;
+    selected.value = next.find(group => !original.some(old => old.id === group.id))?.id ?? next[0]?.id ?? 0;
+    buildStatus.value = `Build passed. Review the new messages and issue tags (${original.length} to ${next.length} commits).`;
+  } catch (failure) {
+    error.value = String(failure);
+  } finally {
+    pending.value = "";
+  }
+}
+
+function undoRegroup() {
+  if (!previous.value || saving.value) return;
+  const restored = previous.value;
+  plan.value = restored.plan;
+  rows.value = restored.rows;
+  selected.value = restored.selected;
+  appliedTag.value = restored.appliedTag;
+  sharedTag.value = restored.sharedTag;
+  previous.value = undefined;
+  acceptedWarnings.value = false;
+  error.value = "";
+  buildStatus.value = "";
+}
+
 async function confirm() {
   if (!canConfirm.value || !plan.value) return;
-  saving.value = true;
+  pending.value = "create";
   error.value = "";
   try {
     const commits = await invoke<string[]>("apply_commit_composition", {
       path: props.repoPath, snapshot: plan.value.snapshot, secretCheck, secretApproval: acceptedWarnings.value,
-      drafts: rows.value.map(({ units }, index) => ({ subject: summaries.value[index].subject, description: summaries.value[index].description, units })),
+      buildCommand: verifyBuild.value ? buildCommand.value.trim() : null,
+      drafts: draftsForReview(),
     });
     emit("committed", commits.length);
   } catch (failure) {
     error.value = String(failure);
   } finally {
-    saving.value = false;
+    pending.value = "";
   }
 }
 
@@ -192,7 +270,7 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
       <Layers :size="20" class="composer-icon" />
       <div class="composer-heading">
         <h2 id="compose-title">Compose commits</h2>
-        <span v-if="plan">{{ plan.branch }} · {{ plan.changes.length }} changed paths</span>
+        <span v-if="plan">{{ plan.branch }} · {{ plan.changes.length }} changes</span>
       </div>
       <span class="experiment">Experimental feature</span>
       <CloseIconButton title="Close commit composer" :disabled="saving" @click="close" />
@@ -274,9 +352,12 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
           <ul v-if="row.units.length" class="composer-files" aria-label="Change sets">
             <li v-for="unit in row.units" :key="unit">
               <div class="composer-paths">
-                <div v-for="file in filesFor([unit])" :key="file.path">
+                <div v-for="file in filesFor([unit])" :key="`${file.path}:${file.chunk?.newStart ?? 0}`">
                   <code :title="file.path">{{ file.oldPath ? file.oldPath + ' → ' : '' }}{{ file.path }}</code>
                   <span :title="file.partial ? 'Unstaged edits to this file will stay local' : undefined">{{ file.partial ? 'Staged only' : file.status }}</span>
+                  <span v-if="file.chunk" class="composer-hunk">
+                    {{ file.chunk.scope }} · L{{ file.chunk.newStart }}–{{ file.chunk.newStart + Math.max(file.chunk.newLines - 1, 0) }}
+                  </span>
                 </div>
               </div>
               <select aria-label="Move change set" title="Move change set" :disabled="saving"
@@ -292,8 +373,9 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
           <button v-else class="composer-empty" type="button" :disabled="saving" @click="removeEmpty">Remove empty commit</button>
         </section>
       </div>
-      <div v-if="plan.limited || warnings || plan.review.large_files.length" class="composer-notices">
+      <div v-if="plan.limited || plan.dependencyNotice || warnings || plan.review.large_files.length" class="composer-notices">
         <p v-if="plan.limited">Some diffs were classified by path only.</p>
+        <p v-if="plan.dependencyNotice">{{ plan.dependencyNotice }}</p>
         <p v-for="file in plan.review.large_files" :key="file.path" class="composer-error">{{ file.path }} exceeds 100 MiB. Stage it with Git LFS Manager first.</p>
         <details v-if="warnings">
           <summary>Secret review: {{ plan.review.findings.length }} findings, {{ plan.review.skipped.length }} scan notices</summary>
@@ -306,6 +388,24 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
       </div>
     </template>
     <p v-if="plan && error" class="composer-apply-error composer-error" role="alert">{{ error }}</p>
+    <div v-if="plan" class="composer-verify">
+      <label class="composer-verify-toggle">
+        <input v-model="verifyBuild" type="checkbox" :disabled="saving" /> Verify every commit
+      </label>
+      <label v-if="verifyBuild" class="composer-field composer-build-command">
+        Build command
+        <input v-model="buildCommand" type="text" maxlength="2048" spellcheck="false" placeholder="cargo check --locked" :disabled="saving" />
+      </label>
+      <p v-if="verifyBuild" class="composer-build-note">Runs trusted project code in a temporary source copy. A failed build blocks the entire series.</p>
+      <div v-if="verifyBuild || previous" class="composer-actions composer-build-actions">
+        <button v-if="verifyBuild" type="button" :disabled="!canReview || !buildCommand.trim()" @click="findBuildableGroups">
+          <Loader2 v-if="pending === 'regroup'" :size="15" class="animate-spin" /><Layers v-else :size="15" />
+          {{ pending === 'regroup' ? 'Checking groups' : 'Find buildable groups' }}
+        </button>
+        <button v-if="previous" type="button" :disabled="saving" @click="undoRegroup"><Undo2 :size="15" /> Undo regroup</button>
+      </div>
+      <p v-if="buildStatus" class="composer-build-note" role="status">{{ buildStatus }}</p>
+    </div>
     <footer class="composer-footer">
       <div class="composer-actions">
         <button type="button" title="Regenerate plan" aria-label="Regenerate plan" :disabled="loading || saving" @click="generate"><RefreshCw :size="15" /></button>
@@ -314,8 +414,8 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
       <div class="composer-actions">
         <button type="button" :disabled="saving" @click="close">Cancel</button>
         <button type="button" class="composer-confirm" :disabled="!canConfirm" @click="confirm">
-          <Loader2 v-if="saving" :size="15" class="animate-spin" /><GitCommitHorizontal v-else :size="15" />
-          {{ saving ? 'Creating commits' : 'Create ' + rows.length + (rows.length === 1 ? ' commit' : ' commits') }}
+          <Loader2 v-if="pending === 'create'" :size="15" class="animate-spin" /><GitCommitHorizontal v-else :size="15" />
+          {{ pending === 'create' ? (verifyBuild ? 'Verifying and creating' : 'Creating commits') : 'Create ' + rows.length + (rows.length === 1 ? ' commit' : ' commits') }}
         </button>
       </div>
     </footer>
@@ -372,10 +472,17 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-paths { min-width: 0; }
 .composer-paths div { display: flex; flex-wrap: wrap; gap: 2px 6px; overflow-wrap: anywhere; }
 .composer-paths span { color: var(--muted-foreground); }
+.composer-paths .composer-hunk { color: var(--primary); font-family: monospace; }
 .composer-notices, .composer-apply-error { border-top: 1px solid var(--border); padding: 8px 14px; max-height: 130px; overflow: auto; font-size: 12px; overflow-wrap: anywhere; }
 .composer-notices label { display: flex; align-items: center; gap: 6px; }
 .composer-state { display: flex; align-items: center; gap: 8px; padding: 24px 14px; font-size: 13px; overflow-wrap: anywhere; }
 .composer-footer { border-top: 1px solid var(--border); justify-content: space-between; }
+.composer-verify { display: grid; gap: 6px; border-top: 1px solid var(--border); padding: 8px 14px; font-size: 12px; }
+.composer-verify-toggle { display: flex; align-items: center; gap: 6px; }
+.composer-build-command { margin-bottom: 0; }
+.composer-build-note { color: var(--muted-foreground); font-size: 11px; }
+.composer-build-actions { flex-wrap: wrap; }
+.composer-apply-error { white-space: pre-wrap; }
 .composer-actions button, .composer-empty, .composer-bulk button { display: inline-flex; min-height: 29px; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--secondary); font-size: 12px; }
 .composer-bulk button { flex-shrink: 0; }
 .composer-actions button:not(:disabled):hover, .composer-empty:hover, .composer-bulk button:not(:disabled):hover { border-color: var(--primary); color: var(--primary); }
