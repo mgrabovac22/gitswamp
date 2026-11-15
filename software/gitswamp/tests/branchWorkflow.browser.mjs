@@ -1,0 +1,186 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { build } from "vite";
+import vue from "@vitejs/plugin-vue";
+import tailwindcss from "@tailwindcss/vite";
+
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+const root = fileURLToPath(new URL("..", import.meta.url));
+const html = `<!doctype html><html class="light"><head><link rel="icon" href="data:,"></head><body><main id="app"></main><script type="module">
+import {createApp,h,ref} from 'vue';
+import BranchQuickActions from '/src/view/shell/BranchQuickActions.vue';
+import InitDialog from '/src/view/repository/InitDialog.vue';
+import CommitGraph from '/src/view/commit/CommitGraph.vue';
+import Dialog from '/src/features/repository/workflow/BranchWorkflowDialog.vue';
+import {workflowForPath,workflowName} from '/src/features/repository/workflow/branchWorkflow.ts';
+import {isBranchWorkflowShortcut} from '/src/features/shell/keyboardShortcuts.ts';
+import '/src/styles/index.css';
+window.calls=[];
+window.testInvoke=async (command,args)=>{
+  window.calls.push({command,args});
+  if (command === 'inspect_branch_workflow') {
+    if (args.path === 'repo-c') {
+      return {key:args.path,current:'change/search',local:['main','change/search'],remote:['main','change/search'],primary:'main',development:null,suggestion:'swamp',unborn:false,minimal:false,blocked:null};
+    }
+    const [primary,development] = args.path === 'repo-a' ? ['main','dev'] : ['trunk',null];
+    return {key: args.path, current: primary, local: [primary, ...(development ? [development] : [])], remote: [],
+       primary, development, suggestion: development ? 'gitflow' : 'trunk', unborn: false, minimal: false, blocked: null};
+  }
+  if (command === 'validate_branch_workflow') return;
+  if (command === 'preview_branch_workflow') {
+    if (args.request.action === 'handoff') {
+      return {token:'handoff', steps:[], comparisons:[{target:'main',ahead:2,behind:1,conflicts:!window.cleanHandoff}],
+        handoff:{source:'change/search',target:'main',published:true,checkpoint:{changedPaths:4,testPaths:1}}};
+    }
+    return {token:'reviewed', steps:['Create and switch to '+args.config.feature+args.request.name+' from '+args.config.development], comparisons:[], handoff:null};
+  }
+  if (command === 'execute_branch_workflow') return {status:'applied', completed:['Created feature/search'], remaining:[], error:null};
+  return null;
+};
+const repo=ref('repo-a'), open=ref(false), init=ref(false), note=ref(0);
+window.changeRepo=(value)=>{repo.value=value;};
+window.showInit=()=>{init.value=true;};
+window.blockStorage=()=>{Storage.prototype.setItem=()=>{throw Error('No storage');}; Storage.prototype.getItem=()=>{throw Error('No storage');};};
+window.addEventListener('keydown',e=>{if(isBranchWorkflowShortcut(e))open.value=true;});
+createApp({render:()=>{
+  void note.value;
+  const config=workflowForPath(repo.value);
+  const workflowLabel=config && config.strategy!=='manual' ? workflowName(config.strategy) : undefined;
+  return [
+    h(BranchQuickActions,{loading:false,ghostActive:false,workflowLabel,onWorkflow:()=>open.value=true}),
+    h('div',{style:'height:380px'},[h(CommitGraph,{repoPath:repo.value,commits:[],selected:null,hasWorkingChanges:true,currentBranch:'main',headSha:'111',workflowLabel,onBranchWorkflow:()=>open.value=true})]),
+    open.value ? h(Dialog,{key:repo.value,repoPath:repo.value,canOpenPullRequest:repo.value==='repo-c',remoteName:'origin',
+      onClose:()=>open.value=false,onSaved:()=>note.value++,onOutcome:r=>window.outcome=r,onPullRequest:draft=>window.handoff=draft}) : null,
+    h(InitDialog,{visible:init.value,onInit:(path,branch,workflow)=>{window.initialized={path,branch,workflow};init.value=false;}})
+  ];
+}}).mount('#app');
+</script></body></html>`;
+const mock = {
+  "@tauri-apps/api/core": "export const invoke=(...args)=>window.testInvoke(...args);",
+  "@tauri-apps/api/path": "export const join=async (...parts)=>parts.join('/'); export const homeDir=async ()=>'/home'; export const sep=()=>'/';",
+  "@tauri-apps/plugin-dialog": "export const open=async ()=>null;",
+};
+const prefix = "\0workflow:";
+const entry = html.split('<script type="module">')[1].split("</script>")[0];
+const result = await build({
+  root, configFile: false, publicDir: false, logLevel: "error",
+  plugins: [{
+    name: "workflow-test", enforce: "pre",
+    resolveId(id) {
+      if (id === "virtual:workflow-test") return "\0workflow-entry";
+      if (Object.hasOwn(mock, id)) return prefix + id;
+    },
+    load(id) {
+      if (id === "\0workflow-entry") return entry;
+      if (id.startsWith(prefix)) return mock[id.slice(prefix.length)];
+    },
+  }, vue(), tailwindcss()],
+  resolve: { alias: { "@": path.join(root, "src") } },
+  build: { write: false, minify: false, cssCodeSplit: false, rollupOptions: { input: "virtual:workflow-test" } },
+});
+const assets = new Map(result.output.map(asset => ["/" + asset.fileName, asset]));
+const script = "/" + result.output.find(asset => asset.type === "chunk" && asset.isEntry).fileName;
+const css = "/" + result.output.find(asset => asset.fileName.endsWith(".css")).fileName;
+const server = createServer((req, res) => {
+  if (req.url === "/__workflow__") {
+    res.setHeader("Content-Type", "text/html");
+    res.end(html.split('<script type="module">')[0].replace("</head>", '<link rel="stylesheet" href="'+css+'"></head>')
+      + '<script type="module" src="'+script+'"></script></body></html>');
+    return;
+  }
+  const asset = assets.get(new URL(req.url, "http://localhost").pathname);
+  if (asset) {
+    if (asset.type === "chunk") res.setHeader("Content-Type", "application/javascript");
+    else if (asset.fileName.endsWith(".css")) res.setHeader("Content-Type", "text/css");
+    res.end(asset.type === "chunk" ? asset.code : asset.source);
+    return;
+  }
+  res.writeHead(404).end();
+});
+
+let browser;
+try {
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
+  const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  page.on("response", response => { if (response.status() >= 400) console.error(response.status(), response.url()); });
+  page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+  await page.goto("http://127.0.0.1:" + server.address().port + "/__workflow__");
+  try { await page.getByTitle("Branch actions", { exact: true }).click(); }
+  catch (error) { throw new Error("Workflow fixture did not start: " + errors.join("; "), { cause: error }); }
+  assert.equal(await page.evaluate(() => window.calls.some(call => call.command === "inspect_branch_workflow")), false);
+  await page.getByRole("button", { name: "Branching workflow", exact: true }).click();
+  const modal = page.locator("dialog.workflow-dialog");
+  await modal.getByRole("button", { name: /Gitflow/ }).click();
+  assert.equal(await modal.getByLabel("Development branch", { exact: true }).inputValue(), "dev");
+  await modal.getByRole("button", { name: "Save strategy", exact: true }).click();
+  await modal.getByRole("button", { name: "Start feature", exact: true }).click();
+  await modal.getByLabel("Branch name", { exact: true }).fill("search");
+  await modal.getByRole("button", { name: "Preview", exact: true }).click();
+  await modal.getByText("Create and switch to feature/search from dev", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.outcome), undefined);
+  await page.screenshot({ path: path.join(root, "src-tauri/target/branch-workflow-desktop.png") });
+  await modal.getByRole("button", { name: "Confirm", exact: true }).click();
+  await modal.getByRole("button", { name: "Done", exact: true }).click();
+  await modal.waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.calls.find(call => call.command === "execute_branch_workflow").args.token), "reviewed");
+  await page.getByText(/● Working(?: Changes|\.\.\.)/).first().click({ button: "right" });
+  await page.getByRole("button", { name: "Gitflow", exact: true }).click();
+  await modal.getByRole("button", { name: "Manage strategy", exact: true }).click();
+  await modal.getByRole("button", { name: /Manual Git/ }).click();
+  await modal.getByRole("button", { name: "Save strategy", exact: true }).click();
+  await modal.getByText("No active branching strategy.", { exact: true }).waitFor();
+  await modal.getByTitle("Close branching workflow", { exact: true }).click();
+  await page.evaluate(() => { window.changeRepo("repo-b"); window.blockStorage(); });
+  await page.keyboard.press("Control+Alt+b");
+  await modal.getByRole("button", { name: /Trunk-Based/ }).click();
+  assert.equal(await modal.getByLabel("Trunk branch", { exact: true }).inputValue(), "trunk");
+  await modal.getByRole("button", { name: "Save strategy", exact: true }).click();
+  await modal.getByText("Settings are available for this session only.", { exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 680 });
+  assert.ok(await modal.evaluate(el => el.scrollWidth <= el.clientWidth));
+  await page.screenshot({ path: path.join(root, "src-tauri/target/branch-workflow-compact.png") });
+  await modal.getByTitle("Close branching workflow", { exact: true }).click();
+  await page.evaluate(() => window.changeRepo("repo-c"));
+  await page.keyboard.press("Control+Alt+b");
+  await modal.getByRole("button", { name: /GitSwamp Handoff/ }).click();
+  await modal.getByRole("button", { name: "Save strategy", exact: true }).click();
+  await modal.getByRole("button", { name: "Review pull request handoff", exact: true }).click();
+  await modal.getByRole("button", { name: "Preview", exact: true }).click();
+  await modal.getByText("Conflicts detected in the merge preview.", { exact: true }).waitFor();
+  assert.ok(await modal.getByRole("button", { name: "Open pull request form", exact: true }).isDisabled());
+  await modal.getByRole("button", { name: "Back", exact: true }).click();
+  await page.evaluate(() => { window.cleanHandoff = true; });
+  await modal.getByRole("button", { name: "Preview", exact: true }).click();
+  await modal.getByText(/4 changed paths/).waitFor();
+  await modal.getByRole("button", { name: "Open pull request form", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.handoff.target), "main");
+  await modal.getByTitle("Close branching workflow", { exact: true }).click();
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await page.evaluate(() => window.showInit());
+  await page.getByRole("button", { name: /Local Only/ }).first().click();
+  await page.getByPlaceholder("my-project").fill("example");
+  await page.getByRole("button", { name: "Branching strategy (optional)" }).click();
+  await page.getByRole("button", { name: /GitSwamp Handoff/ }).click();
+  await page.getByLabel("Primary branch", { exact: true }).fill("integration");
+  await page.getByRole("button", { name: "Use strategy", exact: true }).click();
+  await page.getByRole("button", { name: "Create Repository", exact: true }).click();
+  await page.waitForFunction(() => !!window.initialized);
+  const initial = await page.evaluate(() => window.initialized);
+  assert.equal(initial.branch, "integration");
+  assert.equal(initial.workflow.strategy, "swamp");
+  assert.deepEqual(errors, []);
+} finally {
+  const closing = Promise.all([browser?.close(), new Promise(resolve => server.close(resolve))]);
+  server.closeAllConnections();
+  await Promise.race([closing, new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("Workflow test did not shut down.")), 10000).unref();
+  })]).catch(error => { console.error(error); process.exit(1); });
+}
+console.log("PASS: branch menu, graph context, shortcut, preview and confirm, disabling, session fallback and initialization.");

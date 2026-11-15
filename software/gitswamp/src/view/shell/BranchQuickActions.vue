@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { GitBranch, ChevronDown, Ghost, WandSparkles, Trash2 } from "lucide-vue-next";
+import { GitBranch, ChevronDown, Ghost, WandSparkles, Trash2, GitMerge } from "lucide-vue-next";
 import AppButton from "@/shared/ui/AppButton.vue";
 
 const props = defineProps<{
   loading: boolean;
   ghostActive: boolean;
+  workflowLabel?: string;
 }>();
 
 const emit = defineEmits<{
@@ -13,6 +14,7 @@ const emit = defineEmits<{
   ghost: [];
   materialize: [];
   discard: [];
+  workflow: [];
 }>();
 
 const root = ref<HTMLElement | null>(null);
@@ -26,11 +28,12 @@ function toggleMenu() {
   menuOpen.value = !menuOpen.value;
 }
 
-function runAndClose(action: "branch" | "ghost" | "materialize" | "discard") {
+function runAndClose(action: "branch" | "ghost" | "materialize" | "discard" | "workflow") {
   if (action === "branch") emit("branch");
   if (action === "ghost") emit("ghost");
   if (action === "materialize") emit("materialize");
   if (action === "discard") emit("discard");
+  if (action === "workflow") emit("workflow");
   closeMenu();
 }
 
@@ -97,6 +100,12 @@ onUnmounted(() => {
       >
         <GitBranch class="w-3.5 h-3.5 text-[var(--primary)]" />
         Create a branch
+      </button>
+
+      <button class="w-full text-left px-2.5 py-2 rounded text-[11px] hover:bg-[var(--secondary)] inline-flex items-center gap-2"
+        @click="runAndClose('workflow')">
+        <GitMerge class="w-3.5 h-3.5 text-[var(--primary)]" />
+        {{ workflowLabel || 'Branching workflow' }}
       </button>
 
       <button

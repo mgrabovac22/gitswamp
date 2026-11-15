@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut } from "@/features/shell/keyboardShortcuts";
+import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut, isBranchWorkflowShortcut } from "@/features/shell/keyboardShortcuts";
+import {
+  saveWorkflow, workflowForPath, workflowName, workflowPreference,
+  type HandoffDraft, type WorkflowConfig, type WorkflowInspection, type WorkflowOutcome,
+} from "@/features/repository/workflow/branchWorkflow";
 import TitleBar from "@/view/shell/TitleBar.vue";
 import SecretCommitDialog from "@/shared/ui/SecretCommitDialog.vue";
 import ConflictAppearanceDialog from "@/features/repository/ConflictAppearanceDialog.vue";
@@ -251,6 +255,15 @@ const rebaseConflictSource = ref("");
 const rebaseConflictTarget = ref("");
 const rebaseConflictBusy = ref(false);
 const InteractiveRebaseDialog = defineAsyncComponent(() => import("@/features/repository/InteractiveRebaseDialog.vue"));
+const BranchWorkflowDialog = defineAsyncComponent(() => import("@/features/repository/workflow/BranchWorkflowDialog.vue"));
+const branchWorkflow = ref<{ path: string; initial?: WorkflowInspection } | null>(null);
+const workflowPullRequest = ref<HandoffDraft | null>(null);
+const workflowPreferenceVersion = ref(0);
+const branchWorkflowLabel = computed(() => {
+  void workflowPreferenceVersion.value;
+  const current = workflowForPath(git.repoPath.value);
+  return current && current.strategy !== "manual" ? workflowName(current.strategy) : undefined;
+});
 const interactiveRebase = ref<{ path: string; base: string } | null>(null);
 const interactiveRebaseBusy = ref(false);
 const interactiveRebaseError = ref("");
@@ -1814,8 +1827,9 @@ function openCreateIssuePanel() {
   void loadRemoteCreateOptions();
 }
 
-function openCreatePullRequestPanel() {
+function openCreatePullRequestPanel(draft: HandoffDraft | null = null) {
   clearRemoteInsightDetails();
+  workflowPullRequest.value = draft;
   remoteInsightsMode.value = "pull-request-create";
   setHistoryViewMode("remote-insights");
   void loadRemoteCreateOptions();
@@ -3950,6 +3964,10 @@ function beginRepositoryWorkflowShortcut(event: KeyboardEvent): boolean {
 }
 
 function handleRepositoryWorkflowShortcut(event: KeyboardEvent, key: string): boolean {
+  if (isBranchWorkflowShortcut(event)) {
+    if (beginRepositoryWorkflowShortcut(event)) openBranchWorkflow();
+    return true;
+  }
   const primaryKey = event.ctrlKey || event.metaKey;
   if (!primaryKey) return false;
 
@@ -4022,7 +4040,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
   if (event.defaultPrevented || (event.target instanceof Element && event.target.closest("dialog[data-commit-composer]"))) return;
-  if (pendingWorktreeRemoval.value || interactiveRebase.value || lfsBusy.value) return;
+  if (pendingWorktreeRemoval.value || interactiveRebase.value || branchWorkflow.value || lfsBusy.value) return;
   handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
 
@@ -4153,6 +4171,8 @@ watch([tabs, activeTabId], () => {
 
 watch(activeTabId, () => {
   interactiveRebase.value = null;
+  branchWorkflow.value = null;
+  workflowPullRequest.value = null;
   if (historyViewMode.value === "lfs") setHistoryViewMode("graph");
   if (historyViewMode.value === "branch-workspace") historyViewMode.value = "graph";
   detailsPanelCollapsed.value = true;
@@ -4401,6 +4421,59 @@ function formatCloneProgressDetail(payload: CloneProgressEventPayload): string {
   return payload.message || "Preparing clone...";
 }
 
+function openBranchWorkflow(initial?: WorkflowInspection) {
+  if (git.loading.value || !git.repoPath.value || branchWorkflow.value) return;
+  branchWorkflow.value = { path: git.repoPath.value, initial };
+}
+
+async function suggestClonedWorkflow(path: string) {
+  try {
+    const info = await invoke<WorkflowInspection>("inspect_branch_workflow", { path });
+    if (path !== git.repoPath.value || workflowPreference(info.key) || (!info.minimal && !info.suggestion)) return;
+    toast.action("info", info.suggestion ? `Suggested strategy: ${workflowName(info.suggestion)}` : "Choose a branching strategy?",
+      [{ label: "Configure", style: "primary", onClick: () => { if (path === git.repoPath.value) openBranchWorkflow(info); } }],
+      12000);
+  } catch { /* A strategy suggestion never affects clone success. */ }
+}
+
+async function handleWorkflowOutcome(result: WorkflowOutcome) {
+  const path = branchWorkflow.value?.path;
+  if (!path || path !== git.repoPath.value) return;
+  const summary = [
+    result.completed.length ? `Completed: ${result.completed.join("; ")}.` : "",
+    result.remaining.length ? `Remaining: ${result.remaining.join("; ")}.` : "",
+  ].filter(Boolean).join(" ");
+  if (summary) appendLog("app", summary);
+  await refreshAfterVisualRebase(path);
+  if (path !== git.repoPath.value) return;
+  if (result.status === "conflict") {
+    branchWorkflow.value = null;
+    setHistoryViewMode("graph");
+    const review = git.hasConflicts.value ? onSelectConflicts : onSelectWorkingChanges;
+    review();
+    detailsPanelCollapsed.value = false;
+    toast.action("warning", git.hasConflicts.value ? "Workflow paused for merge conflicts." : "Workflow paused for a pending merge.",
+      [{ label: "Review Merge", style: "primary", onClick: review },
+       { label: "Abort Merge", style: "neutral", onClick: confirmAbortMerge }],
+      26000, summary);
+  }
+}
+
+async function fetchWorkflowRefs() {
+  const path = branchWorkflow.value?.path;
+  if (!path || path !== git.repoPath.value || git.loading.value) throw new Error("The repository is not ready to fetch.");
+  await git.fetchAll();
+  if (path !== git.repoPath.value) throw new Error("The active repository changed.");
+  if (git.error.value?.startsWith("AUTH_REQUIRED:")) throw new Error("Authenticate with the toolbar Fetch action, then reopen Handoff.");
+  if (git.error.value) throw new Error(git.error.value);
+}
+
+function openWorkflowPullRequest(draft: HandoffDraft) {
+  if (!branchWorkflow.value || branchWorkflow.value.path !== git.repoPath.value || !draft.published) return;
+  branchWorkflow.value = null;
+  openCreatePullRequestPanel(draft);
+}
+
 async function handleClone(
   url: string,
   path: string,
@@ -4445,6 +4518,7 @@ async function handleClone(
     await openRepo(clonedPath);
     done?.(true);
     toast.success("Repository cloned successfully");
+    void suggestClonedWorkflow(clonedPath);
   } catch (e) {
     toast.remove(progressToastId);
     done?.(false, String(e));
@@ -4456,12 +4530,21 @@ async function handleClone(
   }
 }
 
-async function handleInit(path: string, branchName: string) {
+async function handleInit(path: string, branchName: string, workflow?: WorkflowConfig) {
   const ok = await git.initRepo(path, branchName);
   if (ok) {
     showInitDialog.value = false;
     await openRepo(path);
     toast.success("Repository initialized successfully");
+    if (workflow) {
+      try {
+        await invoke("validate_branch_workflow", { config: workflow });
+        const info = await invoke<WorkflowInspection>("inspect_branch_workflow", { path });
+        const persisted = saveWorkflow(path, info.key, workflow);
+        workflowPreferenceVersion.value++;
+        if (!persisted) toast.info("Branching strategy is available for this session only.");
+      } catch (error) { toast.warning(`Repository created, but strategy was not saved: ${String(error)}`); }
+    }
   } else {
     toast.error(`Failed to initialize repository: ${git.error.value || "Unknown error"}`);
   }
@@ -5573,6 +5656,8 @@ function submitCreateTag() {
         @fetch="handleFetch"
         @exit-graph-isolation="exitGraphIsolation"
         @branch="handleCreateBranch"
+        :workflow-label="branchWorkflowLabel"
+        @branch-workflow="openBranchWorkflow()"
         @ghost-branch="handleStartGhostBranch"
         @materialize-ghost-branch="handleOpenGhostMaterializeDialog"
         @discard-ghost-branch="handleDiscardGhostBranch"
@@ -5621,6 +5706,8 @@ function submitCreateTag() {
         :selected-pull-request="selectedPullRequest"
         :remote-insight-detail-loading="remoteInsightDetailLoading"
         :remote-create-options="remoteCreateOptions"
+        :workflow-label="branchWorkflowLabel"
+        :workflow-pull-request="workflowPullRequest"
         :remote-create-options-loading="remoteCreateOptionsLoading"
         :remote-insights-mode="remoteInsightsMode"
         :show-diff-viewer="showDiffViewer"
@@ -5664,7 +5751,8 @@ function submitCreateTag() {
         @load-all-issues="loadAllGithubIssues"
         @load-all-pull-requests="loadAllGithubPullRequests"
         @open-create-issue="openCreateIssuePanel"
-        @open-create-pull-request="openCreatePullRequestPanel"
+        @open-create-pull-request="openCreatePullRequestPanel()"
+        @branch-workflow="openBranchWorkflow()"
         @open-gist="openGistInBrowser($event)"
         @create-issue="createRemoteIssue($event)"
         @create-pull-request="createRemotePullRequest($event)"
@@ -5697,6 +5785,12 @@ function submitCreateTag() {
 
     <InteractiveRebaseDialog v-if="interactiveRebase" :repo-path="interactiveRebase.path" :base="interactiveRebase.base"
       :busy="interactiveRebaseBusy" :execution-error="interactiveRebaseError" @close="interactiveRebase = null" @start="startInteractiveRebase" />
+    <BranchWorkflowDialog v-if="branchWorkflow" :key="branchWorkflow.path" :repo-path="branchWorkflow.path"
+      :initial="branchWorkflow.initial" :can-open-pull-request="!!getPrimaryGithubContext()"
+      :remote-name="getPrimaryRemote(git.repoInfo.value?.remotes || [])?.name"
+      :fetch-refs="fetchWorkflowRefs"
+      @close="branchWorkflow = null" @saved="workflowPreferenceVersion++"
+      @outcome="handleWorkflowOutcome" @pull-request="openWorkflowPullRequest" />
 
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"
