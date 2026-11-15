@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { BranchComparison, RemoteBranchCatalog, RemoteDiscussionClient } from "@/features/repository/remote/githubRemote";
+import type { WorkflowConfig } from "@/features/repository/workflow/branchWorkflow";
 import { computed, defineAsyncComponent, ref, watch } from "vue";
 import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
@@ -74,6 +76,15 @@ const props = defineProps<{
   remoteInsightDetailLoading?: boolean;
   remoteCreateOptions?: RemoteCreateOptions;
   remoteCreateOptionsLoading?: boolean;
+  remoteCreating?: boolean;
+  remoteDiscussion?: RemoteDiscussionClient;
+  remoteBranchCatalog?: RemoteBranchCatalog | null;
+  remoteBranchesLoading?: boolean;
+  remoteBranchesError?: boolean;
+  remoteNameForInsights?: string;
+  remoteWorkflow?: WorkflowConfig | null;
+  currentRemoteUpstream?: string;
+  compareRemoteBranches?: (base: string, head: string, signal: AbortSignal) => Promise<BranchComparison>;
   remoteInsightsMode?: RemoteInsightsViewMode;
   showDiffViewer: boolean;
   diffFilePath: string;
@@ -689,6 +700,15 @@ function handleRefreshState() {
           :create-options-loading="props.remoteCreateOptionsLoading"
           :remote-branches="props.git.remoteBranches.value"
           :current-branch="props.git.currentBranch.value"
+          :current-upstream="props.currentRemoteUpstream"
+          :remote-name="props.remoteNameForInsights ?? 'origin'"
+          :workflow="props.remoteWorkflow"
+          :branch-catalog="props.remoteBranchCatalog"
+          :branch-catalog-loading="props.remoteBranchesLoading"
+          :branch-catalog-error="props.remoteBranchesError"
+          :compare-branches="props.compareRemoteBranches"
+          :discussion="props.remoteDiscussion"
+          :creating="props.remoteCreating"
           @close="emit('setHistoryView', 'graph')"
           @create-pull-request="emit('createPullRequest', $event)"
           @create-issue="emit('createIssue', $event)"

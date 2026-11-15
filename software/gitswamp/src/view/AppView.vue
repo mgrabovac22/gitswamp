@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { githubBranchComparison, githubBranches, githubDiscussion, type RemoteBranchCatalog } from "@/features/repository/remote/githubRemote";
 import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut, isBranchWorkflowShortcut } from "@/features/shell/keyboardShortcuts";
 import {
   saveWorkflow, workflowForPath, workflowName, workflowPreference,
@@ -312,6 +313,27 @@ const githubPullRequestDetail = ref<PullRequestInfo | null>(null);
 const remoteInsightDetailLoading = ref(false);
 const remoteCreateOptions = ref<RemoteCreateOptions>(createEmptyRemoteCreateOptions());
 const remoteCreateOptionsLoading = ref(false);
+const remoteCreating = ref(false);
+const remoteBranchCatalog = ref<RemoteBranchCatalog | null>(null);
+const remoteBranchesLoading = ref(false);
+const remoteBranchesError = ref(false);
+const githubContext = computed(() => getPrimaryGithubContext());
+const remoteNameForInsights = computed(() => getPrimaryRemote(git.repoInfo.value?.remotes || [])?.name ?? "origin");
+const remoteWorkflow = computed(() => {
+  void workflowPreferenceVersion.value;
+  return workflowForPath(git.repoPath.value);
+});
+const remoteDiscussion = computed(() => {
+  const context = githubContext.value;
+  if (!context) return undefined;
+  const key = JSON.stringify([git.repoPath.value, context.apiBase, context.owner, context.repo]);
+  return githubDiscussion(context, key, promptGithubInsightsAuth);
+});
+const compareRemoteBranches = computed(() => {
+  const context = githubContext.value;
+  return context ? (base: string, head: string, signal: AbortSignal) => githubBranchComparison(context, base, head, signal) : undefined;
+});
+const currentRemoteUpstream = computed(() => git.localBranches.value.find(branch => branch.is_head || branch.name === git.currentBranch.value)?.upstream ?? undefined);
 const gitRpgProfile = ref<GitRpgProfile | null>(null);
 const gitRpgLoading = ref(false);
 const lostCommits = ref<LostCommitInfo[]>([]);
@@ -1554,8 +1576,7 @@ async function fetchGithubIssueDetail(number: number): Promise<IssueInfo | null>
   };
 }
 
-async function fetchGithubPullRequestDetail(number: number): Promise<PullRequestInfo | null> {
-  const context = getPrimaryGithubContext();
+async function fetchGithubPullRequestDetail(number: number, context = getPrimaryGithubContext()): Promise<PullRequestInfo | null> {
   if (!context) return null;
 
   const headers = githubHeaders(context.token);
@@ -1943,6 +1964,7 @@ async function requestGithubPullRequestReviewers(context: GithubApiContext, numb
 }
 
 async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
+  if (remoteCreating.value) return;
   const context = getPrimaryGithubContext();
   if (!context) {
     toast.warning("GitHub remote is required for issue creation.");
@@ -1955,6 +1977,8 @@ async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
     return;
   }
 
+  const repo = git.repoPath.value;
+  remoteCreating.value = true;
   try {
     const response = await fetch(
       `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues`,
@@ -1983,6 +2007,10 @@ async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
     if (!created) {
       throw new Error("Created issue payload could not be parsed.");
     }
+    if (repo !== git.repoPath.value || historyViewMode.value !== "remote-insights" || remoteInsightsMode.value !== "issue-create") {
+      toast.success(`Issue #${created.number} created.`);
+      return;
+    }
 
     const nextIssues = [created, ...githubIssues.value.filter((item) => item.number !== created.number)];
     githubIssues.value = githubIssuesHasMore.value ? nextIssues.slice(0, GITHUB_INITIAL_INSIGHT_LIMIT) : nextIssues;
@@ -1995,10 +2023,13 @@ async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
     scheduleOpenPullRequestRefresh();
   } catch (e) {
     toast.error("Create issue failed: " + String(e));
+  } finally {
+    remoteCreating.value = false;
   }
 }
 
 async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) {
+  if (remoteCreating.value) return;
   const context = getPrimaryGithubContext();
   if (!context) {
     toast.warning("GitHub remote is required for pull request creation.");
@@ -2011,6 +2042,8 @@ async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) 
     return;
   }
 
+  const repo = git.repoPath.value;
+  remoteCreating.value = true;
   try {
     const response = await fetch(
       `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls`,
@@ -2054,7 +2087,12 @@ async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) 
       metadataWarnings.push(`reviewers: ${String(error)}`);
     }
 
-    const detailed = await fetchGithubPullRequestDetail(created.number).catch(() => null);
+    const detailed = await fetchGithubPullRequestDetail(created.number, context).catch(() => null);
+    if (repo !== git.repoPath.value || historyViewMode.value !== "remote-insights" || remoteInsightsMode.value !== "pull-request-create") {
+      if (metadataWarnings.length) toast.warning(`Pull request #${created.number} created, but some metadata was not applied.`);
+      else toast.success(`Pull request #${created.number} created.`);
+      return;
+    }
     const nextCreated = detailed || created;
     const nextPullRequests = [
       nextCreated,
@@ -2079,6 +2117,8 @@ async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) 
     scheduleOpenPullRequestRefresh();
   } catch (e) {
     toast.error("Create pull request failed: " + String(e));
+  } finally {
+    remoteCreating.value = false;
   }
 }
 
@@ -4356,6 +4396,22 @@ watch(
   },
 );
 
+watch([historyViewMode, remoteInsightsMode, githubContext], ([view, mode, context], _, cleanup) => {
+  remoteBranchCatalog.value = null;
+  remoteBranchesLoading.value = remoteBranchesError.value = false;
+  if (view !== "remote-insights" || mode !== "pull-request-create" || !context) return;
+  const controller = new AbortController();
+  cleanup(() => controller.abort());
+  remoteBranchesLoading.value = true;
+  void githubBranches(context, controller.signal).then(catalog => {
+    if (!controller.signal.aborted) remoteBranchCatalog.value = catalog;
+  }).catch(() => {
+    if (!controller.signal.aborted) remoteBranchesError.value = true;
+  }).finally(() => {
+    if (!controller.signal.aborted) remoteBranchesLoading.value = false;
+  });
+});
+
 async function openRepo(path: string) {
   try {
     await git.openRepository(path);
@@ -5709,6 +5765,15 @@ function submitCreateTag() {
         :workflow-label="branchWorkflowLabel"
         :workflow-pull-request="workflowPullRequest"
         :remote-create-options-loading="remoteCreateOptionsLoading"
+        :remote-creating="remoteCreating"
+        :remote-discussion="remoteDiscussion"
+        :remote-branch-catalog="remoteBranchCatalog"
+        :remote-branches-loading="remoteBranchesLoading"
+        :remote-branches-error="remoteBranchesError"
+        :remote-name-for-insights="remoteNameForInsights"
+        :remote-workflow="remoteWorkflow"
+        :current-remote-upstream="currentRemoteUpstream"
+        :compare-remote-branches="compareRemoteBranches"
         :remote-insights-mode="remoteInsightsMode"
         :show-diff-viewer="showDiffViewer"
         :diff-file-path="diffFilePath"
