@@ -8,6 +8,7 @@ use super::{git_err, Change, PATCH_FILE_LIMIT};
 
 const MAX_REFERENCES: usize = 2048;
 const MAX_EXPORTS: usize = 8192;
+const MAX_MULTILINE_IMPORT_BYTES: usize = 16 * 1024;
 const IMPORT_CACHE_BYTES: usize = 4 * 1024 * 1024;
 const EXPORT_CACHE_NAMES: usize = 16_384;
 const JS: &[&str] = &[
@@ -84,13 +85,13 @@ fn quoted(text: &str) -> Option<&str> {
         return None;
     }
     let (value, _) = text[1..].split_once(quote as char)?;
-    (!value.is_empty() && value.len() <= 240).then_some(value)
+    (!value.is_empty() && value.len() <= 4096).then_some(value)
 }
 
 fn identifier(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= 80
-        && text.as_bytes()[0].is_ascii_alphabetic()
+        && (text.as_bytes()[0].is_ascii_alphabetic() || text.starts_with(['_', '$']))
         && text
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
@@ -119,10 +120,8 @@ fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> (Vec<Import>, bool) 
     };
     let mut block_comment = false;
     let mut js_import = String::new();
-    for raw in text.lines() {
-        if result.len() >= MAX_REFERENCES {
-            break;
-        }
+    let mut limited = false;
+    'scan: for raw in text.lines() {
         let line = raw.trim();
         if block_comment {
             block_comment = !line.contains("*/");
@@ -132,23 +131,28 @@ fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> (Vec<Import>, bool) 
             block_comment = !line.contains("*/");
             continue;
         }
-        if line.len() > 600 || line.starts_with("//") {
+        if line.starts_with("//") {
             continue;
         }
         match resolver {
             Resolver::JavaScript => {
                 if !js_import.is_empty() {
-                    if js_import.len() + line.len() > 600 {
+                    if js_import.len() + line.len() > MAX_MULTILINE_IMPORT_BYTES {
+                        limited = true;
                         js_import.clear();
                         continue;
                     }
                     js_import.push(' ');
                     js_import.push_str(line);
-                } else if line.starts_with("import ")
-                    || line.starts_with("export {")
-                    || line.starts_with("export *")
+                } else if (line.starts_with("import ") || line.starts_with("export {"))
+                    && line.contains('{')
+                    && !line.contains('}')
                 {
-                    js_import.push_str(line);
+                    if line.len() <= MAX_MULTILINE_IMPORT_BYTES {
+                        js_import.push_str(line);
+                    } else {
+                        limited = true;
+                    }
                 }
                 let specifier = if js_import.is_empty() {
                     line
@@ -191,22 +195,20 @@ fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> (Vec<Import>, bool) 
                             .split_once('{')
                             .and_then(|(head, tail)| Some((head, tail.split_once('}')?.0)))
                         {
-                            for name in names
-                                .split(',')
-                                .filter_map(|name| {
-                                    let name =
-                                        name.trim().strip_prefix("type ").unwrap_or(name.trim());
-                                    name.split_ascii_whitespace()
-                                        .next()
-                                        .filter(|name| identifier(name))
-                                })
-                                .take(12)
-                            {
+                            for name in names.split(',').filter_map(|name| {
+                                let name = name.trim().strip_prefix("type ").unwrap_or(name.trim());
+                                name.split_ascii_whitespace()
+                                    .next()
+                                    .filter(|name| identifier(name))
+                            }) {
                                 result.insert(Import {
                                     target: target.clone(),
                                     resolver,
                                     symbol: Some(name.into()),
                                 });
+                                if result.len() > MAX_REFERENCES {
+                                    break 'scan;
+                                }
                             }
                         }
                     }
@@ -223,7 +225,7 @@ fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> (Vec<Import>, bool) 
                     continue;
                 };
                 let dots = module.bytes().take_while(|b| *b == b'.').count();
-                if dots == 0 {
+                if dots == 0 || dots - 1 > dir.split('/').filter(|part| !part.is_empty()).count() {
                     continue;
                 }
                 let prefix = "../".repeat(dots - 1) + &module[dots..].replace('.', "/");
@@ -236,21 +238,20 @@ fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> (Vec<Import>, bool) 
                         });
                     }
                 } else {
-                    for name in names
-                        .split(',')
-                        .filter_map(|name| {
-                            name.split_ascii_whitespace()
-                                .next()
-                                .filter(|name| identifier(name))
-                        })
-                        .take(12)
-                    {
+                    for name in names.split(',').filter_map(|name| {
+                        name.split_ascii_whitespace()
+                            .next()
+                            .filter(|name| identifier(name))
+                    }) {
                         if let Some(target) = path_from(dir, &format!("{prefix}{name}")) {
                             result.insert(Import {
                                 target,
                                 resolver,
                                 symbol: None,
                             });
+                            if result.len() > MAX_REFERENCES {
+                                break 'scan;
+                            }
                         }
                     }
                 }
@@ -286,8 +287,14 @@ fn imports(path: &str, bytes: &[u8], resolver: Resolver) -> (Vec<Import>, bool) 
                 }
             }
         }
+        if result.len() > MAX_REFERENCES {
+            break;
+        }
     }
-    let limited = result.len() >= MAX_REFERENCES;
+    if result.len() > MAX_REFERENCES {
+        result.pop_last();
+        limited = true;
+    }
     (result.into_iter().collect(), limited)
 }
 
@@ -385,6 +392,10 @@ fn exports(bytes: &[u8], limited: &mut bool) -> Option<BTreeSet<String>> {
                 .filter(|name| identifier(name))
             {
                 names.insert(name.into());
+                if names.len() > MAX_EXPORTS {
+                    *limited = true;
+                    return None;
+                }
             }
         } else if line.starts_with('{') {
             return None;
@@ -423,7 +434,7 @@ pub(super) struct Check<'a> {
     repo: &'a Repository,
     final_tree: Tree<'a>,
     base_tree: Option<Tree<'a>>,
-    paths: Vec<String>,
+    paths: Rc<[String]>,
     cache: HashMap<(String, Oid), Rc<[Import]>>,
     exports: HashMap<Oid, Option<BTreeSet<String>>>,
     cached_import_bytes: usize,
@@ -451,25 +462,39 @@ impl<'a> Check<'a> {
             .map(str::to_owned)
             .collect();
         // Unchanged callers only need checking when they reference an affected provider.
-        let affected: BTreeSet<_> = changes.iter().filter(|file| {
-            file.new.is_none()
+        let affected: BTreeSet<_> = changes
+            .iter()
+            .filter(|file| {
+                file.new.is_none()
                     || file.old_path.is_some()
                     || (file.hints.removes_symbol()
                         && family(&file.path) == Some(Resolver::JavaScript))
-        }).filter_map(|file| file.old.map(|(id, _)| id)).collect();
+            })
+            .filter_map(|file| file.old.map(|(id, _)| id))
+            .collect();
         let mut limited = false;
         if !affected.is_empty() {
             if let Some(base) = &base_tree {
                 let odb = repo.odb().map_err(git_err)?;
                 base.walk(TreeWalkMode::PreOrder, |root, entry| {
-                    let Some(name) = entry.name().filter(|_| entry.kind() == Some(ObjectType::Blob)) else {
+                    let Some(name) = entry
+                        .name()
+                        .filter(|_| entry.kind() == Some(ObjectType::Blob))
+                    else {
                         return TreeWalkResult::Ok;
                     };
-                    let Some(resolver) = family(name) else { return TreeWalkResult::Ok };
+                    let Some(resolver) = family(name) else {
+                        return TreeWalkResult::Ok;
+                    };
                     let path = format!("{root}{name}");
-                    if paths.contains(&path) { return TreeWalkResult::Ok; }
+                    if paths.contains(&path) {
+                        return TreeWalkResult::Ok;
+                    }
                     let id = entry.id();
-                    if !odb.read_header(id).is_ok_and(|(size, _)| size <= PATCH_FILE_LIMIT) {
+                    if !odb
+                        .read_header(id)
+                        .is_ok_and(|(size, _)| size <= PATCH_FILE_LIMIT)
+                    {
                         limited = true;
                         return TreeWalkResult::Ok;
                     }
@@ -477,11 +502,16 @@ impl<'a> Check<'a> {
                         if !blob.is_binary() {
                             let (references, incomplete) = imports(&path, blob.content(), resolver);
                             limited |= incomplete;
-                            if references.iter().any(|reference| resolve(Some(base), reference).is_some_and(|id| affected.contains(&id))) {
+                            if references.iter().any(|reference| {
+                                resolve(Some(base), reference)
+                                    .is_some_and(|id| affected.contains(&id))
+                            }) {
                                 paths.insert(path);
                             }
                         }
-                    } else { limited = true; }
+                    } else {
+                        limited = true;
+                    }
                     TreeWalkResult::Ok
                 })
                 .map_err(git_err)?;
@@ -491,7 +521,7 @@ impl<'a> Check<'a> {
             repo,
             final_tree,
             base_tree,
-            paths: paths.into_iter().collect(),
+            paths: paths.into_iter().collect::<Vec<_>>().into(),
             cache: HashMap::new(),
             exports: HashMap::new(),
             cached_import_bytes: 0,
@@ -501,7 +531,12 @@ impl<'a> Check<'a> {
     }
 
     fn read(&mut self, oid: Oid) -> Option<git2::Blob<'a>> {
-        if !self.repo.odb().and_then(|odb| odb.read_header(oid)).is_ok_and(|(size, _)| size <= PATCH_FILE_LIMIT) {
+        if !self
+            .repo
+            .odb()
+            .and_then(|odb| odb.read_header(oid))
+            .is_ok_and(|(size, _)| size <= PATCH_FILE_LIMIT)
+        {
             self.limited = true;
             return None;
         }
@@ -525,9 +560,16 @@ impl<'a> Check<'a> {
             .unwrap_or_default();
         self.limited |= incomplete;
         let value: Rc<[Import]> = value.into();
-        let bytes = key.0.len() + 96 + value.iter().map(|item| {
-            std::mem::size_of::<Import>() + item.target.capacity() + item.symbol.as_ref().map_or(0, String::capacity)
-        }).sum::<usize>();
+        let bytes = key.0.len()
+            + 96
+            + value
+                .iter()
+                .map(|item| {
+                    std::mem::size_of::<Import>()
+                        + item.target.capacity()
+                        + item.symbol.as_ref().map_or(0, String::capacity)
+                })
+                .sum::<usize>();
         if bytes <= IMPORT_CACHE_BYTES {
             if self.cached_import_bytes + bytes > IMPORT_CACHE_BYTES {
                 self.cache.clear();
@@ -541,7 +583,9 @@ impl<'a> Check<'a> {
 
     fn exported(&mut self, oid: Oid, symbol: &str) -> Option<bool> {
         if !self.exports.contains_key(&oid) {
-            let exports = self.read(oid).and_then(|blob| exports(blob.content(), &mut self.limited));
+            let exports = self
+                .read(oid)
+                .and_then(|blob| exports(blob.content(), &mut self.limited));
             let names = exports.as_ref().map_or(1, |names| names.len().max(1));
             if self.exports.len() >= 256 || self.cached_export_names + names > EXPORT_CACHE_NAMES {
                 self.exports.clear();
@@ -558,31 +602,48 @@ impl<'a> Check<'a> {
 
     fn already_missing(&mut self, path: &str, reference: &Import) -> bool {
         let target = resolve(self.base_tree.as_ref(), reference);
-        let missing = target.is_none() || reference.symbol.as_ref().is_some_and(|symbol| {
-            self.exported(target.unwrap(), symbol) == Some(false)
-        });
-        missing && at(self.base_tree.as_ref(), path).is_some_and(|id| {
-            self.read_imports(path, id).binary_search(reference).is_ok()
-        })
+        let missing = match (target, reference.symbol.as_deref()) {
+            (None, _) => true,
+            (Some(id), Some(symbol)) => self.exported(id, symbol) == Some(false),
+            _ => false,
+        };
+        missing
+            && at(self.base_tree.as_ref(), path)
+                .is_some_and(|id| self.read_imports(path, id).binary_search(reference).is_ok())
     }
 
     pub(super) fn verify(&mut self, tree: &Tree<'_>) -> Option<Problem> {
-        for path in self.paths.clone() {
-            let Some(id) = at(Some(tree), &path) else {
+        let paths = Rc::clone(&self.paths);
+        for path in paths.iter() {
+            let Some(id) = at(Some(tree), path) else {
                 continue;
             };
-            let references = self.read_imports(&path, id);
+            let references = self.read_imports(path, id);
+            let mut resolved: Option<(&Import, Option<Oid>)> = None;
             for import in references.iter() {
-                let target = resolve(Some(tree), import);
+                let target = match resolved {
+                    Some((previous, target))
+                        if previous.target == import.target
+                            && previous.resolver == import.resolver =>
+                    {
+                        target
+                    }
+                    _ => {
+                        let target = resolve(Some(tree), import);
+                        resolved = Some((import, target));
+                        target
+                    }
+                };
                 let absent = match (target, import.symbol.as_deref()) {
                     (None, None) => {
                         resolve(Some(&self.final_tree), import).is_some()
                             || resolve(self.base_tree.as_ref(), import).is_some()
-                            || (import.resolver == Resolver::JavaScript && !self.already_missing(&path, import))
+                            || (import.resolver == Resolver::JavaScript
+                                && !self.already_missing(path, import))
                     }
                     (Some(target), Some(symbol)) => {
                         self.exported(target, symbol) == Some(false)
-                            && (!self.already_missing(&path, import)
+                            && (!self.already_missing(path, import)
                                 || resolve(Some(&self.final_tree), import)
                                     .is_some_and(|id| self.exported(id, symbol) == Some(true)))
                     }
@@ -600,7 +661,7 @@ impl<'a> Check<'a> {
                     };
                     return Some(Problem {
                         target: import.target.clone(),
-                        source: path,
+                        source: path.clone(),
                         message,
                     });
                 }
