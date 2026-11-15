@@ -9,6 +9,7 @@ use commands::branches::{checkout_branch, create_branch, delete_branch, get_bran
 use commands::clone_init::{clone_repo, init_repo, initialize_empty_repo, search_commits};
 use commands::commit_composer::{
     apply_commit_composition, find_buildable_commit_groups, plan_commit_composition,
+    preview_commit_composition_change,
 };
 use commands::commit_files::get_commit_files;
 use commands::commits::{get_author_deletion_stats, get_commit_coauthors, get_commit_tree_paths, get_commits};
@@ -120,6 +121,7 @@ pub fn run() {
             unstage_files,
             create_commit,
             plan_commit_composition,
+            preview_commit_composition_change,
             find_buildable_commit_groups,
             apply_commit_composition,
             abort_merge,
