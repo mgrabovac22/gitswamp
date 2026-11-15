@@ -5,6 +5,10 @@ mod repositories;
 mod services;
 
 use commands::appdata::{get_app_state_path, read_app_state, write_app_state};
+use commands::branch_workflow::{
+    execute_branch_workflow, inspect_branch_workflow, preview_branch_workflow, validate_branch_workflow,
+    verify_branch_handoff,
+};
 use commands::branches::{checkout_branch, create_branch, delete_branch, get_branches};
 use commands::clone_init::{clone_repo, init_repo, initialize_empty_repo, search_commits};
 use commands::commit_composer::{
@@ -134,6 +138,11 @@ pub fn run() {
             fetch_all,
             clone_repo,
             init_repo,
+            inspect_branch_workflow,
+            validate_branch_workflow,
+            preview_branch_workflow,
+            execute_branch_workflow,
+            verify_branch_handoff,
             initialize_empty_repo,
             search_commits,
             get_commit_files,
