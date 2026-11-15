@@ -23,6 +23,7 @@ import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
 import type { GitRpgProfile } from "@/features/repository/rpg/gitRpgProfiler";
 
 const props = defineProps<{
+  workflowLabel?: string;
   loading: boolean;
   activeAction?: "pull" | "push" | "fetch" | null;
   ghostActive?: boolean;
@@ -48,6 +49,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  branchWorkflow: [];
   pull: [];
   push: [];
   fetch: [];
@@ -228,6 +230,8 @@ onUnmounted(() => {
         :loading="loading"
         :ghost-active="!!ghostActive"
         @branch="emit('branch')"
+        :workflow-label="props.workflowLabel"
+        @workflow="emit('branchWorkflow')"
         @ghost="emit('ghostBranch')"
         @materialize="emit('materializeGhostBranch')"
         @discard="emit('discardGhostBranch')"
