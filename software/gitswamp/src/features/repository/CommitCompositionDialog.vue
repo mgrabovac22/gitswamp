@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, ref, shallowRef, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, ChevronRight, GitCommitHorizontal, Hammer, Hash, Layers, Loader2, Plus, RefreshCw, Undo2 } from "lucide-vue-next";
+import { ArrowDown, ArrowUp, ChevronRight, CircleHelp, GitCommitHorizontal, Hammer, Hash, Layers, Loader2, Plus, RefreshCw, Undo2 } from "lucide-vue-next";
 import { createCommitLintEngine, inferScopeFromPaths } from "@/domain/analyzer/commitAnalyzer";
 import { COMMIT_TYPES, closingIssueTag, formatCommitSubject, normalizeCommitTag, splitCommitSubject, withClosingIssue, withCommitTag } from "@/domain/analyzer/commitSubject";
 import { getStoredCommitAnalyzerSettings } from "@/shared/config/commitAnalyzerPreferences";
@@ -16,7 +16,12 @@ type Plan = {
   branch: string; snapshot: string; changes: Change[]; units: Unit[]; groups: Draft[]; limited: boolean; dependencyNotice?: string;
   review: { findings: { path: string; line: number; kind: string }[]; skipped: string[]; large_files: { path: string; size: number }[] };
 };
-type Row = Draft & { id: number; tag: string; closeIssue: string };
+type Row = Draft & { id: number; tag: string; closeIssue: string; moved?: boolean };
+type ChangePreview = {
+  lines: { line_type: string; old_line_no?: number; new_line_no?: number; content: string }[];
+  binary: boolean;
+  limited: boolean;
+};
 
 const props = defineProps<{ repoPath: string }>();
 const emit = defineEmits<{ close: []; committed: [count: number] }>();
@@ -24,6 +29,11 @@ const dialog = ref<HTMLDialogElement>();
 const plan = shallowRef<Plan>();
 const rows = ref<Row[]>([]);
 const selected = ref(0);
+const selectedChange = ref<number>();
+const diffPanel = ref<HTMLElement>();
+const preview = shallowRef<ChangePreview>();
+const previewError = ref("");
+const previewLoading = ref(false);
 const loading = ref(true);
 const pending = ref<"regroup" | "create" | "">("");
 const saving = computed(() => !!pending.value);
@@ -40,6 +50,7 @@ const analyzer = createCommitLintEngine();
 const settings = getStoredCommitAnalyzerSettings();
 let nextId = 0;
 let secretCheck = false;
+let previewQueue = Promise.resolve();
 
 const row = computed(() => rows.value.find(group => group.id === selected.value));
 const builder = computed(() => splitCommitSubject(row.value?.subject ?? ""));
@@ -77,12 +88,49 @@ const summaries = computed(() => rows.value.map(group => {
       /[\u0000-\u001f\u007f]/.test(group.subject) || !group.units.length || !!findings?.errors.length };
 }));
 const activeSummary = computed(() => summaries.value[activeIndex.value]);
+// Keep the submitted series oldest first; the graph-style list presents it in reverse.
+const history = computed(() => rows.value.map((group, index) => ({ group, index, summary: summaries.value[index] })).reverse());
+const activeChange = computed(() => selectedChange.value === undefined ? undefined : plan.value?.changes[selectedChange.value]);
+const destinations = computed(() => history.value.filter(entry => entry.group.id !== selected.value));
+const statuses: Record<string, [string, string]> = {
+  added: ["+", "Added"], modified: ["M", "Modified"], deleted: ["−", "Deleted"],
+  renamed: ["R", "Renamed"], typechange: ["T", "Type changed"],
+};
+const status = (value: string) => statuses[value] ?? ["?", value];
 const canReview = computed(() => plan.value && !loading.value && !saving.value && rows.value.length &&
   !summaries.value.some(group => group.invalid) && !plan.value.review.large_files.length);
 const canConfirm = computed(() => canReview.value && (!warnings.value || acceptedWarnings.value) &&
   (!verifyBuild.value || !!buildCommand.value.trim()));
 watch([buildCommand, verifyBuild, () => rows.value.map(group => group.units.join(",")).join(";")],
   () => { buildStatus.value = ""; }, { flush: "sync" });
+watch(selected, () => { selectedChange.value = undefined; });
+watch([selectedChange, () => plan.value?.snapshot], ([change, snapshot], _, onCleanup) => {
+  preview.value = undefined;
+  previewError.value = "";
+  previewLoading.value = change !== undefined && !!snapshot;
+  if (change === undefined || !snapshot) return;
+  let current = true;
+  const timer = window.setTimeout(() => {
+    previewQueue = previewQueue.then(async () => {
+      if (!current) return;
+      try {
+        const result = await invoke<ChangePreview>("preview_commit_composition_change", {
+          path: props.repoPath, snapshot, secretCheck, change,
+        });
+        if (current) preview.value = result;
+      } catch (failure) {
+        if (current) previewError.value = String(failure);
+      } finally {
+        if (current) {
+          previewLoading.value = false;
+          await nextTick();
+          if (current) diffPanel.value?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      }
+    });
+  }, 120);
+  onCleanup(() => { current = false; window.clearTimeout(timer); });
+});
 
 function newRow(draft: Draft): Row {
   const parts = splitCommitSubject(draft.subject);
@@ -104,7 +152,7 @@ async function generate() {
     const result = await invoke<Plan>("plan_commit_composition", { path: props.repoPath, secretCheck });
     plan.value = result;
     rows.value = result.groups.map(newRow);
-    selected.value = rows.value[0]?.id ?? 0;
+    selected.value = rows.value[rows.value.length - 1]?.id ?? 0;
   } catch (failure) {
     error.value = String(failure);
   } finally {
@@ -157,7 +205,11 @@ function move(unit: number, destination: string) {
   if (destination === "new") {
     rows.value.splice(activeIndex.value + 1, 0, target);
   }
+  if (selectedChange.value !== undefined && plan.value?.units[unit].changes.includes(selectedChange.value)) {
+    selectedChange.value = undefined;
+  }
   target.units.push(unit);
+  target.moved = source.moved = true;
   source.units = source.units.filter(id => id !== unit);
   if (!source.units.length) {
     rows.value = rows.value.filter(group => group.id !== source.id);
@@ -174,7 +226,7 @@ function addGroup() {
 function removeEmpty() {
   if (!row.value || row.value.units.length) return;
   rows.value.splice(activeIndex.value, 1);
-  selected.value = rows.value[0]?.id ?? 0;
+  selected.value = rows.value[rows.value.length - 1]?.id ?? 0;
 }
 
 function draftsForReview(): Draft[] {
@@ -216,7 +268,7 @@ async function findBuildableGroups() {
       return { ...newRow(group), tag: appliedTag.value };
     });
     rows.value = next;
-    selected.value = next.find(group => !original.some(old => old.id === group.id))?.id ?? next[0]?.id ?? 0;
+    selected.value = next.find(group => !original.some(old => old.id === group.id))?.id ?? next[next.length - 1]?.id ?? 0;
     buildStatus.value = `Build passed. Review the new messages and issue tags (${original.length} to ${next.length} commits).`;
   } catch (failure) {
     error.value = String(failure);
@@ -265,7 +317,7 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 </script>
 
 <template>
-  <dialog ref="dialog" data-commit-composer class="composer" aria-labelledby="compose-title" @cancel.prevent="close">
+  <dialog ref="dialog" data-commit-composer class="composer" :class="{ 'composer-ready': plan }" aria-labelledby="compose-title" @cancel.prevent="close">
     <header class="composer-header">
       <Layers :size="20" class="composer-icon" />
       <div class="composer-heading">
@@ -287,15 +339,22 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
       </div>
       <div class="composer-grid">
         <section class="composer-history" aria-label="Proposed commits">
-          <header><span>Commits</span><span>{{ rows.length }}</span></header>
+          <header>
+            <span>Commits · {{ rows.length }}</span>
+            <span class="composer-order">
+              Newest first
+              <button type="button" aria-label="Commit order" aria-describedby="composer-order-help"><CircleHelp :size="14" /></button>
+              <span id="composer-order-help" class="composer-tooltip" role="tooltip">Like the Git graph, the newest commit is at the top. Commits are created from bottom to top.</span>
+            </span>
+          </header>
           <ol class="composer-list">
-            <li v-for="(group, index) in rows" :key="group.id">
-              <button type="button" class="composer-row" :title="summaries[index].subject || 'Untitled commit'"
+            <li v-for="{ group, index, summary } in history" :key="group.id">
+              <button type="button" class="composer-row" :title="summary.subject || 'Untitled commit'"
                 :aria-current="selected === group.id ? 'step' : undefined" :disabled="saving" @click="selected = group.id">
                 <span class="composer-node"><GitCommitHorizontal :size="15" /></span>
                 <span class="composer-row-text">
-                  <strong>{{ summaries[index].subject || 'Untitled commit' }}</strong>
-                  <small>Commit {{ index + 1 }} · {{ summaries[index].files }} {{ summaries[index].files === 1 ? 'file' : 'files' }}</small>
+                  <strong>{{ summary.subject || 'Untitled commit' }}</strong>
+                  <small>Commit {{ index + 1 }} · {{ summary.files }} {{ summary.files === 1 ? 'file' : 'files' }}</small>
                 </span>
                 <ChevronRight :size="14" class="composer-chevron" />
               </button>
@@ -307,8 +366,8 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
             <strong>Commit {{ activeIndex + 1 }}</strong>
             <div class="composer-actions">
               <button type="button" title="Visual Commit Builder" aria-label="Visual Commit Builder" :aria-pressed="useBuilder" :disabled="saving" @click="useBuilder = !useBuilder"><Hammer :size="15" /></button>
-              <button type="button" title="Move commit up" aria-label="Move commit up" :disabled="saving || activeIndex === 0" @click="reorder(-1)"><ArrowUp :size="15" /></button>
-              <button type="button" title="Move commit down" aria-label="Move commit down" :disabled="saving || activeIndex === rows.length - 1" @click="reorder(1)"><ArrowDown :size="15" /></button>
+              <button type="button" title="Move commit up" aria-label="Move commit up" :disabled="saving || activeIndex === rows.length - 1" @click="reorder(1)"><ArrowUp :size="15" /></button>
+              <button type="button" title="Move commit down" aria-label="Move commit down" :disabled="saving || activeIndex === 0" @click="reorder(-1)"><ArrowDown :size="15" /></button>
             </div>
           </div>
           <fieldset v-if="useBuilder" class="composer-builder" aria-label="Visual Commit Builder">
@@ -349,27 +408,58 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
           <ul v-if="activeSummary?.findings?.findings.length" class="composer-lint" aria-label="Commit message checks">
             <li v-for="finding in activeSummary.findings.findings" :key="finding.id" :class="{ 'composer-error': finding.severity === 'error' }">{{ finding.message }}</li>
           </ul>
-          <ul v-if="row.units.length" class="composer-files" aria-label="Change sets">
-            <li v-for="unit in row.units" :key="unit">
-              <div class="composer-paths">
-                <div v-for="file in filesFor([unit])" :key="`${file.path}:${file.chunk?.newStart ?? 0}`">
-                  <code :title="file.path">{{ file.oldPath ? file.oldPath + ' → ' : '' }}{{ file.path }}</code>
-                  <span :title="file.partial ? 'Unstaged edits to this file will stay local' : undefined">{{ file.partial ? 'Staged only' : file.status }}</span>
-                  <span v-if="file.chunk" class="composer-hunk">
-                    {{ file.chunk.scope }} · L{{ file.chunk.newStart }}–{{ file.chunk.newStart + Math.max(file.chunk.newLines - 1, 0) }}
-                  </span>
+          <p v-if="row.moved" class="composer-lint" role="status">Files moved. Review the subject and description.</p>
+          <div v-if="row.units.length" class="composer-changes">
+            <header class="composer-changes-header"><strong>Changed files</strong><span>{{ activeSummary?.files }}</span></header>
+            <ul class="composer-files" aria-label="Changed files">
+              <template v-for="unit in row.units" :key="unit">
+                <li v-for="(change, index) in plan.units[unit].changes" :key="change">
+                  <button type="button" class="composer-file" :aria-pressed="selectedChange === change"
+                    :disabled="saving" :title="plan.changes[change].path"
+                    @click="selectedChange = selectedChange === change ? undefined : change">
+                    <span class="composer-file-status" :data-status="plan.changes[change].status" :title="status(plan.changes[change].status)[1]">
+                      <span aria-hidden="true">{{ status(plan.changes[change].status)[0] }}</span>
+                      <span class="sr-only">{{ status(plan.changes[change].status)[1] }}</span>
+                    </span>
+                    <span class="composer-paths">
+                      <code>{{ plan.changes[change].oldPath ? plan.changes[change].oldPath + ' → ' : '' }}{{ plan.changes[change].path }}</code>
+                      <small v-if="plan.changes[change].partial">Staged only</small>
+                      <small v-if="plan.changes[change].chunk" class="composer-hunk">
+                        {{ plan.changes[change].chunk!.scope }} · L{{ plan.changes[change].chunk!.newStart }}–{{ plan.changes[change].chunk!.newStart + Math.max(plan.changes[change].chunk!.newLines - 1, 0) }}
+                      </small>
+                    </span>
+                    <ChevronRight :size="13" class="composer-chevron" />
+                  </button>
+                  <select v-if="index === 0" :aria-label="'Move ' + plan.changes[change].path"
+                    :title="plan.units[unit].changes.length > 1 ? 'These changes must move together to keep the Git tree valid.' : 'Move this change to another commit'"
+                    :disabled="saving" value="" @change="move(unit, ($event.target as HTMLSelectElement).value)">
+                    <option value="" disabled>{{ plan.units[unit].changes.length > 1 ? 'Move linked files' : 'Move to…' }}</option>
+                    <option v-for="entry in destinations" :key="entry.group.id" :value="entry.group.id">
+                      {{ entry.index + 1 }}. {{ entry.summary.subject || 'Untitled commit' }}
+                    </option>
+                    <option v-if="rows.length < 20" value="new">New commit</option>
+                  </select>
+                  <span v-else class="composer-linked">Moves together</span>
+                </li>
+              </template>
+            </ul>
+            <section v-if="activeChange" ref="diffPanel" class="composer-diff" aria-label="File diff">
+              <header><strong>Diff</strong><code :title="activeChange.path">{{ activeChange.path }}</code></header>
+              <p v-if="previewLoading" class="composer-diff-note" role="status"><Loader2 :size="13" class="animate-spin" /> Loading diff</p>
+              <p v-else-if="previewError" class="composer-diff-note composer-error" role="alert">{{ previewError }}</p>
+              <template v-else-if="preview">
+                <p v-if="preview.binary" class="composer-diff-note">Binary file.</p>
+                <div v-else-if="preview.lines.length" class="composer-diff-lines" tabindex="0" aria-label="Diff lines">
+                  <div v-for="(line, index) in preview.lines" :key="index" :data-line="line.line_type">
+                    <span aria-hidden="true">{{ line.old_line_no }}</span><span aria-hidden="true">{{ line.new_line_no }}</span>
+                    <span aria-hidden="true">{{ line.line_type === 'addition' ? '+' : line.line_type === 'deletion' ? '−' : ' ' }}</span><code>{{ line.content }}</code>
+                  </div>
                 </div>
-              </div>
-              <select aria-label="Move change set" title="Move change set" :disabled="saving"
-                :value="''" @change="move(unit, ($event.target as HTMLSelectElement).value)">
-                <option value="" disabled>Move to…</option>
-                <option v-for="(group, index) in rows.filter(candidate => candidate.id !== row?.id)" :key="group.id" :value="group.id">
-                  {{ rows.findIndex(candidate => candidate.id === group.id) + 1 }}. {{ group.subject || 'Untitled commit ' + (index + 1) }}
-                </option>
-                <option v-if="rows.length < 20" value="new">New commit</option>
-              </select>
-            </li>
-          </ul>
+                <p v-else-if="!preview.limited" class="composer-diff-note">No text changes.</p>
+                <p v-if="preview.limited" class="composer-diff-note">{{ preview.lines.length ? 'Diff preview shortened.' : 'File is too large for an inline diff.' }}</p>
+              </template>
+            </section>
+          </div>
           <button v-else class="composer-empty" type="button" :disabled="saving" @click="removeEmpty">Remove empty commit</button>
         </section>
       </div>
@@ -423,7 +513,9 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 </template>
 
 <style scoped>
-.composer { margin: auto; width: min(840px, calc(100vw - 24px)); max-height: min(760px, calc(100vh - 24px)); padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); color: var(--foreground); box-shadow: 0 18px 70px #0005; overflow: auto; }
+.composer { margin: auto; width: min(1040px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); color: var(--foreground); box-shadow: 0 18px 70px #0005; overflow: auto; }
+.composer[open].composer-ready { display: flex; flex-direction: column; height: min(900px, calc(100dvh - 24px)); overflow: hidden; }
+.composer-ready > :not(.composer-grid) { flex-shrink: 0; }
 .composer::backdrop { background: #0007; }
 .composer-header, .composer-footer { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
 .composer-header { border-bottom: 1px solid var(--border); }
@@ -432,9 +524,14 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-heading h2 { font-size: 16px; font-weight: 700; margin: 0; }
 .composer-heading span { font-size: 11px; color: var(--muted-foreground); }
 .experiment { font-size: 11px; font-weight: 650; color: #086243; background: #dcfce7; border: 1px solid #76cf9e; padding: 3px 6px; border-radius: 4px; flex-shrink: 0; }
-.composer-grid { display: grid; grid-template-columns: minmax(195px, 34%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 280px; max-height: min(530px, 58vh); overflow: hidden; }
+.composer-grid { display: grid; flex: 1; grid-template-columns: minmax(220px, 34%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; overflow: hidden; }
 .composer-history { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
-.composer-history > header { display: flex; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-weight: 650; }
+.composer-history > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-weight: 650; }
+.composer-order { position: relative; display: flex; align-items: center; gap: 4px; }
+.composer-order button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: var(--muted-foreground); }
+.composer-order button:hover, .composer-order button:focus-visible { color: var(--primary); }
+.composer-tooltip { display: none; position: absolute; inset: calc(100% + 4px) 0 auto auto; z-index: 2; width: 200px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--popover); color: var(--foreground); font-weight: 400; box-shadow: 0 4px 14px #0002; pointer-events: none; }
+.composer-order:hover .composer-tooltip, .composer-order:focus-within .composer-tooltip { display: block; }
 .composer-list, .composer-editor { min-width: 0; min-height: 0; overflow: auto; }
 .composer-list { margin: 0; padding: 0; list-style: none; }
 .composer-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) 14px; align-items: center; gap: 8px; width: 100%; min-height: 56px; padding: 6px 9px; border: 0; border-left: 3px solid transparent; border-bottom: 1px solid var(--border); font-size: 12px; text-align: left; transition: background-color .12s, border-color .12s; }
@@ -445,7 +542,7 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-row:not(:disabled):hover { background: var(--secondary); }
 .composer-row[aria-current] { border-left-color: var(--primary); background: var(--secondary); box-shadow: inset 0 0 0 1px var(--border); }
 .composer-row[aria-current] :is(.composer-chevron, .composer-node) { color: var(--primary); }
-.composer-editor { padding: 12px; }
+.composer-editor { padding: 12px 14px; overscroll-behavior: contain; }
 .composer-editor-header, .composer-actions { display: flex; align-items: center; gap: 6px; }
 .composer-editor-header { justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
 .composer-field { display: grid; gap: 3px; margin-bottom: 8px; font-size: 12px; }
@@ -467,12 +564,33 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-closing { display: block; margin-bottom: 8px; color: var(--muted-foreground); font-size: 11px; }
 .composer-lint { margin: 6px 0 8px; font-size: 11px; color: var(--muted-foreground); }
 .composer-error { color: var(--destructive); overflow-wrap: anywhere; }
-.composer-files li { display: flex; align-items: center; justify-content: space-between; gap: 6px; border-top: 1px solid var(--border); padding: 7px 0; font-size: 11px; }
-.composer-files select { width: 114px; flex-shrink: 0; }
-.composer-paths { min-width: 0; }
-.composer-paths div { display: flex; flex-wrap: wrap; gap: 2px 6px; overflow-wrap: anywhere; }
-.composer-paths span { color: var(--muted-foreground); }
+.composer-changes { border-top: 1px solid var(--border); }
+.composer-changes-header, .composer-diff > header { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 12px; }
+.composer-changes-header span, .composer-linked { color: var(--muted-foreground); font-size: 11px; }
+.composer-files { max-height: min(225px, 27vh); overflow: auto; }
+.composer-files li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(82px, 120px); align-items: center; gap: 8px; border-top: 1px solid var(--border); padding: 3px 3px 3px 0; font-size: 11px; }
+.composer-files select { width: 100%; min-height: 28px; text-overflow: ellipsis; }
+.composer-file { display: grid; grid-template-columns: 19px minmax(0, 1fr) 13px; gap: 5px; align-items: center; text-align: left; width: 100%; min-height: 35px; padding: 4px; border: 1px solid transparent; border-radius: 4px; }
+.composer-file:hover, .composer-file[aria-pressed="true"] { background: var(--secondary); }
+.composer-file[aria-pressed="true"] { border-color: var(--primary); }
+.composer-file-status { font: 700 12px monospace; text-align: center; }
+.composer-file-status[data-status="added"] { color: #10b981; }
+.composer-file-status[data-status="modified"], .composer-file-status[data-status="typechange"] { color: #f59e0b; }
+.composer-file-status[data-status="deleted"] { color: #ef4444; }
+.composer-file-status[data-status="renamed"] { color: #06b6d4; }
+.composer-paths { display: flex; flex-wrap: wrap; min-width: 0; gap: 2px 8px; overflow-wrap: anywhere; }
+.composer-paths small { color: var(--muted-foreground); }
 .composer-paths .composer-hunk { color: var(--primary); font-family: monospace; }
+.composer-diff { margin-top: 4px; border-top: 1px solid var(--border); }
+.composer-diff > header code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-size: 11px; }
+.composer-diff-note { display: flex; gap: 6px; align-items: center; font-size: 11px; margin: 4px 0; overflow-wrap: anywhere; }
+.composer-diff-lines { max-height: 190px; overflow: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--input-background); font: 11px/1.55 monospace; }
+.composer-diff-lines > div { display: grid; grid-template-columns: 4ch 4ch 2ch max-content; width: max-content; min-width: 100%; min-height: 17px; padding-inline: 4px; }
+.composer-diff-lines span { text-align: center; color: var(--muted-foreground); }
+.composer-diff-lines code { white-space: pre; }
+.composer-diff-lines [data-line="addition"] { background: color-mix(in srgb, #10b981 14%, transparent); }
+.composer-diff-lines [data-line="deletion"] { background: color-mix(in srgb, #ef4444 14%, transparent); }
+.composer-diff-lines [data-line="hunk"] { background: var(--secondary); color: var(--muted-foreground); }
 .composer-notices, .composer-apply-error { border-top: 1px solid var(--border); padding: 8px 14px; max-height: 130px; overflow: auto; font-size: 12px; overflow-wrap: anywhere; }
 .composer-notices label { display: flex; align-items: center; gap: 6px; }
 .composer-state { display: flex; align-items: center; gap: 8px; padding: 24px 14px; font-size: 13px; overflow-wrap: anywhere; }
@@ -491,10 +609,14 @@ onMounted(() => { dialog.value?.showModal(); void generate(); });
 .composer-actions .composer-confirm:not(:disabled):hover { background: color-mix(in srgb, var(--primary) 84%, var(--foreground)); color: var(--primary-foreground); }
 .composer button:disabled { opacity: .5; }
 @media (max-width: 570px) {
-  .composer-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); max-height: 57vh; }
+  .composer-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(66px, 28%) minmax(0, 1fr); }
   .composer-history { border-right: 0; border-bottom: 1px solid var(--border); max-height: 140px; }
   .composer-header { gap: 6px; padding: 8px; }
   .experiment { max-width: 86px; white-space: normal; }
   .composer-bulk input { width: min(84px, 25vw); }
+}
+@media (max-height: 540px) {
+  .composer[open].composer-ready { overflow-y: auto; }
+  .composer-grid { flex-basis: 280px; flex-shrink: 0; }
 }
 </style>
