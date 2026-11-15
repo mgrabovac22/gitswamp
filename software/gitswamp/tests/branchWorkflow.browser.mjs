@@ -33,10 +33,15 @@ window.testInvoke=async (command,args)=>{
   if (command === 'validate_branch_workflow') return;
   if (command === 'preview_branch_workflow') {
     if (args.request.action === 'handoff') {
-      return {token:'handoff', steps:[], comparisons:[{target:'main',ahead:2,behind:1,conflicts:!window.cleanHandoff}],
-        handoff:{source:'change/search',target:'main',published:true,checkpoint:{changedPaths:4,testPaths:1}}};
+      return {token:'handoff', steps:[], comparisons:[{target:'main',ahead:2,behind:1,conflicts:!window.cleanHandoff,conflictPaths:window.cleanHandoff?[]:['shared.txt']}],
+        handoff:{source:'change/search',target:'main',published:true,remote:'origin',targetFetched:true,sourceSync:'in-sync',
+          checkpoint:{changedPaths:4,testPaths:1,reviewAreas:['Schema and migrations'],commits:[{sha:'abcd1234',subject:'Review search'}]}}};
     }
     return {token:'reviewed', steps:['Create and switch to '+args.config.feature+args.request.name+' from '+args.config.development], comparisons:[], handoff:null};
+  }
+  if (command === 'verify_branch_handoff') {
+    if (window.staleHandoff) throw Error('The reviewed refs changed. Preview the handoff again.');
+    return;
   }
   if (command === 'execute_branch_workflow') return {status:'applied', completed:['Created feature/search'], remaining:[], error:null};
   return null;
@@ -54,6 +59,7 @@ createApp({render:()=>{
     h(BranchQuickActions,{loading:false,ghostActive:false,workflowLabel,onWorkflow:()=>open.value=true}),
     h('div',{style:'height:380px'},[h(CommitGraph,{repoPath:repo.value,commits:[],selected:null,hasWorkingChanges:true,currentBranch:'main',headSha:'111',workflowLabel,onBranchWorkflow:()=>open.value=true})]),
     open.value ? h(Dialog,{key:repo.value,repoPath:repo.value,canOpenPullRequest:repo.value==='repo-c',remoteName:'origin',
+      fetchRefs:async()=>{window.cleanHandoff=true;window.fetches=(window.fetches||0)+1;},
       onClose:()=>open.value=false,onSaved:()=>note.value++,onOutcome:r=>window.outcome=r,onPullRequest:draft=>window.handoff=draft}) : null,
     h(InitDialog,{visible:init.value,onInit:(path,branch,workflow)=>{window.initialized={path,branch,workflow};init.value=false;}})
   ];
@@ -153,14 +159,34 @@ try {
   await modal.getByRole("button", { name: "Save strategy", exact: true }).click();
   await modal.getByRole("button", { name: "Review pull request handoff", exact: true }).click();
   await modal.getByRole("button", { name: "Preview", exact: true }).click();
-  await modal.getByText("Conflicts detected in the merge preview.", { exact: true }).waitFor();
+  await modal.getByText("Resolve merge conflicts first", { exact: true }).waitFor();
+  await modal.getByText("shared.txt", { exact: true }).waitFor();
   assert.ok(await modal.getByRole("button", { name: "Open pull request form", exact: true }).isDisabled());
-  await modal.getByRole("button", { name: "Back", exact: true }).click();
-  await page.evaluate(() => { window.cleanHandoff = true; });
-  await modal.getByRole("button", { name: "Preview", exact: true }).click();
+  await modal.getByRole("button", { name: "Fetch & recheck", exact: true }).click();
+  await modal.getByText("Ready for pull request review", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.fetches), 1);
   await modal.getByText(/4 changed paths/).waitFor();
+  await modal.getByText("Recent source commits (1)", { exact: true }).click();
+  await modal.getByText("Review search", { exact: false }).waitFor();
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await modal.getByRole("button", { name: "Copy notes", exact: true }).click();
+  await modal.getByText("Handoff notes copied.", { exact: true }).waitFor();
+  assert.match(await page.evaluate(() => navigator.clipboard.readText()), /Schema and migrations/);
+  await modal.getByRole("checkbox", { name: "Include handoff notes in PR" }).check();
+  assert.ok(await modal.evaluate(el => el.scrollWidth <= el.clientWidth));
+  await page.screenshot({ path: path.join(root, "src-tauri/target/branch-workflow-handoff.png") });
+  await page.evaluate(() => { window.staleHandoff = true; });
   await modal.getByRole("button", { name: "Open pull request form", exact: true }).click();
+  await modal.getByText(/reviewed refs changed/).waitFor();
+  assert.equal(await page.evaluate(() => window.handoff), undefined);
+  await page.evaluate(() => { window.staleHandoff = false; });
+  await modal.getByRole("button", { name: "Recheck", exact: true }).click();
+  await modal.getByRole("button", { name: "Open pull request form", exact: true }).click();
+  await page.waitForFunction(() => !!window.handoff);
   assert.equal(await page.evaluate(() => window.handoff.target), "main");
+  const description = await page.evaluate(() => window.handoff.description);
+  assert.ok(description.includes("Schema and migrations") && description.includes("- [ ]"));
+  assert.ok(!description.includes("Review search"));
   await modal.getByTitle("Close branching workflow", { exact: true }).click();
   await page.setViewportSize({ width: 1100, height: 760 });
   await page.evaluate(() => window.showInit());
