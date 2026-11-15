@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { createServer } from "vite";
+import { build } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -10,7 +11,7 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const root = fileURLToPath(new URL("..", import.meta.url));
 const html = `<!doctype html><html class="light"><head><style>html,body,#app{margin:0;height:100%}</style></head><body><div id="app"></div><script type="module">
-import {createApp,h} from '/node_modules/.vite-composer-test/deps/vue.js';
+import {createApp,h} from 'vue';
 import Details from '/src/view/commit/CommitDetails.vue';
 import {extraViewShortcut} from '/src/features/shell/keyboardShortcuts.ts';
 import '/src/styles/index.css';
@@ -24,11 +25,13 @@ const units=[{id:0,changes:[0]},{id:1,changes:[2]},{id:2,changes:[1]}];
 window.testInvoke = async (command, args)=>{
   if (command==='plan_commit_composition') {
     window.plans = (window.plans || 0) + 1;
+    const extra = window.incompleteAnalysis ? Array.from({length:55}, (_, i)=>({path:'docs/example-'+i+'.md',status:'added',staged:false,partial:false,added:1,removed:0,kind:'docs'})) : [];
+    const extraUnits = extra.map((_, i)=>({id:units.length+i,changes:[changes.length+i]}));
     return {
-    branch:'main',snapshot:'fixture',changes,units,limited:false,
+    branch:'main',snapshot:'fixture',changes:[...changes,...extra],units:[...units,...extraUnits],limited:false,maxGroups:40,requiresBuildVerification:!!window.incompleteAnalysis,
     groups:[
       {subject:'Fix(auth): Handle missing login state',description:'Handle a missing session.',units:[0,2]},
-      {subject:'Docs: Document account setup',description:'Describe the login flow.',units:[1]},
+      {subject:'Docs: Document account setup',description:'Describe the login flow.',units:[1,...extraUnits.map(unit=>unit.id)]},
     ],
     review:{findings:[],skipped:[],large_files:[]},
     };
@@ -60,33 +63,49 @@ createApp({render:()=>h(Details,{repoPath:'fixture',commit:null,commitFiles:[],i
   unstagedFiles:[{path:'docs/usage.md',status:'modified',staged:false}],
   onRefreshState:()=>window.refreshed=true})}).mount('#app');
 </script></body></html>`;
-const server = await createServer({
-  root, configFile: false, cacheDir: "node_modules/.vite-composer-test",
+const [head, moduleScript] = html.split('<script type="module">');
+const result = await build({
+  root, configFile: false, publicDir: false, logLevel: "error",
   plugins: [{
     name: "composer-test", enforce: "pre",
-    resolveId(id) { if (id === "@tauri-apps/api/core") return "\0composer-test-core"; },
-    load(id) { if (id === "\0composer-test-core") return "export const invoke=(...args)=>window.testInvoke(...args);"; },
-    configureServer(vite) {
-      vite.middlewares.use((req, res, next) => {
-        if (req.url !== "/__composer__") return next();
-        void vite.transformIndexHtml(req.url, html).then(body => { res.setHeader("Content-Type", "text/html"); res.end(body); }).catch(next);
-      });
+    resolveId(id) {
+      if (id === "virtual:composer-test") return "\0composer-entry";
+      if (id === "@tauri-apps/api/core") return "\0composer-test-core";
+    },
+    load(id) {
+      if (id === "\0composer-entry") return moduleScript.split("</script>")[0];
+      if (id === "\0composer-test-core") return "export const invoke=(...args)=>window.testInvoke(...args);";
     },
   }, vue(), tailwindcss()],
   resolve: { alias: { "@": path.join(root, "src") } },
-  optimizeDeps: { entries: [], noDiscovery: true, include: ["vue", "lucide-vue-next", "class-variance-authority", "clsx", "tailwind-merge", "highlight.js/lib/common"] },
-  server: { port: 0, host: "127.0.0.1" },
+  build: { write: false, minify: false, cssCodeSplit: false, rollupOptions: { input: "virtual:composer-test" } },
+});
+const assets = new Map(result.output.map(asset => ["/" + asset.fileName, asset]));
+const script = "/" + result.output.find(asset => asset.type === "chunk" && asset.isEntry).fileName;
+const css = "/" + result.output.find(asset => asset.fileName.endsWith(".css")).fileName;
+const server = createServer((req, res) => {
+  if (req.url === "/__composer__") {
+    res.setHeader("Content-Type", "text/html");
+    res.end(head.replace("</head>", `<link rel="stylesheet" href="${css}"></head>`)
+      + `<script type="module" src="${script}"></script></body></html>`);
+    return;
+  }
+  const asset = assets.get(new URL(req.url, "http://localhost").pathname);
+  if (!asset) return res.writeHead(404).end();
+  if (asset.type === "chunk") res.setHeader("Content-Type", "application/javascript");
+  else if (asset.fileName.endsWith(".css")) res.setHeader("Content-Type", "text/css");
+  res.end(asset.type === "chunk" ? asset.code : asset.source);
 });
 
 let browser;
 try {
-  await server.listen();
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
   const page = await browser.newPage({ viewport: { width: 1120, height: 800 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("response", response => { if (response.status() >= 400) console.error(response.status(), response.url()); });
-  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__composer__`, { waitUntil: "commit", timeout: 60000 });
+  await page.goto(`http://127.0.0.1:${server.address().port}/__composer__`);
   try { await page.getByTitle("Visual commit builder", { exact: true }).click(); }
   catch (error) { throw new Error(`Builder did not load: ${errors.join("; ")}`, { cause: error }); }
   assert.equal(await page.evaluate(() => window.plans), undefined);
@@ -205,12 +224,28 @@ try {
   await page.getByRole("button", { name: "Save", exact: true }).click();
   assert.doesNotMatch(await page.getByPlaceholder("Commit message...", { exact: true }).inputValue(), /Closes/);
   assert.equal(await page.getByPlaceholder("Description (optional)...", { exact: true }).inputValue(), "Keep repository checks intact.\n\nCloses #123");
+  await page.evaluate(() => { window.incompleteAnalysis = true; });
+  await page.getByTitle("Visual commit builder", { exact: true }).click();
+  await page.getByRole("button", { name: "Compose commits automatically", exact: true }).click();
+  await confirm.waitFor();
+  assert.ok(await confirm.isDisabled());
+  await docs.click();
+  assert.equal(await changed.locator("li").count(), 50);
+  await modal.getByRole("button", { name: "Next files", exact: true }).click();
+  assert.equal(await changed.locator("li").count(), 6);
+  await changed.getByRole("button", { name: /docs\/example-54.md/ }).waitFor();
+  await modal.getByRole("button", { name: "Previous files", exact: true }).click();
+  assert.equal(await changed.locator("li").count(), 50);
+  await modal.getByRole("checkbox", { name: "Verify every commit", exact: true }).check();
+  await modal.getByRole("textbox", { name: "Build command", exact: true }).fill("cargo check --locked");
+  assert.ok(await confirm.isEnabled());
+  await modal.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.deepEqual(errors, []);
 } finally {
-  const closing = Promise.all([browser?.close(), server.close()]);
-  server.httpServer?.closeAllConnections();
+  const closing = Promise.all([browser?.close(), new Promise(resolve => server.close(resolve))]);
+  server.closeAllConnections();
   await Promise.race([closing, new Promise((_, reject) => {
     setTimeout(() => reject(new Error("Playwright fixture did not shut down.")), 10000).unref();
   })]).catch(error => { console.error(error); process.exit(1); });
 }
-console.log("PASS: graph order, per-file moves and diff, editing, regrouping and compact layout.");
+console.log("PASS: graph order, per-file moves and diff, editing, regrouping, build verification, file paging and compact layout.");
