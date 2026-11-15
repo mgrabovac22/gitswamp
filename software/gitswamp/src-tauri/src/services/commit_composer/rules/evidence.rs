@@ -66,16 +66,6 @@ pub(super) enum Action {
     Remove,
 }
 
-impl Action {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Add => "add",
-            Self::Update => "update",
-            Self::Remove => "remove",
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq)]
 struct Item {
     topic: Topic,
