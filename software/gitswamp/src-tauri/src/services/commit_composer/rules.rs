@@ -1,4 +1,5 @@
 pub(super) mod behavior;
+mod cohesion;
 mod evidence;
 
 use std::collections::{BTreeMap, HashMap};
@@ -10,7 +11,7 @@ use super::{Change, Group, Unit};
 use behavior::{Behavior, Signal};
 use evidence::{Action, Evidence, Topic};
 
-const SUGGESTED_GROUPS: usize = 8;
+const SUGGESTED_GROUPS: usize = super::MAX_GROUPS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -47,6 +48,7 @@ const SOURCE_EXTENSIONS: &[&str] = &[
     "cuh", "tcl", "awk", "pl", "pm", "cljc", "lisp", "el", "rkt", "scm", "ocaml", "ino", "ada",
     "adb", "ads", "d", "hx", "hbs", "ejs", "erb", "jinja", "j2", "pug", "twig", "liquid", "xaml",
     "ipynb", "cob", "cbl", "mo", "raku", "for", "f03", "c3", "odin", "asm", "s", "wat", "qml",
+    "svh", "psm1", "psd1", "bas", "cls", "exp", "abap",
 ];
 
 fn basename(path: &str) -> &str {
@@ -331,6 +333,7 @@ pub(super) fn kind(path: &str, mode: u32) -> Kind {
             | "editorconfig"
             | "tf"
             | "hcl"
+            | "bicep"
     ) || name.starts_with(".env")
         || name.contains(".config.")
     {
@@ -353,10 +356,66 @@ pub(super) struct Hints {
     evidence: Evidence,
     pub(super) behavior: behavior::Summary,
     relative_links: Vec<String>,
+    data_tables: Vec<String>,
+    bodies: Vec<Body>,
+}
+
+struct Body {
+    name: String,
+    added: u32,
+    removed: u32,
+    lines: u16,
 }
 
 impl Hints {
-    pub(super) fn observe(&mut self, path: &str, kind: Kind, bytes: &[u8], addition: bool) {
+    pub(super) fn removes_symbol(&self) -> bool {
+        self.evidence
+            .facts()
+            .any(|(topic, action, _)| topic == Topic::Symbol && action == Action::Remove)
+    }
+
+    pub(super) fn observe_body(&mut self, line: behavior::Line<'_>, added: bool) {
+        self.behavior.observe(line, added);
+        if line.signature == 0 || line.scope.is_empty() {
+            return;
+        }
+        let index = match self.bodies.iter().position(|body| body.name == line.scope) {
+            Some(index) => index,
+            None if self.bodies.len() < 6 => {
+                self.bodies.push(Body {
+                    name: line.scope.into(),
+                    added: 0,
+                    removed: 0,
+                    lines: 0,
+                });
+                self.bodies.len() - 1
+            }
+            None => return,
+        };
+        let body = &mut self.bodies[index];
+        let side = if added {
+            &mut body.added
+        } else {
+            &mut body.removed
+        };
+        *side = side.wrapping_add(line.signature);
+        body.lines = body.lines.saturating_add(1);
+    }
+
+    fn changed_bodies(&self) -> impl Iterator<Item = &Body> {
+        self.bodies.iter().filter(|body| body.added != body.removed)
+    }
+}
+
+impl Hints {
+    pub(super) fn observe(
+        &mut self,
+        path: &str,
+        kind: Kind,
+        bytes: &[u8],
+        addition: bool,
+        preview: bool,
+    ) {
         let Ok(line) = std::str::from_utf8(bytes.get(..bytes.len().min(700)).unwrap_or(bytes))
         else {
             return;
@@ -387,6 +446,16 @@ impl Hints {
         {
             self.formatting = self.formatting.saturating_add(1);
             return;
+        }
+        if preview && kind == Kind::Source && self.data_tables.len() < 6 {
+            for table in cohesion::referenced_tables(line) {
+                if !self.data_tables.contains(&table) {
+                    self.data_tables.push(table);
+                    if self.data_tables.len() == 6 {
+                        break;
+                    }
+                }
+            }
         }
         if self.dependency_names.len() < 24 && kind == Kind::Build {
             let assignment = line.split_once('=').or_else(|| line.split_once(':'));
@@ -861,7 +930,6 @@ pub(super) fn atomic_units(files: &[Change]) -> Vec<Unit> {
         .iter()
         .map(|file| stem(basename(&file.path)))
         .collect();
-    let components: Vec<_> = files.iter().map(|file| component(&file.path)).collect();
     let mut unique_stems = HashMap::new();
     for (i, _) in files
         .iter()
@@ -883,7 +951,11 @@ pub(super) fn atomic_units(files: &[Change]) -> Vec<Unit> {
         }
         for (j, other) in files.iter().enumerate().take(i) {
             let intersects =
-                endpoints(file).any(|a| endpoints(other).any(|b| covers(a, b) || covers(b, a)));
+                if file.path == other.path && file.chunk.is_some() && other.chunk.is_some() {
+                    super::chunks::related(file, other)
+                } else {
+                    endpoints(file).any(|a| endpoints(other).any(|b| covers(a, b) || covers(b, a)))
+                };
             let attrs = |attr: &Change, candidate: &Change| {
                 basename(&attr.path) == ".gitattributes"
                     && candidate.new.is_some()
@@ -900,6 +972,9 @@ pub(super) fn atomic_units(files: &[Change]) -> Vec<Unit> {
                 || gitlink(other, file)
             {
                 sets.join(i, j);
+                continue;
+            }
+            if file.path == other.path {
                 continue;
             }
             let imports = |source: &Change, target: &Change| {
@@ -925,18 +1000,17 @@ pub(super) fn atomic_units(files: &[Change]) -> Vec<Unit> {
                 continue;
             }
             let (a, b) = (file.kind, other.kind);
-            let related_source =
-                |kind| matches!(kind, Kind::Source | Kind::Schema | Kind::Migration);
             let build = matching_build_files(file, other) || matching_build_files(other, file);
-            let companions = stems[i] == stems[j]
+            let native_pair = a == Kind::Source
+                && b == Kind::Source
+                && stems[i] == stems[j]
                 && !generic_stem(&stems[i])
-                && (!matches!(a, Kind::Migration) && !matches!(b, Kind::Migration)
-                    || migration_root(&file.path) == migration_root(&other.path))
-                && (related_source(a)
-                    || related_source(b)
-                    || matches!((a, b), (Kind::Test, Kind::Test)))
-                && !matches!(a, Kind::Build | Kind::Lock | Kind::Ci | Kind::Git)
-                && !matches!(b, Kind::Build | Kind::Lock | Kind::Ci | Kind::Git);
+                && directory(&file.path) == directory(&other.path)
+                && ["h", "hpp", "hh", "hxx"].contains(&extension(&file.path))
+                    != ["h", "hpp", "hh", "hxx"].contains(&extension(&other.path))
+                && ["c", "cc", "cpp", "cxx", "m", "mm", "cu"]
+                    .iter()
+                    .any(|ext| *ext == extension(&file.path) || *ext == extension(&other.path));
             let generated = matches!(
                 (a, b),
                 (Kind::Generated, Kind::Schema) | (Kind::Schema, Kind::Generated)
@@ -956,16 +1030,11 @@ pub(super) fn atomic_units(files: &[Change]) -> Vec<Unit> {
                     | (Kind::Migration, Kind::Schema)
                     | (Kind::Migration, Kind::Migration)
             ) && migration_root(&file.path) == migration_root(&other.path);
-            let supporting_config = matches!(
-                (a, b),
-                (Kind::Config, Kind::Source) | (Kind::Source, Kind::Config)
-            ) && !components[i].is_empty()
-                && components[i] == components[j]
-                && directory(&file.path) == directory(&other.path);
             let possible_move = matches!(
                 (file.status, other.status),
                 ("added", "deleted") | ("deleted", "added")
             ) && stems[i] == stems[j]
+                && !generic_stem(&stems[i])
                 && extension(&file.path) == extension(&other.path)
                 && (a != Kind::Migration && b != Kind::Migration
                     || migration_root(&file.path) == migration_root(&other.path));
@@ -980,11 +1049,10 @@ pub(super) fn atomic_units(files: &[Change]) -> Vec<Unit> {
             };
             let source_and_manifest = manifest_import(file, other) || manifest_import(other, file);
             if build
-                || companions
+                || native_pair
                 || generated
                 || template
                 || migration
-                || supporting_config
                 || possible_move
                 || source_and_manifest
             {
@@ -1122,12 +1190,16 @@ fn group_key(files: &[&Change]) -> (u8, String, Kind, u8) {
     let kind = primary(files);
     let anchor = files.iter().find(|f| f.kind == kind).unwrap();
     let module = area(&anchor.path);
-    let key = match kind {
-        Kind::Source | Kind::Test | Kind::Style | Kind::Asset | Kind::Other => {
-            format!("{module}/{}", component(&anchor.path))
+    let key = if let Some(chunk) = &anchor.chunk {
+        format!("{}/{}", anchor.path, chunk.scope)
+    } else {
+        match kind {
+            Kind::Source | Kind::Test | Kind::Style | Kind::Asset | Kind::Other => {
+                format!("{module}/{}", component(&anchor.path))
+            }
+            Kind::Migration => migration_root(&anchor.path).into(),
+            _ => module,
         }
-        Kind::Migration => migration_root(&anchor.path).into(),
-        _ => module,
     };
     let order = match kind {
         Kind::Git => 0,
@@ -1281,6 +1353,20 @@ fn subject_behavior<'a>(kind: Kind, files: &[&'a Change]) -> Option<Behavior<'a>
         })
 }
 
+fn precise_fact(topic: Topic) -> bool {
+    matches!(
+        topic,
+        Topic::Column
+            | Topic::Operation
+            | Topic::Endpoint
+            | Topic::Message
+            | Topic::Field
+            | Topic::Signal
+            | Topic::Command
+            | Topic::Constraint
+    )
+}
+
 fn behavior_sentence(change: Behavior<'_>) -> String {
     let what = change.signal.label();
     let action = if change.updated {
@@ -1311,6 +1397,14 @@ fn label_kind(kind: Kind) -> Option<&'static str> {
 }
 
 fn fact_sentence(topic: Topic, action: Action, name: &str) -> String {
+    if precise_fact(topic) {
+        let verb = match action {
+            Action::Add => "Adds",
+            Action::Update => "Changes",
+            Action::Remove => "Removes",
+        };
+        return format!("{verb} the {} `{name}`.", topic.label());
+    }
     let fact = visible_fact(topic, action, name);
     let (verb, detail) = fact.split_once(' ').unwrap_or((&fact, ""));
     let verb = match verb {
@@ -1321,25 +1415,32 @@ fn fact_sentence(topic: Topic, action: Action, name: &str) -> String {
     format!("{verb} {detail}.")
 }
 
-fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
+fn draft(files: &[&Change], unit_ids: Vec<usize>, feature: Option<&str>) -> Group {
     let kind = primary(files);
     let anchor = files.iter().find(|file| file.kind == kind).unwrap();
     let (mut prefix, mut verb) = title(kind, files);
     let scope = scope_for(files, kind);
     let anchor_target = readable(&anchor.path);
     let scope_label = readable_word(&scope);
-    let representative = subject_behavior(kind, files);
     let fact = subject_fact(kind, files);
+    let representative = subject_behavior(kind, files);
+    let lead_behavior = representative.filter(|change| {
+        !fact.is_some_and(|(topic, _, _)| topic == Topic::Route || precise_fact(topic))
+            && (!matches!(fact, Some((Topic::Symbol, Action::Add, _))) || !change.added)
+    });
+    let body = files
+        .iter()
+        .filter(|file| file.kind == kind && file.status == "modified")
+        .flat_map(|file| file.hints.changed_bodies())
+        .filter(|body| !generic_stem(&body.name))
+        .max_by_key(|body| body.lines);
     let target = if anchor.status == "renamed" && files.len() == 1 {
         verb = "Rename";
         format!(
             "{} to {anchor_target}",
             anchor.old_path.as_deref().map(readable).unwrap_or_default()
         )
-    } else if let Some(change) = representative.filter(|change| {
-        !matches!(fact, Some((Topic::Route, _, _)))
-            && (!matches!(fact, Some((Topic::Symbol, Action::Add, _))) || !change.added)
-    }) {
+    } else if let Some(change) = lead_behavior {
         verb = if change.updated {
             "Update"
         } else if change.added {
@@ -1362,9 +1463,17 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
         format!("{} in {name}", change.signal.label())
     } else if let Some((topic, action, name)) = fact {
         verb = match (topic, action) {
-            (Topic::Table | Topic::Index | Topic::View, Action::Add) => "Create",
-            (Topic::Table | Topic::Index | Topic::View, Action::Remove) => "Drop",
+            (
+                Topic::Table | Topic::Index | Topic::View | Topic::Trigger | Topic::Policy,
+                Action::Add,
+            ) => "Create",
+            (
+                Topic::Table | Topic::Index | Topic::View | Topic::Trigger | Topic::Policy,
+                Action::Remove,
+            ) => "Drop",
             (Topic::Section, _) => "Document",
+            (Topic::Endpoint, Action::Add) => "Expose",
+            (Topic::Command, Action::Add) => "Define",
             (_, Action::Add) => "Add",
             (_, Action::Update) => "Update",
             (_, Action::Remove) => "Remove",
@@ -1377,6 +1486,14 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
             Topic::Route => format!("{} route in {anchor_target}", name.to_ascii_uppercase()),
             _ => format!("{} {name}", topic.label()),
         }
+    } else if let Some(chunk) = &anchor.chunk {
+        verb = "Update";
+        readable_word(&chunk.scope)
+    } else if let Some(body) = body {
+        verb = "Revise";
+        readable_word(&body.name)
+    } else if let Some(feature) = feature {
+        format!("{feature} implementation")
     } else if files.len() > 1 && !matches!(scope.as_str(), "core" | "repo") {
         scope_label.clone()
     } else {
@@ -1406,17 +1523,54 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
         .to_owned();
     let mut description = String::new();
     let mut described = Vec::new();
-    if let Some(change) = representative {
+    if let Some(change) = lead_behavior {
         described.push((change.signal, change.scope, change.added, change.updated));
         description.push_str(&behavior_sentence(change));
     } else if let Some((topic, action, name)) = fact {
         description.push_str(&fact_sentence(topic, action, name));
+    } else if let Some(body) = body {
+        description.push_str(&format!("Changes the implementation in `{}`.", body.name));
     } else if files.len() == 1 && anchor.status == "renamed" {
         description.push_str(&format!(
             "Renames `{}` to `{}`.",
             anchor.old_path.as_deref().unwrap_or(&anchor.path),
             anchor.path
         ));
+    }
+    if let Some(change) = lead_behavior {
+        use behavior::Signal::*;
+        let reason = match change.signal {
+            NullGuard if change.added => Some("This makes the missing-value path explicit before downstream code can use that value."),
+            BoundsGuard if change.added => Some("This handles out-of-range input before the affected operation proceeds."),
+            InputValidation if change.added => Some("This gives the affected input an explicit validation step."),
+            Authorization if change.added => Some("This puts an explicit permission check on the affected path."),
+            ResourceCleanup if change.added => Some("This gives the affected resource an explicit cleanup step."),
+            Timeout if change.updated => Some("This changes how long the affected operation is allowed to wait."),
+            DatabaseRead if change.added => Some("The affected path now reads data through a database query."),
+            DatabaseWrite if change.added => Some("The affected path now includes an explicit database write step."),
+            Transaction if change.added => Some("This places the affected database work under explicit transactional control."),
+            Authentication if change.added => Some("The affected path now checks the caller's identity."),
+            PasswordHandling if change.added => Some("This adds an explicit password-handling step to the authentication path."),
+            TokenHandling if change.added => Some("This makes token processing explicit on the affected path."),
+            SessionHandling if change.added => Some("This adds an explicit step to the session lifecycle."),
+            BusinessRules if change.added => Some("The affected operation now evaluates an additional business rule."),
+            Pagination if change.added => Some("This introduces page-based or cursor-based handling for the affected results."),
+            DataFiltering if change.added => Some("The affected path now narrows results using an explicit filter."),
+            DataOrdering if change.added => Some("The affected path now applies an explicit sort order."),
+            FeatureFlags if change.added => Some("The affected behavior now consults a feature flag."),
+            RateLimiting if change.added => Some("The affected operation now consults a rate limiter."),
+            JobDispatch if change.added => Some("The affected path now hands work off to a background job."),
+            DataRedaction if change.added => Some("Adds an explicit step to remove or mask sensitive data."),
+            Idempotency if change.added => Some("The affected operation now has an explicit check for repeat execution."),
+            Lifecycle if change.added => Some("Registers work to run at a lifecycle boundary."),
+            Routing if change.added => Some("This exposes an additional route through the application's routing layer."),
+            EventHandling if change.added => Some("This connects the affected component to its event source."),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            description.push(' ');
+            description.push_str(reason);
+        }
     }
     let mut details = 0;
     for file in files {
@@ -1441,6 +1595,24 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
             details += 1;
         }
     }
+    let mut structural = Vec::new();
+    for (topic, action, name) in files.iter().flat_map(|file| useful_facts(file)) {
+        if structural.len() == 2 {
+            break;
+        }
+        let key = (topic, action, name);
+        if Some(key) == fact && lead_behavior.is_none()
+            || structural.contains(&key)
+            || !precise_fact(topic)
+        {
+            continue;
+        }
+        structural.push(key);
+        if !description.is_empty() {
+            description.push(' ');
+        }
+        description.push_str(&fact_sentence(topic, action, name));
+    }
     let mut supporting = Vec::new();
     for file in files.iter().filter(|file| file.kind != kind) {
         if let Some(label) = label_kind(file.kind) {
@@ -1456,7 +1628,9 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
         ));
     }
     if description.is_empty() {
-        let target = if anchor_target.is_empty() {
+        let target = if let Some(feature) = feature {
+            feature
+        } else if anchor_target.is_empty() {
             scope_label.as_str()
         } else {
             anchor_target.as_str()
@@ -1482,14 +1656,17 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
         };
         description.push_str(&format!("{action} {activity} for {target}."));
     }
-    if !description.is_empty() {
-        description.push_str("\n\n");
-    }
+    let mut description = wrap_paragraph(&description, "");
+    description.push_str("\n\n");
     let mut displayed: Vec<_> = files.iter().copied().enumerate().collect();
     displayed.sort_by_key(|(i, file)| (file.kind != kind, useful_facts(file).next().is_none(), *i));
     for (_, file) in displayed.into_iter().take(8) {
         if let Some(old) = &file.old_path {
-            description.push_str(&format!("- Rename {old} to {}\n", file.path));
+            description.push_str(&wrap_paragraph(
+                &format!("Rename {old} to {}", file.path),
+                "- ",
+            ));
+            description.push('\n');
         } else {
             let action = match file.status {
                 "added" => "Add",
@@ -1497,11 +1674,21 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
                 "typechange" => "Replace",
                 _ => "Update",
             };
-            description.push_str(&format!("- {action} {}", file.path));
+            let mut entry = format!("{action} {}", file.path);
             let mut clues: Vec<_> = useful_facts(file)
                 .take(3)
                 .map(|(topic, action, name)| visible_fact(topic, action, name))
                 .collect();
+            if let Some(chunk) = &file.chunk {
+                clues.push(format!(
+                    "hunk in `{}`, lines {}-{}",
+                    chunk.scope,
+                    chunk.new_start,
+                    chunk
+                        .new_start
+                        .saturating_add(chunk.new_lines.saturating_sub(1))
+                ));
+            }
             if file.added + file.removed > 0 {
                 clues.push(format!("+{}/-{} lines", file.added, file.removed));
             }
@@ -1541,14 +1728,15 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
                 clues.push(detail.into());
             }
             if !clues.is_empty() {
-                description.push_str(&format!(" ({})", clues.join("; ")));
+                entry.push_str(&format!(" ({})", clues.join("; ")));
             }
+            description.push_str(&wrap_paragraph(&entry, "- "));
             description.push('\n');
         }
     }
     if files.len() > 8 {
         description.push_str(&format!(
-            "- Include {} more related paths\n",
+            "- Include {} more related changes\n",
             files.len() - 8
         ));
     }
@@ -1572,7 +1760,11 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
         .filter(|(count, _)| *count > 0)
         .map(|(count, status)| format!("{count} {status}"))
         .collect();
-        description.push_str(&format!("\n{} paths: {}.", files.len(), counts.join(", ")));
+        description.push_str(&format!(
+            "\n{} changes: {}.",
+            files.len(),
+            counts.join(", ")
+        ));
     }
     Group {
         subject,
@@ -1581,14 +1773,71 @@ fn draft(files: &[&Change], unit_ids: Vec<usize>) -> Group {
     }
 }
 
+fn wrap_paragraph(text: &str, prefix: &str) -> String {
+    let mut result = prefix.to_owned();
+    let indent = prefix.len();
+    let mut column = indent;
+    for word in text.split_whitespace() {
+        let width = word.chars().count();
+        if column > indent {
+            if column + 1 + width > 72 {
+                result.push('\n');
+                result.push_str(&" ".repeat(indent));
+                column = indent;
+            } else {
+                result.push(' ');
+                column += 1;
+            }
+        }
+        result.push_str(word);
+        column += width;
+    }
+    result
+}
+
+pub(super) fn combined_with_reason(
+    files: &[Change],
+    units: &[Unit],
+    selected: Vec<usize>,
+    reason: &str,
+) -> Group {
+    explain_group(combined(files, units, selected), reason)
+}
+
+fn explain_group(mut group: Group, reason: &str) -> Group {
+    let paragraph = wrap_paragraph(reason, "");
+    if let Some(split) = group.description.find("\n\n") {
+        group
+            .description
+            .insert_str(split, &format!("\n\n{paragraph}"));
+    } else {
+        group.description.push_str(&format!("\n\n{paragraph}"));
+    }
+    group
+}
+
+pub(super) fn combined(files: &[Change], units: &[Unit], selected: Vec<usize>) -> Group {
+    let changes: Vec<_> = selected
+        .iter()
+        .flat_map(|id| units[*id].changes.iter().map(|id| &files[*id]))
+        .collect();
+    draft(&changes, selected, None)
+}
+
 pub(super) fn compose(files: &[Change]) -> (Vec<Unit>, Vec<Group>) {
     let units = atomic_units(files);
-    let mut sets: BTreeMap<_, Vec<usize>> = BTreeMap::new();
-    for unit in &units {
-        let changes: Vec<_> = unit.changes.iter().map(|i| &files[*i]).collect();
-        sets.entry(group_key(&changes)).or_default().push(unit.id);
-    }
-    let mut groups: Vec<_> = sets.into_iter().collect();
+    let mut groups: Vec<_> = cohesion::group(files, &units)
+        .into_iter()
+        .map(|proposal| {
+            let changes: Vec<_> = proposal
+                .units
+                .iter()
+                .flat_map(|id| units[*id].changes.iter().map(|i| &files[*i]))
+                .collect();
+            (group_key(&changes), proposal)
+        })
+        .collect();
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
     while groups.len() > SUGGESTED_GROUPS {
         let position = groups
             .windows(2)
@@ -1600,23 +1849,30 @@ pub(super) fn compose(files: &[Change]) -> (Vec<Unit>, Vec<Group>) {
                     a.0 .1 != b.0 .1,
                     a.0 .2 != b.0 .2,
                     a.0 .3 != b.0 .3,
-                    a.1.len() + b.1.len(),
+                    a.1.units.len() + b.1.units.len(),
                 )
             })
             .map(|(i, _)| i)
             .unwrap();
         let (_, right) = groups.remove(position + 1);
-        groups[position].1.extend(right);
+        groups[position].1.units.extend(right.units);
+        groups[position].1.reason = None;
+        groups[position].1.feature = None;
     }
     let groups = groups
         .into_iter()
-        .map(|(_, unit_ids)| {
-            let changes: Vec<_> = unit_ids
+        .map(|(_, proposal)| {
+            let changes: Vec<_> = proposal
+                .units
                 .iter()
-                .flat_map(|i| units[*i].changes.iter())
-                .map(|i| &files[*i])
+                .flat_map(|id| units[*id].changes.iter().map(|index| &files[*index]))
                 .collect();
-            draft(&changes, unit_ids)
+            let group = draft(&changes, proposal.units, proposal.feature.as_deref());
+            if let Some(reason) = proposal.reason {
+                explain_group(group, reason)
+            } else {
+                group
+            }
         })
         .collect();
     (units, groups)
