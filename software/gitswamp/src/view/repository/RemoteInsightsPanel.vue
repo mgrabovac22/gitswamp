@@ -40,6 +40,7 @@ const props = defineProps<{
   issue: IssueInfo | null;
   detailLoading?: boolean;
   createOptions?: RemoteCreateOptions;
+  workflowDraft?: { source: string; target: string; description?: string } | null;
   createOptionsLoading?: boolean;
   remoteBranches: BranchInfo[];
   currentBranch: string;
@@ -134,8 +135,8 @@ function initPullRequestDraft() {
   const branches = remoteBranchOptions.value;
   const current = normalizeBranchName(props.currentBranch);
 
-  const source = branches.includes(current) ? current : (branches[0] || "");
-  let target = suggestDefaultTargetBranch();
+  const source = props.workflowDraft?.source ?? (branches.includes(current) ? current : (branches[0] || ""));
+  let target = props.workflowDraft?.target ?? suggestDefaultTargetBranch();
   if (source && source === target) {
     target = branches.find((branch) => branch !== source) || target;
   }
@@ -145,7 +146,7 @@ function initPullRequestDraft() {
   sourceBranchSearch.value = source;
   targetBranchSearch.value = target;
   pullRequestTitle.value = source && target ? `Merge ${source} into ${target}` : "";
-  pullRequestDescription.value = "";
+  pullRequestDescription.value = props.workflowDraft?.description ?? "";
   pullRequestLabelNames.value = [];
   pullRequestAssignees.value = [];
   pullRequestReviewers.value = [];
@@ -161,8 +162,8 @@ function initIssueDraft() {
 }
 
 watch(
-  () => props.mode,
-  (mode) => {
+  [() => props.mode, () => props.workflowDraft],
+  ([mode]) => {
     if (mode === "pull-request-create") {
       initPullRequestDraft();
     }
