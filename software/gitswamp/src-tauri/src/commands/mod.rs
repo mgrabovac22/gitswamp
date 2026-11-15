@@ -17,6 +17,7 @@ pub mod operation_preview;
 pub mod operations;
 pub mod repository;
 pub mod stash;
+pub mod remote_tracking;
 pub mod status;
 pub mod tags;
 pub mod updates;
