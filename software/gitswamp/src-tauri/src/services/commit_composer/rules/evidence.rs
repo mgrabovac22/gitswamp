@@ -1,3 +1,5 @@
+mod structures;
+
 use super::{basename, extension, Kind};
 
 const LIMIT: usize = 16;
@@ -7,7 +9,17 @@ pub(super) enum Topic {
     Table,
     Index,
     View,
+    Trigger,
+    Constraint,
+    Policy,
     Route,
+    Column,
+    Operation,
+    Endpoint,
+    Message,
+    Field,
+    Signal,
+    Command,
     Symbol,
     Resource,
     Selector,
@@ -24,7 +36,17 @@ impl Topic {
             Self::Table => "table",
             Self::Index => "index",
             Self::View => "view",
+            Self::Trigger => "trigger",
+            Self::Constraint => "constraint",
+            Self::Policy => "policy",
             Self::Route => "route",
+            Self::Column => "column",
+            Self::Operation => "operation",
+            Self::Endpoint => "endpoint",
+            Self::Message => "message",
+            Self::Field => "field",
+            Self::Signal => "signal",
+            Self::Command => "command",
             Self::Symbol => "",
             Self::Resource => "resource",
             Self::Selector => "selector",
@@ -83,11 +105,22 @@ impl Evidence {
                     if !self.explicit.contains(&item) {
                         self.explicit.push(item);
                     }
+                    if topic == Topic::Table
+                        && action == Action::Update
+                        && self.explicit.len() < LIMIT
+                    {
+                        if let Some((topic, action, name)) = sql_table_change(original, lower) {
+                            let item = (topic, action, name.into());
+                            if !self.explicit.contains(&item) {
+                                self.explicit.push(item);
+                            }
+                        }
+                    }
                 }
                 return;
             }
         }
-        let feature = match kind {
+        let feature = structures::identify(path, kind, original).or_else(|| match kind {
             Kind::Source | Kind::Schema | Kind::Test | Kind::Migration => route(original, lower)
                 .map(|name| (Topic::Route, name))
                 .or_else(|| symbol(original, extension(path)).map(|name| (Topic::Symbol, name))),
@@ -101,7 +134,7 @@ impl Evidence {
             Kind::Docs => heading(original).map(|name| (Topic::Section, name)),
             Kind::Style => selector(original).map(|name| (Topic::Selector, name)),
             _ => None,
-        };
+        });
         if let Some((topic, name)) = feature {
             let entries = if added {
                 &mut self.added
@@ -320,7 +353,9 @@ fn sql<'a>(line: &'a str, lower: &str) -> Option<(Topic, Action, &'a str)> {
         "table" => Topic::Table,
         "index" => Topic::Index,
         "view" => Topic::View,
-        "function" | "procedure" | "trigger" | "type" => Topic::Symbol,
+        "trigger" => Topic::Trigger,
+        "policy" => Topic::Policy,
+        "function" | "procedure" | "type" => Topic::Symbol,
         _ => return None,
     };
     let mut original = line.split_ascii_whitespace().skip(offset);
@@ -340,6 +375,38 @@ fn sql<'a>(line: &'a str, lower: &str) -> Option<(Topic, Action, &'a str)> {
         .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
         .next()?;
     (!name.is_empty() && name.len() <= 80).then_some((topic, action, name))
+}
+
+fn sql_table_change<'a>(line: &'a str, lower: &str) -> Option<(Topic, Action, &'a str)> {
+    let (offset, verb) = lower
+        .split_ascii_whitespace()
+        .enumerate()
+        .skip(3)
+        .find(|(_, word)| {
+            matches!(
+                *word,
+                "add" | "drop" | "alter" | "modify" | "rename" | "validate"
+            )
+        })?;
+    let action = match verb {
+        "add" => Action::Add,
+        "drop" => Action::Remove,
+        _ => Action::Update,
+    };
+    let mut names = line.split_ascii_whitespace().skip(offset + 1);
+    let topic = match names.next()?.to_ascii_lowercase().as_str() {
+        "constraint" => Topic::Constraint,
+        "column" => Topic::Column,
+        _ => return None,
+    };
+    let mut name = names.next()?;
+    if name.eq_ignore_ascii_case("if") {
+        if names.next()?.eq_ignore_ascii_case("not") {
+            names.next()?;
+        }
+        name = names.next()?;
+    }
+    identifier(name.trim_start_matches(['"', '`', '['])).map(|name| (topic, action, name))
 }
 
 fn route<'a>(line: &'a str, lower: &str) -> Option<&'a str> {
@@ -678,5 +745,136 @@ mod tests {
             Some("Configure branch protection")
         );
         assert_eq!(heading("## link https://example.invalid/token"), None);
+    }
+
+    #[test]
+    fn recognizes_named_changes_in_contracts_hardware_scripts_and_builds() {
+        for (path, text, topic, name) in [
+            (
+                "catalog.graphql",
+                "mutation UpdateCatalog($id: ID!) {",
+                Topic::Operation,
+                "UpdateCatalog",
+            ),
+            (
+                "catalog.graphql",
+                "summary: String!",
+                Topic::Field,
+                "summary",
+            ),
+            (
+                "catalog.proto",
+                "rpc ListProducts(Request) returns (Response);",
+                Topic::Endpoint,
+                "ListProducts",
+            ),
+            (
+                "catalog.proto",
+                "optional string cursor = 5;",
+                Topic::Field,
+                "cursor",
+            ),
+            (
+                "controller.sv",
+                "output logic [7:0] phase;",
+                Topic::Signal,
+                "phase",
+            ),
+            (
+                "controller.vhd",
+                "SIGNAL Sequencer : std_logic;",
+                Topic::Signal,
+                "Sequencer",
+            ),
+            (
+                "Backup.psm1",
+                "function Invoke-Backup {",
+                Topic::Command,
+                "Invoke-Backup",
+            ),
+            (
+                "deploy.tcl",
+                "proc reload_service {name} {",
+                Topic::Command,
+                "reload_service",
+            ),
+            (
+                "CMakeLists.txt",
+                "add_library(core_objects OBJECT paths.cc)",
+                Topic::Target,
+                "core_objects",
+            ),
+            (
+                "main.bicep",
+                "resource build_storage 'Microsoft.Storage/internal' = {",
+                Topic::Resource,
+                "build_storage",
+            ),
+            (
+                "types.bas",
+                "Public Sub RefreshCatalog()",
+                Topic::Symbol,
+                "RefreshCatalog",
+            ),
+        ] {
+            let mut evidence = Evidence::default();
+            evidence.observe(
+                path,
+                super::super::kind(path, 0o100644),
+                text,
+                &text.to_ascii_lowercase(),
+                true,
+            );
+            assert!(
+                evidence
+                    .facts()
+                    .any(|fact| fact == (topic, Action::Add, name)),
+                "{path}: {text}"
+            );
+        }
+
+        for (source, topic, action, name) in [
+            (
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS opt_in BOOLEAN DEFAULT 'private';",
+                Topic::Column,
+                Action::Add,
+                "opt_in",
+            ),
+            (
+                "ALTER TABLE users DROP COLUMN IF EXISTS legacy_name;",
+                Topic::Column,
+                Action::Remove,
+                "legacy_name",
+            ),
+            (
+                "ALTER TABLE orders VALIDATE CONSTRAINT open_order;",
+                Topic::Constraint,
+                Action::Update,
+                "open_order",
+            ),
+        ] {
+            let mut evidence = Evidence::default();
+            evidence.observe(
+                "migration.sql",
+                Kind::Migration,
+                source,
+                &source.to_ascii_lowercase(),
+                true,
+            );
+            assert!(
+                evidence.facts().any(|fact| fact == (topic, action, name)),
+                "{source}"
+            );
+            assert!(evidence
+                .facts()
+                .all(|(_, _, name)| !name.contains("private")));
+        }
+        assert!(
+            structures::identify("catalog.proto", Kind::Schema, "option java_package = 123;")
+                .is_none()
+        );
+        assert!(
+            structures::identify("catalog.graphql", Kind::Schema, "secret: \"private\"").is_none()
+        );
     }
 }
