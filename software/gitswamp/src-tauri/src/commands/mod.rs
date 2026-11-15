@@ -1,4 +1,5 @@
 pub mod appdata;
+pub mod branch_workflow;
 pub mod branches;
 pub mod clone_init;
 pub mod commit_composer;
