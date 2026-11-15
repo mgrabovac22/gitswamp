@@ -23,6 +23,7 @@ const { rowHeight } = useCompactRowHeight();
 const { svgBgOuter, svgBgInner } = useThemeMode();
 
 const props = defineProps<{
+  workflowLabel?: string;
   repoPath: string;
   commits: CommitInfo[];
   selected: CommitInfo | null;
@@ -48,6 +49,7 @@ type CommitSelectPayload = {
 };
 
 const emit = defineEmits<{
+  branchWorkflow: [];
   select: [payload: CommitSelectPayload];
   search: [query: string];
   clearSearch: [];
@@ -821,6 +823,9 @@ function refAction(action: string) {
     case "branch-workspace":
       if (r.kind === "branch") emit("openBranchWorkspace", r.local ? `refs/heads/${r.name}` : `refs/remotes/origin/${r.name}`);
       break;
+    case "branch-workflow":
+      emit("branchWorkflow");
+      break;
     case "delete-remote":
       emit("deleteRemoteBranch", r.name);
       break;
@@ -1135,6 +1140,11 @@ function ctxAction(action: string) {
     const enabled = !props.amendModeActive;
     closeCtx();
     emit("setAmendMode", enabled);
+    return;
+  }
+  if (action === "branch-workflow") {
+    closeCtx();
+    emit("branchWorkflow");
     return;
   }
   if (!ctxCommit.value) return;
@@ -2083,6 +2093,7 @@ onUnmounted(() => {
             <button class="ctx-item" @click="refAction('checkout-and-isolate')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to this branch and isolate its connected commits</span></button>
             <button class="ctx-item" @click="refAction('branch-here')"><GitBranchPlus class="ctx-icon h-4 w-4" /><span class="ctx-main">Create branch here</span><span class="ctx-sub">Start a new branch at {{ refCtxRef.name }}</span></button>
             <button class="ctx-item" @click="refAction('branch-workspace')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">Open Branch Workspace</span><span class="ctx-sub">Open {{ refCtxRef.name }} in its own worktree</span></button>
+            <button class="ctx-item" @click="refAction('branch-workflow')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ workflowLabel || 'Branching workflow' }}</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('rename-branch')"><PencilLine class="ctx-icon h-4 w-4" /><span class="ctx-main">Rename branch</span><span class="ctx-sub">Rename {{ refCtxRef.name }}</span></button>
             <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
             <button v-if="canRebaseRefOntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('rebase-onto-current')"><span class="ctx-icon">↕</span><span class="ctx-main">Rebase onto {{ currentBranch }}</span><span class="ctx-sub">Checkout {{ refCtxRef.name }} and rebase it onto {{ currentBranch }}</span></button>
@@ -2157,6 +2168,7 @@ onUnmounted(() => {
         @click.stop
       >
         <template v-if="ctxWorkingChanges">
+          <button class="ctx-item" @click="ctxAction('branch-workflow')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ workflowLabel || 'Branching workflow' }}</span></button>
           <button
             class="ctx-item ctx-amend-item"
             :disabled="!amendModeActive && (hasConflicts || !headSha)"
@@ -2199,6 +2211,7 @@ onUnmounted(() => {
         <div class="space-y-1">
           <button class="ctx-item" @click="ctxAction('checkout')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout this commit</span><span class="ctx-sub">Detached HEAD at {{ ctxCommit?.short_sha }}</span></button>
           <button class="ctx-item" @click="ctxAction('branch')"><span class="ctx-icon">🌿</span><span class="ctx-main">Create branch here</span><span class="ctx-sub">Create new branch from this commit</span></button>
+          <button class="ctx-item" @click="ctxAction('branch-workflow')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ workflowLabel || 'Branching workflow' }}</span></button>
           <button class="ctx-item" @click="ctxAction('time-machine-blame')"><span class="ctx-icon">🕰</span><span class="ctx-main">Time Machine Blame</span><span class="ctx-sub">Open Time Machine focused on this commit frame</span></button>
           <button class="ctx-item" @click="ctxAction('cherry-pick')"><span class="ctx-icon">🍒</span><span class="ctx-main">Cherry-pick commit</span><span class="ctx-sub">Apply this commit on top of current branch</span></button>
           <button v-if="headSha && !ctxIsHeadCommit()" class="ctx-item" @click="ctxAction('interactive-rebase')"><ListRestart class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ ctxHeadHistoryRelation === 'ancestor' ? 'Interactive Rebase from Here' : ctxHeadHistoryRelation === 'other' ? 'Interactive Rebase onto Here' : 'Interactive Rebase…' }}</span><span class="ctx-sub">{{ ctxHeadHistoryRelation === 'ancestor' ? `Rewrite commits after ${ctxCommit?.short_sha}` : `Use ${ctxCommit?.short_sha} as the rebase target` }}</span></button>
