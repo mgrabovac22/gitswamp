@@ -3842,12 +3842,12 @@ watch(activePlatform, () => {
 
 <style scoped>
 .settings-search { position: relative; z-index: 2; padding: 9px 18px; border-bottom: 1px solid var(--border); }
-.settings-search-field { display: flex; align-items: center; gap: 8px; width: min(100%, 535px); border: 1px solid var(--border); border-radius: 6px; padding: 0 9px; background: var(--input-background); color: var(--muted-foreground); }
+.settings-search-field { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 0 9px; background: var(--input-background); color: var(--muted-foreground); }
 .settings-search-field:focus-within { border-color: var(--primary); }
 .settings-search-field input { min-width: 0; flex: 1; height: 34px; font-size: 13px; color: var(--foreground); background: transparent; outline: none; }
 .settings-search-field button { flex-shrink: 0; padding: 3px; border-radius: 4px; }
 .settings-search-field button:hover { color: var(--foreground); background: var(--secondary); }
-.settings-results { position: absolute; top: calc(100% - 5px); inset-inline-start: 18px; width: min(calc(100% - 36px), 535px); max-height: min(310px, 60vh); overflow: auto; background: var(--popover); color: var(--foreground); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 7px 24px #0004; }
+.settings-results { position: absolute; top: calc(100% - 5px); inset-inline-start: 18px; width: clamp(min(320px, calc(100% - 36px)), calc(50% - 18px), calc(100% - 36px)); max-height: min(310px, 60vh); overflow: auto; background: var(--popover); color: var(--foreground); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 7px 24px #0004; }
 .settings-results [role="option"] { min-height: 37px; padding: 6px 9px; display: flex; align-items: center; flex-wrap: wrap; gap: 3px 10px; justify-content: space-between; cursor: pointer; }
 .settings-results strong { font-size: 12px; font-weight: 600; }
 .settings-results small, .settings-results p { color: var(--muted-foreground); font-size: 11px; }
