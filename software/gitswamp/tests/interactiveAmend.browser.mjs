@@ -20,8 +20,12 @@ import '/src/styles/index.css';
 const ids = ['3','2','1'].map(n=>n.repeat(40));
 const commits = ids.map((sha,i)=>({sha,short_sha:sha.slice(0,7),message:['Latest commit','Review selected commit','Parent commit'][i],parent_shas:ids[i+1]?[ids[i+1]]:[],refs:i===0?['HEAD -> main']:[],author_name:'Test',author_email:'test@example.invalid',timestamp:1793380000-i}));
 const requested = ref(null), patch = ref(null), headAmend = ref(false), showDetails = ref(false);
+const showHistory = ref(false);
 window.toggleHeadAmend = () => { showDetails.value=true; setTimeout(()=>{headAmend.value=true;},0); };
+window.showHistoricalChanges = () => { showHistory.value=true; };
+window.revealedFiles = [];
 window.gitMock = async (command,args) => {
+  if (command === 'find_file_location') { window.revealedFiles.push(args); return; }
   if (command === 'get_interactive_amend_plan') { window.review = args; return {branch:'main',head:ids[0],target:commits[1],parent:commits[2],replay:1,dirty:!!window.dirty,published:true}; }
   if (command === 'amend_removal_choices') { window.removalLoaded=true; return [{path:'keep.txt',status:'modified'}, {path:'move.txt',status:'added'}]; }
   if (command === 'get_available_external_editors' || command === 'get_empty_directories') return [];
@@ -29,7 +33,7 @@ window.gitMock = async (command,args) => {
   return null;
 };
 createApp({render:()=>h('main',{style:'height:100%;display:flex;flex-direction:column'},[
-  showDetails.value ? h(Details,{headCommit:commits[0],repoPath:'fixture',isWorkingChanges:true,commit:null,commitFiles:[],stagedFiles:[{path:'keep.txt',status:'modified',staged:true}],unstagedFiles:[],amendModeRequested:headAmend.value,onAmendCommit:payload=>window.normalAmend=payload}) : h(Graph,{repoPath:'fixture',commits,selected:null,hasWorkingChanges:true,currentBranch:'main',headSha:ids[0],onRequestInteractiveAmend:request=>{requested.value=request;},onRequestPatch:request=>{window.patchRequest=request; if (!request.sha) patch.value=request;}}),
+  showDetails.value ? h(Details,{headCommit:commits[0],repoPath:'fixture',isWorkingChanges:!showHistory.value,commit:showHistory.value?commits[1]:null,commitFiles:showHistory.value?[{path:'old dir/history.txt',status:'deleted',additions:0,deletions:1}]:[],stagedFiles:[{path:'keep.txt',status:'modified',staged:true}],unstagedFiles:[{path:'src/local.txt',status:'modified',staged:false}],amendModeRequested:headAmend.value,onAmendCommit:payload=>window.normalAmend=payload}) : h(Graph,{repoPath:'fixture',commits,selected:null,hasWorkingChanges:true,currentBranch:'main',headSha:ids[0],onRequestInteractiveAmend:request=>{requested.value=request;},onRequestPatch:request=>{window.patchRequest=request; if (!request.sha) patch.value=request;}}),
   requested.value ? h(Amend,{repoPath:'fixture',...requested.value,busy:false,executionError:'',onClose:()=>requested.value=null,onStart:payload=>{window.confirmation=payload;requested.value=null;}}):null,
   patch.value ? h(Patch,{kind:patch.value.kind,file:patch.value.kind==='import'?'C:/temp/change.patch':undefined,branch:'main',busy:false,error:'',onClose:()=>patch.value=null,onImport:value=>{window.patchStage=value;patch.value=null;},onExport:value=>{window.patchScope=value;patch.value=null;}}):null,
 ])}).mount('#app');`;
@@ -105,16 +109,30 @@ try {
   assert.equal(await page.evaluate(()=>window.patchStage),true);
 
   await page.evaluate(()=>window.toggleHeadAmend());
+  const findLocation = page.getByRole("button",{name:"Find file location",exact:true});
+  assert.deepEqual(await page.evaluate(()=>window.revealedFiles),[]);
+  for (const file of ["keep.txt", "local.txt"]) {
+    await page.getByText(file,{exact:true}).click({button:"right"});
+    await findLocation.click();
+    await findLocation.waitFor({state:"hidden"});
+  }
+
   assert.equal(await page.evaluate(()=>window.removalLoaded),undefined);
   await page.getByText("Move files to Working Changes",{exact:true}).click();
   assert.ok(await page.getByRole("checkbox",{name:"Move keep.txt to Working Changes"}).isDisabled());
   await page.getByRole("checkbox",{name:"Move move.txt to Working Changes"}).check();
   await page.getByRole("button",{name:"Amend Last Commit",exact:true}).click();
   assert.deepEqual(await page.evaluate(()=>window.normalAmend.removal),{head:"3".repeat(40),paths:["move.txt"]});
+
+  await page.evaluate(()=>window.showHistoricalChanges());
+  await page.getByRole("button",{name:"Changes",exact:true}).click();
+  await page.getByText("history.txt",{exact:true}).click({button:"right"});
+  await findLocation.click();
+  assert.deepEqual(await page.evaluate(()=>window.revealedFiles),["keep.txt","src/local.txt","old dir/history.txt"].map(filePath=>({path:"fixture",filePath})));
   assert.deepEqual(errors,[]);
 } finally {
   const closing = Promise.all([browser?.close(),new Promise(resolve=>server.close(resolve))]);
   server.closeAllConnections();
   await closing;
 }
-console.log("PASS: Interactive Amend submenu, review and confirmation, patch commands, and selective HEAD amend.");
+console.log("PASS: Interactive Amend, patch commands, selective HEAD amend, and file location in both change views.");
