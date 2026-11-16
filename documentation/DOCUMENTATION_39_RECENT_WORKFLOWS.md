@@ -119,7 +119,7 @@ Success previews close within seven seconds, or immediately with **X** or Escape
 
 ## Desktop Pet and Themes
 
-Enable **Desktop pet** in **Options > Preferences > Appearance**. **Edit pet** opens a live preview with the name, hat, accessory, outfit color and ten acrobatic tricks to try. Swampy visits for 20 seconds and returns two minutes after the start of the previous visit. With tricks enabled, he climbs a rope, leaps to a higher point on the other edge, climbs the rock holds in a different rhythm and performs a rotating finale in the middle of the window. Without tricks, he only walks along the bottom. The pet stays off by default and does not run when the window is hidden or Reduced Motion is enabled.
+Enable **Desktop pet** in **Options > Preferences > Appearance**. **Edit pet** opens a live preview with the name, hat, accessory, outfit color and ten acrobatic tricks to try. Swampy visits for 20 seconds and returns two minutes after the start of the previous visit. With tricks enabled, he usually crosses the bottom of the window from left to right, stopping for three tricks from his rotating repertoire. Every third visit, he climbs a rope, leaps to a higher point on the other edge, climbs the rock holds and performs a finale in the middle of the window. Without tricks, he only walks along the bottom. The pet stays off by default and does not run when the window is hidden or Reduced Motion is enabled.
 
 Snowy, Starry Night, Pixel Arcade, Anime Sakura, Meteor Watch and Firework Studio also have effects that periodically cross the window. Theme overlays do not capture clicks and disappear when you switch away from the theme.
 
