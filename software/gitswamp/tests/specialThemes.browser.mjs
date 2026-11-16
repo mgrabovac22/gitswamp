@@ -146,6 +146,66 @@ try {
   await petSwitch.click();
   await pet.waitFor();
   const walker = pet.locator(".desktop-pet__walker");
+  const floorTricks = new Set();
+  const checkFloor = async (expected) => {
+    assert.equal(await walker.getAttribute("data-tricks"), expected);
+    expected.split(" ").forEach(trick => floorTricks.add(trick));
+    assert.equal(await pet.locator("[data-pet-wall]").count(), 0);
+  };
+  const nextPetVisit = async () => {
+    await page.clock.fastForward(20_000);
+    await pet.waitFor({ state: "detached" });
+    await page.clock.fastForward(100_000);
+    await pet.waitFor();
+  };
+  const inspectFloor = async () => {
+    const floor = await pet.evaluate(element => {
+      const walker = element.querySelector('.desktop-pet__walker');
+      const body = element.querySelector('.desktop-pet__tricks');
+      const sprite = element.querySelector('svg.pet-sprite');
+      const foot = element.querySelector('[data-limb="leg-near"] .pet-limb__skin');
+      const animations = element.getAnimations({ subtree: true });
+      const delays = animations.filter(animation => animation.effect.target === body).map(animation => animation.effect.getTiming().delay);
+      sprite.pauseAnimations();
+      const route = time => {
+        for (const animation of animations) {
+          animation.pause();
+          animation.currentTime = time;
+        }
+        sprite.setCurrentTime(time / 1000);
+        const { left, right, bottom } = walker.getBoundingClientRect();
+        return { left, right, bottom, foot: foot.getBoundingClientRect().right,
+          lift: new DOMMatrix(getComputedStyle(body).transform).m42 };
+      };
+      const start = route(0), step = route(100), end = route(20_000);
+      const checkpoints = [3650, 9100, 14550].map(time => ({
+        arrive: route(time), trick: route(time + 850), depart: route(time + 1800),
+        peakLift: Math.min(...[450, 650, 850, 1100].map(offset => route(time + offset).lift)),
+      }));
+      route(9950);
+      return { start, step, end, checkpoints, width: innerWidth, height: innerHeight, delays };
+    });
+    assert.ok(floor.start.left <= 12 && floor.end.right >= floor.width - 12 && floor.end.right <= floor.width, `The floor route must cross the whole window: ${JSON.stringify(floor)}`);
+    assert.ok(floor.start.bottom > floor.height - 10 && floor.end.bottom === floor.start.bottom && floor.step.left > floor.start.left, `The pet should keep walking along the bottom: ${JSON.stringify(floor)}`);
+    assert.ok(Math.abs(floor.step.foot - floor.start.foot) < 4, `The floor stride should stay planted: ${JSON.stringify(floor)}`);
+    assert.deepEqual(floor.delays, [3650, 9100, 14550]);
+    assert.ok(floor.checkpoints.every(({ arrive, trick, depart, peakLift }) => Math.abs(arrive.left - depart.left) < 1 && arrive.bottom === trick.bottom && peakLift < -1), `The route should pause for all three visible tricks: ${JSON.stringify(floor)}`);
+  };
+
+  await checkFloor("wave cartwheel victory");
+  await inspectFloor();
+  await page.screenshot({ path: path.join(root, "src-tauri/target/desktop-pet-floor.png") });
+  await page.clock.fastForward(20_000);
+  await pet.waitFor({ state: "detached" });
+  await page.clock.fastForward(90_000);
+  assert.equal(await pet.count(), 0);
+  await page.setViewportSize({ width: 365, height: 670 });
+  await page.clock.fastForward(10_000);
+  await pet.waitFor();
+  await checkFloor("star backflip balance");
+  await inspectFloor();
+  await page.setViewportSize({ width: 1120, height: 720 });
+  await nextPetVisit();
   assert.equal(await walker.getAttribute("data-tricks"), "somersault");
   assert.equal(await pet.locator("[data-pet-wall]").count(), 2);
   assert.match(await pet.locator(".desktop-pet__walker").evaluate(element => getComputedStyle(element).animationDuration), /^20s$/);
@@ -266,13 +326,14 @@ try {
   await editor.waitFor({ state: "detached" });
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("gitswamp-desktop-pet-appearance"))),
     { name: "Captain Swampy", hat: "crown", accessory: "bandana", color: "river", tricks: true });
-  await page.clock.fastForward(20_000);
-  await pet.waitFor({ state: "detached" });
-  await page.clock.fastForward(90_000);
-  assert.equal(await pet.count(), 0);
-  await page.clock.fastForward(10_000);
-  await pet.waitFor();
+  await nextPetVisit();
+  await checkFloor("split twist somersault");
+  await nextPetVisit();
+  await checkFloor("balance kip wave");
+  assert.deepEqual([...floorTricks].sort(), [...tricks].sort());
+  await nextPetVisit();
   assert.equal(await walker.getAttribute("data-tricks"), "cartwheel");
+  assert.equal(await pet.locator("[data-pet-wall]").count(), 2);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await pet.waitFor({ state: "detached" });
   await page.emulateMedia({ reducedMotion: "no-preference" });
