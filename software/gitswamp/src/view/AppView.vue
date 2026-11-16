@@ -15,6 +15,7 @@ import { useOperationVisualisation } from "@/features/repository/useOperationVis
 import AppHeader from "@/view/shell/AppHeader.vue";
 import CommandPalette from "@/view/shell/CommandPalette.vue";
 import ThemeAmbience from "@/view/shell/ThemeAmbience.vue";
+import { petEnabled } from "@/features/shell/petPreferences";
 import RepositoryTabs from "@/view/repository/RepositoryTabs.vue";
 import RepositoryWorkspace from "@/view/repository/RepositoryWorkspace.vue";
 import LandingPage from "@/view/repository/LandingPage.vue";
@@ -112,6 +113,7 @@ const { preview: operationPreview, close: closeOperationPreview } = useOperation
   () => git.repoPath.value, () => Boolean(conflictPreview.value) || git.hasConflicts.value,
 );
 const OperationVisualisationDialog = defineAsyncComponent(() => import("@/features/repository/OperationVisualisationDialog.vue"));
+const DesktopPet = defineAsyncComponent(() => import("@/features/shell/DesktopPet.vue"));
 const toast = useToast();
 const PickaxeSearchPanel = defineAsyncComponent(() => import("@/features/repository/pickaxe/PickaxeSearchPanel.vue"));
 const { scheduleDestructiveAction } = useUndoableDestructiveAction(() => git.destructiveContext.value, () => !git.loading.value);
@@ -6129,6 +6131,7 @@ function submitCreateTag() {
     />
 
     <ThemeAmbience />
+    <DesktopPet v-if="petEnabled" />
     <ToastContainer />
     <SecretCommitDialog :repo-path="git.repoPath.value" @open-lfs="openRequestedLfs" />
     <WorktreeRemovalDialog v-if="pendingWorktreeRemoval" :location="pendingWorktreeRemoval.location"

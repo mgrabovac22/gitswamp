@@ -54,6 +54,7 @@ import { useAppUpdate } from "@/features/updater/useAppUpdate";
 import AppUpdatePanel from "@/features/updater/AppUpdatePanel.vue";
 import { visualiseOperationsEnabled, storeVisualiseOperations } from "@/shared/config/visualiseOperationsPreferences";
 import AppButton from "@/shared/ui/AppButton.vue";
+import DesktopPetSettings from "@/features/shell/DesktopPetSettings.vue";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -3050,6 +3051,8 @@ watch(activePlatform, () => {
                     </optgroup>
                   </select>
                 </div>
+
+                <DesktopPetSettings />
 
                 <div class="flex items-center justify-between py-2">
                   <div>
