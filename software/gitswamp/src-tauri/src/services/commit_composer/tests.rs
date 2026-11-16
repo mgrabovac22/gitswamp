@@ -412,6 +412,74 @@ fn drafts_a_feature_across_layers_and_keeps_ambiguous_names_independent() {
 }
 
 #[test]
+fn groups_ten_files_into_three_editable_feature_commits() {
+    let f = Fixture::new(true);
+    let cart = [
+        "apps/shop/src/features/cart.ts",
+        "apps/shop/src/features/cart/hooks/useCoupons.ts",
+        "apps/shop/src/features/cart/styles/coupons.css",
+        "apps/shop/src/features/cart/tests/cartTotals.spec.ts",
+        "apps/shop/src/features/cart/README.md",
+    ];
+    let history = [
+        "apps/shop/src/features/repository/history/CommitFilter.vue",
+        "apps/shop/src/features/repository/history/hooks/useTimeline.ts",
+        "apps/shop/src/features/repository/history/tests/restore.spec.ts",
+    ];
+    let admin = [
+        "apps/admin/src/features/cart/CartDialog.tsx",
+        "apps/admin/src/features/cart/GroupPermissions.ts",
+    ];
+    for path in cart.iter().chain(&history).chain(&admin) {
+        f.write(path, "// Draft fixture\n");
+    }
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let draft = plan(f.path(), false).unwrap();
+    assert_eq!(draft.changes.len(), 10);
+    assert_eq!(draft.groups.len(), 3);
+    for module in [&cart[..], &history, &admin] {
+        let first = draft_with(&draft, module[0]);
+        assert!(first.description.contains("same feature module"));
+        for file in &module[1..] {
+            assert_eq!(first.units, draft_with(&draft, file).units);
+            assert!(!together(&draft, module[0], file));
+        }
+    }
+    assert_ne!(draft_with(&draft, cart[0]).units, draft_with(&draft, history[0]).units);
+    assert_ne!(draft_with(&draft, cart[0]).units, draft_with(&draft, admin[0]).units);
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    let commits = f.apply(&draft);
+    assert_eq!(commits.len(), 3);
+    assert!(f.git(&["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn diff_intent_groups_matching_changes_without_merging_two_behaviors_in_one_module() {
+    let f = Fixture::new(true);
+    let redeem = "src/features/checkout/PanelOne.ts";
+    let limits = "src/features/checkout/PanelTwo.ts";
+    let shipping = "src/features/checkout/PanelThree.ts";
+    let delivery = "src/features/checkout/PanelFour.ts";
+    let tests = "src/features/checkout/tests/coupon.spec.ts";
+    f.write(redeem, "export function redeemCoupon() { return true; }\n");
+    f.write(limits, "export function validateCouponLimit() { return true; }\n");
+    f.write(shipping, "export function calculateShipping() { return 4; }\n");
+    f.write(delivery, "export function estimateShippingWindow() { return 5; }\n");
+    f.write(tests, "// Test fixture\n");
+
+    let draft = plan(f.path(), false).unwrap();
+    let coupon = draft_with(&draft, redeem);
+    assert_eq!(draft.groups.len(), 2);
+    assert_eq!(coupon.units, draft_with(&draft, limits).units);
+    assert_eq!(coupon.units, draft_with(&draft, tests).units);
+    assert_ne!(coupon.units, draft_with(&draft, shipping).units);
+    assert_eq!(draft_with(&draft, shipping).units, draft_with(&draft, delivery).units);
+    assert!(coupon.description.contains("matching diff evidence"));
+    assert_eq!(f.apply(&draft).len(), 2);
+    assert!(f.git(&["status", "--porcelain"]).is_empty());
+}
+
+#[test]
 fn drafts_ui_with_named_stories_and_locales_without_crossing_workspaces() {
     let f = Fixture::new(true);
     let screen = "apps/store/src/features/cart/CartScreen.tsx";
