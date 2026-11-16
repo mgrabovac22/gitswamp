@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const root = fileURLToPath(new URL("..", import.meta.url));
 const html = `<!doctype html><html class="light"><head><link rel="icon" href="data:,"></head><body><main id="app"></main><script type="module">
 import {createApp,h,ref} from 'vue';
-import BranchQuickActions from '/src/view/shell/BranchQuickActions.vue';
+import AppHeader from '/src/view/shell/AppHeader.vue';
 import InitDialog from '/src/view/repository/InitDialog.vue';
 import CommitGraph from '/src/view/commit/CommitGraph.vue';
 import Dialog from '/src/features/repository/workflow/BranchWorkflowDialog.vue';
@@ -56,8 +56,11 @@ createApp({render:()=>{
   const config=workflowForPath(repo.value);
   const workflowLabel=config && config.strategy!=='manual' ? workflowName(config.strategy) : undefined;
   return [
-    h(BranchQuickActions,{loading:false,ghostActive:false,workflowLabel,onWorkflow:()=>open.value=true}),
-    h('div',{style:'height:380px'},[h(CommitGraph,{repoPath:repo.value,commits:[],selected:null,hasWorkingChanges:true,currentBranch:'main',headSha:'111',workflowLabel,onBranchWorkflow:()=>open.value=true})]),
+    h(AppHeader,{loading:false,ghostActive:false,workflowLabel,onBranchWorkflow:()=>open.value=true}),
+    h('div',{class:'relative h-[380px]'},[
+      h(CommitGraph,{repoPath:repo.value,commits:[],selected:null,hasWorkingChanges:true,currentBranch:'main',headSha:'111',workflowLabel,onBranchWorkflow:()=>open.value=true}),
+      h('aside',{class:'absolute z-[120] right-0 top-0 h-full w-[360px] bg-[var(--card)]','aria-label':'Commit info'},'Commit info'),
+    ]),
     open.value ? h(Dialog,{key:repo.value,repoPath:repo.value,canOpenPullRequest:repo.value==='repo-c',remoteName:'origin',
       fetchRefs:async()=>{window.cleanHandoff=true;window.fetches=(window.fetches||0)+1;},
       onClose:()=>open.value=false,onSaved:()=>note.value++,onOutcome:r=>window.outcome=r,onPullRequest:draft=>window.handoff=draft}) : null,
@@ -118,10 +121,21 @@ try {
   page.on("response", response => { if (response.status() >= 400) console.error(response.status(), response.url()); });
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
   await page.goto("http://127.0.0.1:" + server.address().port + "/__workflow__");
-  try { await page.getByTitle("Branch actions", { exact: true }).click(); }
+  const branchActions = page.getByTitle("Branch actions", { exact: true });
+  try { await branchActions.click(); }
   catch (error) { throw new Error("Workflow fixture did not start: " + errors.join("; "), { cause: error }); }
   assert.equal(await page.evaluate(() => window.calls.some(call => call.command === "inspect_branch_workflow")), false);
-  await page.getByRole("button", { name: "Branching workflow", exact: true }).click();
+  const openWorkflow = page.getByRole("button", { name: "Branching workflow", exact: true });
+  const overlaps = await openWorkflow.evaluate(button => {
+    const { x, y, width, height } = button.getBoundingClientRect();
+    return document.elementsFromPoint(x + width / 2, y + height / 2).some(element => element.getAttribute("aria-label") === "Commit info");
+  });
+  assert.ok(overlaps, "The menu should overlap the commit info panel in this fixture");
+  await page.keyboard.press("Escape");
+  await openWorkflow.waitFor({ state: "hidden" });
+  assert.equal(await branchActions.getAttribute("aria-expanded"), "false");
+  await branchActions.click();
+  await openWorkflow.click();
   const modal = page.locator("dialog.workflow-dialog");
   await modal.getByRole("button", { name: /Gitflow/ }).click();
   assert.equal(await modal.getByLabel("Development branch", { exact: true }).inputValue(), "dev");

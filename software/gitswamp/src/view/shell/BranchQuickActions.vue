@@ -85,6 +85,7 @@ onUnmounted(() => {
       class="h-8 w-7 rounded-r-md border border-transparent text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] transition-colors"
       :disabled="props.loading"
       title="Branch actions"
+      :aria-expanded="menuOpen"
       @click="toggleMenu"
     >
       <ChevronDown class="w-3.5 h-3.5 mx-auto" />
@@ -92,7 +93,7 @@ onUnmounted(() => {
 
     <div
       v-if="menuOpen"
-      class="absolute top-full right-0 mt-1 z-[2300] min-w-[220px] rounded-lg border border-[var(--border)] bg-[var(--popover)] shadow-2xl p-1"
+      class="branch-actions-popover absolute top-full right-0 mt-1 z-[2300] min-w-[220px] rounded-lg border border-[var(--border)] bg-[var(--popover)] shadow-2xl p-1"
     >
       <button
         class="w-full text-left px-2.5 py-2 rounded text-[11px] text-[var(--foreground)] hover:bg-[var(--secondary)] transition-colors inline-flex items-center gap-2"
