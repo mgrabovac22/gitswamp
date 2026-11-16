@@ -44,7 +44,7 @@ use commands::operation_preview::get_operation_preview;
 use commands::operations::{
     add_bitbucket_ssh_key, add_github_ssh_key, add_gitlab_ssh_key, check_origin, checkout_commit,
     cherry_pick, create_annotated_tag, create_tag_at, delete_bitbucket_ssh_key,
-    delete_github_ssh_key, delete_remote_branch, delete_tag, edit_commit_message, fetch_all,
+    delete_github_ssh_key, delete_remote_branch, delete_tag, edit_commit_message, fetch_all, find_file_location,
     generate_ssh_key, get_available_external_editors, get_available_external_tools, get_git_path,
     get_lost_commits, github_oauth_poll, github_oauth_start, list_bitbucket_ssh_keys,
     list_github_ssh_keys, load_ssh_public_key_from_file, open_file_with_editor,
@@ -218,6 +218,7 @@ pub fn run() {
             get_available_external_editors,
             get_available_external_tools,
             open_file_with_editor,
+            find_file_location,
             open_path_with_tool,
             save_token,
             load_token,
