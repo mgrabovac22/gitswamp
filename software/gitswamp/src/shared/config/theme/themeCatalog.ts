@@ -1,6 +1,22 @@
 export type ThemeModePreference = "dark" | "light";
 
+export const ANIMATED_SPECIAL_THEMES = [
+  { id: "signal-rain", label: "Signal Rain", mode: "dark", group: "special", particles: 12, period: 9 },
+  { id: "meteor-watch", label: "Meteor Watch", mode: "dark", group: "special", particles: 8, period: 8 },
+  { id: "firefly-grove", label: "Firefly Grove", mode: "dark", group: "special", particles: 15, period: 6 },
+  { id: "paper-confetti", label: "Paper Confetti", mode: "light", group: "special", particles: 14, period: 12 },
+  { id: "autumn-trail", label: "Autumn Trail", mode: "light", group: "special", particles: 12, period: 13 },
+  { id: "lantern-festival", label: "Lantern Festival", mode: "dark", group: "special", particles: 8, period: 19 },
+  { id: "deep-current", label: "Deep Current", mode: "dark", group: "special", particles: 9, period: 21 },
+  { id: "vinyl-room", label: "Vinyl Room", mode: "light", group: "special", particles: 8, period: 8 },
+  { id: "railway-nights", label: "Railway Nights", mode: "dark", group: "special", particles: 3, period: 20 },
+  { id: "firework-studio", label: "Firework Studio", mode: "dark", group: "special", particles: 7, period: 9 },
+] as const;
+
+export type SpecialThemeScene = typeof ANIMATED_SPECIAL_THEMES[number];
+
 export type AppPalettePreference =
+  | SpecialThemeScene["id"]
   | "swamp"
   | "default"
   | "default-light"
@@ -128,4 +144,5 @@ export const APP_THEME_OPTIONS: AppThemeOption[] = [
   { id: "comic-boom", label: "Comic Boom", mode: "light", group: "special" },
   { id: "rubber-hose", label: "Rubber Hose", mode: "light", group: "special" },
   { id: "cartoon-carnival", label: "Cartoon Carnival", mode: "dark", group: "special" },
+  ...ANIMATED_SPECIAL_THEMES,
 ];
