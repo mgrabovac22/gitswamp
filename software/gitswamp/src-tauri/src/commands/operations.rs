@@ -367,6 +367,13 @@ pub fn open_file_with_editor(
 }
 
 #[tauri::command]
+pub async fn find_file_location(path: String, file_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || GitService::find_file_location(&path, &file_path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn open_path_with_tool(path: String, tool: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || GitService::open_path_with_tool(&path, &tool))
         .await
