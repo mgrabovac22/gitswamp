@@ -3317,6 +3317,12 @@ impl GitService {
         IntegrationService::open_file_with_editor(path, file_path, editor)
     }
 
+    pub fn find_file_location(path: &str, file_path: &str) -> Result<(), String> {
+        let repo = GitRepository::open(path)?;
+        let worktree = repo.workdir().ok_or("This repository has no working directory.")?;
+        IntegrationService::reveal_worktree_file(worktree, Path::new(file_path))
+    }
+
     pub fn open_path_with_tool(path: &str, tool: &str) -> Result<(), String> {
         IntegrationService::open_path_with_tool(path, tool)
     }
