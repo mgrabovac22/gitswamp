@@ -19,6 +19,7 @@ import {
   Archive,
   Eye,
   Folder,
+  FolderSearch,
   File,
   FolderTree,
   Files,
@@ -1980,7 +1981,7 @@ function openFileContextMenu(event: MouseEvent, path: string) {
   fileCtxPath.value = path;
 
   const menuWidth = 250;
-  const menuHeight = 80 + Math.max(availableEditors.value.length, 1) * 42;
+  const menuHeight = 112 + Math.max(availableEditors.value.length, 1) * 42;
   let x = event.clientX;
   let y = event.clientY;
 
@@ -2000,6 +2001,8 @@ function closeFileContextMenu() {
   fileCtxVisible.value = false;
   fileCtxPath.value = null;
 }
+
+watch(() => props.repoPath, closeFileContextMenu);
 
 function editorButtonClass(option: ExternalEditorOption): string {
   if (option.id === "notepad") {
@@ -2032,6 +2035,17 @@ async function openSelectedFileWithEditor(editorId: ExternalEditorId) {
     toast.error(`Could not open ${fileParts(selectedPath).fileName}: ${String(error)}`);
   } finally {
     closeFileContextMenu();
+  }
+}
+
+async function findSelectedFileLocation() {
+  const filePath = fileCtxPath.value;
+  if (!filePath || !props.repoPath) return;
+  closeFileContextMenu();
+  try {
+    await invoke("find_file_location", { path: props.repoPath, filePath });
+  } catch (error) {
+    toast.error(`Could not find ${fileParts(filePath).fileName}: ${String(error)}`);
   }
 }
 
@@ -3736,7 +3750,7 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="fileCtxVisible && fileCtxPath"
-        class="fixed z-[210] w-[250px] rounded-lg border border-[var(--border)] bg-[var(--popover)] shadow-2xl p-2"
+        class="fixed z-[210] w-[250px] max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--popover)] shadow-2xl p-2"
         :style="{ left: fileCtxX + 'px', top: fileCtxY + 'px' }"
         @pointerdown.stop
       >
@@ -3755,6 +3769,14 @@ onUnmounted(() => {
           >
             <div class="text-xs font-medium text-[var(--foreground)]">{{ option.label }}</div>
             <div class="file-ctx-option-hint text-[10px] text-[var(--muted-foreground)]">{{ option.hint }}</div>
+          </button>
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 text-left px-2 py-1.5 rounded-md border border-transparent text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--secondary)]"
+            @click="findSelectedFileLocation"
+          >
+            <FolderSearch class="w-4 h-4 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
+            <span>Find file location</span>
           </button>
         </div>
       </div>
