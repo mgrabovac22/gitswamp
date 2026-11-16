@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef } from "vue";
+import { computed, onMounted, ref, shallowRef, useId } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, GitBranch, GitMerge, GitPullRequest, GitBranchPlus, Loader2, Settings2, Tag, Trash2 } from "lucide-vue-next";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -33,6 +33,31 @@ const formatAction: Record<WorkflowAction, string> = {
   "prepare-development": "Create development branch", finish: "Finish branch", cleanup: "Delete merged branch",
   tag: "Create release tag", handoff: "Review pull request handoff",
 };
+type HintAction = WorkflowAction | "manage";
+const hintId = useId();
+const hint = shallowRef<{ action: HintAction; x: number; y: number; above: boolean }>();
+const hints = computed<Record<HintAction, string>>(() => {
+  const c = config.value;
+  const primary = c?.primary ? `'${c.primary}'` : "the primary branch";
+  const development = c?.development ? `'${c.development}'` : "the development branch";
+  const base = c?.strategy === "gitflow" ? development : primary;
+  return {
+    feature: `Create and switch to a feature branch based on ${base}.`,
+    fix: `Create and switch to a bugfix branch based on ${primary}.`,
+    release: `Create and switch to a release branch from ${base} to prepare a new version.`,
+    hotfix: `Create and switch to a hotfix branch from ${primary} for an urgent production fix.`,
+    support: `Create and switch to a maintenance branch from a release tag, or from ${primary} if no tag is entered.`,
+    "prepare-primary": `Create a local ${primary} from its remote branch, without switching branches.`,
+    "prepare-development": `Create ${development} from its remote branch if available, or from ${primary}. Stay on the current branch.`,
+    finish: c?.strategy === "gitflow"
+      ? `Merge a feature into ${development}. Releases and hotfixes merge into ${primary} and ${development}, with an optional tag.`
+      : `Preview a fast-forward merge into ${primary}. You can also remove the local source after integration.`,
+    cleanup: "Delete the local branch only if it is fully merged and has no remote counterpart.",
+    tag: `Create a local version tag on the latest commit of ${primary}. It is not pushed automatically.`,
+    handoff: `Review changes and possible merge conflicts before opening a pull request into ${primary}.`,
+    manage: "Change the active strategy, its base branches and its naming prefixes.",
+  };
+});
 const actions = computed(() => {
   const c = config.value;
   const repo = info.value;
@@ -107,10 +132,28 @@ function save(value: WorkflowConfig) {
 }
 
 function begin(action: WorkflowAction) {
+  hint.value = undefined;
   const current = info.value?.current;
   const source = current && sources.value.includes(current) ? current : sources.value[0] ?? "";
   request.value = { action, name: "", source: action === "support" ? "" : source, cleanup: false, remote: props.remoteName };
   suggestTag();
+}
+
+function showHint(action: HintAction, event: PointerEvent | FocusEvent) {
+  const anchor = event.currentTarget as HTMLButtonElement;
+  if (event.type === "focus" ? !anchor.matches(":focus-visible") : (event as PointerEvent).pointerType === "touch") return;
+  const { left, right, top, bottom } = anchor.getBoundingClientRect();
+  const width = Math.min(260, window.innerWidth - 16);
+  const above = window.innerHeight - bottom < 130 && top > window.innerHeight - bottom;
+  const x = Math.max(8, Math.min((left + right - width) / 2, window.innerWidth - width - 8));
+  hint.value = { action, x, y: above ? top - 6 : bottom + 6, above };
+}
+
+function hideHint(action: HintAction, event: PointerEvent | FocusEvent) {
+  if (hint.value?.action !== action) return;
+  const anchor = event.currentTarget as HTMLButtonElement;
+  if (event.type === "pointerleave" ? anchor.matches(":focus-visible") : anchor.matches(":hover")) return;
+  hint.value = undefined;
 }
 
 function suggestTag() {
@@ -179,10 +222,14 @@ async function execute() {
 }
 
 function close() { if (!busy.value) emit("close"); }
+function cancel() {
+  if (hint.value) hint.value = undefined;
+  else close();
+}
 </script>
 
 <template>
-  <dialog ref="dialog" class="workflow-dialog" aria-labelledby="workflow-title" @cancel.prevent="close">
+  <dialog ref="dialog" class="workflow-dialog" aria-labelledby="workflow-title" @cancel.prevent="cancel" @scroll.self="hint = undefined">
     <header class="workflow-header">
       <GitBranch :size="19" class="branch-icon" />
       <div><h2 id="workflow-title">{{ setup ? 'Manage branching strategy' : title }}</h2>
@@ -255,16 +302,23 @@ function close() { if (!busy.value) emit("close"); }
         </template>
         <template v-else>
           <div v-if="actions.length" class="workflow-actions">
-            <button v-for="action in actions" :key="action" class="plain action" type="button" @click="begin(action)"><component :is="icon(action)" :size="16" />{{ formatAction[action] }}</button>
+            <button v-for="action in actions" :key="action" class="plain action" type="button" :aria-describedby="hint?.action === action ? hintId : undefined"
+              @pointerenter="showHint(action, $event)" @pointerleave="hideHint(action, $event)"
+              @focus="showHint(action, $event)" @blur="hideHint(action, $event)" @click="begin(action)">
+              <component :is="icon(action)" :size="16" />{{ formatAction[action] }}
+            </button>
           </div>
           <p v-else-if="config?.strategy !== 'manual'" class="muted">{{ info.blocked || 'Choose an existing primary branch in the strategy settings.' }}</p>
           <p v-else class="muted">No active branching strategy.</p>
-          <footer><button type="button" class="plain" @click="setup = true"><Settings2 :size="15" /> Manage strategy</button></footer>
+          <footer><button type="button" class="plain" :aria-describedby="hint?.action === 'manage' ? hintId : undefined"
+            @pointerenter="showHint('manage', $event)" @pointerleave="hideHint('manage', $event)"
+            @focus="showHint('manage', $event)" @blur="hideHint('manage', $event)" @click="hint = undefined; setup = true"><Settings2 :size="15" /> Manage strategy</button></footer>
         </template>
       </template>
       <p v-if="note" role="status" class="muted">{{ note }}</p>
       <p v-if="error" role="alert" class="error">{{ error }}</p>
     </div>
+    <div v-if="hint" :id="hintId" role="tooltip" class="workflow-hint" :style="{ left: `${hint.x}px`, top: `${hint.y}px` }" :class="{ above: hint.above }">{{ hints[hint.action] }}</div>
   </dialog>
 </template>
 
@@ -292,5 +346,7 @@ footer { display: flex; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
 .comparison { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; border-block-end: 1px solid var(--border); padding: 4px 0; }
 .comparison p { grid-column: 1 / -1; }
 .error { color: var(--destructive); white-space: pre-wrap; }
+.workflow-hint { position: fixed; z-index: 1; pointer-events: none; width: min(260px, calc(100vw - 16px)); padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--popover); color: var(--foreground); box-shadow: 0 4px 15px #0004; font-size: 11px; overflow-wrap: anywhere; }
+.workflow-hint.above { transform: translateY(-100%); }
 @media (max-width: 390px) { .workflow-actions { grid-template-columns: 1fr; } }
 </style>
