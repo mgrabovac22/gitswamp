@@ -3,10 +3,10 @@ import { computed, useId } from "vue";
 import { limbTracks, restingLimb, type Limb } from "./petLimbMotion";
 import type { ScheduledTrick } from "./petTricks";
 
-const props = defineProps<{ kind: Limb; paint: string; outline: string; texture: string; moving?: boolean; outing?: boolean; schedule?: readonly ScheduledTrick[] }>();
+const props = defineProps<{ kind: Limb; paint: string; outline: string; texture: string; moving?: boolean; outing?: boolean; schedule?: readonly ScheduledTrick[]; floorStrides?: number }>();
 const outlineId = useId();
 const rest = computed(() => restingLimb(props.kind));
-const tracks = computed(() => props.moving ? limbTracks(props.kind, !!props.outing, props.schedule ?? []) : []);
+const tracks = computed(() => props.moving ? limbTracks(props.kind, !!props.outing, props.schedule ?? [], props.floorStrides) : []);
 </script>
 
 <template>

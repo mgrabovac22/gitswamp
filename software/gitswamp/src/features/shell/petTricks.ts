@@ -94,9 +94,23 @@ export const PET_TRICKS = {
 export type PetTrickId = keyof typeof PET_TRICKS;
 export type ScheduledTrick = { id: PetTrickId; start: number; duration: number; grand?: boolean };
 const finales = ["somersault", "cartwheel", "backflip", "twist", "kip"] satisfies PetTrickId[];
+const floorRoutines = [
+  ["wave", "cartwheel", "victory"],
+  ["star", "backflip", "balance"],
+  ["split", "twist", "somersault"],
+  ["balance", "kip", "wave"],
+] satisfies PetTrickId[][];
+export const PET_FLOOR_TRICK_TIMES = [3.65, 9.1, 14.55];
+export const PET_FLOOR_WALK_TIMES = [0, 5.45, 10.9, 16.35];
+const FLOOR_TRICK_DURATION = 1.8;
 
 export function outingTricks(visit: number): ScheduledTrick[] {
-  return [{ id: finales[visit % finales.length], start: 15.4, duration: 2.8, grand: true }];
+  const wallVisits = Math.floor(visit / 3);
+  if (visit % 3 === 2) {
+    return [{ id: finales[wallVisits % finales.length], start: 15.4, duration: 2.8, grand: true }];
+  }
+  const routine = floorRoutines[(visit - wallVisits) % floorRoutines.length];
+  return routine.map((id, index) => ({ id, start: PET_FLOOR_TRICK_TIMES[index], duration: FLOOR_TRICK_DURATION }));
 }
 
 function wallPoses(start: number, end: number, poses: [number, PetPoseName][]) {
@@ -105,7 +119,7 @@ function wallPoses(start: number, end: number, poses: [number, PetPoseName][]) {
   })) };
 }
 
-// The addresses in pet-wall-route use the same seconds on the 20-second timeline.
+// CSS keyframes in pet-wall-route follow this same 20-second timeline.
 export const PET_WALL_ASCENT = wallPoses(3.2, 15.4, [
   [3.2, "rest"], [3.5, "wallReach"], [3.98, "wallPull"], [4.28, "wallGrip"],
   [4.56, "wallGrip"], [4.81, "wallSwap"], [5.21, "wallPull"], [5.63, "wallReach"],

@@ -6,7 +6,7 @@ import { PET_LIMB_ANCHORS, type Limb } from "./petLimbMotion";
 import { PET_COLORS, type PetAppearance } from "./petPreferences";
 import type { ScheduledTrick } from "./petTricks";
 
-const props = defineProps<{ appearance: PetAppearance; walking?: boolean; outing?: boolean; schedule?: readonly ScheduledTrick[] }>();
+const props = defineProps<{ appearance: PetAppearance; walking?: boolean; outing?: boolean; schedule?: readonly ScheduledTrick[]; floorStrides?: number }>();
 const id = useId();
 const part = (name: string) => `${id}-${name}`;
 const paint = (name: string) => `url(#${part(name)})`;
@@ -89,10 +89,10 @@ watchEffect(onCleanup => {
       </g>
     </g>
 
-    <PetLimb v-bind="limbPaint('leg-far')" :moving="moving" :outing="outing" :schedule="schedule" />
+    <PetLimb v-bind="limbPaint('leg-far')" :moving="moving" :outing="outing" :schedule="schedule" :floor-strides="floorStrides" />
 
     <g class="pet-upper">
-      <PetLimb v-if="moving" v-bind="limbPaint('arm-far')" moving :outing="outing" :schedule="schedule" />
+      <PetLimb v-if="moving" v-bind="limbPaint('arm-far')" moving :outing="outing" :schedule="schedule" :floor-strides="floorStrides" />
       <g v-else transform="translate(38 5) scale(.222)">
         <use :href="`#${part('logo')}`" :clip-path="paint('arm-far')" />
       </g>
@@ -106,9 +106,9 @@ watchEffect(onCleanup => {
       </g>
     </g>
 
-    <PetLimb v-bind="limbPaint('leg-near')" :moving="moving" :outing="outing" :schedule="schedule" />
+    <PetLimb v-bind="limbPaint('leg-near')" :moving="moving" :outing="outing" :schedule="schedule" :floor-strides="floorStrides" />
 
-    <PetLimb v-if="moving" v-bind="limbPaint('arm-near')" moving :outing="outing" :schedule="schedule" />
+    <PetLimb v-if="moving" v-bind="limbPaint('arm-near')" moving :outing="outing" :schedule="schedule" :floor-strides="floorStrides" />
     <g v-else transform="translate(38 5) scale(.222)">
       <use :href="`#${part('logo')}`" :clip-path="paint('arm-near')" />
     </g>

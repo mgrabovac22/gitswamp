@@ -1,16 +1,24 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, shallowRef } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 import PetSprite from "./PetSprite.vue";
-import { PET_WALK_SPEED } from "./petLimbMotion";
+import { floorStridesFor, PET_WALK_SPEED } from "./petLimbMotion";
 import { petAppearance } from "./petPreferences";
 import { outingTricks, type ScheduledTrick } from "./petTricks";
 import { usePetTrickMotion } from "./usePetTrickMotion";
 
 const INTERVAL = 120_000;
 const OUTING = 20_000;
-const strideDistance = { "--pet-wall-approach": PET_WALK_SPEED * 3.2, "--pet-walk-distance": PET_WALK_SPEED * 9.6 };
+const MIN_WIDTH = 112, MAX_WIDTH = 156, WIDTH_RATIO = .16, SIDE_MARGIN = 10;
+const strideDistance = {
+  "--pet-width": `clamp(${MIN_WIDTH}px, ${WIDTH_RATIO * 100}vw, ${MAX_WIDTH}px)`,
+  "--pet-floor-margin": `${SIDE_MARGIN}px`,
+  "--pet-wall-approach": PET_WALK_SPEED * 3.2,
+  "--pet-walk-distance": PET_WALK_SPEED * 9.6,
+};
 const visible = ref(false);
 const schedule = shallowRef<ScheduledTrick[]>([]);
+const floorStrides = ref(0);
+const wallShow = computed(() => schedule.value[0]?.grand === true);
 const body = ref<HTMLDivElement>();
 const shadow = ref<HTMLSpanElement>();
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -30,6 +38,10 @@ function stop() {
 
 function visit() {
   schedule.value = petAppearance.value.tricks ? outingTricks(visitNumber++) : [];
+  if (!wallShow.value && schedule.value.length) {
+    const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth * WIDTH_RATIO));
+    floorStrides.value = floorStridesFor(window.innerWidth - width - 2 * SIDE_MARGIN, width);
+  } else floorStrides.value = 0;
   visible.value = true;
   finish = setTimeout(() => { visible.value = false; }, OUTING);
   next = setTimeout(visit, INTERVAL);
@@ -59,16 +71,16 @@ onUnmounted(() => {
 
 <template>
   <div v-if="visible" class="desktop-pet" :style="strideDistance" aria-hidden="true">
-    <div v-if="schedule.length" class="desktop-pet__rope" data-pet-wall="rope"><i></i><i></i><i></i></div>
-    <div v-if="schedule.length" class="desktop-pet__rocks" data-pet-wall="rock"><i v-for="hold in 5" :key="hold"></i></div>
-    <div class="desktop-pet__walker" :class="{ 'desktop-pet__walker--show': schedule.length }"
+    <div v-if="wallShow" class="desktop-pet__rope" data-pet-wall="rope"><i></i><i></i><i></i></div>
+    <div v-if="wallShow" class="desktop-pet__rocks" data-pet-wall="rock"><i v-for="hold in 5" :key="hold"></i></div>
+    <div class="desktop-pet__walker" :class="{ 'desktop-pet__walker--wall': wallShow, 'desktop-pet__walker--floor': floorStrides }"
       :data-tricks="schedule.map(trick => trick.id).join(' ')">
       <span ref="shadow" class="desktop-pet__shadow"></span>
-      <svg v-if="schedule.length" class="desktop-pet__impact" viewBox="0 0 120 20" aria-hidden="true">
+      <svg v-if="wallShow" class="desktop-pet__impact" viewBox="0 0 120 20" aria-hidden="true">
         <path d="M44 15Q30 5 22 12m16 3L16 15m50 0q17-13 30-6m-17 7 25 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
       </svg>
       <div class="desktop-pet__facing">
-        <div ref="body" class="desktop-pet__tricks"><PetSprite :appearance="petAppearance" walking outing :schedule="schedule" /></div>
+        <div ref="body" class="desktop-pet__tricks"><PetSprite :appearance="petAppearance" walking outing :schedule="schedule" :floor-strides="floorStrides" /></div>
       </div>
     </div>
   </div>
@@ -76,7 +88,6 @@ onUnmounted(() => {
 
 <style scoped>
 .desktop-pet {
-  --pet-width: clamp(112px, 16vw, 156px);
   --pet-height: calc(var(--pet-width) * 193 / 260);
   --wall-limit: max(30px, calc(100vh - var(--pet-height) - 14px));
   --rope-rise: min(var(--wall-limit), clamp(65px, 24vh, 215px));
@@ -98,14 +109,20 @@ onUnmounted(() => {
   width: var(--pet-width);
   animation: pet-walk-route 20s linear both;
 }
-.desktop-pet__walker--show {
+.desktop-pet__walker--wall {
   left: 0;
   animation-name: pet-wall-route;
 }
+.desktop-pet__walker--floor {
+  --pet-floor-distance: max(0px, calc(100vw - var(--pet-width) - 2 * var(--pet-floor-margin)));
+  left: var(--pet-floor-margin);
+  animation-name: pet-floor-route;
+}
 .desktop-pet__facing { animation: pet-turn 20s ease-in-out both; }
-.desktop-pet__walker--show .desktop-pet__facing { animation-name: pet-wall-facing; animation-timing-function: ease-in-out; }
+.desktop-pet__walker--wall .desktop-pet__facing { animation-name: pet-wall-facing; }
+.desktop-pet__walker--floor .desktop-pet__facing { animation: none; }
 .desktop-pet__shadow { position: absolute; width: 44%; height: 6px; bottom: 3%; left: 28%; border-radius: 50%; background: #13100b; opacity: .2; }
-.desktop-pet__walker--show .desktop-pet__shadow { animation: pet-wall-shadow 20s linear both; }
+.desktop-pet__walker--wall .desktop-pet__shadow { animation: pet-wall-shadow 20s linear both; }
 .desktop-pet__impact { position: absolute; width: 92%; height: 20px; bottom: 1px; left: 4%; color: #d3b67c; opacity: 0; animation: pet-wall-impact 20s linear both; }
 .desktop-pet__rope {
   position: absolute; bottom: 8px; right: 13px; width: 4px;
@@ -138,6 +155,15 @@ onUnmounted(() => {
   0%, 100% { transform: translateX(0); opacity: 0; }
   3%, 97% { opacity: 1; }
   49%, 53% { transform: translateX(var(--pet-distance)); }
+}
+/* The pauses at 3.65s, 9.1s and 14.55s follow the floor trick schedule. */
+@keyframes pet-floor-route {
+  0% { transform: translateX(0); opacity: 0; }
+  3%, 97% { opacity: 1; }
+  18.25%, 27.25% { transform: translateX(calc(var(--pet-floor-distance) * .25)); }
+  45.5%, 54.5% { transform: translateX(calc(var(--pet-floor-distance) * .5)); }
+  72.75%, 81.75% { transform: translateX(calc(var(--pet-floor-distance) * .75)); }
+  100% { transform: translateX(var(--pet-floor-distance)); opacity: 0; }
 }
 /* Ground approach, rope, airborne crossing, rock, then the centre. */
 @keyframes pet-wall-route {

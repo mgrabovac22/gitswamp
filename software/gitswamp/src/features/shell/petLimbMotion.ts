@@ -1,15 +1,17 @@
-import { PET_POSES, PET_TRICKS, PET_WALL_ASCENT, PET_WALL_LANDING, type PetPose, type PetTrickFrame, type ScheduledTrick } from "./petTricks";
+import { PET_FLOOR_TRICK_TIMES, PET_FLOOR_WALK_TIMES, PET_POSES, PET_TRICKS, PET_WALL_ASCENT, PET_WALL_LANDING, type PetPose, type PetTrickFrame, type ScheduledTrick } from "./petTricks";
 
 export type Limb = "leg-near" | "leg-far" | "arm-near" | "arm-far";
 type Point = { x: number; y: number };
 type Pose = { end: Point; lift?: number };
 type Shape = { skin: string; detail: string; shine: string; claws: string };
-type Track = { begin: string; dur: string; times?: string; values: Shape; repeat: "1" | "indefinite" };
+type Track = { begin: string; dur: string; times?: string; values: Shape; repeat: number | "indefinite" };
 
 const CYCLE = .66;
 const CONTACT = .63;
 const STRIDE = 30;
 export const PET_WALK_SPEED = STRIDE / (CYCLE * CONTACT * 260);
+const floorWalkStart = PET_FLOOR_WALK_TIMES.map(time => `${time}s`).join(";");
+const floorWalkDuration = PET_FLOOR_TRICK_TIMES[0];
 const SAMPLES = 16;
 const transitionCache = new Map<string, Track>();
 const walkCache = new Map<Limb, Track>();
@@ -23,6 +25,10 @@ const shift = (a: Point, x: number, y: number) => point(a.x + x, a.y + y);
 const unit = (a: Point) => scale(a, 1 / (Math.hypot(a.x, a.y) || 1));
 const normal = (a: Point) => point(-a.y, a.x);
 const at = (a: Point) => `${+a.x.toFixed(1)} ${+a.y.toFixed(1)}`;
+
+export function floorStridesFor(distance: number, spriteWidth: number): number {
+  return Math.max(1, Math.min(12, Math.round(distance / (PET_FLOOR_WALK_TIMES.length * PET_WALK_SPEED * spriteWidth * CYCLE))));
+}
 
 export const PET_LIMB_ANCHORS = {
   "leg-near": point(104, 132), "leg-far": point(138, 132),
@@ -135,29 +141,35 @@ function walkTrack(limb: Limb): Track {
   return track;
 }
 
-function transition(limb: Limb, name: string, start: number, duration: number, frames: readonly PetTrickFrame[], walkStart = false, walkEnd = false): Track {
-  const key = `${limb}/${name}/${start}/${duration}`;
+function transition(limb: Limb, name: string, start: number, duration: number, frames: readonly PetTrickFrame[], walkStart?: number, walkEnd?: number): Track {
+  const key = `${limb}/${name}/${start}/${duration}/${walkStart ?? ""}/${walkEnd ?? ""}`;
   const existing = transitionCache.get(key);
   if (existing) return existing;
   const poses = frames.map(({ at: time, pose: preset }) => {
-    if ((walkStart && time === 0) || (walkEnd && time === 1)) return step(limb, start + time * duration);
+    if (time === 0 && walkStart !== undefined) return step(limb, walkStart);
+    if (time === 1 && walkEnd !== undefined) return step(limb, walkEnd);
     const pose: PetPose = PET_POSES[preset ?? "rest"];
     const [x, y] = pose.joints[limb] ?? [0, 0];
     return { end: shift(rig[limb].rest, x, y), lift: pose.weight };
   });
-  const track: Track = { begin: `${start}s`, dur: `${duration}s`, repeat: "1", times: frames.map(frame => frame.at).join(";"), values: keys(poses.map(pose => shape(limb, pose))) };
+  const track: Track = { begin: `${start}s`, dur: `${duration}s`, repeat: 1, times: frames.map(frame => frame.at).join(";"), values: keys(poses.map(pose => shape(limb, pose))) };
   transitionCache.set(key, track);
   return track;
 }
 
 const turnFrames = [{ at: 0 }, { at: .23 }, { at: .76 }, { at: 1 }];
-export function limbTracks(limb: Limb, outing: boolean, schedule: readonly ScheduledTrick[]): Track[] {
+export function limbTracks(limb: Limb, outing: boolean, schedule: readonly ScheduledTrick[], floorStrides = 0): Track[] {
+  if (floorStrides) {
+    // Each walking segment ends on the same pose, independent of window width.
+    const walk = { ...walkTrack(limb), begin: floorWalkStart, dur: `${floorWalkDuration / floorStrides}s`, repeat: floorStrides };
+    return [walk, ...schedule.map(({ id, start, duration }) => transition(limb, id, start, duration, PET_TRICKS[id].frames, 0, 0))];
+  }
   const tracks = outing || !schedule.length ? [walkTrack(limb)] : [];
   const wallShow = outing && schedule.some(trick => trick.grand);
-  if (wallShow) tracks.push(transition(limb, "wall-course", PET_WALL_ASCENT.start, PET_WALL_ASCENT.duration, PET_WALL_ASCENT.frames, true));
-  else if (outing) tracks.push(transition(limb, "turn", 9.8, .8, turnFrames, true, true));
+  if (wallShow) tracks.push(transition(limb, "wall-course", PET_WALL_ASCENT.start, PET_WALL_ASCENT.duration, PET_WALL_ASCENT.frames, PET_WALL_ASCENT.start));
+  else if (outing) tracks.push(transition(limb, "turn", 9.8, .8, turnFrames, 9.8, 10.6));
   for (const { id, start, duration } of schedule) {
-    tracks.push(transition(limb, id, start, duration, PET_TRICKS[id].frames, outing && !wallShow, outing && !wallShow));
+    tracks.push(transition(limb, id, start, duration, PET_TRICKS[id].frames));
   }
   if (wallShow) tracks.push(transition(limb, "wall-landing", PET_WALL_LANDING.start, PET_WALL_LANDING.duration, PET_WALL_LANDING.frames));
   return tracks;
