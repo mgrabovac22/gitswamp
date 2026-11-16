@@ -36,6 +36,9 @@ use commands::ghost::{
 use commands::http::http_send_request;
 use commands::lfs::{change_lfs_rule, convert_staged_lfs, get_lfs_overview, setup_lfs, transfer_lfs};
 use commands::interactive_rebase::{get_interactive_rebase_plan, interactive_rebase_action, start_interactive_rebase};
+use commands::interactive_rebase::{get_interactive_amend_plan, start_interactive_amend};
+use commands::patches::{export_patch, import_patch};
+use commands::status::amend_removal_choices;
 use commands::logs::{append_app_log, get_app_log_path};
 use commands::operation_preview::get_operation_preview;
 use commands::operations::{
@@ -132,6 +135,7 @@ pub fn run() {
             abort_cherry_pick,
             restore_pull_safety_stash,
             amend_commit,
+            amend_removal_choices,
             pull,
             push,
             push_force,
@@ -174,6 +178,10 @@ pub fn run() {
             rebase_branch_onto,
             rebase_continue,
             get_interactive_rebase_plan,
+            get_interactive_amend_plan,
+            start_interactive_amend,
+            export_patch,
+            import_patch,
             start_interactive_rebase,
             interactive_rebase_action,
             rebase_abort,

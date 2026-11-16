@@ -6,6 +6,8 @@ This guide supplements the [user guide](DOCUMENTATION_31_USER_GUIDE.md). Android
 
 Stage the files that should be included in the last commit. Right-click the current branch's last commit or Working Changes in the graph, then choose **Amend commit**. Review the staged files, message and available options before confirming.
 
+To take a file change out of the last commit, expand **Move files to Working Changes** and select it before confirming. The amended commit (and the index) use the parent's version, but the working files stay as they are. A file added by the old commit becomes untracked if it remains on disk. An exact rename is moved as a pair. If a selected path already has separate staged edits, unstage those edits first; GitSwamp will not replace the staged copy silently. Cancelling the amend selection does not change the index.
+
 Amend can change commit content, not just its message. It creates a new commit SHA. Coordinate with collaborators before rewriting already published history.
 
 For a repository initialized outside GitSwamp, stage your files and commit as usual. The first commit creates the branch configured by Git, including `main` or `master`, without requiring a separate README commit. Initialize a Repository uses the last clone location, or a folder under your home directory when no clone location is saved.
@@ -176,6 +178,32 @@ Right-click a commit in the graph and select **Interactive Rebase from Here**. T
 To move local work onto newer upstream commits, fetch first, then right-click the `origin` branch badge or its commit and select **Interactive Rebase onto** that target. Only commits on your local side of the common ancestor are replayed. If you have no local commits to replay, the dialog offers **Fast-forward** instead. Neither action moves the remote branch or pushes changes.
 
 Start from a clean working tree on a local branch. The visual editor supports linear ranges and does not flatten merges. **Edit** pauses after applying a commit; use the Changes panel to stage and amend, then **Continue rebase** in the toolbar. For a conflict, resolve and stage the files before continuing, or choose **Skip commit**. **Abort rebase** restores the original branch tip. Nothing is pushed automatically. The existing branch-to-branch rebase is unchanged.
+
+## Interactive Amend
+
+Right-click a commit on the checked-out branch and expand **Interactive Amend** below the reset options. The review shows the selected commit, its parent when relevant, and how many later commits will be replayed. The working tree must be clean before starting; commit, stash, or export local changes first. If replay would overwrite an ignored local path, move it aside before starting or continuing. When the tracked remote already contains rewritten commits, the dialog requires a separate acknowledgement. It never pushes or resets other refs.
+
+| Action | Result |
+| --- | --- |
+| **Edit or add files** | Pause at the commit. Edit or add files, or import a patch, then stage and use **Amend Last Commit**. Click **Continue rebase** to replay the later commits. |
+| **Reword** | Replace the selected commit's message. |
+| **Squash into parent** | Combine both commits and edit the combined message. |
+| **Fixup into parent** | Combine the changes but keep only the parent's message. |
+| **Drop commit** | Remove the selected commit from this branch; its changes are not moved to Working Changes. |
+
+If replay stops on a conflict, resolve and stage the affected files before continuing. **Keep Base** takes the whole file from the rebased history so far; **Keep Modified** takes the whole file from the commit being replayed. Resolve manually to combine parts of the two versions. **Skip commit** discards that replayed commit and moves on. **Abort rebase** restores the original branch tip and discards tracked edits made during the operation. If restoring the tip would overwrite a new untracked or ignored path, move that path aside before aborting.
+
+Interactive Amend refuses ranges that would rewrite a merge commit. A root commit has no parent to squash or fix up into. Use ordinary **Amend Last Commit** when all you need is to add staged files to HEAD or move selected HEAD changes back out of it.
+
+## Import and Export Patches
+
+Right-click a non-merge commit and choose **Save as patch** to export a Git-format patch with its commit message, author and file changes. For local changes, choose **Export Patch** in **Menu > File** or use the Working Changes context menu. Select **All tracked changes**, **Staged changes**, or **Unstaged changes**. Stage a new untracked file if you want to include it.
+
+Choose **Menu > File > Import Patch** and select a `.patch` or `.diff` file. By default it applies to Working Changes only. Enable **Stage changes after applying** to update both the working tree and index. Git checks the patch first, and a failed check does not change files. Import never creates a commit or modifies its author; it can be used during the edit pause of Interactive Amend before you amend manually.
+
+## Release Versioning
+
+Set `version` in `software/gitswamp/src-tauri/tauri.conf.json` to start a new major or minor release line. If the last released tag is `v0.5.20`, setting `0.6.0` makes the first build on `main` produce `0.6.0`. Later builds in the same line increment its latest stable patch tag. Retrying the latest already-tagged commit reuses its version. The CI run number no longer contributes to the version; the signed updater manifest uses the same version as the bundles.
 
 ## Bug Autopsy and Git Bisect
 

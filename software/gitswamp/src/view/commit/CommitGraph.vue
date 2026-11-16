@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
-import { Check, Columns3, GitBranchPlus, ListRestart, PencilLine, RotateCcw } from "lucide-vue-next";
+import { Check, ChevronRight, Columns3, FileDiff, GitBranchPlus, ListRestart, PencilLine, RotateCcw } from "lucide-vue-next";
+import { amendActions, type AmendAction, type PatchRequest } from "@/features/repository/historyEdits";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -87,6 +88,8 @@ const emit = defineEmits<{
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestInteractiveRebase: [sha: string];
+  requestInteractiveAmend: [request: { sha: string; action: AmendAction }];
+  requestPatch: [request: PatchRequest];
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
   focusHead: [];
@@ -107,6 +110,7 @@ const ctxX = ref(0);
 const ctxY = ref(0);
 const ctxCommit = ref<CommitInfo | null>(null);
 const ctxResetSub = ref(false);
+const ctxAmendSub = ref(false);
 const ctxWorkingChanges = ref(false);
 const refCtxVisible = ref(false);
 const refCtxX = ref(0);
@@ -1045,7 +1049,7 @@ function onWorkingChangesContextMenu(event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
   const menuWidth = 300;
-  const menuHeight = 76;
+  const menuHeight = 142;
   let x = event.clientX;
   let y = event.clientY;
   if (x + menuWidth > window.innerWidth) x = Math.max(8, window.innerWidth - menuWidth - 8);
@@ -1055,6 +1059,7 @@ function onWorkingChangesContextMenu(event: MouseEvent) {
   ctxCommit.value = null;
   ctxWorkingChanges.value = true;
   ctxResetSub.value = false;
+  ctxAmendSub.value = false;
   ctxVisible.value = true;
   closeRefCtx();
   closeStashCtx();
@@ -1077,6 +1082,7 @@ function onCtx(e: MouseEvent, commit: CommitInfo) {
   ctxY.value = y;
   ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
+  ctxAmendSub.value = false;
   ctxVisible.value = true;
   closeRefCtx();
   closeStashCtx();
@@ -1086,6 +1092,7 @@ function closeCtx() {
   ctxVisible.value = false;
   ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
+  ctxAmendSub.value = false;
   closeRefCtx();
   closeStashCtx();
 }
@@ -1136,6 +1143,12 @@ function applyBranchContextAction(action: string, branch: string, sourceRemote =
 }
 
 function ctxAction(action: string) {
+  if (action === "import-patch" || action === "export-patch") {
+    const sha = ctxCommit.value?.sha;
+    closeCtx();
+    emit("requestPatch", action === "import-patch" ? { kind: "import" } : { kind: "export", sha });
+    return;
+  }
   if (action === "toggle-amend") {
     const enabled = !props.amendModeActive;
     closeCtx();
@@ -1168,6 +1181,13 @@ function ctxAction(action: string) {
   if (branch) {
     applyBranchContextAction(action, branch, !!branchRef?.remote && !branchRef?.local);
   }
+}
+
+function chooseAmend(action: AmendAction) {
+  const sha = ctxCommit.value?.sha;
+  if (!sha) return;
+  closeCtx();
+  emit("requestInteractiveAmend", { sha, action });
 }
 
 function topRefStyle(commit: CommitInfo, color: string): Record<string, string> {
@@ -2169,6 +2189,8 @@ onUnmounted(() => {
       >
         <template v-if="ctxWorkingChanges">
           <button class="ctx-item" @click="ctxAction('branch-workflow')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ workflowLabel || 'Branching workflow' }}</span></button>
+          <button class="ctx-item" @click="ctxAction('export-patch')"><FileDiff class="ctx-icon h-4 w-4" /><span class="ctx-main">Export patch…</span></button>
+          <button class="ctx-item" @click="ctxAction('import-patch')"><FileDiff class="ctx-icon h-4 w-4" /><span class="ctx-main">Import patch…</span></button>
           <button
             class="ctx-item ctx-amend-item"
             :disabled="!amendModeActive && (hasConflicts || !headSha)"
@@ -2221,7 +2243,7 @@ onUnmounted(() => {
         <div class="relative">
           <button
             class="ctx-item ctx-item-reset mt-1 w-full"
-            @click.stop="ctxResetSub = !ctxResetSub"
+            @click.stop="ctxResetSub = !ctxResetSub; ctxAmendSub = false"
           >
             <span class="ctx-icon">🔄</span>
             <span class="ctx-main !whitespace-nowrap">Reset {{ currentBranch }} to this commit</span>
@@ -2235,6 +2257,18 @@ onUnmounted(() => {
             <button class="ctx-item-sub" @click="ctxAction('reset-soft')">Soft — move HEAD, keep all changes staged</button>
             <button class="ctx-item-sub" @click="ctxAction('reset-mixed')">Mixed — move HEAD, unstage files, keep working tree</button>
             <button class="ctx-item-sub text-[#ef4444] hover:bg-[#ef4444]/15" @click="ctxAction('reset-hard')">Hard — move HEAD and discard all working changes</button>
+          </div>
+        </div>
+
+        <div v-if="headSha && ctxHeadHistoryRelation !== 'other' && ctxCommit && ctxCommit.parent_shas.length < 2">
+          <button class="ctx-item ctx-item-reset mt-1 w-full" type="button" :aria-expanded="ctxAmendSub" @click.stop="ctxAmendSub = !ctxAmendSub; ctxResetSub = false">
+            <PencilLine class="ctx-icon h-4 w-4" /><span class="ctx-main">Interactive Amend</span><ChevronRight class="ctx-arrow h-3 w-3 transition-transform" :class="{ 'rotate-90': ctxAmendSub }" />
+          </button>
+          <div v-if="ctxAmendSub" class="bg-[var(--popover)]/80 py-1 pl-2 pr-1">
+            <button v-for="(entry, action) in amendActions" :key="action" class="ctx-item-sub flex items-center gap-2" type="button"
+              :title="entry.description" :disabled="!ctxCommit.parent_shas.length && (action === 'squash' || action === 'fixup')" @click="chooseAmend(action)">
+              <component :is="entry.icon" :size="13" />{{ entry.label }}
+            </button>
           </div>
         </div>
 
@@ -2277,6 +2311,7 @@ onUnmounted(() => {
           </div>
         </template>
         <div class="space-y-1 mt-1">
+          <button v-if="ctxCommit && ctxCommit.parent_shas.length < 2" class="ctx-item" @click="ctxAction('export-patch')"><FileDiff class="ctx-icon h-4 w-4" /><span class="ctx-main">Save as patch…</span></button>
           <button class="ctx-item" @click="ctxAction('copy-sha')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy commit SHA</span><span class="ctx-sub">Copy full commit hash to clipboard</span></button>
           <button class="ctx-item" @click="ctxAction('tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Create lightweight tag</span><span class="ctx-sub">Create tag on this commit</span></button>
           <button class="ctx-item" @click="ctxAction('annotated-tag')"><span class="ctx-icon">🏷✏</span><span class="ctx-main">Create annotated tag</span><span class="ctx-sub">Create tag with message and metadata</span></button>

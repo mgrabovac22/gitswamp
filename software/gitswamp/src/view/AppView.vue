@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { AmendAction, AmendConfirmation, PatchRequest, PatchScope } from "@/features/repository/historyEdits";
 import { useProviderTracking, type TrackingContext } from "@/features/repository/remote/useProviderTracking";
 import { githubBranchComparison, githubBranches, githubDiscussion, type RemoteBranchCatalog } from "@/features/repository/remote/githubRemote";
 import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut, isBranchWorkflowShortcut } from "@/features/shell/keyboardShortcuts";
@@ -257,6 +258,8 @@ const rebaseConflictSource = ref("");
 const rebaseConflictTarget = ref("");
 const rebaseConflictBusy = ref(false);
 const InteractiveRebaseDialog = defineAsyncComponent(() => import("@/features/repository/InteractiveRebaseDialog.vue"));
+const InteractiveAmendDialog = defineAsyncComponent(() => import("@/features/repository/InteractiveAmendDialog.vue"));
+const HistoryPatchDialog = defineAsyncComponent(() => import("@/features/repository/HistoryPatchDialog.vue"));
 const BranchWorkflowDialog = defineAsyncComponent(() => import("@/features/repository/workflow/BranchWorkflowDialog.vue"));
 const branchWorkflow = ref<{ path: string; initial?: WorkflowInspection } | null>(null);
 const workflowPullRequest = ref<HandoffDraft | null>(null);
@@ -269,6 +272,12 @@ const branchWorkflowLabel = computed(() => {
 const interactiveRebase = ref<{ path: string; base: string } | null>(null);
 const interactiveRebaseBusy = ref(false);
 const interactiveRebaseError = ref("");
+const interactiveAmend = ref<{ path: string; sha: string; action: AmendAction } | null>(null);
+const interactiveAmendError = ref("");
+type HistoryPatch = PatchRequest & { path: string; expectedHead: string | null; branch: string; file?: string };
+const historyPatch = ref<HistoryPatch | null>(null);
+const historyPatchBusy = ref(false);
+const historyPatchError = ref("");
 const visualRebaseActive = computed(() => !!git.repositoryOperation.value?.visual_rebase);
 const normalRebaseActive = computed(() => git.repositoryOperation.value?.kind === "rebase" && !visualRebaseActive.value);
 let normalRebaseHadConflicts = false;
@@ -471,6 +480,7 @@ function closeDiffViewer() {
 }
 
 async function openConflictResolver(filePath: string) {
+  const context = git.destructiveContext.value;
   try {
     toast.action(
       "warning",
@@ -480,6 +490,7 @@ async function openConflictResolver(filePath: string) {
           label: "Resolve Manually",
           style: "primary",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             conflictResolverPath.value = filePath;
             setHistoryViewMode("conflict-resolve");
           },
@@ -488,6 +499,7 @@ async function openConflictResolver(filePath: string) {
           label: "Keep Modified",
           style: "neutral",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             await resolveConflict(filePath, "keep-modified");
           },
         },
@@ -495,6 +507,7 @@ async function openConflictResolver(filePath: string) {
           label: "Keep Base",
           style: "neutral",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             await resolveConflict(filePath, "keep-base");
           },
         },
@@ -502,6 +515,7 @@ async function openConflictResolver(filePath: string) {
           label: "Delete File",
           style: "danger",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             await resolveConflict(filePath, "delete");
           },
         },
@@ -512,6 +526,7 @@ async function openConflictResolver(filePath: string) {
         },
       ],
       30000,
+      visualRebaseActive.value ? "Keep Base takes the rebased version; Keep Modified takes the version from the commit being replayed. Each replaces the whole file." : undefined,
     );
   } catch (e) {
     toast.error(`Error opening conflict resolver: ${String(e)}`);
@@ -535,26 +550,23 @@ function onConflictResolved() {
 }
 
 async function resolveConflict(filePath: string, resolution: 'keep-modified' | 'keep-base' | 'delete') {
+  const path = git.repoPath.value;
+  if (!path || git.loading.value) return;
+  git.loading.value = true;
   try {
-    let strategy: "ours" | "theirs" | "delete";
-    if (resolution === "keep-modified") {
-      strategy = "ours";
-    } else if (resolution === "keep-base") {
-      strategy = "theirs";
-    } else {
-      strategy = "delete";
-    }
-
     await invoke('resolve_conflict_file', {
-      path: git.repoPath.value,
+      path,
       filePath: filePath,
-      strategy: strategy,
+      strategy: resolution,
     });
 
+    if (path !== git.repoPath.value) return;
     await git.refreshAll();
     toast.success(`Conflict resolved: ${filePath}`);
   } catch (e) {
-    toast.error(`Failed to resolve conflict: ${String(e)}`);
+    if (path === git.repoPath.value) toast.error(`Failed to resolve conflict: ${String(e)}`);
+  } finally {
+    if (path === git.repoPath.value) git.loading.value = false;
   }
 }
 
@@ -4115,7 +4127,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
   if (event.defaultPrevented || (event.target instanceof Element && event.target.closest("dialog[data-commit-composer]"))) return;
-  if (pendingWorktreeRemoval.value || interactiveRebase.value || branchWorkflow.value || lfsBusy.value) return;
+  if (pendingWorktreeRemoval.value || interactiveRebase.value || interactiveAmend.value || historyPatch.value || branchWorkflow.value || lfsBusy.value) return;
   handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
 
@@ -4246,6 +4258,8 @@ watch([tabs, activeTabId], () => {
 
 watch(activeTabId, () => {
   interactiveRebase.value = null;
+  interactiveAmend.value = null;
+  historyPatch.value = null;
   branchWorkflow.value = null;
   workflowPullRequest.value = null;
   if (historyViewMode.value === "lfs") setHistoryViewMode("graph");
@@ -5184,6 +5198,98 @@ function openInteractiveRebase(base: string) {
   interactiveRebase.value = { path: git.repoPath.value, base };
 }
 
+function openInteractiveAmend(request: { sha: string; action: AmendAction }) {
+  if (git.loading.value || !git.repoPath.value) return;
+  interactiveAmendError.value = "";
+  interactiveAmend.value = { path: git.repoPath.value, ...request };
+}
+
+async function startInteractiveAmend(confirmation: AmendConfirmation) {
+  const request = interactiveAmend.value;
+  if (!request || request.path !== git.repoPath.value || git.loading.value || interactiveRebaseBusy.value) return;
+  interactiveRebaseBusy.value = git.loading.value = true;
+  interactiveAmendError.value = "";
+  try {
+    const outcome = await invoke<VisualRebaseOutcome>("start_interactive_amend", { ...request, confirmation });
+    await refreshAfterVisualRebase(request.path);
+    interactiveAmend.value = null;
+    if (request.path === git.repoPath.value) {
+      if (outcome === "completed") { onSelectWorkingChanges(); toast.success("Interactive amend complete."); }
+      else showVisualRebaseOutcome(outcome);
+    }
+  } catch (error) {
+    await refreshAfterVisualRebase(request.path);
+    if (request.path === git.repoPath.value && visualRebaseActive.value) {
+      interactiveAmend.value = null;
+      onSelectWorkingChanges();
+      toast.error(String(error));
+    } else interactiveAmendError.value = String(error);
+  } finally {
+    interactiveRebaseBusy.value = false;
+    if (request.path === git.repoPath.value) git.loading.value = false;
+  }
+}
+
+const patchFilters = [{ name: "Git patch", extensions: ["patch", "diff"] }];
+
+async function openHistoryPatch(request: PatchRequest) {
+  const path = git.repoPath.value;
+  if (!path || git.loading.value || historyPatchBusy.value || historyPatch.value) return;
+  const snapshot: HistoryPatch = { ...request, path, branch: git.currentBranch.value, expectedHead: git.repoInfo.value?.head_sha ?? null };
+  historyPatchError.value = "";
+  if (request.kind === "export") {
+    if (request.sha) await saveHistoryPatch(snapshot, "all-tracked");
+    else historyPatch.value = snapshot;
+    return;
+  }
+  try {
+    historyPatchBusy.value = true;
+    const file = await openDialog({ directory: false, multiple: false, filters: patchFilters });
+    if (typeof file === "string" && path === git.repoPath.value && snapshot.branch === git.currentBranch.value) historyPatch.value = { ...snapshot, file };
+  } catch (error) { toast.error(String(error)); }
+  finally { historyPatchBusy.value = false; }
+}
+
+async function saveHistoryPatch(patch: HistoryPatch, scope: PatchScope) {
+  if (patch.path !== git.repoPath.value || historyPatchBusy.value) return;
+  historyPatchBusy.value = true;
+  historyPatchError.value = "";
+  try {
+    const destination = await saveDialog({ filters: patchFilters, defaultPath: patch.sha ? `${patch.sha.slice(0, 8)}.patch` : "working-changes.patch" });
+    if (!destination || patch.path !== git.repoPath.value) return;
+    await invoke("export_patch", { path: patch.path, destination, sha: patch.sha ?? null, scope });
+    if (historyPatch.value === patch) historyPatch.value = null;
+    toast.success("Patch saved.");
+  } catch (error) {
+    if (historyPatch.value === patch) historyPatchError.value = String(error);
+    else toast.error(String(error));
+  } finally { historyPatchBusy.value = false; }
+}
+
+async function applyHistoryPatch(staged: boolean) {
+  const patch = historyPatch.value;
+  if (!patch?.file || patch.path !== git.repoPath.value || historyPatchBusy.value || git.loading.value) return;
+  if (patch.branch !== git.currentBranch.value) { historyPatchError.value = "The branch changed. Reopen Import Patch."; return; }
+  historyPatchBusy.value = git.loading.value = true;
+  historyPatchError.value = "";
+  try {
+    await invoke("import_patch", { path: patch.path, source: patch.file, expectedHead: patch.expectedHead, staged });
+    if (patch.path === git.repoPath.value) {
+      await git.refreshStatus();
+      if (patch.path !== git.repoPath.value) return;
+      historyPatch.value = null;
+      setHistoryViewMode("graph");
+      onSelectWorkingChanges();
+      toast.success(staged ? "Patch applied and staged." : "Patch applied to Working Changes.");
+    }
+  } catch (error) {
+    if (patch.path === git.repoPath.value) { historyPatchError.value = String(error); await git.refreshStatus(); }
+  } finally {
+    historyPatchBusy.value = false;
+    if (patch.path === git.repoPath.value) git.loading.value = false;
+  }
+}
+
 async function refreshAfterVisualRebase(path: string) {
   if (path !== git.repoPath.value) return;
   await git.refreshRepoInfo();
@@ -5681,6 +5787,7 @@ function submitCreateTag() {
       @open-in-vs-code="openRepoInVsCode()"
       @open-in-explorer="openRepoInExplorer()"
       @create-gist="createGistFromRepo()"
+      @request-patch="openHistoryPatch"
       @open-logs="toggleLogsPanel()"
     />
 
@@ -5876,6 +5983,8 @@ function submitCreateTag() {
         @request-merge="handleRequestMerge($event)"
         @request-rebase="handleRequestRebase($event)"
         @request-interactive-rebase="openInteractiveRebase($event)"
+        @request-interactive-amend="openInteractiveAmend"
+        @request-patch="openHistoryPatch"
         @checkout-remote-branch="handleCheckoutRemoteBranch($event)"
         @pull="handlePull"
         @push="handlePush"
@@ -5900,6 +6009,10 @@ function submitCreateTag() {
 
     <InteractiveRebaseDialog v-if="interactiveRebase" :repo-path="interactiveRebase.path" :base="interactiveRebase.base"
       :busy="interactiveRebaseBusy" :execution-error="interactiveRebaseError" @close="interactiveRebase = null" @start="startInteractiveRebase" />
+    <InteractiveAmendDialog v-if="interactiveAmend" :repo-path="interactiveAmend.path" :sha="interactiveAmend.sha" :action="interactiveAmend.action"
+      :busy="interactiveRebaseBusy" :execution-error="interactiveAmendError" @close="interactiveAmend = null" @start="startInteractiveAmend" />
+    <HistoryPatchDialog v-if="historyPatch" :kind="historyPatch.kind" :file="historyPatch.file" :branch="historyPatch.branch" :busy="historyPatchBusy" :error="historyPatchError"
+      :initial-staged="git.repositoryOperation.value?.visual_rebase_editing" @close="historyPatch = null" @import="applyHistoryPatch" @export="saveHistoryPatch(historyPatch!, $event)" />
     <BranchWorkflowDialog v-if="branchWorkflow" :key="branchWorkflow.path" :repo-path="branchWorkflow.path"
       :initial="branchWorkflow.initial" :can-open-pull-request="!!getPrimaryGithubContext()"
       :remote-name="getPrimaryRemote(git.repoInfo.value?.remotes || [])?.name"

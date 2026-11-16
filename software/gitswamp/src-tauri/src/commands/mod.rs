@@ -14,6 +14,7 @@ pub mod interactive_rebase;
 pub mod lfs;
 pub mod logs;
 pub mod operation_preview;
+pub mod patches;
 pub mod operations;
 pub mod repository;
 pub mod stash;

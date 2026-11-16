@@ -131,6 +131,48 @@ const allowEmptyCommit = ref(getStoredAllowEmptyCommit());
 const amendPreviousCommit = ref(false);
 const amendResetAuthor = ref(false);
 const amendSignoff = ref(false);
+type AmendFile = { path: string; oldPath?: string | null; status: string };
+const amendFiles = shallowRef<AmendFile[]>();
+const amendFilesLoading = ref(false);
+const amendFilesError = ref("");
+const amendExcluded = shallowRef(new Set<string>());
+const amendFileFilter = ref("");
+const amendFileLimit = ref(80);
+let amendFilesRequest = 0;
+const amendStagedPaths = computed(() => new Set(props.stagedFiles.map(file => file.path)));
+const amendBlocked = (file: AmendFile) => amendStagedPaths.value.has(file.path) || (!!file.oldPath && amendStagedPaths.value.has(file.oldPath));
+const amendVisibleCandidates = computed(() => (amendFiles.value ?? []).filter(file =>
+  !amendFileFilter.value.trim() || file.path.toLowerCase().includes(amendFileFilter.value.trim().toLowerCase())));
+
+watch([amendPreviousCommit, () => props.repoPath, () => props.headCommit?.sha], () => {
+  amendFilesRequest++;
+  amendFiles.value = undefined;
+  amendFilesLoading.value = false;
+  amendFilesError.value = "";
+  amendExcluded.value = new Set();
+  amendFileFilter.value = "";
+  amendFileLimit.value = 80;
+});
+
+async function loadAmendFiles(event: Event) {
+  const head = props.headCommit?.sha;
+  if (!(event.target as HTMLDetailsElement).open || !head || amendFiles.value || amendFilesLoading.value) return;
+  const request = ++amendFilesRequest;
+  amendFilesLoading.value = true;
+  amendFilesError.value = "";
+  try {
+    const files = await invoke<AmendFile[]>("amend_removal_choices", { path: props.repoPath, head });
+    if (request === amendFilesRequest) amendFiles.value = files;
+  } catch (error) {
+    if (request === amendFilesRequest) amendFilesError.value = String(error);
+  } finally { if (request === amendFilesRequest) amendFilesLoading.value = false; }
+}
+
+function toggleAmendFile(path: string, selected: boolean) {
+  const paths = new Set(amendExcluded.value);
+  if (selected) paths.add(path); else paths.delete(path);
+  amendExcluded.value = paths;
+}
 const regularCommitDraft = ref({ subject: "", description: "" });
 const showCommitBuilder = ref(false);
 const CommitCompositionDialog = defineAsyncComponent(() => import("@/features/repository/CommitCompositionDialog.vue"));
@@ -657,6 +699,7 @@ const composedCommitMessage = computed(() => commitDescription.value.trim()
 const amendHasChanges = computed(() => {
   if (!amendPreviousCommit.value || !props.headCommit) return false;
   return props.stagedFiles.length > 0
+    || amendExcluded.value.size > 0
     || composedCommitMessage.value.trimEnd() !== props.headCommit.message.trimEnd()
     || amendResetAuthor.value
     || amendSignoff.value;
@@ -665,7 +708,7 @@ const canSubmitCommit = computed(() => {
   if (!commitSummary.value.trim() || props.hasConflicts || props.operationBusy) return false;
   if (rebaseInProgress.value && !rebaseEditing.value) return false;
   if (amendPreviousCommit.value) {
-    return !!props.headCommit && amendHasChanges.value;
+    return !!props.headCommit && amendHasChanges.value && !amendFiles.value?.some(file => amendExcluded.value.has(file.path) && amendBlocked(file));
   }
   return props.stagedFiles.length > 0 || mergeInProgress.value || allowEmptyCommit.value;
 });
@@ -1861,6 +1904,7 @@ function onCommit() {
       message,
       resetAuthor: amendResetAuthor.value,
       signoff: amendSignoff.value,
+      removal: amendExcluded.value.size && props.headCommit ? { head: props.headCommit.sha, paths: [...amendExcluded.value] } : undefined,
     });
     return;
   }
@@ -2721,8 +2765,27 @@ onUnmounted(() => {
           <p class="mt-1 text-[9px] leading-relaxed text-[var(--muted-foreground)]">
             {{ stagedFiles.length > 0
               ? `${stagedFiles.length} staged ${stagedFiles.length === 1 ? 'file' : 'files'} will be included.`
-              : 'No staged files; only the message or selected metadata will change.' }}
+              : 'No new staged files.' }}
           </p>
+
+          <details class="mt-2 border-y border-[var(--border)] py-1.5" :key="headCommit?.sha" @toggle="loadAmendFiles">
+            <summary class="cursor-pointer text-[10px] font-medium">Move files to Working Changes<span v-if="amendExcluded.size"> · {{ amendExcluded.size }} selected</span></summary>
+            <p v-if="amendFilesLoading" class="px-2 py-1 text-[10px] text-[var(--muted-foreground)]" role="status">Loading files from the last commit…</p>
+            <p v-else-if="amendFilesError" class="px-2 py-1 text-[10px] text-[var(--destructive)]" role="alert">{{ amendFilesError }}</p>
+            <p v-else-if="amendFiles && !amendFiles.length" class="px-2 py-1 text-[10px] text-[var(--muted-foreground)]">There are no file changes in this commit.</p>
+            <template v-else-if="amendFiles">
+              <input v-if="amendFiles.length > 80" v-model="amendFileFilter" type="search" aria-label="Find files in last commit" placeholder="Find a file" class="my-1 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 py-1 text-[10px]" />
+              <div class="max-h-32 overflow-y-auto">
+                <label v-for="file in amendVisibleCandidates.slice(0, amendFileLimit)" :key="file.path" class="flex min-w-0 items-center gap-1.5 rounded px-1 py-1 text-[10px] hover:bg-[var(--secondary)]" :title="file.oldPath ? `${file.oldPath} → ${file.path}` : file.path">
+                  <input type="checkbox" class="h-3 w-3 shrink-0 accent-[var(--primary)]" :aria-label="`Move ${file.path} to Working Changes`"
+                    :checked="amendExcluded.has(file.path)" :disabled="operationBusy || (amendBlocked(file) && !amendExcluded.has(file.path))"
+                    @change="toggleAmendFile(file.path, ($event.target as HTMLInputElement).checked)" />
+                  <span class="min-w-0 flex-1 truncate">{{ file.path }}</span><span v-if="amendBlocked(file)" class="text-[var(--muted-foreground)]">Unstage first</span>
+                </label>
+                <button v-if="amendVisibleCandidates.length > amendFileLimit" class="py-1 px-2 text-[10px] text-[var(--primary)]" type="button" @click="amendFileLimit += 80">Show more files</button>
+              </div>
+            </template>
+          </details>
 
           <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
             <label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-[var(--muted-foreground)]">

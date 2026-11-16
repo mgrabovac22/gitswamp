@@ -21,24 +21,12 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - id: version
         working-directory: software/gitswamp
-        env:
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync, readFileSync } from "node:fs";
-
-          const base = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
-          const match = base.match(/^(\d+)\.(\d+)\.(\d+)/);
-          if (!match) throw new Error(`Expected a stable semver version, received ${base}.`);
-
-          const [, major, minor, patch] = match;
-          const releasePatch = Number(patch) * 1_000_000 + Number(process.env.RUN_NUMBER);
-          const version = `${major}.${minor}.${releasePatch}`;
-          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\n`);
-          NODE
+        run: node scripts/next-release-version.mjs
 
   build:
     name: Build ${{ matrix.name }}
@@ -87,7 +75,7 @@ jobs:
       - run: npm ci
 
       - name: Test updater and packaging metadata
-        run: node --test tests/linuxUpdates.test.mjs
+        run: node --test tests/linuxUpdates.test.mjs tests/releaseVersion.test.mjs
 
       - name: Require updater signing key
         shell: bash

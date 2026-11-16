@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { AmendAction, PatchRequest } from "@/features/repository/historyEdits";
 import type { BranchComparison, RemoteBranchCatalog, RemoteDiscussionClient } from "@/features/repository/remote/githubRemote";
 import type { TrackingKind, TrackingProvider } from "@/features/repository/remote/useProviderTracking";
 import type { WorkflowConfig } from "@/features/repository/workflow/branchWorkflow";
@@ -147,6 +148,8 @@ const emit = defineEmits<{
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestInteractiveRebase: [sha: string];
+  requestInteractiveAmend: [request: { sha: string; action: AmendAction }];
+  requestPatch: [request: PatchRequest];
   checkoutRemoteBranch: [name: string];
   pull: [];
   push: [];
@@ -621,6 +624,8 @@ function handleRefreshState() {
           @request-merge="emit('requestMerge', $event)"
           @request-rebase="emit('requestRebase', $event)"
           @request-interactive-rebase="emit('requestInteractiveRebase', $event)"
+          @request-interactive-amend="emit('requestInteractiveAmend', $event)"
+          @request-patch="emit('requestPatch', $event)"
           @time-machine-blame="emit('timeMachineBlame', $event)"
           @jump-to-search-result="handleJumpToSearchResult($event)"
         />
