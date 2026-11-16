@@ -27,7 +27,7 @@ window.testInvoke=async (command,args)=>{
       return {key:args.path,current:'change/search',local:['main','change/search'],remote:['main','change/search'],primary:'main',development:null,suggestion:'swamp',unborn:false,minimal:false,blocked:null};
     }
     const [primary,development] = args.path === 'repo-a' ? ['main','dev'] : ['trunk',null];
-    return {key: args.path, current: primary, local: [primary, ...(development ? [development] : [])], remote: [],
+    return {key: args.path, current: primary, local: [primary, ...(development ? [development, 'feature/existing'] : [])], remote: [],
        primary, development, suggestion: development ? 'gitflow' : 'trunk', unborn: false, minimal: false, blocked: null};
   }
   if (command === 'validate_branch_workflow') return;
@@ -140,6 +140,36 @@ try {
   await modal.getByRole("button", { name: /Gitflow/ }).click();
   assert.equal(await modal.getByLabel("Development branch", { exact: true }).inputValue(), "dev");
   await modal.getByRole("button", { name: "Save strategy", exact: true }).click();
+  const tooltip = modal.getByRole("tooltip");
+  for (const [option, description] of [
+    ["Start feature", /feature branch based on 'dev'/],
+    ["Start release", /release branch from 'dev'/],
+    ["Start hotfix", /hotfix branch from 'main'/],
+    ["Start maintenance branch", /from a release tag, or from 'main'/],
+    ["Finish branch", /feature into 'dev'.*into 'main' and 'dev'/],
+    ["Delete merged branch", /fully merged and has no remote counterpart/],
+    ["Create release tag", /latest commit of 'main'/],
+    ["Manage strategy", /active strategy, its base branches and its naming prefixes/],
+  ]) {
+    const trigger = modal.getByRole("button", { name: option, exact: true });
+    await trigger.hover();
+    assert.match(await tooltip.innerText(), description);
+    assert.equal(await trigger.getAttribute("aria-describedby"), await tooltip.getAttribute("id"));
+  }
+  const closeWorkflow = modal.getByTitle("Close branching workflow", { exact: true });
+  await closeWorkflow.hover();
+  await tooltip.waitFor({ state: "hidden" });
+  await closeWorkflow.focus();
+  await page.keyboard.press("Tab");
+  assert.match(await tooltip.innerText(), /feature branch based on 'dev'/);
+  await page.keyboard.press("Escape");
+  await tooltip.waitFor({ state: "hidden" });
+  assert.ok(await modal.isVisible());
+  await page.setViewportSize({ width: 365, height: 450 });
+  await modal.getByRole("button", { name: "Manage strategy", exact: true }).hover();
+  const hintBounds = await tooltip.boundingBox();
+  assert.ok(hintBounds.x >= 8 && hintBounds.y >= 0 && hintBounds.x + hintBounds.width <= 357 && hintBounds.y + hintBounds.height <= 450);
+  await page.setViewportSize({ width: 1100, height: 760 });
   await modal.getByRole("button", { name: "Start feature", exact: true }).click();
   await modal.getByLabel("Branch name", { exact: true }).fill("search");
   await modal.getByRole("button", { name: "Preview", exact: true }).click();
