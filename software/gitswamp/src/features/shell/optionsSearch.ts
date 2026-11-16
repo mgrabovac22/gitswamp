@@ -39,6 +39,7 @@ const settings = [
   ...entries("preferences", [
     ["theme", "Theme", "light dark mode system svijetlo tamno"],
     ["theme-preset", "Theme Preset", "palette accent color kitty appearance tema boje"],
+    ["desktop-pet", "Desktop pet", "swampy crocodile krokodil ljubimac mascot hat accessory edit pet animation"],
     ["general-font", "General Font Size", "ui scale zoom typography velicina slova"],
     ["commit-font", "Commit Text Size", "graph commit font zoom"],
     ["compact", "Compact Mode", "density spacing layout"],
