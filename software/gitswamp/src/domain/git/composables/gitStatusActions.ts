@@ -173,6 +173,7 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
         message: options.message,
         resetAuthor: options.resetAuthor,
         signoff: options.signoff,
+        removal: options.removal,
         ...approval,
       });
       state.terminalOutput.value.push("$ git commit --amend\n" + result);
@@ -230,18 +231,22 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
   function resolveAllConflicts() {
     if (!state.repoPath.value || !state.hasConflicts.value) return;
     const repoPath = state.repoPath.value;
+    const head = state.repoInfo.value?.head_sha;
+    const sameConflict = () => state.repoPath.value === repoPath && state.repoInfo.value?.head_sha === head;
     toast.action("warning", `Resolve all ${state.conflictFiles.value.length} conflicted files?`, [
       { label: "Keep modified", style: "primary", onClick: () => {
-        if (state.repoPath.value === repoPath) return applyAllConflictResolutions("ours");
+        if (sameConflict()) return applyAllConflictResolutions("keep-modified");
       } },
       { label: "Keep base", style: "neutral", onClick: () => {
-        if (state.repoPath.value === repoPath) return applyAllConflictResolutions("theirs");
+        if (sameConflict()) return applyAllConflictResolutions("keep-base");
       } },
       { label: "Cancel", style: "neutral", onClick: () => {} },
-    ], 0, "Applies the selected version to every conflicted file and stages the result. Resolve individual files to choose different versions.");
+    ], 0, state.repositoryOperation.value?.visual_rebase
+      ? "Keep Base takes the rebased version; Keep Modified takes the version from the commit being replayed. Every conflicted file is replaced and staged."
+      : "Applies the selected version to every conflicted file and stages the result. Resolve individual files to choose different versions.");
   }
 
-  async function applyAllConflictResolutions(strategy: "ours" | "theirs") {
+  async function applyAllConflictResolutions(strategy: "keep-modified" | "keep-base") {
     if (!state.repoPath.value || !state.hasConflicts.value) return;
     if (state.loading.value) return;
     try {
@@ -257,14 +262,14 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
     }
   }
 
-  async function resolveConflictFile(filePath: string, strategy: "ours" | "theirs" | "delete") {
+  async function resolveConflictFile(filePath: string, strategy: "keep-modified" | "keep-base" | "delete") {
     if (!state.repoPath.value) return;
     try {
       await callTauri("resolve_conflict_file", { path: state.repoPath.value, filePath, strategy });
       await refresh.refreshStatus();
       const labels: Record<string, string> = {
-        ours: "Kept modified version",
-        theirs: "Kept base version",
+        "keep-modified": "Kept modified version",
+        "keep-base": "Kept base version",
         delete: "Deleted file",
       };
       toast.success(`${labels[strategy]}: ${filePath}`);
@@ -275,12 +280,19 @@ export function createStatusActions(state: GitState, refresh: RefreshDeps, toast
   }
 
   function promptResolveConflict(filePath: string) {
+    const path = state.repoPath.value;
+    const head = state.repoInfo.value?.head_sha;
+    function resolve(strategy: "keep-modified" | "keep-base" | "delete") {
+      if (state.repoPath.value === path && state.repoInfo.value?.head_sha === head) return resolveConflictFile(filePath, strategy);
+    }
     toast.action("warning", `Resolve conflict: ${filePath}`, [
-      { label: "Keep modified", style: "primary", onClick: () => void resolveConflictFile(filePath, "ours") },
-      { label: "Keep base", style: "neutral", onClick: () => void resolveConflictFile(filePath, "theirs") },
-      { label: "Delete file", style: "danger", onClick: () => void resolveConflictFile(filePath, "delete") },
+      { label: "Keep modified", style: "primary", onClick: () => resolve("keep-modified") },
+      { label: "Keep base", style: "neutral", onClick: () => resolve("keep-base") },
+      { label: "Delete file", style: "danger", onClick: () => resolve("delete") },
       { label: "Cancel", style: "neutral", onClick: () => {} },
-    ], 20000);
+    ], 20000, state.repositoryOperation.value?.visual_rebase
+      ? "Keep Base takes the rebased version; Keep Modified takes the version from the commit being replayed. Each replaces the whole file."
+      : undefined);
   }
 
   return {

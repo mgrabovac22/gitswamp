@@ -462,6 +462,7 @@ impl RemoteService {
     }
 
     pub fn pull(path: &str, token: Option<&str>, auto_stash: bool) -> Result<String, String> {
+        super::interactive_rebase::require_inactive(&GitRepository::open(path)?)?;
         Self::fetch_all(path, token)?;
         let plan = Self::pull_plan(path)?;
         if matches!(&plan, PullPlan::UpToDate) {
@@ -538,6 +539,7 @@ impl RemoteService {
 
     fn push_internal(path: &str, token: Option<&str>, force: bool) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let branch_name = head.shorthand().unwrap_or("main").to_string();
         let commit_id = head
@@ -563,6 +565,11 @@ impl RemoteService {
             .map_err(|e| format!("No remote 'origin': {}", e.message()))?;
 
         let remote_url = remote.url().unwrap_or_default().to_string();
+        let mut lfs_refs = vec![refspec.trim_start_matches('+').split(':').next().unwrap_or("HEAD")];
+        lfs_refs.extend(tag_refspecs.iter().filter_map(|spec| spec.split(':').next()));
+        let lfs_auth = token.map(|token| split_bitbucket_credentials(&remote_url, token)
+            .unwrap_or_else(|| (Self::auth_username_candidates(&remote_url, None).into_iter().next().unwrap_or_else(|| "git".into()), token.into())));
+        super::lfs::upload_refs(&repo, "origin", &remote_url, lfs_auth.as_ref().map(|(user, secret)| (user.as_str(), secret.as_str())), &lfs_refs)?;
         if let Some(t) = token {
             if remote_url.starts_with(HTTPS_SCHEME) && !remote_url.contains('@') {
                 let attempts: Vec<(String, String)> =
@@ -787,6 +794,7 @@ impl RemoteService {
 
     pub fn reset_branch_to_remote(path: &str, branch: &str) -> Result<String, String> {
         let repo = GitRepository::open(path)?;
+        super::interactive_rebase::require_inactive(&repo)?;
         let local_ref_name = format!("refs/heads/{}", branch);
         let local_commit = repo
             .find_reference(&local_ref_name)
@@ -980,6 +988,10 @@ impl RemoteService {
                 format!("Could not remove the old temporary remote. Push cancelled: {}", error.message())
             })?;
         }
+        let lfs_refs: Vec<_> = refspecs.iter().filter_map(|spec| spec.split(':').next()).collect();
+        let lfs_auth = split_bitbucket_credentials(origin_url, token)
+            .unwrap_or_else(|| (Self::auth_username_candidates(origin_url, None).into_iter().next().unwrap_or_else(|| "git".into()), token.into()));
+        super::lfs::upload_refs(repo, TEMP_PUSH_REMOTE_PLATFORM, origin_url, Some((&lfs_auth.0, &lfs_auth.1)), &lfs_refs)?;
         let mut remote = repo.remote_anonymous(origin_url)
             .map_err(|error| format!("Failed to create push connection: {}", error.message()))?;
         let mut push_opts = git2::PushOptions::new();

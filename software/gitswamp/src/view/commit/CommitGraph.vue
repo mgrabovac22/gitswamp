@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from "vue";
-import { Check, Columns3, GitBranchPlus, PencilLine, RotateCcw } from "lucide-vue-next";
+import { Check, ChevronRight, Columns3, FileDiff, GitBranchPlus, ListRestart, PencilLine, RotateCcw } from "lucide-vue-next";
+import { amendActions, type AmendAction, type PatchRequest } from "@/features/repository/historyEdits";
 import type { CommitInfo, StashInfo, TagInfo } from "@/types";
 import {
   AUTHOR_COL,
@@ -23,6 +24,7 @@ const { rowHeight } = useCompactRowHeight();
 const { svgBgOuter, svgBgInner } = useThemeMode();
 
 const props = defineProps<{
+  workflowLabel?: string;
   repoPath: string;
   commits: CommitInfo[];
   selected: CommitInfo | null;
@@ -48,6 +50,7 @@ type CommitSelectPayload = {
 };
 
 const emit = defineEmits<{
+  branchWorkflow: [];
   select: [payload: CommitSelectPayload];
   search: [query: string];
   clearSearch: [];
@@ -84,6 +87,9 @@ const emit = defineEmits<{
   selectStash: [stash: StashInfo];
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
+  requestInteractiveRebase: [sha: string];
+  requestInteractiveAmend: [request: { sha: string; action: AmendAction }];
+  requestPatch: [request: PatchRequest];
   timeMachineBlame: [sha: string];
   jumpToSearchResult: [sha: string];
   focusHead: [];
@@ -104,6 +110,7 @@ const ctxX = ref(0);
 const ctxY = ref(0);
 const ctxCommit = ref<CommitInfo | null>(null);
 const ctxResetSub = ref(false);
+const ctxAmendSub = ref(false);
 const ctxWorkingChanges = ref(false);
 const refCtxVisible = ref(false);
 const refCtxX = ref(0);
@@ -820,6 +827,9 @@ function refAction(action: string) {
     case "branch-workspace":
       if (r.kind === "branch") emit("openBranchWorkspace", r.local ? `refs/heads/${r.name}` : `refs/remotes/origin/${r.name}`);
       break;
+    case "branch-workflow":
+      emit("branchWorkflow");
+      break;
     case "delete-remote":
       emit("deleteRemoteBranch", r.name);
       break;
@@ -843,6 +853,9 @@ function refAction(action: string) {
       break;
     case "rebase-current-onto-selected":
       emit("requestRebase", { source: props.currentBranch, sourceRemote: false, target: r.name });
+      break;
+    case "interactive-rebase-current-onto-selected":
+      if (commitSha) emit("requestInteractiveRebase", commitSha);
       break;
     case "checkout-and-isolate":
       checkoutAndIsolateRef(r);
@@ -1012,11 +1025,31 @@ function ctxIsHeadCommit(): boolean {
   return refs.some(r => r.name === props.currentBranch);
 }
 
+const ctxHeadHistoryRelation = computed(() => {
+  const target = ctxCommit.value?.sha;
+  const head = props.headSha;
+  if (!target || !head) return "unknown";
+  const bySha = new Map(props.commits.map((commit) => [commit.sha, commit]));
+  const pending = [head];
+  const seen = new Set<string>();
+  let incomplete = false;
+  while (pending.length > 0) {
+    const sha = pending.pop()!;
+    if (sha === target) return "ancestor";
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    const commit = bySha.get(sha);
+    if (!commit) incomplete = true;
+    else for (const parent of commit.parent_shas) pending.push(parent);
+  }
+  return incomplete ? "unknown" : "other";
+});
+
 function onWorkingChangesContextMenu(event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
   const menuWidth = 300;
-  const menuHeight = 76;
+  const menuHeight = 142;
   let x = event.clientX;
   let y = event.clientY;
   if (x + menuWidth > window.innerWidth) x = Math.max(8, window.innerWidth - menuWidth - 8);
@@ -1026,6 +1059,7 @@ function onWorkingChangesContextMenu(event: MouseEvent) {
   ctxCommit.value = null;
   ctxWorkingChanges.value = true;
   ctxResetSub.value = false;
+  ctxAmendSub.value = false;
   ctxVisible.value = true;
   closeRefCtx();
   closeStashCtx();
@@ -1048,6 +1082,7 @@ function onCtx(e: MouseEvent, commit: CommitInfo) {
   ctxY.value = y;
   ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
+  ctxAmendSub.value = false;
   ctxVisible.value = true;
   closeRefCtx();
   closeStashCtx();
@@ -1057,6 +1092,7 @@ function closeCtx() {
   ctxVisible.value = false;
   ctxWorkingChanges.value = false;
   ctxResetSub.value = false;
+  ctxAmendSub.value = false;
   closeRefCtx();
   closeStashCtx();
 }
@@ -1066,6 +1102,7 @@ function applyShaContextAction(action: string, sha: string): boolean {
     case "checkout": emit("checkout", sha); return true;
     case "branch": emit("createBranchAt", sha); return true;
     case "cherry-pick": emit("cherryPick", sha); return true;
+    case "interactive-rebase": emit("requestInteractiveRebase", sha); return true;
     case "revert": emit("revert", sha); return true;
     case "reset-soft": emit("resetSoft", sha); return true;
     case "reset-mixed": emit("resetMixed", sha); return true;
@@ -1106,10 +1143,21 @@ function applyBranchContextAction(action: string, branch: string, sourceRemote =
 }
 
 function ctxAction(action: string) {
+  if (action === "import-patch" || action === "export-patch") {
+    const sha = ctxCommit.value?.sha;
+    closeCtx();
+    emit("requestPatch", action === "import-patch" ? { kind: "import" } : { kind: "export", sha });
+    return;
+  }
   if (action === "toggle-amend") {
     const enabled = !props.amendModeActive;
     closeCtx();
     emit("setAmendMode", enabled);
+    return;
+  }
+  if (action === "branch-workflow") {
+    closeCtx();
+    emit("branchWorkflow");
     return;
   }
   if (!ctxCommit.value) return;
@@ -1133,6 +1181,13 @@ function ctxAction(action: string) {
   if (branch) {
     applyBranchContextAction(action, branch, !!branchRef?.remote && !branchRef?.local);
   }
+}
+
+function chooseAmend(action: AmendAction) {
+  const sha = ctxCommit.value?.sha;
+  if (!sha) return;
+  closeCtx();
+  emit("requestInteractiveAmend", { sha, action });
 }
 
 function topRefStyle(commit: CommitInfo, color: string): Record<string, string> {
@@ -1459,7 +1514,7 @@ onUnmounted(() => {
           ref="searchInputEl"
           v-model="searchInput"
           @input="onSearch"
-          placeholder="Search commits, messages, authors, SHA..."
+          placeholder="Search commits, authors, co-authors, SHA..."
           class="flex-1 bg-transparent text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none select-text"
         />
         <button v-if="searchInput" @click="clearSearch" class="p-0.5 rounded hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors">
@@ -2058,10 +2113,12 @@ onUnmounted(() => {
             <button class="ctx-item" @click="refAction('checkout-and-isolate')"><span class="ctx-icon">◉</span><span class="ctx-main">Checkout and isolate branch</span><span class="ctx-sub">Switch to this branch and isolate its connected commits</span></button>
             <button class="ctx-item" @click="refAction('branch-here')"><GitBranchPlus class="ctx-icon h-4 w-4" /><span class="ctx-main">Create branch here</span><span class="ctx-sub">Start a new branch at {{ refCtxRef.name }}</span></button>
             <button class="ctx-item" @click="refAction('branch-workspace')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">Open Branch Workspace</span><span class="ctx-sub">Open {{ refCtxRef.name }} in its own worktree</span></button>
+            <button class="ctx-item" @click="refAction('branch-workflow')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ workflowLabel || 'Branching workflow' }}</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('rename-branch')"><PencilLine class="ctx-icon h-4 w-4" /><span class="ctx-main">Rename branch</span><span class="ctx-sub">Rename {{ refCtxRef.name }}</span></button>
             <button v-if="canMergeRefIntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('merge-into-current')"><span class="ctx-icon">🍒</span><span class="ctx-main">Merge into {{ currentBranch }}</span><span class="ctx-sub">Merge selected branch into current branch</span></button>
             <button v-if="canRebaseRefOntoCurrent(refCtxRef)" class="ctx-item" @click="refAction('rebase-onto-current')"><span class="ctx-icon">↕</span><span class="ctx-main">Rebase onto {{ currentBranch }}</span><span class="ctx-sub">Checkout {{ refCtxRef.name }} and rebase it onto {{ currentBranch }}</span></button>
             <button v-if="canRebaseCurrentOntoRef(refCtxRef)" class="ctx-item" @click="refAction('rebase-current-onto-selected')"><span class="ctx-icon">⇅</span><span class="ctx-main">Rebase {{ currentBranch }} onto {{ refCtxRef.name }}</span><span class="ctx-sub">Keep selected branch as base and move current branch on top</span></button>
+            <button v-if="headSha && refCtxCommitSha && headSha !== refCtxCommitSha" class="ctx-item" @click="refAction('interactive-rebase-current-onto-selected')"><ListRestart class="ctx-icon h-4 w-4" /><span class="ctx-main">Interactive Rebase onto {{ refCtxRef.remote && !refCtxRef.local ? `origin/${refCtxRef.name}` : refCtxRef.name }}</span><span class="ctx-sub">Use this branch tip as the new base</span></button>
             <button v-if="refCtxRef.local && refCtxRef.remote" class="ctx-item" @click="refAction('set-upstream')"><span class="ctx-icon">🔗</span><span class="ctx-main">Set upstream</span><span class="ctx-sub">Link to origin/{{ refCtxRef.name }}</span></button>
             <button v-if="refCtxRef.local && refCtxRef.remote" class="ctx-item" @click="refAction('reset-to-remote')"><RotateCcw class="ctx-icon h-4 w-4" /><span class="ctx-main">Reset branch to remote</span><span class="ctx-sub">Match origin/{{ refCtxRef.name }}</span></button>
             <button v-if="refCtxRef.local" class="ctx-item" @click="refAction('delete-local')"><span class="ctx-icon">🗑</span><span class="ctx-main">Delete local branch</span><span class="ctx-sub">Delete {{ refCtxRef.name }} from local repository</span></button>
@@ -2131,6 +2188,9 @@ onUnmounted(() => {
         @click.stop
       >
         <template v-if="ctxWorkingChanges">
+          <button class="ctx-item" @click="ctxAction('branch-workflow')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ workflowLabel || 'Branching workflow' }}</span></button>
+          <button class="ctx-item" @click="ctxAction('export-patch')"><FileDiff class="ctx-icon h-4 w-4" /><span class="ctx-main">Export patch…</span></button>
+          <button class="ctx-item" @click="ctxAction('import-patch')"><FileDiff class="ctx-icon h-4 w-4" /><span class="ctx-main">Import patch…</span></button>
           <button
             class="ctx-item ctx-amend-item"
             :disabled="!amendModeActive && (hasConflicts || !headSha)"
@@ -2173,15 +2233,17 @@ onUnmounted(() => {
         <div class="space-y-1">
           <button class="ctx-item" @click="ctxAction('checkout')"><span class="ctx-icon">⎇</span><span class="ctx-main">Checkout this commit</span><span class="ctx-sub">Detached HEAD at {{ ctxCommit?.short_sha }}</span></button>
           <button class="ctx-item" @click="ctxAction('branch')"><span class="ctx-icon">🌿</span><span class="ctx-main">Create branch here</span><span class="ctx-sub">Create new branch from this commit</span></button>
+          <button class="ctx-item" @click="ctxAction('branch-workflow')"><Columns3 class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ workflowLabel || 'Branching workflow' }}</span></button>
           <button class="ctx-item" @click="ctxAction('time-machine-blame')"><span class="ctx-icon">🕰</span><span class="ctx-main">Time Machine Blame</span><span class="ctx-sub">Open Time Machine focused on this commit frame</span></button>
           <button class="ctx-item" @click="ctxAction('cherry-pick')"><span class="ctx-icon">🍒</span><span class="ctx-main">Cherry-pick commit</span><span class="ctx-sub">Apply this commit on top of current branch</span></button>
+          <button v-if="headSha && !ctxIsHeadCommit()" class="ctx-item" @click="ctxAction('interactive-rebase')"><ListRestart class="ctx-icon h-4 w-4" /><span class="ctx-main">{{ ctxHeadHistoryRelation === 'ancestor' ? 'Interactive Rebase from Here' : ctxHeadHistoryRelation === 'other' ? 'Interactive Rebase onto Here' : 'Interactive Rebase…' }}</span><span class="ctx-sub">{{ ctxHeadHistoryRelation === 'ancestor' ? `Rewrite commits after ${ctxCommit?.short_sha}` : `Use ${ctxCommit?.short_sha} as the rebase target` }}</span></button>
           <button class="ctx-item" @click="ctxAction('revert')"><span class="ctx-icon">↩</span><span class="ctx-main">Revert commit</span><span class="ctx-sub">Create new commit that undoes this one</span></button>
         </div>
 
         <div class="relative">
           <button
             class="ctx-item ctx-item-reset mt-1 w-full"
-            @click.stop="ctxResetSub = !ctxResetSub"
+            @click.stop="ctxResetSub = !ctxResetSub; ctxAmendSub = false"
           >
             <span class="ctx-icon">🔄</span>
             <span class="ctx-main !whitespace-nowrap">Reset {{ currentBranch }} to this commit</span>
@@ -2195,6 +2257,18 @@ onUnmounted(() => {
             <button class="ctx-item-sub" @click="ctxAction('reset-soft')">Soft — move HEAD, keep all changes staged</button>
             <button class="ctx-item-sub" @click="ctxAction('reset-mixed')">Mixed — move HEAD, unstage files, keep working tree</button>
             <button class="ctx-item-sub text-[#ef4444] hover:bg-[#ef4444]/15" @click="ctxAction('reset-hard')">Hard — move HEAD and discard all working changes</button>
+          </div>
+        </div>
+
+        <div v-if="headSha && ctxHeadHistoryRelation !== 'other' && ctxCommit && ctxCommit.parent_shas.length < 2">
+          <button class="ctx-item ctx-item-reset mt-1 w-full" type="button" :aria-expanded="ctxAmendSub" @click.stop="ctxAmendSub = !ctxAmendSub; ctxResetSub = false">
+            <PencilLine class="ctx-icon h-4 w-4" /><span class="ctx-main">Interactive Amend</span><ChevronRight class="ctx-arrow h-3 w-3 transition-transform" :class="{ 'rotate-90': ctxAmendSub }" />
+          </button>
+          <div v-if="ctxAmendSub" class="bg-[var(--popover)]/80 py-1 pl-2 pr-1">
+            <button v-for="(entry, action) in amendActions" :key="action" class="ctx-item-sub flex items-center gap-2" type="button"
+              :title="entry.description" :disabled="!ctxCommit.parent_shas.length && (action === 'squash' || action === 'fixup')" @click="chooseAmend(action)">
+              <component :is="entry.icon" :size="13" />{{ entry.label }}
+            </button>
           </div>
         </div>
 
@@ -2237,6 +2311,7 @@ onUnmounted(() => {
           </div>
         </template>
         <div class="space-y-1 mt-1">
+          <button v-if="ctxCommit && ctxCommit.parent_shas.length < 2" class="ctx-item" @click="ctxAction('export-patch')"><FileDiff class="ctx-icon h-4 w-4" /><span class="ctx-main">Save as patch…</span></button>
           <button class="ctx-item" @click="ctxAction('copy-sha')"><span class="ctx-icon">📋</span><span class="ctx-main">Copy commit SHA</span><span class="ctx-sub">Copy full commit hash to clipboard</span></button>
           <button class="ctx-item" @click="ctxAction('tag')"><span class="ctx-icon">🏷</span><span class="ctx-main">Create lightweight tag</span><span class="ctx-sub">Create tag on this commit</span></button>
           <button class="ctx-item" @click="ctxAction('annotated-tag')"><span class="ctx-icon">🏷✏</span><span class="ctx-main">Create annotated tag</span><span class="ctx-sub">Create tag with message and metadata</span></button>

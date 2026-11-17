@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { ShieldAlert, X, FileMinus, GitCommitHorizontal } from "lucide-vue-next";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { ShieldAlert, X, FileMinus, GitCommitHorizontal, HardDrive } from "lucide-vue-next";
 import { secretConfirmation, finishSecretConfirmation } from "@/shared/notifications/secretConfirmation";
 
 const props = defineProps<{ repoPath: string | null }>();
+const emit = defineEmits<{ openLfs: [request: { path: string; files: string[] }] }>();
 const cancelButton = ref<HTMLButtonElement | null>(null);
 const dialog = ref<HTMLElement | null>(null);
 let previousFocus: HTMLElement | null = null;
@@ -12,9 +12,12 @@ const report = computed(() => secretConfirmation.value?.report);
 const canIgnore = computed(() => report.value?.findings.some(f => !f.tracked));
 const largeFiles = computed(() => report.value?.large_files ?? []);
 function sizeLabel(size: number) { return `${(size / 1024 / 1024).toFixed(1)} MiB`; }
-async function openLfsGuide() {
-  try { await openUrl("https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-git-large-file-storage"); }
-  catch { /* The user can still cancel without changing the index. */ }
+function openLfsManager() {
+  const path = secretConfirmation.value?.repoPath;
+  if (!path) return;
+  const files = largeFiles.value.map(file => file.path);
+  finishSecretConfirmation();
+  emit("openLfs", { path, files });
 }
 watch(() => props.repoPath, () => finishSecretConfirmation());
 watch(secretConfirmation, async value => {
@@ -41,7 +44,7 @@ onBeforeUnmount(() => finishSecretConfirmation());
         <header><ShieldAlert :size="20" /><h2 id="secret-title">{{ largeFiles.length ? 'Large files need Git LFS' : 'Review staged secrets' }}</h2>
           <button title="Cancel commit" aria-label="Cancel commit" @click="finishSecretConfirmation()"><X :size="18" /></button>
         </header>
-        <p id="secret-description" v-if="largeFiles.length">GitHub blocks regular Git files larger than 100 MiB. Use Git LFS for these files, then stage them again. No commit has been created.</p>
+        <p id="secret-description" v-if="largeFiles.length">GitHub blocks regular Git files larger than 100 MiB. Convert the staged files to Git LFS or unstage them. No commit has been created.</p>
         <p v-if="report.findings.length || report.skipped.length" :id="largeFiles.length ? undefined : 'secret-description'">{{ report.findings.length ? 'Possible credentials found in staged files.' : 'Some staged files could not be fully checked.' }} {{ largeFiles.length ? '' : 'No commit has been created.' }}</p>
         <ul class="secret-findings">
           <li v-for="file in largeFiles" :key="'large:'+file.path"><strong>{{ file.path }}</strong><span>{{ sizeLabel(file.size) }} · exceeds GitHub's 100 MiB limit</span></li>
@@ -53,8 +56,8 @@ onBeforeUnmount(() => finishSecretConfirmation());
         <footer>
           <button ref="cancelButton" @click="finishSecretConfirmation()">Cancel</button>
           <button v-if="canIgnore" @click="finishSecretConfirmation('ignore')"><FileMinus :size="15" />Add to .gitignore</button>
-          <button v-if="largeFiles.length" @click="openLfsGuide">Git LFS guide</button>
-          <button class="secret-confirm" @click="finishSecretConfirmation('commit')"><GitCommitHorizontal :size="15" />Commit anyway</button>
+          <button v-if="largeFiles.length" class="secret-confirm" @click="openLfsManager"><HardDrive :size="15" />Open Git LFS Manager</button>
+          <button v-else class="secret-confirm" @click="finishSecretConfirmation('commit')"><GitCommitHorizontal :size="15" />Commit anyway</button>
         </footer>
       </section>
     </div>

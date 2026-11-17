@@ -12,6 +12,21 @@ export interface KeyboardShortcutGroup {
   shortcuts: readonly KeyboardShortcutDefinition[];
 }
 
+export const EXTRA_VIEW_SHORTCUTS = {
+  "branch-workspace": { keys: "Alt+Shift+1", code: "Digit1" },
+  lfs: { keys: "Alt+Shift+2", code: "Digit2" },
+} as const;
+
+export function extraViewShortcut(event: KeyboardEvent) {
+  if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
+  return (Object.keys(EXTRA_VIEW_SHORTCUTS) as (keyof typeof EXTRA_VIEW_SHORTCUTS)[])
+    .find(view => EXTRA_VIEW_SHORTCUTS[view].code === event.code);
+}
+
+export function isBranchWorkflowShortcut(event: KeyboardEvent) {
+  return (event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && event.code === "KeyB";
+}
+
 export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
   {
     id: "workspace",
@@ -47,6 +62,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
     shortcuts: [
       { id: "working-changes", label: "Show working changes", keys: "Ctrl+Shift+W" },
       { id: "create-branch", label: "Create branch", keys: "Ctrl+Shift+B" },
+      { id: "branch-workflow", label: "Open branching workflow", keys: "Ctrl+Alt+B" },
       { id: "stage-all", label: "Stage all unstaged files", keys: "Ctrl+Shift+S" },
       { id: "unstage-all", label: "Unstage all staged files", keys: "Ctrl+Shift+U" },
       { id: "copy-path", label: "Copy repository path", keys: "Ctrl+Shift+C" },
@@ -76,6 +92,8 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
       { id: "galaxy-view", label: "Galaxy view", keys: "Alt+7" },
       { id: "city-view", label: "Repository City", keys: "Alt+8" },
       { id: "burnout-view", label: "Burnout Analytics", keys: "Alt+9" },
+      { id: "workspace-view", label: "Branch Workspace", keys: EXTRA_VIEW_SHORTCUTS["branch-workspace"].keys },
+      { id: "lfs-view", label: "Git LFS Manager", keys: EXTRA_VIEW_SHORTCUTS.lfs.keys },
     ],
   },
   {

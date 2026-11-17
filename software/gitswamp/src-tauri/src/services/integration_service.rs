@@ -92,7 +92,7 @@ impl IntegrationService {
         result
     }
 
-    fn basic_auth_header(username: &str, password: &str) -> String {
+    pub(super) fn basic_auth_header(username: &str, password: &str) -> String {
         let payload = format!("{}:{}", username, password);
         let encoded = Self::base64_encode(payload.as_bytes());
         format!("Basic {}", encoded)
@@ -1467,6 +1467,49 @@ impl IntegrationService {
         }
     }
 
+    pub fn reveal_worktree_file(worktree: &Path, file: &Path) -> Result<(), String> {
+        let location = Self::worktree_file_location(worktree, file)?;
+        if location.is_dir() {
+            return Self::open_with_system_explorer(&location);
+        }
+        if tauri_plugin_opener::reveal_item_in_dir(&location).is_err() {
+            let parent = location.parent().ok_or("The containing folder is unavailable.")?;
+            Self::open_with_system_explorer(parent)?;
+        }
+        Ok(())
+    }
+
+    fn worktree_file_location(worktree: &Path, file: &Path) -> Result<PathBuf, String> {
+        use std::io::ErrorKind;
+        use std::path::Component;
+
+        if file.as_os_str().is_empty()
+            || !file.components().all(|part| matches!(part, Component::Normal(_)))
+        {
+            return Err("Expected a file path relative to the repository.".into());
+        }
+        let root = fs::canonicalize(worktree).map_err(|error| error.to_string())?;
+        for (depth, relative) in file.ancestors().enumerate() {
+            let candidate = worktree.join(relative);
+            // The native reveal follows links; show the folder containing a file link instead.
+            if depth == 0 && fs::symlink_metadata(&candidate).is_ok_and(|entry| entry.is_symlink()) {
+                continue;
+            }
+            let resolved = match fs::canonicalize(&candidate) {
+                Ok(path) => path,
+                Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            if !resolved.starts_with(&root) {
+                return Err("The file location is outside the repository.".into());
+            }
+            if depth == 0 || resolved.is_dir() {
+                return Ok(candidate);
+            }
+        }
+        Err("The file location is unavailable.".into())
+    }
+
     pub fn open_path_with_tool(target_path: &str, tool: &str) -> Result<(), String> {
         let resolved_path = PathBuf::from(target_path);
         if !resolved_path.exists() {
@@ -2155,5 +2198,43 @@ impl IntegrationService {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worktree_file_location_uses_the_nearest_existing_folder() {
+        let worktree = tempfile::tempdir().unwrap();
+        let root = worktree.path();
+        let folder = root.join("code and assets");
+        fs::create_dir(&folder).unwrap();
+        let file = folder.join("main.rs");
+        fs::write(&file, "contents").unwrap();
+
+        let locate = |path| IntegrationService::worktree_file_location(root, Path::new(path));
+        assert_eq!(locate("code and assets/main.rs").unwrap(), file);
+        assert_eq!(locate("code and assets/old/removed.rs").unwrap(), folder);
+        assert_eq!(locate("code and assets/main.rs/old.txt").unwrap(), folder);
+        assert_eq!(locate("missing/removed.rs").unwrap(), root);
+        assert!(locate("../outside.txt").is_err());
+        assert!(locate("").is_err());
+        assert!(IntegrationService::worktree_file_location(root, &file).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_file_location_does_not_reveal_symlink_targets_outside_the_repo() {
+        let worktree = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("file.txt");
+        fs::write(&target, "contents").unwrap();
+        std::os::unix::fs::symlink(&target, worktree.path().join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), worktree.path().join("subdir")).unwrap();
+        let locate = |path| IntegrationService::worktree_file_location(worktree.path(), Path::new(path));
+        assert_eq!(locate("link.txt").unwrap(), worktree.path());
+        assert!(locate("subdir/file.txt").is_err());
     }
 }

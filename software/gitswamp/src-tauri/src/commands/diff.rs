@@ -1,5 +1,6 @@
-use crate::models::{BinaryDiffInfo, FileBlameLine, FileDiff, StagedDiffSummary};
+use crate::models::{BinaryDiffInfo, DiffLine, FileBlameLine, FileDiff, StagedDiffSummary};
 use crate::services::git_service::GitService;
+use crate::services::line_staging;
 use crate::services::worktree_service::validate_checkout;
 
 #[tauri::command]
@@ -176,6 +177,24 @@ pub async fn unstage_hunk(
     tauri::async_runtime::spawn_blocking(move || {
         validate_checkout(&path, expected_branch.as_deref())?;
         GitService::unstage_hunk(&path, &file_path, hunk_index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn apply_diff_line(
+    path: String,
+    file_path: String,
+    staged: bool,
+    hunk_index: usize,
+    line_index: usize,
+    expected: DiffLine,
+    expected_branch: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_checkout(&path, expected_branch.as_deref())?;
+        line_staging::apply(&path, &file_path, staged, hunk_index, line_index, &expected)
     })
     .await
     .map_err(|e| e.to_string())?

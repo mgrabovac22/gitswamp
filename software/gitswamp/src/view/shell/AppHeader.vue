@@ -11,6 +11,7 @@ import {
   UserCircle2,
   GitBranch,
   CircleX,
+  ListRestart,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppButton from "@/shared/ui/AppButton.vue";
@@ -22,6 +23,7 @@ import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
 import type { GitRpgProfile } from "@/features/repository/rpg/gitRpgProfiler";
 
 const props = defineProps<{
+  workflowLabel?: string;
   loading: boolean;
   activeAction?: "pull" | "push" | "fetch" | null;
   ghostActive?: boolean;
@@ -35,6 +37,9 @@ const props = defineProps<{
   graphIsolationBranch?: string;
   mergeActive?: boolean;
   cherryPickActive?: boolean;
+  rebaseActive?: boolean;
+  visualRebaseActive?: boolean;
+  visualRebaseConflicted?: boolean;
   identityGuard?: {
     enabled: boolean;
     mismatch: boolean;
@@ -44,12 +49,17 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  branchWorkflow: [];
   pull: [];
   push: [];
   fetch: [];
   exitGraphIsolation: [];
   abortMerge: [];
   abortCherryPick: [];
+  abortRebase: [];
+  continueVisualRebase: [];
+  skipVisualRebase: [];
+  abortVisualRebase: [];
   branch: [];
   ghostBranch: [];
   materializeGhostBranch: [];
@@ -89,7 +99,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative z-[40] min-h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 px-2 py-1 shadow-lg flex-shrink-0">
+  <div class="repository-header relative z-[40] min-h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 px-2 py-1 shadow-lg flex-shrink-0">
     <div class="flex flex-wrap items-center gap-2 min-w-0">
       <div class="flex items-center gap-1.5">
         <div class="w-12 h-8 flex items-center justify-center">
@@ -110,7 +120,7 @@ onUnmounted(() => {
           variant="ghost"
           size="sm"
           class="h-8 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] gap-1.5 transition-all text-xs"
-          :disabled="loading"
+          :disabled="loading || visualRebaseActive || rebaseActive"
           @click="emit('pull')"
         >
           <Loader2 v-if="loading && activeAction === 'pull'" class="w-3.5 h-3.5 animate-spin" />
@@ -121,7 +131,7 @@ onUnmounted(() => {
           variant="ghost"
           size="sm"
           class="h-8 text-[var(--foreground)] hover:bg-[var(--header-hover)] hover:text-[var(--primary)] gap-1.5 transition-all text-xs"
-          :disabled="loading"
+          :disabled="loading || visualRebaseActive || rebaseActive"
           @click="emit('push')"
         >
           <Loader2 v-if="loading && activeAction === 'push'" class="w-3.5 h-3.5 animate-spin" />
@@ -164,6 +174,21 @@ onUnmounted(() => {
           <CircleX class="w-3.5 h-3.5" />
           {{ cherryPickActive ? 'Abort cherry-pick' : 'Abort merge' }}
         </AppButton>
+        <template v-if="rebaseActive">
+          <AppButton variant="ghost" size="sm" class="h-8 shrink-0 gap-1.5 text-xs text-[var(--destructive)]" :disabled="loading" @click="emit('abortRebase')">
+            <CircleX class="w-3.5 h-3.5" /> Abort rebase
+          </AppButton>
+        </template>
+        <template v-if="visualRebaseActive">
+          <AppButton variant="ghost" size="sm" class="h-8 shrink-0 gap-1.5 text-xs" :disabled="loading || visualRebaseConflicted"
+            :title="visualRebaseConflicted ? 'Resolve all conflicts before continuing' : 'Continue interactive rebase'" @click="emit('continueVisualRebase')">
+            <ListRestart class="w-3.5 h-3.5" /> Continue rebase
+          </AppButton>
+          <AppButton v-if="visualRebaseConflicted" variant="ghost" size="sm" class="h-8 shrink-0 text-xs" :disabled="loading" @click="emit('skipVisualRebase')">Skip commit</AppButton>
+          <AppButton variant="ghost" size="sm" class="h-8 shrink-0 gap-1.5 text-xs text-[var(--destructive)]" :disabled="loading" @click="emit('abortVisualRebase')">
+            <CircleX class="w-3.5 h-3.5" /> Abort rebase
+          </AppButton>
+        </template>
       </div>
     </div>
 
@@ -205,6 +230,8 @@ onUnmounted(() => {
         :loading="loading"
         :ghost-active="!!ghostActive"
         @branch="emit('branch')"
+        :workflow-label="props.workflowLabel"
+        @workflow="emit('branchWorkflow')"
         @ghost="emit('ghostBranch')"
         @materialize="emit('materializeGhostBranch')"
         @discard="emit('discardGhostBranch')"
@@ -240,6 +267,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.repository-header:has(.branch-actions-popover) {
+  /* Keep the open popover above the workspace, including its panel toggle. */
+  z-index: 410;
+}
+
 @keyframes fade-in-letter {
   from {
     opacity: 0;

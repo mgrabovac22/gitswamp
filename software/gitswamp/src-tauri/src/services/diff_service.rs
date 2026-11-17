@@ -185,37 +185,34 @@ impl DiffService {
         reverse: bool,
         action_label: &str,
     ) -> Result<(), String> {
+        let mut args = vec!["apply"];
+        if cached { args.push("--cached"); }
+        if reverse { args.push("-R"); }
+        Self::apply_patch(path, patch_text.as_bytes(), &args)
+            .map_err(|e| format!("Failed to {} selected hunk: {}", action_label, e))
+    }
+
+    pub(super) fn apply_patch(path: &str, patch: &[u8], args: &[&str]) -> Result<(), String> {
         let unique_suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
 
         let patch_path = std::env::temp_dir().join(format!(
-            "gitswamp-revert-hunk-{}-{}.patch",
+            "gitswamp-diff-{}-{}.patch",
             std::process::id(),
             unique_suffix
         ));
 
-        std::fs::write(&patch_path, patch_text)
+        std::fs::write(&patch_path, patch)
             .map_err(|e| format!("Failed to write temporary patch file: {}", e))?;
 
         let patch_path_string = patch_path.to_string_lossy().to_string();
-        let mut args_owned = vec!["apply".to_string()];
-        if cached {
-            args_owned.push("--cached".to_string());
-        }
-        if reverse {
-            args_owned.push("-R".to_string());
-        }
-        args_owned.push(patch_path_string);
-        let args: Vec<&str> = args_owned.iter().map(|value| value.as_str()).collect();
-
+        let mut args = args.to_vec();
+        args.push(&patch_path_string);
         let apply_result = GitRepository::git_cli(path, &args);
         let _ = std::fs::remove_file(&patch_path);
-
-        apply_result
-            .map(|_| ())
-            .map_err(|e| format!("Failed to {} selected hunk: {}", action_label, e))
+        apply_result.map(|_| ())
     }
 
     fn apply_reverse_hunk_patch(path: &str, patch_text: &str, staged: bool) -> Result<(), String> {
@@ -225,7 +222,7 @@ impl DiffService {
     pub fn get_working_diff(path: &str, file_path: &str, staged: bool) -> Result<FileDiff, String> {
         let repo = GitRepository::open(path)?;
         let mut diff_opts = git2::DiffOptions::new();
-        diff_opts.context_lines(3).interhunk_lines(1);
+        diff_opts.context_lines(3).interhunk_lines(1).disable_pathspec_match(true).pathspec(file_path);
 
         let diff = if staged {
             let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
@@ -252,7 +249,8 @@ impl DiffService {
                     || (!tracked_in_index && full_path.is_file())
                 {
                     Self::build_untracked_file_diff(Path::new(path), file_path)
-                } else if status.is_empty() {
+                } else if !status.intersects(git2::Status::WT_MODIFIED | git2::Status::WT_DELETED
+                    | git2::Status::WT_RENAMED | git2::Status::WT_TYPECHANGE | git2::Status::CONFLICTED) {
                     Ok(FileDiff {
                         path: file_path.to_string(),
                         old_path: None,
@@ -264,6 +262,10 @@ impl DiffService {
                     Err(error)
                 }
             }
+            Err(_) if diff.deltas().len() == 0 => Ok(FileDiff {
+                path: file_path.to_string(), old_path: None, status: "modified".to_string(),
+                hunks: Vec::new(), is_binary: false,
+            }),
             Err(error) => Err(error),
         }
     }
@@ -793,7 +795,7 @@ impl DiffService {
 }
 
 #[cfg(test)]
-mod binary_tests {
+mod tests {
     use super::{DiffService, MAX_BINARY_PREVIEW_BYTES};
     use std::path::{Path, PathBuf};
 
@@ -826,6 +828,92 @@ mod binary_tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
+    }
+
+    fn select_line(fixture: &Fixture, name: &str, staged: bool, kind: &str, text: &str) -> Result<(), String> {
+        let diff = DiffService::get_working_diff(fixture.path(), name, staged)?;
+        let (hunk_index, line_index, line) = diff.hunks.iter().enumerate().find_map(|(hunk_index, hunk)| {
+            hunk.lines.iter().enumerate().find(|(_, line)| line.line_type == kind && line.content == text)
+                .map(|(line_index, line)| (hunk_index, line_index, line))
+        }).unwrap_or_else(|| panic!("Missing {kind} {text:?} in {diff:?}"));
+        super::super::line_staging::apply(fixture.path(), name, staged, hunk_index, line_index, line)
+    }
+
+    fn index_bytes(fixture: &Fixture, name: &str) -> Option<Vec<u8>> {
+        let mut index = fixture.repo.index().unwrap();
+        index.read(true).unwrap();
+        let entry = index.get_path(Path::new(name), 0)?;
+        Some(fixture.repo.find_blob(entry.id).unwrap().content().to_vec())
+    }
+
+    #[test]
+    fn stages_and_unstages_one_change_without_touching_neighbors_or_worktree() {
+        let fixture = Fixture::new();
+        let name = "with spaces [literal].txt";
+        let base = b"first\nold\nlast\n";
+        let edited = b"first\nnew one\nnew two\nlast\n";
+        fixture.write(name, base);
+        fixture.stage(name);
+        fixture.commit();
+        fixture.write(name, edited);
+        select_line(&fixture, name, false, "addition", "new two\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"first\nold\nnew two\nlast\n");
+        select_line(&fixture, name, false, "deletion", "old\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"first\nnew two\nlast\n");
+        select_line(&fixture, name, true, "deletion", "old\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"first\nold\nnew two\nlast\n");
+        select_line(&fixture, name, true, "addition", "new two\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), base);
+        assert!(DiffService::get_working_diff(fixture.path(), name, true).unwrap().hunks.is_empty());
+        assert_eq!(std::fs::read(fixture.root.join(name)).unwrap(), edited);
+    }
+
+    #[test]
+    fn partial_new_file_and_final_unstage_preserve_bytes_and_untracked_file() {
+        let fixture = Fixture::new();
+        let name = "new file.txt";
+        let edited = b"first\nlast with no newline";
+        fixture.write(name, edited);
+        select_line(&fixture, name, false, "addition", "last with no newline").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"last with no newline");
+        select_line(&fixture, name, true, "addition", "last with no newline").unwrap();
+        assert_eq!(index_bytes(&fixture, name), None);
+        assert_eq!(std::fs::read(fixture.root.join(name)).unwrap(), edited);
+    }
+
+    #[test]
+    fn handles_partial_deleted_file_and_restores_one_line_to_index() {
+        let fixture = Fixture::new();
+        let name = "deleted.txt";
+        fixture.write(name, b"one\ntwo\n");
+        fixture.stage(name);
+        fixture.commit();
+        std::fs::remove_file(fixture.root.join(name)).unwrap();
+        select_line(&fixture, name, false, "deletion", "two\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"one\n");
+        select_line(&fixture, name, false, "deletion", "one\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name), None);
+        select_line(&fixture, name, true, "deletion", "two\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"two\n");
+        assert!(!fixture.root.join(name).exists());
+    }
+
+    #[test]
+    fn rejects_a_changed_line_and_preserves_crlf_and_whitespace() {
+        let fixture = Fixture::new();
+        fixture.repo.config().unwrap().set_str("core.autocrlf", "false").unwrap();
+        let name = "crlf.txt";
+        fixture.write(name, b"one\r\n");
+        fixture.stage(name);
+        fixture.commit();
+        fixture.write(name, b"one\r\nprior\r\n");
+        let diff = DiffService::get_working_diff(fixture.path(), name, false).unwrap();
+        fixture.write(name, b"one\r\nnext  \r\n");
+        let result = super::super::line_staging::apply(fixture.path(), name, false, 0, 1, &diff.hunks[0].lines[1]);
+        assert!(result.unwrap_err().contains("diff changed"));
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"one\r\n");
+        select_line(&fixture, name, false, "addition", "next  \r\n").unwrap();
+        assert_eq!(index_bytes(&fixture, name).unwrap(), b"one\r\nnext  \r\n");
     }
 
     #[test]

@@ -1,0 +1,114 @@
+html[data-app-theme="signal-rain"] {
+  --scene-bg: #0e1514; --scene-panel: #172421; --scene-ink: #e4f5ef; --scene-muted: #9abcb2;
+  --scene-primary: #6bc9ac; --scene-accent: #e8af58; --scene-motion: #6ce5b2;
+}
+
+html[data-app-theme="meteor-watch"] {
+  --scene-bg: #161423; --scene-panel: #23223a; --scene-ink: #f0ecff; --scene-muted: #b8b1d4;
+  --scene-primary: #b2a6f9; --scene-accent: #fcbb77; --scene-motion: #b7c8ff;
+}
+
+html[data-app-theme="firefly-grove"] {
+  --scene-bg: #141c13; --scene-panel: #202d1f; --scene-ink: #eaf3df; --scene-muted: #b3c29e;
+  --scene-primary: #abc875; --scene-accent: #ead36e; --scene-motion: #dae986;
+}
+
+html[data-app-theme="paper-confetti"] {
+  --scene-bg: #eef4fb; --scene-panel: #fcfdff; --scene-ink: #242d46; --scene-muted: #4e6281;
+  --scene-primary: #315cb5; --scene-accent: #a42b66; --scene-motion: #c74468;
+}
+
+html[data-app-theme="autumn-trail"] {
+  --scene-bg: #faf1e8; --scene-panel: #fffaf4; --scene-ink: #3f2a27; --scene-muted: #6f544d;
+  --scene-primary: #a4452d; --scene-accent: #3d694c; --scene-motion: #b45a34;
+}
+
+html[data-app-theme="lantern-festival"] {
+  --scene-bg: #20131b; --scene-panel: #321f2b; --scene-ink: #fbeced; --scene-muted: #cbb0b9;
+  --scene-primary: #f08da9; --scene-accent: #f2b579; --scene-motion: #fa745a;
+}
+
+html[data-app-theme="deep-current"] {
+  --scene-bg: #0c1b20; --scene-panel: #142c33; --scene-ink: #e3f4ee; --scene-muted: #9cbebf;
+  --scene-primary: #73c5ca; --scene-accent: #eab7a3; --scene-motion: #7cdacf;
+}
+
+html[data-app-theme="vinyl-room"] {
+  --scene-bg: #f2edf0; --scene-panel: #fdf9fc; --scene-ink: #352333; --scene-muted: #685667;
+  --scene-primary: #94375a; --scene-accent: #36726c; --scene-motion: #68405f;
+}
+
+html[data-app-theme="railway-nights"] {
+  --scene-bg: #141a1d; --scene-panel: #202b2f; --scene-ink: #f0f0e8; --scene-muted: #b6c4c4;
+  --scene-primary: #8bb8af; --scene-accent: #ffbe68; --scene-motion: #e6b867;
+}
+
+html[data-app-theme="firework-studio"] {
+  --scene-bg: #191520; --scene-panel: #2a2134; --scene-ink: #fff0f4; --scene-muted: #c8b6cc;
+  --scene-primary: #dda1cd; --scene-accent: #77d1c3; --scene-motion: #ff989e;
+}
+
+html:is(
+  [data-app-theme="signal-rain"], [data-app-theme="meteor-watch"], [data-app-theme="firefly-grove"],
+  [data-app-theme="paper-confetti"], [data-app-theme="autumn-trail"], [data-app-theme="lantern-festival"],
+  [data-app-theme="deep-current"], [data-app-theme="vinyl-room"], [data-app-theme="railway-nights"],
+  [data-app-theme="firework-studio"]
+) {
+  --background: var(--scene-bg);
+  --foreground: var(--scene-ink);
+  --card: var(--scene-panel);
+  --card-foreground: var(--scene-ink);
+  --popover: var(--scene-panel);
+  --popover-foreground: var(--scene-ink);
+  --secondary: color-mix(in srgb, var(--scene-panel), var(--scene-primary) 16%);
+  --secondary-foreground: var(--scene-ink);
+  --muted: var(--secondary);
+  --muted-foreground: var(--scene-muted);
+  --primary: var(--scene-primary);
+  --primary-foreground: var(--scene-action-text);
+  --scene-action-text: var(--scene-bg);
+  --accent: var(--scene-accent);
+  --accent-foreground: var(--scene-bg);
+  --ring: var(--scene-primary);
+  --border: color-mix(in srgb, var(--scene-primary) 32%, var(--scene-panel));
+  --input: var(--border);
+  --input-background: var(--scene-panel);
+  --switch-background: var(--scene-primary);
+  --sidebar: var(--scene-bg);
+  --sidebar-foreground: var(--scene-ink);
+  --sidebar-primary: var(--scene-primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--secondary);
+  --sidebar-accent-foreground: var(--scene-ink);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --header-bg: var(--scene-panel);
+  --header-fg: var(--scene-ink);
+  --header-hover: var(--secondary);
+  --terminal-bg: var(--scene-bg);
+  --diff-bg: var(--scene-bg);
+  --diff-hunk-bg: var(--secondary);
+  --diff-text: var(--scene-ink);
+  --diff-border: var(--border);
+  --diff-line-number: var(--scene-muted);
+  --diff-sign-neutral: var(--scene-muted);
+  --diff-link: var(--scene-ink);
+  --code-fg: var(--scene-ink);
+  --code-muted: var(--scene-muted);
+  --graph-message-opacity: 1;
+}
+
+html.light:is(
+  [data-app-theme="paper-confetti"], [data-app-theme="autumn-trail"], [data-app-theme="vinyl-room"]
+) {
+  --scene-action-text: #fff;
+  --accent-foreground: #fff;
+}
+
+html:is(
+  [data-app-theme="signal-rain"], [data-app-theme="meteor-watch"], [data-app-theme="firefly-grove"],
+  [data-app-theme="lantern-festival"], [data-app-theme="deep-current"], [data-app-theme="railway-nights"],
+  [data-app-theme="firework-studio"]
+) .text-white:is(.bg-primary, .bg-\[var\(--primary\)\]) {
+  color: var(--primary-foreground);
+}

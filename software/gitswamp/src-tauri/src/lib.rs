@@ -5,10 +5,18 @@ mod repositories;
 mod services;
 
 use commands::appdata::{get_app_state_path, read_app_state, write_app_state};
+use commands::branch_workflow::{
+    execute_branch_workflow, inspect_branch_workflow, preview_branch_workflow, validate_branch_workflow,
+    verify_branch_handoff,
+};
 use commands::branches::{checkout_branch, create_branch, delete_branch, get_branches};
 use commands::clone_init::{clone_repo, init_repo, initialize_empty_repo, search_commits};
+use commands::commit_composer::{
+    apply_commit_composition, find_buildable_commit_groups, plan_commit_composition,
+    preview_commit_composition_change,
+};
 use commands::commit_files::get_commit_files;
-use commands::commits::{get_author_deletion_stats, get_commit_tree_paths, get_commits};
+use commands::commits::{get_author_deletion_stats, get_commit_coauthors, get_commit_tree_paths, get_commits};
 use commands::conflicts::{
     get_conflict_hotspots, get_conflict_pairs, get_conflict_preview, get_merge_preflight_risk, get_repository_tree_paths,
 };
@@ -17,6 +25,7 @@ use commands::credentials::{
     save_token,
 };
 use commands::diff::{
+    apply_diff_line,
     get_binary_diff_info, get_commit_diff, get_file_blame, get_file_bytes, get_file_content,
     get_staged_diff_summary, get_staged_file_content, get_working_diff, has_conflict_markers,
     revert_hunk, save_file_content, stage_hunk, unstage_hunk,
@@ -25,12 +34,17 @@ use commands::ghost::{
     discard_ghost_branch, get_ghost_branch_state, materialize_ghost_branch, start_ghost_branch,
 };
 use commands::http::http_send_request;
+use commands::lfs::{change_lfs_rule, convert_staged_lfs, get_lfs_overview, setup_lfs, transfer_lfs};
+use commands::interactive_rebase::{get_interactive_rebase_plan, interactive_rebase_action, start_interactive_rebase};
+use commands::interactive_rebase::{get_interactive_amend_plan, start_interactive_amend};
+use commands::patches::{export_patch, import_patch};
+use commands::status::amend_removal_choices;
 use commands::logs::{append_app_log, get_app_log_path};
 use commands::operation_preview::get_operation_preview;
 use commands::operations::{
     add_bitbucket_ssh_key, add_github_ssh_key, add_gitlab_ssh_key, check_origin, checkout_commit,
     cherry_pick, create_annotated_tag, create_tag_at, delete_bitbucket_ssh_key,
-    delete_github_ssh_key, delete_remote_branch, delete_tag, edit_commit_message, fetch_all,
+    delete_github_ssh_key, delete_remote_branch, delete_tag, edit_commit_message, fetch_all, find_file_location,
     generate_ssh_key, get_available_external_editors, get_available_external_tools, get_git_path,
     get_lost_commits, github_oauth_poll, github_oauth_start, list_bitbucket_ssh_keys,
     list_github_ssh_keys, load_ssh_public_key_from_file, open_file_with_editor,
@@ -43,7 +57,7 @@ use commands::operations::{
     verify_github_token, verify_gitlab_token, write_text_file,
 };
 use commands::repository::get_repo_info;
-use commands::stash::{stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
+use commands::stash::{restore_selected_stash, stash_apply, stash_drop, stash_files, stash_list, stash_pop, stash_push};
 use commands::status::{
     scan_secrets, ignore_secret_files,
     abort_cherry_pick, abort_merge, add_gitkeep, amend_commit, create_commit, discard_file, discard_files,
@@ -89,6 +103,12 @@ pub fn run() {
             get_commits,
             get_author_deletion_stats,
             get_commit_tree_paths,
+            get_commit_coauthors,
+            get_lfs_overview,
+            setup_lfs,
+            change_lfs_rule,
+            convert_staged_lfs,
+            transfer_lfs,
             get_conflict_hotspots,
             get_conflict_preview,
             get_operation_preview,
@@ -107,16 +127,26 @@ pub fn run() {
             unstage_file,
             unstage_files,
             create_commit,
+            plan_commit_composition,
+            preview_commit_composition_change,
+            find_buildable_commit_groups,
+            apply_commit_composition,
             abort_merge,
             abort_cherry_pick,
             restore_pull_safety_stash,
             amend_commit,
+            amend_removal_choices,
             pull,
             push,
             push_force,
             fetch_all,
             clone_repo,
             init_repo,
+            inspect_branch_workflow,
+            validate_branch_workflow,
+            preview_branch_workflow,
+            execute_branch_workflow,
+            verify_branch_handoff,
             initialize_empty_repo,
             search_commits,
             get_commit_files,
@@ -126,6 +156,8 @@ pub fn run() {
             stash_apply,
             stash_drop,
             stash_files,
+            restore_selected_stash,
+            commands::remote_tracking::remote_tracking,
             get_tags,
             get_lost_commits,
             run_git_command,
@@ -145,6 +177,13 @@ pub fn run() {
             reset_to_commit,
             rebase_branch_onto,
             rebase_continue,
+            get_interactive_rebase_plan,
+            get_interactive_amend_plan,
+            start_interactive_amend,
+            export_patch,
+            import_patch,
+            start_interactive_rebase,
+            interactive_rebase_action,
             rebase_abort,
             rebase_skip,
             checkout_commit,
@@ -179,6 +218,7 @@ pub fn run() {
             get_available_external_editors,
             get_available_external_tools,
             open_file_with_editor,
+            find_file_location,
             open_path_with_tool,
             save_token,
             load_token,
@@ -207,6 +247,7 @@ pub fn run() {
             revert_hunk,
             stage_hunk,
             unstage_hunk,
+            apply_diff_line,
             has_conflict_markers,
             append_app_log,
             get_app_log_path,

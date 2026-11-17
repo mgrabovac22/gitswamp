@@ -44,9 +44,45 @@ pub struct LargeStagedFile {
     pub size: u64,
 }
 
-const GITHUB_MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
+pub(super) const GITHUB_MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
 
 pub struct SecretService;
+
+pub(super) struct CompositionSecrets {
+    scan: SecretScan,
+    budget: Budget,
+    enabled: bool,
+}
+
+impl CompositionSecrets {
+    pub(super) fn new(snapshot: &str, enabled: bool) -> Self {
+        Self {
+            scan: SecretScan { findings: vec![], skipped: vec![], snapshot: snapshot.into(), large_files: vec![] },
+            budget: Budget::new(Limits::default()),
+            enabled,
+        }
+    }
+
+    pub(super) fn inspect(&mut self, repo: &Repository, path: &str, id: Oid, size: usize, tracked: bool) {
+        if size as u64 > GITHUB_MAX_FILE_BYTES {
+            self.scan.large_files.push(LargeStagedFile { path: path.into(), size: size as u64 });
+            return;
+        }
+        if !self.enabled || !continue_scan(&mut self.scan, &self.budget) { return; }
+        self.budget.entries += 1;
+        if let Err(reason) = self.budget.reserve(size) {
+            skip(&mut self.scan, path, reason);
+        } else {
+            match repo.find_blob(id) {
+                Ok(blob) if blob.size() <= self.budget.limits.file_bytes =>
+                    detect(blob.content(), path, tracked, &mut self.scan, &self.budget),
+                _ => skip(&mut self.scan, path, "Proposed content could not be read."),
+            }
+        }
+    }
+
+    pub(super) fn finish(self) -> SecretScan { self.scan }
+}
 
 #[derive(Clone, Copy)]
 struct Limits {
@@ -234,7 +270,7 @@ impl State {
     }
 }
 
-fn safe_relative(path: &str) -> bool {
+pub(super) fn safe_relative(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= MAX_PATH_BYTES
         && !path
@@ -246,7 +282,7 @@ fn safe_relative(path: &str) -> bool {
         && path.split('/').count() <= 64
 }
 
-fn safe_file(root: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
+pub(super) fn safe_file(root: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
     if !safe_relative(relative) {
         return Err(IGNORE_FAILED.into());
     }
@@ -930,6 +966,10 @@ fn continue_detection(scan: &mut SecretScan, budget: &Budget) -> bool {
 
 /// Call synchronously immediately before the real commit in the same blocking closure.
 pub fn validate_commit(path: &str, enabled: bool, approval: Option<&str>) -> Result<(), String> {
+    let scan = SecretService::review_staged(path, approval.is_none() && enabled)?;
+    if !scan.large_files.is_empty() {
+        return Err("Staged files exceed GitHub's 100 MiB limit. Open Git LFS Manager or unstage those files before committing.".into());
+    }
     let repo = Repository::open(path).map_err(|_| FAILED)?;
     let current = State::read(&repo)?;
     if let Some(approval) = approval {
@@ -938,28 +978,22 @@ pub fn validate_commit(path: &str, enabled: bool, approval: Option<&str>) -> Res
         }
         return Ok(());
     }
-    let scan = SecretService::review_staged(path, enabled)?;
     if scan.snapshot != current.snapshot {
         return Err(CHANGED.into());
     }
     if !scan.findings.is_empty() || !scan.skipped.is_empty() {
         return Err(BLOCKED.into());
     }
-    if !scan.large_files.is_empty() {
-        return Err(
-            "Staged files exceed GitHub's 100 MiB limit. Review Git LFS before committing.".into(),
-        );
-    }
     Ok(())
 }
 
-struct OwnedLock {
+pub(super) struct OwnedLock {
     path: PathBuf,
     active: bool,
 }
 
 impl OwnedLock {
-    fn create(path: PathBuf, bytes: &[u8]) -> Result<Self, String> {
+    pub(super) fn create(path: PathBuf, bytes: &[u8]) -> Result<Self, String> {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -972,7 +1006,7 @@ impl OwnedLock {
         Ok(lock)
     }
 
-    fn install(&mut self, destination: &Path) -> Result<(), String> {
+    pub(super) fn install(&mut self, destination: &Path) -> Result<(), String> {
         fs::rename(&self.path, destination).map_err(|_| IGNORE_FAILED)?;
         self.active = false;
         Ok(())
@@ -1305,7 +1339,7 @@ mod tests {
         assert!(scan.findings.is_empty());
         assert!(scan.skipped.is_empty());
         assert!(validate_commit(f.path(), false, None).is_err());
-        assert!(validate_commit(f.path(), false, Some(&scan.snapshot)).is_ok());
+        assert!(validate_commit(f.path(), false, Some(&scan.snapshot)).is_err());
         // An LFS pointer stages a small text blob even when the local file is huge.
         let pointer = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",

@@ -3,7 +3,7 @@ import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue
 import { Folder, GitBranch, Plus, X, Home, Menu, Info } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isEditableTarget } from "@/shared/dom/keyboardTargets";
-import type { AppHelpSection } from "@/features/shell/keyboardShortcuts";
+import { EXTRA_VIEW_SHORTCUTS, type AppHelpSection } from "@/features/shell/keyboardShortcuts";
 import type { RepoInfo } from "@/types";
 import type { RepositoryTab } from "@/features/repository/tabs/repositoryTabs.types";
 import type { ToolId } from "@/features/toolbox/toolboxStorage";
@@ -13,7 +13,7 @@ const AppHelpDialog = defineAsyncComponent(() => import("@/view/shell/AppHelpDia
 const ToolsDialog = defineAsyncComponent(() => import("@/features/toolbox/ToolsDialog.vue"));
 
 type MenuSection = "file" | "edit" | "view" | "tools" | "options" | "help";
-type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client" | "branch-workspace";
+type HistoryViewMode = "graph" | "galaxy" | "city" | "productivity" | "time-machine" | "conflict-heatmap" | "burnout" | "fast-scripts" | "http-client" | "branch-workspace" | "lfs";
 
 interface MenuAction {
   id: string;
@@ -48,6 +48,7 @@ const emit = defineEmits<{
   openInVsCode: [];
   openInExplorer: [];
   createGist: [];
+  requestPatch: [request: { kind: "import" | "export" }];
   setHistoryView: [mode: HistoryViewMode];
   openLogs: [];
 }>();
@@ -179,6 +180,8 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       disabled: !hasActiveRepo.value,
       run: () => emit("createGist"),
     },
+    { id: "import-patch", label: "Import Patch…", disabled: !hasActiveRepo.value || props.workspaceViewOpen, run: () => emit("requestPatch", { kind: "import" }) },
+    { id: "export-patch", label: "Export Patch…", disabled: !hasActiveRepo.value || props.workspaceViewOpen, run: () => emit("requestPatch", { kind: "export" }) },
   ],
   edit: [
     {
@@ -248,13 +251,6 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       run: () => emit("setHistoryView", "time-machine"),
     },
     {
-      id: "view-branch-workspace",
-      label: "Branch Workspace",
-      description: "Work on branches side by side",
-      disabled: !hasActiveRepo.value,
-      run: () => emit("setHistoryView", "branch-workspace"),
-    },
-    {
       id: "view-fast-scripts",
       label: "Fast Scripts",
       description: "Save and run terminal, Python and custom commands with a single click.",
@@ -301,6 +297,22 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       shortcut: "Alt+O",
       disabled: !hasActiveRepo.value,
       run: () => emit("openInExplorer"),
+    },
+    {
+      id: "view-branch-workspace",
+      label: "Branch Workspace",
+      description: "Work on branches side by side",
+      shortcut: EXTRA_VIEW_SHORTCUTS["branch-workspace"].keys,
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "branch-workspace"),
+    },
+    {
+      id: "view-lfs",
+      label: "Git LFS Manager",
+      description: "Manage large files and Git LFS tracking rules.",
+      shortcut: EXTRA_VIEW_SHORTCUTS.lfs.keys,
+      disabled: !hasActiveRepo.value,
+      run: () => emit("setHistoryView", "lfs"),
     },
   ],
   tools: [

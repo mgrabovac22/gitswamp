@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
+import { computed, defineAsyncComponent, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, type CSSProperties } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -19,10 +19,12 @@ import {
   Archive,
   Eye,
   Folder,
+  FolderSearch,
   File,
   FolderTree,
   Files,
   Hammer,
+  Layers,
   Map as MapIcon,
   Bug,
   RotateCcw,
@@ -36,6 +38,7 @@ import SecretFindingBadge from "@/shared/ui/SecretFindingBadge.vue";
 import { splitFilePath } from "@/shared/codeView";
 import { useWindowedRows } from "@/shared/ui/useWindowedRows";
 import { useToast } from "@/shared/notifications/useToast";
+import { COMMIT_TYPES, closingIssueTag, formatCommitSubject, splitClosingIssue, withClosingIssue } from "@/domain/analyzer/commitSubject";
 import {
   createCommitLintEngine,
   inferScopeFromPaths,
@@ -63,6 +66,7 @@ import type {
 
 const props = defineProps<{
   commit: CommitInfo | null;
+  panelHidden?: boolean;
   selectedCommits?: CommitInfo[];
   canAmendSelectedCommit?: boolean;
   headCommit?: CommitInfo | null;
@@ -108,6 +112,7 @@ const emit = defineEmits<{
   stashPop: [index: number];
   stashApply: [index: number];
   stashDrop: [index: number];
+  restoreStashSelection: [stash: StashInfo, files: string[], pop: boolean];
   viewDiff: [{ path: string; sha: string | null; staged: boolean }];
   closeDiffViewer: [];
   amendCommitMessage: [newMessage: string];
@@ -127,11 +132,73 @@ const allowEmptyCommit = ref(getStoredAllowEmptyCommit());
 const amendPreviousCommit = ref(false);
 const amendResetAuthor = ref(false);
 const amendSignoff = ref(false);
+type AmendFile = { path: string; oldPath?: string | null; status: string };
+const amendFiles = shallowRef<AmendFile[]>();
+const amendFilesLoading = ref(false);
+const amendFilesError = ref("");
+const amendExcluded = shallowRef(new Set<string>());
+const amendFileFilter = ref("");
+const amendFileLimit = ref(80);
+let amendFilesRequest = 0;
+const amendStagedPaths = computed(() => new Set(props.stagedFiles.map(file => file.path)));
+const amendBlocked = (file: AmendFile) => amendStagedPaths.value.has(file.path) || (!!file.oldPath && amendStagedPaths.value.has(file.oldPath));
+const amendVisibleCandidates = computed(() => (amendFiles.value ?? []).filter(file =>
+  !amendFileFilter.value.trim() || file.path.toLowerCase().includes(amendFileFilter.value.trim().toLowerCase())));
+
+watch([amendPreviousCommit, () => props.repoPath, () => props.headCommit?.sha], () => {
+  amendFilesRequest++;
+  amendFiles.value = undefined;
+  amendFilesLoading.value = false;
+  amendFilesError.value = "";
+  amendExcluded.value = new Set();
+  amendFileFilter.value = "";
+  amendFileLimit.value = 80;
+});
+
+async function loadAmendFiles(event: Event) {
+  const head = props.headCommit?.sha;
+  if (!(event.target as HTMLDetailsElement).open || !head || amendFiles.value || amendFilesLoading.value) return;
+  const request = ++amendFilesRequest;
+  amendFilesLoading.value = true;
+  amendFilesError.value = "";
+  try {
+    const files = await invoke<AmendFile[]>("amend_removal_choices", { path: props.repoPath, head });
+    if (request === amendFilesRequest) amendFiles.value = files;
+  } catch (error) {
+    if (request === amendFilesRequest) amendFilesError.value = String(error);
+  } finally { if (request === amendFilesRequest) amendFilesLoading.value = false; }
+}
+
+function toggleAmendFile(path: string, selected: boolean) {
+  const paths = new Set(amendExcluded.value);
+  if (selected) paths.add(path); else paths.delete(path);
+  amendExcluded.value = paths;
+}
 const regularCommitDraft = ref({ subject: "", description: "" });
 const showCommitBuilder = ref(false);
+const CommitCompositionDialog = defineAsyncComponent(() => import("@/features/repository/CommitCompositionDialog.vue"));
+const compositionPath = ref("");
+const canCompose = computed(() => !!props.repoPath && props.isWorkingChanges && !props.operationBusy &&
+  !props.hasConflicts && !props.repositoryOperation && !amendPreviousCommit.value &&
+  !!(props.stagedFiles.length || props.unstagedFiles.length));
+
+function openComposition() {
+  if (!canCompose.value) return;
+  showCommitBuilder.value = false;
+  compositionPath.value = props.repoPath;
+}
+
+function finishComposition(count: number) {
+  const path = compositionPath.value;
+  compositionPath.value = "";
+  if (props.repoPath !== path) return;
+  emit("refreshState");
+  toast.success(count === 1 ? "Created 1 commit." : `Created ${count} commits.`);
+}
 const commitBuilderType = ref("Fix");
 const commitBuilderScope = ref("");
 const commitBuilderIssue = ref("");
+const commitBuilderClosing = ref("");
 const commitBuilderSummary = ref("");
 const commitBuilderBody = ref("");
 const commitLintEngine = createCommitLintEngine();
@@ -166,6 +233,8 @@ const commitBuilderPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10
 const commitAnalyzerPanelStyle = ref<CSSProperties>({ left: "-10000px", top: "-10000px", width: "270px", zIndex: 2147483600 });
 const mergeInProgress = computed(() => props.repositoryOperation?.kind === "merge");
 const cherryPickInProgress = computed(() => props.repositoryOperation?.kind === "cherry-pick");
+const rebaseInProgress = computed(() => props.repositoryOperation?.kind === "rebase");
+const rebaseEditing = computed(() => !!props.repositoryOperation?.visual_rebase_editing);
 let appliedOperationMessageKey = "";
 
 function openDiff(filePath: string, commitSha: string | null, staged: boolean) {
@@ -178,6 +247,49 @@ function openStashDiff(filePath: string) {
   const stash = props.selectedStash;
   if (!stash) return;
   openDiff(filePath, stash.stash_sha || null, false);
+}
+
+const defaultStashSelected = ref(true);
+const stashSelectionOverrides = shallowRef(new Set<string>());
+const stashFileCount = computed(() => props.stashFiles?.length ?? 0);
+const selectedStashCount = computed(() => defaultStashSelected.value ? Math.max(0, stashFileCount.value - stashSelectionOverrides.value.size) : Math.min(stashFileCount.value, stashSelectionOverrides.value.size));
+const allStashFilesSelected = computed(() => selectedStashCount.value === stashFileCount.value);
+const stashFileLimit = ref(150);
+const stashFileQuery = ref("");
+const filteredStashFiles = computed(() => {
+  const files = props.stashFiles ?? [];
+  const term = stashFileQuery.value.trim().toLowerCase();
+  return term ? files.filter(file => file.path.toLowerCase().includes(term)) : files;
+});
+const visibleStashFiles = computed(() => filteredStashFiles.value.slice(0, stashFileLimit.value));
+watch([() => props.repoPath, () => props.selectedStash?.stash_sha], () => {
+  defaultStashSelected.value = true;
+  stashSelectionOverrides.value = new Set();
+  stashFileQuery.value = "";
+  stashFileLimit.value = 150;
+});
+watch(stashFileQuery, () => { stashFileLimit.value = 150; });
+
+function stashFileSelected(path: string) {
+  return defaultStashSelected.value !== stashSelectionOverrides.value.has(path);
+}
+
+function toggleStashFile(path: string, checked: boolean) {
+  const next = new Set(stashSelectionOverrides.value);
+  if (checked === defaultStashSelected.value) next.delete(path); else next.add(path);
+  stashSelectionOverrides.value = next;
+}
+
+function toggleAllStashFiles() {
+  defaultStashSelected.value = !allStashFilesSelected.value;
+  stashSelectionOverrides.value = new Set();
+}
+
+function restoreStash(pop: boolean) {
+  const stash = props.selectedStash;
+  if (!stash || !selectedStashCount.value) return;
+  const paths = props.stashFiles?.filter(file => stashFileSelected(file.path)).map(file => file.path) ?? [];
+  if (paths.length) emit("restoreStashSelection", stash, paths, pop);
 }
 
 function scrollSelectedCommitFileIntoView() {
@@ -393,6 +505,24 @@ function setActiveTab(tab: "changes" | "info") {
   userSelectedTab.value = true;
 }
 const isMultiCommitSelection = computed(() => (props.selectedCommits?.length || 0) > 1);
+
+type Coauthor = { name: string; email: string };
+const coauthors = shallowRef<Coauthor[]>([]);
+const coauthorSha = computed(() => {
+  if (props.panelHidden || activeTab.value !== "info" || props.isWorkingChanges || props.isStash || isMultiCommitSelection.value) return null;
+  const commit = props.commit;
+  return commit && /co-authored-by/i.test(commit.message) ? commit.sha : null;
+});
+watch([() => props.repoPath, coauthorSha], async ([path, sha], _, onCleanup) => {
+  coauthors.value = [];
+  if (!path || !sha) return;
+  let current = true;
+  onCleanup(() => { current = false; });
+  try {
+    const result = await invoke<Coauthor[]>("get_commit_coauthors", { path, sha });
+    if (current) coauthors.value = result;
+  } catch { /* Optional metadata should not interrupt the commit details. */ }
+});
 const primaryCommitShaForDiff = computed(() => {
   if (props.commit?.sha) {
     return props.commit.sha;
@@ -496,10 +626,11 @@ const expandedStaged = ref(true);
 const expandedUnstaged = ref(true);
 const toast = useToast();
 
-watch(() => props.amendModeRequested, (enabled) => {
-  if (enabled) enterAmendMode();
-  else leaveAmendMode();
-}, { immediate: true });
+watch(() => [props.amendModeRequested, props.repositoryOperation?.visual_rebase_editing, props.headCommit?.sha] as const,
+  ([requested, editing, head]) => {
+    if ((requested || editing) && head) enterAmendMode();
+    else leaveAmendMode();
+  }, { immediate: true, flush: "post" });
 
 type ExternalEditorId = "notepad" | "vscode" | "visualstudio" | "androidstudio" | "intellij";
 
@@ -569,14 +700,16 @@ const composedCommitMessage = computed(() => commitDescription.value.trim()
 const amendHasChanges = computed(() => {
   if (!amendPreviousCommit.value || !props.headCommit) return false;
   return props.stagedFiles.length > 0
+    || amendExcluded.value.size > 0
     || composedCommitMessage.value.trimEnd() !== props.headCommit.message.trimEnd()
     || amendResetAuthor.value
     || amendSignoff.value;
 });
 const canSubmitCommit = computed(() => {
   if (!commitSummary.value.trim() || props.hasConflicts || props.operationBusy) return false;
+  if (rebaseInProgress.value && !rebaseEditing.value) return false;
   if (amendPreviousCommit.value) {
-    return !!props.headCommit && amendHasChanges.value;
+    return !!props.headCommit && amendHasChanges.value && !amendFiles.value?.some(file => amendExcluded.value.has(file.path) && amendBlocked(file));
   }
   return props.stagedFiles.length > 0 || mergeInProgress.value || allowEmptyCommit.value;
 });
@@ -614,7 +747,6 @@ const commitLintIndicatorClass = computed(() => {
   return "text-[var(--muted-foreground)] border-[var(--border)] bg-[var(--secondary)]";
 });
 
-const commitBuilderTypes = ["Fix", "Feat", "Refactor", "Docs", "Style", "Test", "Chore", "Perf", "Build", "Ci", "Revert"] as const;
 const commitBuilderScopes = computed(() => {
   const scopes = [
     stagedDiffSummary.value.inferred_scope,
@@ -661,11 +793,14 @@ const commitBuilderPreview = computed(() => {
   const summary = commitBuilderSummary.value.trim() || commitSummary.value.trim() || "describe change";
   const issueTag = normalizedCommitBuilderIssueTag.value;
   const cleanSummary = issueTag ? summary.replace(/^#\d+\s+/, "") : summary;
-  const taggedSummary = issueTag ? `${issueTag} ${cleanSummary}` : cleanSummary;
-  return scope ? `${type}(${scope}): ${taggedSummary}` : `${type}: ${taggedSummary}`;
+  return formatCommitSubject(type, scope, false, cleanSummary, issueTag);
 });
 
 const normalizedCommitBuilderIssueTag = computed(() => normalizeIssueTag(commitBuilderIssue.value));
+const builderClosingIssue = computed(() => closingIssueTag(commitBuilderIssue.value));
+watch(builderClosingIssue, issue => {
+  if (commitBuilderClosing.value !== issue) commitBuilderClosing.value = "";
+});
 
 function capitalizeCommitBuilderType(type: string): string {
   const trimmed = type.trim();
@@ -753,7 +888,9 @@ function openCommitBuilder() {
   commitBuilderScope.value = parsed?.scope || commitBuilderScope.value || stagedDiffSummary.value.inferred_scope || commitBuilderScopes.value[0] || "";
   commitBuilderIssue.value = parsed?.issue || commitBuilderIssue.value || "";
   commitBuilderSummary.value = parsed?.summary || commitSummary.value;
-  commitBuilderBody.value = commitDescription.value;
+  const closing = splitClosingIssue(commitDescription.value, builderClosingIssue.value);
+  commitBuilderBody.value = closing.body;
+  commitBuilderClosing.value = closing.issue;
   showCommitBuilder.value = true;
   void nextTick(updateCommitFloatingPanels);
 }
@@ -769,7 +906,7 @@ function saveCommitBuilder() {
     return;
   }
   commitSummary.value = commitBuilderPreview.value;
-  commitDescription.value = commitBuilderBody.value.trim();
+  commitDescription.value = withClosingIssue(commitBuilderBody.value.trim(), commitBuilderClosing.value);
   showCommitBuilder.value = false;
   queueCommitLintAnalysis();
 }
@@ -1768,6 +1905,7 @@ function onCommit() {
       message,
       resetAuthor: amendResetAuthor.value,
       signoff: amendSignoff.value,
+      removal: amendExcluded.value.size && props.headCommit ? { head: props.headCommit.sha, paths: [...amendExcluded.value] } : undefined,
     });
     return;
   }
@@ -1843,7 +1981,7 @@ function openFileContextMenu(event: MouseEvent, path: string) {
   fileCtxPath.value = path;
 
   const menuWidth = 250;
-  const menuHeight = 80 + Math.max(availableEditors.value.length, 1) * 42;
+  const menuHeight = 112 + Math.max(availableEditors.value.length, 1) * 42;
   let x = event.clientX;
   let y = event.clientY;
 
@@ -1863,6 +2001,8 @@ function closeFileContextMenu() {
   fileCtxVisible.value = false;
   fileCtxPath.value = null;
 }
+
+watch(() => props.repoPath, closeFileContextMenu);
 
 function editorButtonClass(option: ExternalEditorOption): string {
   if (option.id === "notepad") {
@@ -1898,7 +2038,19 @@ async function openSelectedFileWithEditor(editorId: ExternalEditorId) {
   }
 }
 
+async function findSelectedFileLocation() {
+  const filePath = fileCtxPath.value;
+  if (!filePath || !props.repoPath) return;
+  closeFileContextMenu();
+  try {
+    await invoke("find_file_location", { path: props.repoPath, filePath });
+  } catch (error) {
+    toast.error(`Could not find ${fileParts(filePath).fileName}: ${String(error)}`);
+  }
+}
+
 function handleGlobalKeyDown(event: KeyboardEvent) {
+  if (compositionPath.value || (event.target instanceof Element && event.target.closest("dialog[data-commit-composer]"))) return;
   if (event.key === "Escape") {
     showCommitBuilder.value = false;
     commitAnalyzerTooltipVisible.value = false;
@@ -2627,8 +2779,27 @@ onUnmounted(() => {
           <p class="mt-1 text-[9px] leading-relaxed text-[var(--muted-foreground)]">
             {{ stagedFiles.length > 0
               ? `${stagedFiles.length} staged ${stagedFiles.length === 1 ? 'file' : 'files'} will be included.`
-              : 'No staged files; only the message or selected metadata will change.' }}
+              : 'No new staged files.' }}
           </p>
+
+          <details class="mt-2 border-y border-[var(--border)] py-1.5" :key="headCommit?.sha" @toggle="loadAmendFiles">
+            <summary class="cursor-pointer text-[10px] font-medium">Move files to Working Changes<span v-if="amendExcluded.size"> · {{ amendExcluded.size }} selected</span></summary>
+            <p v-if="amendFilesLoading" class="px-2 py-1 text-[10px] text-[var(--muted-foreground)]" role="status">Loading files from the last commit…</p>
+            <p v-else-if="amendFilesError" class="px-2 py-1 text-[10px] text-[var(--destructive)]" role="alert">{{ amendFilesError }}</p>
+            <p v-else-if="amendFiles && !amendFiles.length" class="px-2 py-1 text-[10px] text-[var(--muted-foreground)]">There are no file changes in this commit.</p>
+            <template v-else-if="amendFiles">
+              <input v-if="amendFiles.length > 80" v-model="amendFileFilter" type="search" aria-label="Find files in last commit" placeholder="Find a file" class="my-1 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 py-1 text-[10px]" />
+              <div class="max-h-32 overflow-y-auto">
+                <label v-for="file in amendVisibleCandidates.slice(0, amendFileLimit)" :key="file.path" class="flex min-w-0 items-center gap-1.5 rounded px-1 py-1 text-[10px] hover:bg-[var(--secondary)]" :title="file.oldPath ? `${file.oldPath} → ${file.path}` : file.path">
+                  <input type="checkbox" class="h-3 w-3 shrink-0 accent-[var(--primary)]" :aria-label="`Move ${file.path} to Working Changes`"
+                    :checked="amendExcluded.has(file.path)" :disabled="operationBusy || (amendBlocked(file) && !amendExcluded.has(file.path))"
+                    @change="toggleAmendFile(file.path, ($event.target as HTMLInputElement).checked)" />
+                  <span class="min-w-0 flex-1 truncate">{{ file.path }}</span><span v-if="amendBlocked(file)" class="text-[var(--muted-foreground)]">Unstage first</span>
+                </label>
+                <button v-if="amendVisibleCandidates.length > amendFileLimit" class="py-1 px-2 text-[10px] text-[var(--primary)]" type="button" @click="amendFileLimit += 80">Show more files</button>
+              </div>
+            </template>
+          </details>
 
           <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
             <label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-[var(--muted-foreground)]">
@@ -2660,7 +2831,7 @@ onUnmounted(() => {
           @click="onCommit"
         >
           <RotateCcw v-if="amendPreviousCommit" class="h-3.5 w-3.5" />
-          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes'))) }}</span>
+          <span class="min-w-0 truncate">{{ amendPreviousCommit ? 'Amend Last Commit' : (rebaseInProgress ? 'Continue rebase in the toolbar' : (mergeInProgress ? 'Complete Merge' : (cherryPickInProgress ? 'Complete cherry-pick' : (workspaceBranch ? `Commit to ${workspaceBranch}` : 'Commit Changes')))) }}</span>
         </AppButton>
       </div>
     </div>
@@ -3008,6 +3179,19 @@ onUnmounted(() => {
               <div class="text-[10px] text-[var(--muted-foreground)]">{{ commit.committer_email || '—' }}</div>
             </div>
           </div>
+
+          <div v-if="coauthors.length" class="space-y-2" role="group" aria-label="Co-authors">
+            <div v-for="coauthor in coauthors" :key="coauthor.email" class="flex items-center gap-3">
+              <div aria-hidden="true" class="w-8 h-8 rounded-full bg-[var(--secondary)] text-[var(--primary)] flex items-center justify-center text-xs font-bold flex-shrink-0">
+                {{ displayIdentityInitial(coauthor.name) }}
+              </div>
+              <div class="min-w-0">
+                <div class="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">Co-author</div>
+                <div class="text-sm text-[var(--foreground)] font-medium break-words">{{ coauthor.name }}</div>
+                <div class="text-[10px] text-[var(--muted-foreground)] break-words">{{ coauthor.email }}</div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="h-px bg-[var(--border)]" />
@@ -3173,13 +3357,22 @@ onUnmounted(() => {
           </div>
 
           <template v-if="changesViewMode === 'files'">
+            <div class="px-4 py-1.5 flex flex-wrap justify-between items-center gap-2 text-[10px] text-[var(--muted-foreground)]">
+              <span>{{ selectedStashCount }} of {{ stashFiles.length }} selected</span>
+              <button type="button" class="rounded px-1 py-0.5 hover:bg-[var(--secondary)] hover:text-[var(--foreground)]" @click="toggleAllStashFiles">{{ allStashFilesSelected ? 'Clear selection' : 'Select all' }}</button>
+            </div>
+            <div v-if="stashFileCount > 150" class="px-4 pb-2"><input v-model="stashFileQuery" type="search" aria-label="Filter stash files" placeholder="Filter files" class="h-6 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-[10px]" /></div>
             <div
-              v-for="f in stashFiles"
+              v-for="f in visibleStashFiles"
               :key="f.path"
               class="flex items-center gap-2 px-4 py-1.5 hover:bg-[#f59e0b]/5 transition-all cursor-pointer"
               @click="openStashDiff(f.path)"
               @contextmenu="openFileContextMenu($event, f.path)"
             >
+              <label class="inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center" @click.stop>
+                <input type="checkbox" class="h-3 w-3 accent-[var(--primary)]" :aria-label="'Select ' + f.path" :checked="stashFileSelected(f.path)"
+                  @change="toggleStashFile(f.path, ($event.target as HTMLInputElement).checked)" />
+              </label>
               <span class="text-[10px] font-bold w-4 text-center" :style="{ color: statusColor(f.status) }">{{ statusIcon(f.status) }}</span>
               <div class="flex-1 min-w-0">
                 <div class="text-xs text-[var(--foreground)] truncate opacity-90">{{ fileParts(f.path).fileName }}</div>
@@ -3188,6 +3381,8 @@ onUnmounted(() => {
               <span v-if="f.additions > 0" class="text-[10px] text-[#10b981] font-mono">+{{ f.additions }}</span>
               <span v-if="f.deletions > 0" class="text-[10px] text-[#ef4444] font-mono">-{{ f.deletions }}</span>
             </div>
+            <p v-if="!filteredStashFiles.length" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)]">No matching files</p>
+            <button v-if="filteredStashFiles.length > stashFileLimit" type="button" class="w-full border-t border-[var(--border)] py-2 text-[10px] hover:bg-[var(--secondary)]" @click="stashFileLimit += 150">Show more files</button>
           </template>
 
           <template v-else-if="changesViewMode === 'tree'">
@@ -3329,18 +3524,21 @@ onUnmounted(() => {
       </div>
 
       <div v-if="selectedStash" class="border-t border-[var(--border)] p-3 bg-[var(--card)]/50 flex-shrink-0 space-y-2">
+        <p v-if="!allStashFilesSelected && selectedStashCount" class="text-[10px] text-[var(--muted-foreground)]">{{ selectedStashCount }} selected · Unselected files stay in the stash.</p>
         <AppButton
           class="w-full bg-[#f59e0b] hover:bg-[#f59e0b]/90 text-white text-xs font-medium h-8"
-          @click="emit('stashPop', selectedStash.index)"
+          :disabled="!selectedStashCount"
+          @click="restoreStash(true)"
         >
-          Pop Stash
+          {{ allStashFilesSelected ? 'Pop Stash' : 'Pop selected' }}
         </AppButton>
         <div class="flex gap-2">
           <AppButton
             class="flex-1 bg-[var(--secondary)] hover:bg-[var(--secondary)]/80 text-[var(--foreground)] text-xs font-medium h-8"
-            @click="emit('stashApply', selectedStash.index)"
+            :disabled="!selectedStashCount"
+            @click="restoreStash(false)"
           >
-            Apply
+            {{ allStashFilesSelected ? 'Apply' : 'Apply selected' }}
           </AppButton>
           <AppButton
             class="flex-1 bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-medium h-8"
@@ -3451,7 +3649,13 @@ onUnmounted(() => {
             <Hammer class="h-3.5 w-3.5 text-[var(--primary)]" />
             <div class="text-xs font-semibold text-[var(--foreground)]">Visual Commit Builder</div>
           </div>
-          <CloseIconButton size="sm" subtle title="Close commit builder" @click="showCommitBuilder = false" />
+          <div class="flex items-center gap-1">
+            <button type="button" title="Compose commits automatically" aria-label="Compose commits automatically"
+              :disabled="!canCompose"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--primary)]/40 bg-[var(--primary)]/10 text-[var(--primary)] transition-colors enabled:cursor-pointer enabled:hover:border-[var(--primary)] enabled:hover:bg-[var(--primary)]/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+              @click="openComposition"><Layers :size="15" /></button>
+            <CloseIconButton size="sm" subtle title="Close commit builder" @click="showCommitBuilder = false" />
+          </div>
         </div>
 
         <div class="grid grid-cols-3 gap-2">
@@ -3461,7 +3665,7 @@ onUnmounted(() => {
               v-model="commitBuilderType"
               class="h-8 w-full rounded border border-[var(--border)] bg-[var(--input-background)] px-2 text-xs text-[var(--foreground)] outline-none"
             >
-              <option v-for="type in commitBuilderTypes" :key="type" :value="type">{{ type }}</option>
+              <option v-for="type in COMMIT_TYPES" :key="type" :value="type">{{ type }}</option>
             </select>
           </label>
           <label class="space-y-1">
@@ -3508,6 +3712,13 @@ onUnmounted(() => {
           />
         </label>
 
+        <label v-if="builderClosingIssue" class="mt-2 flex items-center gap-2 text-xs text-[var(--foreground)]">
+          <input type="checkbox" :checked="commitBuilderClosing === builderClosingIssue"
+            @change="commitBuilderClosing = ($event.target as HTMLInputElement).checked ? builderClosingIssue : ''" />
+          Close issue {{ builderClosingIssue }}
+        </label>
+        <code v-if="commitBuilderClosing" class="mt-1 block text-[10px] text-[var(--muted-foreground)]">Closes {{ commitBuilderClosing }}</code>
+
         <div class="mt-2 rounded border border-[var(--border)] bg-[var(--input-background)] px-2 py-1.5 font-mono text-[10px] text-[var(--foreground)]">
           {{ commitBuilderPreview }}
         </div>
@@ -3532,9 +3743,14 @@ onUnmounted(() => {
     </Teleport>
 
     <Teleport to="body">
+      <CommitCompositionDialog v-if="compositionPath && compositionPath === repoPath" :key="compositionPath"
+        :repo-path="compositionPath" @close="compositionPath = ''" @committed="finishComposition" />
+    </Teleport>
+
+    <Teleport to="body">
       <div
         v-if="fileCtxVisible && fileCtxPath"
-        class="fixed z-[210] w-[250px] rounded-lg border border-[var(--border)] bg-[var(--popover)] shadow-2xl p-2"
+        class="fixed z-[210] w-[250px] max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--popover)] shadow-2xl p-2"
         :style="{ left: fileCtxX + 'px', top: fileCtxY + 'px' }"
         @pointerdown.stop
       >
@@ -3553,6 +3769,14 @@ onUnmounted(() => {
           >
             <div class="text-xs font-medium text-[var(--foreground)]">{{ option.label }}</div>
             <div class="file-ctx-option-hint text-[10px] text-[var(--muted-foreground)]">{{ option.hint }}</div>
+          </button>
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 text-left px-2 py-1.5 rounded-md border border-transparent text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--secondary)]"
+            @click="findSelectedFileLocation"
+          >
+            <FolderSearch class="w-4 h-4 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
+            <span>Find file location</span>
           </button>
         </div>
       </div>

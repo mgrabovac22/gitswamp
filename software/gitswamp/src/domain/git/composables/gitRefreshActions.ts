@@ -21,9 +21,10 @@ export function createRefreshActions(state: GitState) {
   let commitRefreshRequestId = 0;
   let statusRequestId = 0;
   let repoInfoRequestId = 0;
+  let searchRequestId = 0;
+  let pendingSearch: Promise<CommitInfo[]> | null = null;
   const coordinator = new RepositoryRefreshCoordinator();
-  const stashFilesCache = new Map<string, CommitFileInfo[]>();
-  const STASH_FILES_CACHE_LIMIT = 60;
+  let stashRequestId = 0;
 
   function scheduleCommitWaveFrame(callback: () => void) {
     if (typeof globalThis.requestAnimationFrame === "function") {
@@ -380,6 +381,7 @@ export function createRefreshActions(state: GitState) {
   }
 
   async function selectStash(stash: StashInfo | null) {
+    const request = ++stashRequestId;
     state.selectedStash.value = stash;
     state.selectedCommit.value = null;
     state.selectedCommits.value = [];
@@ -391,32 +393,21 @@ export function createRefreshActions(state: GitState) {
       return;
     }
 
-    const cacheKey = `${repoPath}\u0000${stash.stash_sha || stash.index}`;
-    const cached = stashFilesCache.get(cacheKey);
-    if (cached) {
-      state.selectedStashFiles.value = cached;
-      return;
-    }
+    state.selectedStashFiles.value = [];
+    const stillSelected = () => request === stashRequestId && repoPath === state.repoPath.value && state.selectedStash.value?.stash_sha === stash.stash_sha;
 
     try {
-      const files = await callTauri<CommitFileInfo[]>("stash_files", { path: repoPath, index: stash.index });
-      if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;
-      stashFilesCache.set(cacheKey, files);
-      if (stashFilesCache.size > STASH_FILES_CACHE_LIMIT) {
-        const oldestKey = stashFilesCache.keys().next().value;
-        if (oldestKey !== undefined) {
-          stashFilesCache.delete(oldestKey);
-        }
-      }
-      state.selectedStashFiles.value = files;
+      const files = await callTauri<CommitFileInfo[]>("stash_files", { path: repoPath, index: stash.index, sha: stash.stash_sha });
+      if (stillSelected()) state.selectedStashFiles.value = files;
     } catch (e) {
-      if (repoPath !== state.repoPath.value || state.selectedStash.value?.index !== stash.index) return;
+      if (!stillSelected()) return;
       state.error.value = String(e);
       state.selectedStashFiles.value = [];
     }
   }
 
   function clearStashSelection() {
+    stashRequestId++;
     state.selectedStash.value = null;
     state.selectedStashFiles.value = [];
   }
@@ -429,14 +420,21 @@ export function createRefreshActions(state: GitState) {
       return;
     }
 
+    const requestId = ++searchRequestId;
+    const isCurrent = () => requestId === searchRequestId && repoPath === state.repoPath.value;
+    state.searchQuery.value = query;
+    // Keep only one history scan active; queued searches that were replaced never start.
+    if (pendingSearch) await pendingSearch.catch(() => {});
+    if (!isCurrent()) return;
+    const request = callTauri<CommitInfo[]>("search_commits", {
+      path: repoPath,
+      query,
+      maxCount: 50000,
+    });
+    pendingSearch = request;
     try {
-      state.searchQuery.value = query;
-      const results = await callTauri<CommitInfo[]>("search_commits", {
-        path: repoPath,
-        query,
-        maxCount: 50000,
-      });
-      if (repoPath !== state.repoPath.value) return;
+      const results = await request;
+      if (!isCurrent()) return;
       state.searchResults.value = results;
       state.hasMoreSearchResults.value = false;
 
@@ -444,12 +442,14 @@ export function createRefreshActions(state: GitState) {
         await ensureCommitLoaded(results[0].sha);
       }
     } catch (e) {
-      if (repoPath !== state.repoPath.value) return;
-      state.error.value = String(e);
+      if (isCurrent()) state.error.value = String(e);
+    } finally {
+      if (pendingSearch === request) pendingSearch = null;
     }
   }
 
   function clearSearch() {
+    searchRequestId += 1;
     state.searchQuery.value = "";
     state.searchResults.value = null;
     state.hasMoreSearchResults.value = false;
