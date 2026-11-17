@@ -48,6 +48,7 @@ const emit = defineEmits<{
   openInVsCode: [];
   openInExplorer: [];
   createGist: [];
+  requestPatch: [request: { kind: "import" | "export" }];
   setHistoryView: [mode: HistoryViewMode];
   openLogs: [];
 }>();
@@ -179,6 +180,8 @@ const menuActions = computed<Record<MenuSection, MenuAction[]>>(() => ({
       disabled: !hasActiveRepo.value,
       run: () => emit("createGist"),
     },
+    { id: "import-patch", label: "Import Patch…", disabled: !hasActiveRepo.value || props.workspaceViewOpen, run: () => emit("requestPatch", { kind: "import" }) },
+    { id: "export-patch", label: "Export Patch…", disabled: !hasActiveRepo.value || props.workspaceViewOpen, run: () => emit("requestPatch", { kind: "export" }) },
   ],
   edit: [
     {

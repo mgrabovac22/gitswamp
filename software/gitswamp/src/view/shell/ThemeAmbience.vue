@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { getStoredAppPalettePreference, type AppPalettePreference } from "@/shared/themePreferences";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
+import { ANIMATED_SPECIAL_THEMES, getStoredAppPalettePreference, type AppPalettePreference } from "@/shared/themePreferences";
+
+const SpecialThemeScene = defineAsyncComponent(() => import("./SpecialThemeScene.vue"));
 
 interface AmbienceConfig {
   glyphs: string[];
@@ -49,6 +51,8 @@ function syncTheme() {
 }
 
 const config = computed(() => AMBIENCE_CONFIGS[activeTheme.value] ?? null);
+const scene = computed(() => ANIMATED_SPECIAL_THEMES.find(theme => theme.id === activeTheme.value));
+const crossing = computed(() => ["starry-night", "pixel-arcade", "anime-sakura", "snowy"].includes(activeTheme.value) ? activeTheme.value : null);
 
 function pseudoRandom(seed: number): number {
   const value = Math.sin(seed * 12.9898) * 43758.5453;
@@ -123,7 +127,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="config" class="theme-ambience" aria-hidden="true">
+  <SpecialThemeScene v-if="scene" :key="scene.id" :scene="scene" />
+  <div v-else-if="config" class="theme-ambience" aria-hidden="true">
     <span
       v-for="glyph in glyphs"
       :key="glyph.id"
@@ -145,6 +150,10 @@ onUnmounted(() => {
     >
       {{ glyph.glyph }}
     </span>
+
+    <div v-if="crossing" class="theme-crossing" :data-crossing="crossing">
+      <i v-for="part in 3" :key="part"></i>
+    </div>
 
     <div v-if="activeTheme === 'snowy'" class="theme-ambience__santa">
       <svg class="theme-ambience__santa-svg" viewBox="0 0 200 100" role="presentation">
@@ -185,3 +194,5 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+
+<style src="./themeCrossings.css"></style>

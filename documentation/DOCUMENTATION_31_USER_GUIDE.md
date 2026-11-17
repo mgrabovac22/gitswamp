@@ -105,6 +105,16 @@ See [Current workflows and troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md
 - Shows local repository context and recent repositories when offline or unauthenticated
 - Provides search for pull requests and assigned issues
 
+**GitHub work items:** The repository sidebar opens pull request and issue details, including their conversations. You can post a general comment without leaving GitSwamp. When creating a pull request, the **Base** and **Compare** pickers search the remote's published branches and suggest a base using your branching workflow and GitHub's default branch. See [GitHub pull requests and issues](DOCUMENTATION_39_RECENT_WORKFLOWS.md#github-pull-requests-and-issues).
+
+**Find a setting:** Open **Options** and type into **Search settings** below the header. Partial names, common aliases and typos work across tabs. Select a result to open and highlight the setting without changing it. See [Options Search](DOCUMENTATION_39_RECENT_WORKFLOWS.md#options-search).
+
+**Parallel branches and guided workflows:** Use **Branch Workspace** for separate working directories and changes on up to four branches. Use **Branching workflow** for GitHub Flow, Gitflow, Trunk-Based or GitSwamp Handoff, and use the **Visual Commit Builder** to open Commit Composer. See [Branch Workspace](DOCUMENTATION_39_RECENT_WORKFLOWS.md#branch-workspace), [Branching Workflow](DOCUMENTATION_39_RECENT_WORKFLOWS.md#branching-workflow), and [Compose Commits](DOCUMENTATION_39_RECENT_WORKFLOWS.md#compose-commits).
+
+**Restore only part of a stash:** Open a stash's **View Changes** and uncheck files you want to leave in it. **Apply selected** keeps the original stash; **Pop selected** keeps only the unselected files after a successful restore. See [Restore Selected Stash Files](DOCUMENTATION_39_RECENT_WORKFLOWS.md#restore-selected-stash-files).
+
+**Other providers:** Open the repository sidebar to browse GitLab issues and merge requests, Azure Boards work items and pull requests, or Bitbucket Cloud pull requests. See [provider tracking and credentials](DOCUMENTATION_39_RECENT_WORKFLOWS.md#gitlab-azure-devops-and-bitbucket-tracking).
+
 ### 3.2 Quick Menu (Hamburger ☰)
 
 Click the top-left hamburger icon to open the quick menu with 4 sections:

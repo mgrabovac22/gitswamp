@@ -1,4 +1,5 @@
 pub mod appdata;
+pub mod branch_workflow;
 pub mod branches;
 pub mod clone_init;
 pub mod commit_composer;
@@ -13,9 +14,11 @@ pub mod interactive_rebase;
 pub mod lfs;
 pub mod logs;
 pub mod operation_preview;
+pub mod patches;
 pub mod operations;
 pub mod repository;
 pub mod stash;
+pub mod remote_tracking;
 pub mod status;
 pub mod tags;
 pub mod updates;

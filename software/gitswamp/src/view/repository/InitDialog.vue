@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, defineAsyncComponent, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { join, sep } from "@tauri-apps/api/path";
 import { defaultRepositoryDirectory } from "./repositoryDirectory";
@@ -15,6 +15,9 @@ import {
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
+import { workflowName, type WorkflowConfig } from "@/features/repository/workflow/branchWorkflow";
+
+const WorkflowSetup = defineAsyncComponent(() => import("@/features/repository/workflow/WorkflowSetup.vue"));
 
 const props = defineProps<{
   visible: boolean;
@@ -23,7 +26,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  init: [path: string, branchName: string];
+  init: [path: string, branchName: string, workflow?: WorkflowConfig];
   saveProviderToken: [provider: string, token: string];
 }>();
 
@@ -75,6 +78,14 @@ const initWithLfs = ref(false);
 const repoVisibility = ref<"public" | "private">("private");
 const initError = ref<string | null>(null);
 const initializing = ref(false);
+const workflowSetup = ref(false);
+const workflow = ref<WorkflowConfig>();
+
+function configureWorkflow(config: WorkflowConfig) {
+  workflow.value = config;
+  if (config.strategy !== "manual") branchName.value = config.primary;
+  workflowSetup.value = false;
+}
 
 const tokenInput = ref("");
 const showConnectForm = ref(false);
@@ -342,7 +353,10 @@ async function onInit() {
   initError.value = null;
   try {
     const path = await join(initPath.value.trim(), repoName.value.trim());
-    if (props.visible) emit("init", path, branchName.value.trim() || "main");
+    if (props.visible) {
+      const branch = branchName.value.trim() || "main";
+      emit("init", path, branch, workflow.value ? { ...workflow.value, primary: branch } : undefined);
+    }
   } catch {
     initError.value = "Could not build the repository path.";
     initializing.value = false;
@@ -362,6 +376,8 @@ watch(
       if (current && initPath.value === previousPath) initPath.value = directory;
     } else {
       activeSource.value = null;
+      workflowSetup.value = false;
+      workflow.value = undefined;
       resetConnectState();
       initError.value = null;
       initializing.value = false;
@@ -432,7 +448,11 @@ watch(
           </button>
         </div>
 
-        <div class="flex-1 p-5 flex flex-col overflow-y-auto">
+        <div v-if="workflowSetup" class="flex-1 p-5 overflow-y-auto">
+          <WorkflowSetup :initial="workflow" :primary="branchName.trim() || 'main'" label="Use strategy"
+            @save="configureWorkflow" @cancel="workflowSetup = false" />
+        </div>
+        <div v-else class="flex-1 p-5 flex flex-col overflow-y-auto">
           <template v-if="activeSource && activeSource !== 'local'">
             <div v-if="needsConnection && !showConnectForm" class="mb-4 p-3 rounded-lg border border-[#f59e0b]/30 bg-[#f59e0b]/10">
               <div class="text-xs text-[#f59e0b] font-medium mb-1">{{ providerNames[activeSource] }} is not connected</div>
@@ -598,7 +618,11 @@ watch(
             </div>
           </div>
 
-          <div class="flex justify-end mt-4 flex-shrink-0">
+          <div class="flex justify-end gap-2 flex-wrap mt-4 flex-shrink-0">
+            <button type="button" class="px-2 py-2 rounded text-xs border border-[var(--border)] hover:bg-[var(--secondary)] inline-flex gap-2 items-center"
+              :disabled="initializing" @click="workflowSetup = true">
+              <GitBranch class="w-3.5 h-3.5" />{{ workflow ? workflowName(workflow.strategy) : 'Branching strategy (optional)' }}
+            </button>
             <button
               @click="onInit"
               :disabled="!repoName.trim() || !initPath.trim() || initializing"

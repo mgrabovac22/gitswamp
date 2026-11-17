@@ -115,6 +115,7 @@ const stash = createStashActions(
   {
     refreshStatus: refresh.refreshStatus,
     refreshStashes: refresh.refreshStashes,
+    selectStash: refresh.selectStash,
   },
   toast,
 );

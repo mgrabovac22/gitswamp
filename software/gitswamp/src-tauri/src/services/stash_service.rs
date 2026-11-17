@@ -3,18 +3,27 @@ use std::collections::HashSet;
 use crate::models::{CommitFileInfo, StashInfo};
 use crate::repositories::git_repository::GitRepository;
 
+mod selection;
+
 pub struct StashService;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionResult {
+    message: String,
+    remainder: Option<String>,
+}
 
 pub const PULL_SAFETY_STASH_PREFIX: &str = "GitSwamp pull safety ";
 
 impl StashService {
     pub fn stash_list(path: &str) -> Result<Vec<StashInfo>, String> {
         let mut repo = GitRepository::open(path)?;
-        let mut raw: Vec<(usize, String, String)> = Vec::new();
+        let mut raw: Vec<(usize, String, git2::Oid)> = Vec::new();
 
         if repo
             .stash_foreach(|index, name, oid| {
-                raw.push((index, name.to_string(), oid.to_string()));
+                raw.push((index, name.to_string(), *oid));
                 true
             })
             .is_err()
@@ -23,10 +32,10 @@ impl StashService {
         }
 
         let mut stashes = Vec::with_capacity(raw.len());
-        for (index, stash_name, oid_str) in raw {
-            let parent_sha = git2::Oid::from_str(&oid_str)
+        for (index, stash_name, oid) in raw {
+            let parent_sha = repo
+                .find_commit(oid)
                 .ok()
-                .and_then(|oid| repo.find_commit(oid).ok())
                 .and_then(|c| c.parent_id(0).ok())
                 .map(|oid| oid.to_string())
                 .unwrap_or_default();
@@ -53,7 +62,7 @@ impl StashService {
                 branch,
                 timestamp: String::new(),
                 parent_sha,
-                stash_sha: oid_str,
+                stash_sha: oid.to_string(),
             });
         }
 
@@ -195,32 +204,15 @@ impl StashService {
         Ok(format!("Dropped stash@{{{}}}", index))
     }
 
-    fn stash_oid_for_index(repo: &mut git2::Repository, index: usize) -> Result<git2::Oid, String> {
-        let mut stash_oid: Option<git2::Oid> = None;
-        repo.stash_foreach(|idx, _name, oid| {
-            if idx == index {
-                stash_oid = Some(*oid);
-                false
-            } else {
-                true
-            }
-        })
-        .map_err(|e| e.message().to_string())?;
-
-        stash_oid.ok_or_else(|| format!("Stash at index {} not found", index))
-    }
-
     fn collect_diff_files(
         diff: &git2::Diff,
+        odb: &git2::Odb,
+        budget: &mut usize,
         files: &mut Vec<CommitFileInfo>,
         seen: &mut HashSet<String>,
         force_added: bool,
     ) {
-        let n = diff.deltas().len();
-        for idx in 0..n {
-            let Some(delta) = diff.get_delta(idx) else {
-                continue;
-            };
+        for (idx, delta) in diff.deltas().enumerate() {
             let file_path = delta
                 .new_file()
                 .path()
@@ -245,25 +237,63 @@ impl StashService {
                 }
             };
 
-            let (additions, deletions) = match git2::Patch::from_diff(diff, idx) {
-                Ok(Some(patch)) => patch.line_stats().map(|(_, a, d)| (a, d)).unwrap_or((0, 0)),
-                _ => (0, 0),
+            let size = |file: git2::DiffFile| {
+                if file.id().is_zero() {
+                    Some(0)
+                } else {
+                    odb.read_header(file.id()).ok().map(|(size, _)| size)
+                }
             };
+            let mut stats = (0, 0);
+            if *budget >= 1024 {
+                if let Some(total) = size(delta.old_file())
+                    .zip(size(delta.new_file()))
+                    .map(|(a, b)| a.saturating_add(b).max(1024))
+                {
+                    if total <= 128 * 1024 && total <= *budget {
+                        *budget -= total;
+                        if let Ok(Some(patch)) = git2::Patch::from_diff(diff, idx) {
+                            stats = patch
+                                .line_stats()
+                                .map(|(_, a, d)| (a, d))
+                                .unwrap_or_default();
+                        }
+                    }
+                }
+            }
 
             files.push(CommitFileInfo {
                 path: file_path,
                 status: status.to_string(),
-                additions,
-                deletions,
+                additions: stats.0,
+                deletions: stats.1,
             });
         }
     }
 
-    pub fn stash_files(path: &str, index: usize) -> Result<Vec<CommitFileInfo>, String> {
-        let mut repo = GitRepository::open(path)?;
-        let oid = Self::stash_oid_for_index(&mut repo, index)?;
+    pub fn restore_selected(
+        path: &str,
+        index: usize,
+        sha: &str,
+        paths: Vec<String>,
+        pop: bool,
+    ) -> Result<SelectionResult, String> {
+        selection::restore(path, index, sha, paths, pop)
+    }
+
+    pub fn stash_files(
+        path: &str,
+        index: usize,
+        sha: Option<&str>,
+    ) -> Result<Vec<CommitFileInfo>, String> {
+        let repo = GitRepository::open(path)?;
+        let oid = selection::open_stash(&repo, index, sha)?;
         let stash_commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
         let stash_tree = stash_commit.tree().map_err(|e| e.message().to_string())?;
+        let odb = repo.odb().map_err(|e| e.message().to_string())?;
+        let mut budget = 1024 * 1024;
+        let mut options = git2::DiffOptions::new();
+        options.skip_binary_check(true).include_typechange(true);
 
         let mut files: Vec<CommitFileInfo> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -275,18 +305,37 @@ impl StashService {
                 .tree()
                 .map_err(|e| e.message().to_string())?;
             let diff = repo
-                .diff_tree_to_tree(Some(&parent_tree), Some(&stash_tree), None)
+                .diff_tree_to_tree(Some(&parent_tree), Some(&stash_tree), Some(&mut options))
                 .map_err(|e| e.message().to_string())?;
-            Self::collect_diff_files(&diff, &mut files, &mut seen, false);
+            Self::collect_diff_files(&diff, &odb, &mut budget, &mut files, &mut seen, false);
+            if let Ok(index_tree) = stash_commit.parent(1).and_then(|commit| commit.tree()) {
+                if index_tree.id() != stash_tree.id() {
+                    let diff = repo
+                        .diff_tree_to_tree(
+                            Some(&parent_tree),
+                            Some(&index_tree),
+                            Some(&mut options),
+                        )
+                        .map_err(|e| e.message().to_string())?;
+                    Self::collect_diff_files(
+                        &diff,
+                        &odb,
+                        &mut budget,
+                        &mut files,
+                        &mut seen,
+                        false,
+                    );
+                }
+            }
         }
 
         if stash_commit.parent_count() >= 3 {
             if let Ok(untracked_commit) = stash_commit.parent(2) {
                 if let Ok(untracked_tree) = untracked_commit.tree() {
                     let diff = repo
-                        .diff_tree_to_tree(None, Some(&untracked_tree), None)
+                        .diff_tree_to_tree(None, Some(&untracked_tree), Some(&mut options))
                         .map_err(|e| e.message().to_string())?;
-                    Self::collect_diff_files(&diff, &mut files, &mut seen, true);
+                    Self::collect_diff_files(&diff, &odb, &mut budget, &mut files, &mut seen, true);
                 }
             }
         }

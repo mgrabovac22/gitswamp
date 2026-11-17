@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { TrackingKind, TrackingProvider } from "@/features/repository/remote/useProviderTracking";
 import { reactive, ref, computed, nextTick, watch } from "vue";
 import {
   Search,
@@ -47,6 +48,10 @@ const props = defineProps<{
   selectedPullRequestNumber?: number | null;
   openPullRequestBranches?: string[];
   remoteProvider?: 'github' | 'gitlab' | 'bitbucket' | 'azure' | 'unknown';
+  trackingProvider?: TrackingProvider;
+  trackingIssuesError?: string;
+  trackingPullsError?: string;
+  trackingVersion?: number;
 }>();
 
 const emit = defineEmits<{
@@ -71,6 +76,7 @@ const emit = defineEmits<{
   selectPullRequest: [pullRequestNumber: number];
   loadAllIssues: [];
   loadAllPullRequests: [];
+  loadTracking: [kind: TrackingKind];
   openGist: [url: string];
   openCreateIssue: [];
   openCreatePullRequest: [];
@@ -195,7 +201,17 @@ function branchMenuAction(action: "checkout" | "create" | "workspace" | "rename"
 
 function toggleSection(section: keyof RepositorySidebarSections) {
   expandedSections[section] = !expandedSections[section];
+  if (props.trackingProvider && expandedSections[section]) {
+    if (section === "issues") emit("loadTracking", "issue");
+    if (section === "pullRequests") emit("loadTracking", "pull-request");
+  }
 }
+
+watch(() => props.trackingVersion, () => {
+  if (!props.trackingProvider) return;
+  if (expandedSections.issues && props.trackingProvider !== "bitbucket") emit("loadTracking", "issue");
+  if (expandedSections.pullRequests) emit("loadTracking", "pull-request");
+});
 
 function submitNewBranch() {
   if (!newBranchName.value.trim()) return;
@@ -224,7 +240,7 @@ const remoteIcon = computed(() => {
   return props.remoteProvider === 'github' ? Github : Globe;
 });
 
-const showGithubInsights = computed(() => props.remoteProvider === "github");
+const showGithubInsights = computed(() => !props.trackingProvider && props.remoteProvider === "github");
 
 const sortedIssues = computed(() => {
   const values = [...(props.issues || [])];
@@ -250,7 +266,7 @@ const visibleIssues = computed(() => {
     return filteredIssues.value;
   }
 
-  return props.issuesHasMore ? filteredIssues.value.slice(0, 50) : filteredIssues.value;
+  return props.issuesHasMore && !props.trackingProvider ? filteredIssues.value.slice(0, 50) : filteredIssues.value;
 });
 
 const showIssueSearch = computed(() => {
@@ -291,7 +307,7 @@ const visiblePullRequests = computed(() => {
     return filteredPullRequests.value;
   }
 
-  return props.pullRequestsHasMore ? filteredPullRequests.value.slice(0, 50) : filteredPullRequests.value;
+  return props.pullRequestsHasMore && !props.trackingProvider ? filteredPullRequests.value.slice(0, 50) : filteredPullRequests.value;
 });
 
 const showPullRequestSearch = computed(() => {
@@ -595,14 +611,14 @@ function issueStateClass(issue: IssueInfo): string {
       </RepositorySidebarSection>
 
       <RepositorySidebarSection
-        v-if="showGithubInsights"
-        label="ISSUES"
+        v-if="showGithubInsights || (trackingProvider && trackingProvider !== 'bitbucket')"
+        :label="trackingProvider === 'azure' ? 'WORK ITEMS' : 'ISSUES'"
         :count="issuesCountLabel"
         :icon="CircleDot"
         :expanded="expandedSections.issues"
         @toggle="toggleSection('issues')"
       >
-        <div class="px-4 pb-1">
+        <div v-if="showGithubInsights" class="px-4 pb-1">
           <button
             @click="emit('openCreateIssue')"
             class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
@@ -619,8 +635,11 @@ function issueStateClass(issue: IssueInfo): string {
             class="w-full h-6 px-2 bg-[var(--sidebar-accent)] border border-[var(--sidebar-border)] rounded text-[10px] text-[var(--sidebar-foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--sidebar-ring)]/40"
           />
         </div>
-        <div v-if="visibleIssues.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
-          {{ issueSearch.trim() ? "No matching issues" : "No open issues" }}
+        <div v-if="trackingIssuesError && trackingProvider" class="px-4 py-2 text-[10px] break-words" role="alert">
+          <p>{{ trackingIssuesError }}</p><button type="button" class="pt-1 underline" @click="emit('loadTracking', 'issue')">Retry</button>
+        </div>
+        <div v-else-if="visibleIssues.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
+          {{ issuesLoadingAll ? 'Loading…' : issueSearch.trim() ? 'No matching items' : trackingProvider === 'azure' ? 'No work items' : 'No open issues' }}
         </div>
         <button
           v-for="issue in visibleIssues"
@@ -653,21 +672,21 @@ function issueStateClass(issue: IssueInfo): string {
             @click="emit('loadAllIssues')"
           >
             <span v-if="props.issuesLoadingAll">Loading...</span>
-            <span v-else>Load all</span>
+            <span v-else>{{ trackingProvider ? 'Load more' : 'Load all' }}</span>
           </button>
         </div>
       </RepositorySidebarSection>
 
       <RepositorySidebarSection
-        v-if="showGithubInsights"
-        label="PULL REQUESTS"
+        v-if="showGithubInsights || trackingProvider"
+        :label="trackingProvider === 'gitlab' ? 'MERGE REQUESTS' : 'PULL REQUESTS'"
         short-label="PRS"
         :count="pullRequestsCountLabel"
         :icon="GitPullRequest"
         :expanded="expandedSections.pullRequests"
         @toggle="toggleSection('pullRequests')"
       >
-        <div class="px-4 pb-1">
+        <div v-if="showGithubInsights" class="px-4 pb-1">
           <button
             @click="emit('openCreatePullRequest')"
             class="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] text-[var(--muted-foreground)] hover:text-[var(--sidebar-primary)] hover:bg-[var(--sidebar-accent)] rounded transition-all"
@@ -684,8 +703,11 @@ function issueStateClass(issue: IssueInfo): string {
             class="w-full h-6 px-2 bg-[var(--sidebar-accent)] border border-[var(--sidebar-border)] rounded text-[10px] text-[var(--sidebar-foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--sidebar-ring)]/40"
           />
         </div>
-        <div v-if="visiblePullRequests.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
-          {{ pullRequestSearch.trim() ? "No matching pull requests" : "No open pull requests" }}
+        <div v-if="trackingPullsError && trackingProvider" class="px-4 py-2 text-[10px] break-words" role="alert">
+          <p>{{ trackingPullsError }}</p><button type="button" class="pt-1 underline" @click="emit('loadTracking', 'pull-request')">Retry</button>
+        </div>
+        <div v-else-if="visiblePullRequests.length === 0" class="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">
+          {{ pullRequestsLoadingAll ? 'Loading…' : pullRequestSearch.trim() ? 'No matching requests' : 'No open requests' }}
         </div>
         <button
           v-for="pullRequest in visiblePullRequests"
@@ -725,7 +747,7 @@ function issueStateClass(issue: IssueInfo): string {
             @click="emit('loadAllPullRequests')"
           >
             <span v-if="props.pullRequestsLoadingAll">Loading...</span>
-            <span v-else>Load all</span>
+            <span v-else>{{ trackingProvider ? 'Load more' : 'Load all' }}</span>
           </button>
         </div>
       </RepositorySidebarSection>

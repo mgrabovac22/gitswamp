@@ -1,3 +1,4 @@
+pub mod branch_workflow;
 pub mod commit_coauthors;
 pub mod commit_composer;
 pub mod conflict_preview;
@@ -9,7 +10,10 @@ pub mod interactive_rebase;
 pub mod lfs;
 pub mod line_staging;
 pub mod operation_preview;
+pub mod patches;
 pub mod remote_service;
 pub mod secret_service;
 pub mod stash_service;
+pub mod remote_tracking;
 pub mod worktree_service;
+pub mod amend_selection;

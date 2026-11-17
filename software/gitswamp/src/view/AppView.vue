@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut } from "@/features/shell/keyboardShortcuts";
+import type { AmendAction, AmendConfirmation, PatchRequest, PatchScope } from "@/features/repository/historyEdits";
+import { useProviderTracking, type TrackingContext } from "@/features/repository/remote/useProviderTracking";
+import { githubBranchComparison, githubBranches, githubDiscussion, type RemoteBranchCatalog } from "@/features/repository/remote/githubRemote";
+import { EXTRA_VIEW_SHORTCUTS, extraViewShortcut, isBranchWorkflowShortcut } from "@/features/shell/keyboardShortcuts";
+import {
+  saveWorkflow, workflowForPath, workflowName, workflowPreference,
+  type HandoffDraft, type WorkflowConfig, type WorkflowInspection, type WorkflowOutcome,
+} from "@/features/repository/workflow/branchWorkflow";
 import TitleBar from "@/view/shell/TitleBar.vue";
 import SecretCommitDialog from "@/shared/ui/SecretCommitDialog.vue";
 import ConflictAppearanceDialog from "@/features/repository/ConflictAppearanceDialog.vue";
@@ -8,6 +15,7 @@ import { useOperationVisualisation } from "@/features/repository/useOperationVis
 import AppHeader from "@/view/shell/AppHeader.vue";
 import CommandPalette from "@/view/shell/CommandPalette.vue";
 import ThemeAmbience from "@/view/shell/ThemeAmbience.vue";
+import { petEnabled } from "@/features/shell/petPreferences";
 import RepositoryTabs from "@/view/repository/RepositoryTabs.vue";
 import RepositoryWorkspace from "@/view/repository/RepositoryWorkspace.vue";
 import LandingPage from "@/view/repository/LandingPage.vue";
@@ -105,6 +113,7 @@ const { preview: operationPreview, close: closeOperationPreview } = useOperation
   () => git.repoPath.value, () => Boolean(conflictPreview.value) || git.hasConflicts.value,
 );
 const OperationVisualisationDialog = defineAsyncComponent(() => import("@/features/repository/OperationVisualisationDialog.vue"));
+const DesktopPet = defineAsyncComponent(() => import("@/features/shell/DesktopPet.vue"));
 const toast = useToast();
 const PickaxeSearchPanel = defineAsyncComponent(() => import("@/features/repository/pickaxe/PickaxeSearchPanel.vue"));
 const { scheduleDestructiveAction } = useUndoableDestructiveAction(() => git.destructiveContext.value, () => !git.loading.value);
@@ -251,9 +260,26 @@ const rebaseConflictSource = ref("");
 const rebaseConflictTarget = ref("");
 const rebaseConflictBusy = ref(false);
 const InteractiveRebaseDialog = defineAsyncComponent(() => import("@/features/repository/InteractiveRebaseDialog.vue"));
+const InteractiveAmendDialog = defineAsyncComponent(() => import("@/features/repository/InteractiveAmendDialog.vue"));
+const HistoryPatchDialog = defineAsyncComponent(() => import("@/features/repository/HistoryPatchDialog.vue"));
+const BranchWorkflowDialog = defineAsyncComponent(() => import("@/features/repository/workflow/BranchWorkflowDialog.vue"));
+const branchWorkflow = ref<{ path: string; initial?: WorkflowInspection } | null>(null);
+const workflowPullRequest = ref<HandoffDraft | null>(null);
+const workflowPreferenceVersion = ref(0);
+const branchWorkflowLabel = computed(() => {
+  void workflowPreferenceVersion.value;
+  const current = workflowForPath(git.repoPath.value);
+  return current && current.strategy !== "manual" ? workflowName(current.strategy) : undefined;
+});
 const interactiveRebase = ref<{ path: string; base: string } | null>(null);
 const interactiveRebaseBusy = ref(false);
 const interactiveRebaseError = ref("");
+const interactiveAmend = ref<{ path: string; sha: string; action: AmendAction } | null>(null);
+const interactiveAmendError = ref("");
+type HistoryPatch = PatchRequest & { path: string; expectedHead: string | null; branch: string; file?: string };
+const historyPatch = ref<HistoryPatch | null>(null);
+const historyPatchBusy = ref(false);
+const historyPatchError = ref("");
 const visualRebaseActive = computed(() => !!git.repositoryOperation.value?.visual_rebase);
 const normalRebaseActive = computed(() => git.repositoryOperation.value?.kind === "rebase" && !visualRebaseActive.value);
 let normalRebaseHadConflicts = false;
@@ -299,6 +325,54 @@ const githubPullRequestDetail = ref<PullRequestInfo | null>(null);
 const remoteInsightDetailLoading = ref(false);
 const remoteCreateOptions = ref<RemoteCreateOptions>(createEmptyRemoteCreateOptions());
 const remoteCreateOptionsLoading = ref(false);
+const remoteCreating = ref(false);
+const remoteBranchCatalog = ref<RemoteBranchCatalog | null>(null);
+const remoteBranchesLoading = ref(false);
+const remoteBranchesError = ref(false);
+const githubContext = computed(() => getPrimaryGithubContext());
+const remoteNameForInsights = computed(() => getPrimaryRemote(git.repoInfo.value?.remotes || [])?.name ?? "origin");
+const remoteWorkflow = computed(() => {
+  void workflowPreferenceVersion.value;
+  return workflowForPath(git.repoPath.value);
+});
+const remoteDiscussion = computed(() => {
+  const context = githubContext.value;
+  if (!context) return undefined;
+  const key = JSON.stringify([git.repoPath.value, context.apiBase, context.owner, context.repo]);
+  return githubDiscussion(context, key, promptGithubInsightsAuth);
+});
+const compareRemoteBranches = computed(() => {
+  const context = githubContext.value;
+  return context ? (base: string, head: string, signal: AbortSignal) => githubBranchComparison(context, base, head, signal) : undefined;
+});
+const currentRemoteUpstream = computed(() => git.localBranches.value.find(branch => branch.is_head || branch.name === git.currentBranch.value)?.upstream ?? undefined);
+const trackingContext = computed<TrackingContext | null>(previous => {
+  const remote = getPrimaryRemote(git.repoInfo.value?.remotes || []);
+  const path = git.repoPath.value;
+  if (!remote || !path) return null;
+  const parsed = parseRemoteHostAndPath(remote.url);
+  if (!parsed) return null;
+  const saved = git.providerTokens.value;
+  const selfManaged = parseStoredGitlabSelfToken();
+  const authority = selfManaged?.domain;
+  const provider = parsed.host === "bitbucket.org" ? "bitbucket"
+    : parsed.host === "dev.azure.com" || parsed.host === "ssh.dev.azure.com" || parsed.host.endsWith(".visualstudio.com") ? "azure"
+    : remote.provider === "gitlab" || parsed.host === "gitlab.com" || (remote.provider !== "github" && !!authority && remoteMatchesDomain(parsed.host, parsed.hostWithPort, authority)) ? "gitlab" : null;
+  if (!provider) return null;
+  const credentials = provider === "bitbucket" ? { bitbucket: saved.bitbucket }
+    : provider === "azure" ? { azure: saved.azure, azureDomain: saved["azure-domain"] }
+    : parsed.host === "gitlab.com" ? { gitlab: saved.gitlab }
+    : { gitlabAuthority: authority, gitlabSelf: selfManaged?.token };
+  if (previous?.path === path && previous.remote === remote.name && previous.url === remote.url && previous.provider === provider
+    && Object.entries(credentials).every(([key, value]) => previous.credentials[key] === value)) return previous;
+  return { provider, path, remote: remote.name, url: remote.url, credentials };
+});
+const { issues: trackingIssues, pulls: trackingPulls, load: loadTracking, detail: trackingDetail } = useProviderTracking(trackingContext);
+const trackingProvider = computed(() => trackingContext.value?.provider);
+const trackingVersion = ref(0);
+const visibleRemoteIssues = computed(() => trackingProvider.value ? trackingIssues.value.items : githubIssues.value);
+const visibleRemotePulls = computed(() => trackingProvider.value ? trackingPulls.value.items : githubPullRequests.value);
+const remoteDetailError = ref("");
 const gitRpgProfile = ref<GitRpgProfile | null>(null);
 const gitRpgLoading = ref(false);
 const lostCommits = ref<LostCommitInfo[]>([]);
@@ -408,6 +482,7 @@ function closeDiffViewer() {
 }
 
 async function openConflictResolver(filePath: string) {
+  const context = git.destructiveContext.value;
   try {
     toast.action(
       "warning",
@@ -417,6 +492,7 @@ async function openConflictResolver(filePath: string) {
           label: "Resolve Manually",
           style: "primary",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             conflictResolverPath.value = filePath;
             setHistoryViewMode("conflict-resolve");
           },
@@ -425,6 +501,7 @@ async function openConflictResolver(filePath: string) {
           label: "Keep Modified",
           style: "neutral",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             await resolveConflict(filePath, "keep-modified");
           },
         },
@@ -432,6 +509,7 @@ async function openConflictResolver(filePath: string) {
           label: "Keep Base",
           style: "neutral",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             await resolveConflict(filePath, "keep-base");
           },
         },
@@ -439,6 +517,7 @@ async function openConflictResolver(filePath: string) {
           label: "Delete File",
           style: "danger",
           onClick: async () => {
+            if (context !== git.destructiveContext.value) return;
             await resolveConflict(filePath, "delete");
           },
         },
@@ -449,6 +528,7 @@ async function openConflictResolver(filePath: string) {
         },
       ],
       30000,
+      visualRebaseActive.value ? "Keep Base takes the rebased version; Keep Modified takes the version from the commit being replayed. Each replaces the whole file." : undefined,
     );
   } catch (e) {
     toast.error(`Error opening conflict resolver: ${String(e)}`);
@@ -472,26 +552,23 @@ function onConflictResolved() {
 }
 
 async function resolveConflict(filePath: string, resolution: 'keep-modified' | 'keep-base' | 'delete') {
+  const path = git.repoPath.value;
+  if (!path || git.loading.value) return;
+  git.loading.value = true;
   try {
-    let strategy: "ours" | "theirs" | "delete";
-    if (resolution === "keep-modified") {
-      strategy = "ours";
-    } else if (resolution === "keep-base") {
-      strategy = "theirs";
-    } else {
-      strategy = "delete";
-    }
-
     await invoke('resolve_conflict_file', {
-      path: git.repoPath.value,
+      path,
       filePath: filePath,
-      strategy: strategy,
+      strategy: resolution,
     });
 
+    if (path !== git.repoPath.value) return;
     await git.refreshAll();
     toast.success(`Conflict resolved: ${filePath}`);
   } catch (e) {
-    toast.error(`Failed to resolve conflict: ${String(e)}`);
+    if (path === git.repoPath.value) toast.error(`Failed to resolve conflict: ${String(e)}`);
+  } finally {
+    if (path === git.repoPath.value) git.loading.value = false;
   }
 }
 
@@ -725,16 +802,11 @@ function getGitlabTokenForHost(host: string, hostWithPort: string = host): strin
   }
 
   const selfHostedToken = parseStoredGitlabSelfToken();
-  if (selfHostedToken && remoteMatchesDomain(host, hostWithPort, selfHostedToken.domain)) {
+  if (selfHostedToken && selfHostedToken.domain === hostWithPort) {
     return selfHostedToken.token;
   }
 
-  const selfHostedLegacy = git.providerTokens.value["gitlab-self"];
-  if (selfHostedLegacy && !selfHostedToken) {
-    return selfHostedLegacy;
-  }
-
-  return git.providerTokens.value.gitlab || null;
+  return null;
 }
 
 function collectChangedWorkingPaths(): string[] {
@@ -1541,8 +1613,7 @@ async function fetchGithubIssueDetail(number: number): Promise<IssueInfo | null>
   };
 }
 
-async function fetchGithubPullRequestDetail(number: number): Promise<PullRequestInfo | null> {
-  const context = getPrimaryGithubContext();
+async function fetchGithubPullRequestDetail(number: number, context = getPrimaryGithubContext()): Promise<PullRequestInfo | null> {
   if (!context) return null;
 
   const headers = githubHeaders(context.token);
@@ -1612,6 +1683,7 @@ function ensureRemoteInsightSelection() {
 async function refreshOpenPullRequestBranches() {
   const remotes = git.repoInfo.value?.remotes || [];
   const primaryRemote = getPrimaryRemote(remotes);
+  const sequence = ++pullRequestFetchSequence;
 
   if (!primaryRemote || (primaryRemote.provider !== "github" && primaryRemote.provider !== "gitlab")) {
     openPullRequestBranches.value = [];
@@ -1620,13 +1692,13 @@ async function refreshOpenPullRequestBranches() {
     githubGists.value = [];
     githubPullRequestsHasMore.value = false;
     githubIssuesHasMore.value = false;
-    clearRemoteInsightDetails();
-    selectedPullRequestNumber.value = null;
-    selectedIssueNumber.value = null;
+    if (!trackingProvider.value) {
+      clearRemoteInsightDetails();
+      selectedPullRequestNumber.value = null;
+      selectedIssueNumber.value = null;
+    }
     return;
   }
-
-  const sequence = ++pullRequestFetchSequence;
 
   try {
     if (primaryRemote.provider === "github") {
@@ -1660,9 +1732,6 @@ async function refreshOpenPullRequestBranches() {
     githubGists.value = [];
     githubPullRequestsHasMore.value = false;
     githubIssuesHasMore.value = false;
-    clearRemoteInsightDetails();
-    selectedPullRequestNumber.value = null;
-    selectedIssueNumber.value = null;
     openPullRequestBranches.value = uniqueNormalizedBranches(branches);
   } catch {
     if (sequence !== pullRequestFetchSequence) return;
@@ -1672,9 +1741,11 @@ async function refreshOpenPullRequestBranches() {
     githubGists.value = [];
     githubPullRequestsHasMore.value = false;
     githubIssuesHasMore.value = false;
-    clearRemoteInsightDetails();
-    selectedPullRequestNumber.value = null;
-    selectedIssueNumber.value = null;
+    if (!trackingProvider.value) {
+      clearRemoteInsightDetails();
+      selectedPullRequestNumber.value = null;
+      selectedIssueNumber.value = null;
+    }
   }
 }
 
@@ -1708,6 +1779,7 @@ function getPrimaryGithubContext(): { apiBase: string; owner: string; repo: stri
 function clearRemoteInsightDetails(): void {
   remoteInsightDetailSequence += 1;
   remoteInsightDetailLoading.value = false;
+  remoteDetailError.value = "";
   githubIssueDetail.value = null;
   githubPullRequestDetail.value = null;
 }
@@ -1741,14 +1813,23 @@ async function loadSelectedIssueDetail(number: number): Promise<void> {
   const sequence = ++remoteInsightDetailSequence;
   remoteInsightDetailLoading.value = true;
   githubIssueDetail.value = null;
+  remoteDetailError.value = "";
 
   try {
-    const detail = await fetchGithubIssueDetail(number);
+    const detail = trackingProvider.value ? await trackingDetail<IssueInfo>("issue", number) : await fetchGithubIssueDetail(number);
     if (sequence !== remoteInsightDetailSequence || selectedIssueNumber.value !== number) return;
+    if (detail && trackingProvider.value === "azure") {
+      const template = document.createElement("template");
+      template.innerHTML = detail.description;
+      for (const node of template.content.querySelectorAll("script, style")) node.remove();
+      for (const node of template.content.querySelectorAll("p, div, li, br")) node.append("\n");
+      detail.description = template.content.textContent?.trim() ?? "";
+    }
     githubIssueDetail.value = detail;
-  } catch {
+  } catch (error) {
     if (sequence === remoteInsightDetailSequence) {
       githubIssueDetail.value = null;
+      remoteDetailError.value = String(error);
     }
   } finally {
     if (sequence === remoteInsightDetailSequence) {
@@ -1761,14 +1842,16 @@ async function loadSelectedPullRequestDetail(number: number): Promise<void> {
   const sequence = ++remoteInsightDetailSequence;
   remoteInsightDetailLoading.value = true;
   githubPullRequestDetail.value = null;
+  remoteDetailError.value = "";
 
   try {
-    const detail = await fetchGithubPullRequestDetail(number);
+    const detail = trackingProvider.value ? await trackingDetail<PullRequestInfo>("pull-request", number) : await fetchGithubPullRequestDetail(number);
     if (sequence !== remoteInsightDetailSequence || selectedPullRequestNumber.value !== number) return;
     githubPullRequestDetail.value = detail;
-  } catch {
+  } catch (error) {
     if (sequence === remoteInsightDetailSequence) {
       githubPullRequestDetail.value = null;
+      remoteDetailError.value = String(error);
     }
   } finally {
     if (sequence === remoteInsightDetailSequence) {
@@ -1814,8 +1897,9 @@ function openCreateIssuePanel() {
   void loadRemoteCreateOptions();
 }
 
-function openCreatePullRequestPanel() {
+function openCreatePullRequestPanel(draft: HandoffDraft | null = null) {
   clearRemoteInsightDetails();
+  workflowPullRequest.value = draft;
   remoteInsightsMode.value = "pull-request-create";
   setHistoryViewMode("remote-insights");
   void loadRemoteCreateOptions();
@@ -1929,6 +2013,7 @@ async function requestGithubPullRequestReviewers(context: GithubApiContext, numb
 }
 
 async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
+  if (remoteCreating.value) return;
   const context = getPrimaryGithubContext();
   if (!context) {
     toast.warning("GitHub remote is required for issue creation.");
@@ -1941,6 +2026,8 @@ async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
     return;
   }
 
+  const repo = git.repoPath.value;
+  remoteCreating.value = true;
   try {
     const response = await fetch(
       `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/issues`,
@@ -1969,6 +2056,10 @@ async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
     if (!created) {
       throw new Error("Created issue payload could not be parsed.");
     }
+    if (repo !== git.repoPath.value || historyViewMode.value !== "remote-insights" || remoteInsightsMode.value !== "issue-create") {
+      toast.success(`Issue #${created.number} created.`);
+      return;
+    }
 
     const nextIssues = [created, ...githubIssues.value.filter((item) => item.number !== created.number)];
     githubIssues.value = githubIssuesHasMore.value ? nextIssues.slice(0, GITHUB_INITIAL_INSIGHT_LIMIT) : nextIssues;
@@ -1981,10 +2072,13 @@ async function createRemoteIssue(payload: RemoteIssueCreatePayload) {
     scheduleOpenPullRequestRefresh();
   } catch (e) {
     toast.error("Create issue failed: " + String(e));
+  } finally {
+    remoteCreating.value = false;
   }
 }
 
 async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) {
+  if (remoteCreating.value) return;
   const context = getPrimaryGithubContext();
   if (!context) {
     toast.warning("GitHub remote is required for pull request creation.");
@@ -1997,6 +2091,8 @@ async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) 
     return;
   }
 
+  const repo = git.repoPath.value;
+  remoteCreating.value = true;
   try {
     const response = await fetch(
       `${context.apiBase}/repos/${encodeURIComponent(context.owner)}/${encodeURIComponent(context.repo)}/pulls`,
@@ -2040,7 +2136,12 @@ async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) 
       metadataWarnings.push(`reviewers: ${String(error)}`);
     }
 
-    const detailed = await fetchGithubPullRequestDetail(created.number).catch(() => null);
+    const detailed = await fetchGithubPullRequestDetail(created.number, context).catch(() => null);
+    if (repo !== git.repoPath.value || historyViewMode.value !== "remote-insights" || remoteInsightsMode.value !== "pull-request-create") {
+      if (metadataWarnings.length) toast.warning(`Pull request #${created.number} created, but some metadata was not applied.`);
+      else toast.success(`Pull request #${created.number} created.`);
+      return;
+    }
     const nextCreated = detailed || created;
     const nextPullRequests = [
       nextCreated,
@@ -2065,6 +2166,8 @@ async function createRemotePullRequest(payload: RemotePullRequestCreatePayload) 
     scheduleOpenPullRequestRefresh();
   } catch (e) {
     toast.error("Create pull request failed: " + String(e));
+  } finally {
+    remoteCreating.value = false;
   }
 }
 
@@ -3950,6 +4053,10 @@ function beginRepositoryWorkflowShortcut(event: KeyboardEvent): boolean {
 }
 
 function handleRepositoryWorkflowShortcut(event: KeyboardEvent, key: string): boolean {
+  if (isBranchWorkflowShortcut(event)) {
+    if (beginRepositoryWorkflowShortcut(event)) openBranchWorkflow();
+    return true;
+  }
   const primaryKey = event.ctrlKey || event.metaKey;
   if (!primaryKey) return false;
 
@@ -4022,7 +4129,7 @@ function handleRepositoryShortcut(event: KeyboardEvent, key: string): boolean {
 
 function handleGlobalShortcuts(event: KeyboardEvent) {
   if (event.defaultPrevented || (event.target instanceof Element && event.target.closest("dialog[data-commit-composer]"))) return;
-  if (pendingWorktreeRemoval.value || interactiveRebase.value || lfsBusy.value) return;
+  if (pendingWorktreeRemoval.value || interactiveRebase.value || interactiveAmend.value || historyPatch.value || branchWorkflow.value || lfsBusy.value) return;
   handleBackgroundUserActivity();
   const key = event.key.toLowerCase();
 
@@ -4153,6 +4260,10 @@ watch([tabs, activeTabId], () => {
 
 watch(activeTabId, () => {
   interactiveRebase.value = null;
+  interactiveAmend.value = null;
+  historyPatch.value = null;
+  branchWorkflow.value = null;
+  workflowPullRequest.value = null;
   if (historyViewMode.value === "lfs") setHistoryViewMode("graph");
   if (historyViewMode.value === "branch-workspace") historyViewMode.value = "graph";
   detailsPanelCollapsed.value = true;
@@ -4283,14 +4394,23 @@ watch(() => git.selectedCommit.value, (commit) => {
 const selectedIssue = computed(() =>
   githubIssueDetail.value?.number === selectedIssueNumber.value
     ? githubIssueDetail.value
-    : githubIssues.value.find((item) => item.number === selectedIssueNumber.value) || null,
+    : visibleRemoteIssues.value.find((item) => item.number === selectedIssueNumber.value) || null,
 );
 
 const selectedPullRequest = computed(() =>
   githubPullRequestDetail.value?.number === selectedPullRequestNumber.value
     ? githubPullRequestDetail.value
-    : githubPullRequests.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
+    : visibleRemotePulls.value.find((item) => item.number === selectedPullRequestNumber.value) || null,
 );
+
+watch(trackingContext, (next, previous) => {
+  if (!next && !previous) return;
+  trackingVersion.value++;
+  clearRemoteInsightDetails();
+  selectedPullRequestNumber.value = null;
+  selectedIssueNumber.value = null;
+  if (historyViewMode.value === "remote-insights") setHistoryViewMode("graph");
+});
 
 const identityGuardHeaderStatus = computed(() => {
   if (!identityGuardEnabled.value || !git.repoPath.value) {
@@ -4335,6 +4455,22 @@ watch(
     loadRemoteInsightDetailForCurrentSelection();
   },
 );
+
+watch([historyViewMode, remoteInsightsMode, githubContext], ([view, mode, context], _, cleanup) => {
+  remoteBranchCatalog.value = null;
+  remoteBranchesLoading.value = remoteBranchesError.value = false;
+  if (view !== "remote-insights" || mode !== "pull-request-create" || !context) return;
+  const controller = new AbortController();
+  cleanup(() => controller.abort());
+  remoteBranchesLoading.value = true;
+  void githubBranches(context, controller.signal).then(catalog => {
+    if (!controller.signal.aborted) remoteBranchCatalog.value = catalog;
+  }).catch(() => {
+    if (!controller.signal.aborted) remoteBranchesError.value = true;
+  }).finally(() => {
+    if (!controller.signal.aborted) remoteBranchesLoading.value = false;
+  });
+});
 
 async function openRepo(path: string) {
   try {
@@ -4401,6 +4537,59 @@ function formatCloneProgressDetail(payload: CloneProgressEventPayload): string {
   return payload.message || "Preparing clone...";
 }
 
+function openBranchWorkflow(initial?: WorkflowInspection) {
+  if (git.loading.value || !git.repoPath.value || branchWorkflow.value) return;
+  branchWorkflow.value = { path: git.repoPath.value, initial };
+}
+
+async function suggestClonedWorkflow(path: string) {
+  try {
+    const info = await invoke<WorkflowInspection>("inspect_branch_workflow", { path });
+    if (path !== git.repoPath.value || workflowPreference(info.key) || (!info.minimal && !info.suggestion)) return;
+    toast.action("info", info.suggestion ? `Suggested strategy: ${workflowName(info.suggestion)}` : "Choose a branching strategy?",
+      [{ label: "Configure", style: "primary", onClick: () => { if (path === git.repoPath.value) openBranchWorkflow(info); } }],
+      12000);
+  } catch { /* A strategy suggestion never affects clone success. */ }
+}
+
+async function handleWorkflowOutcome(result: WorkflowOutcome) {
+  const path = branchWorkflow.value?.path;
+  if (!path || path !== git.repoPath.value) return;
+  const summary = [
+    result.completed.length ? `Completed: ${result.completed.join("; ")}.` : "",
+    result.remaining.length ? `Remaining: ${result.remaining.join("; ")}.` : "",
+  ].filter(Boolean).join(" ");
+  if (summary) appendLog("app", summary);
+  await refreshAfterVisualRebase(path);
+  if (path !== git.repoPath.value) return;
+  if (result.status === "conflict") {
+    branchWorkflow.value = null;
+    setHistoryViewMode("graph");
+    const review = git.hasConflicts.value ? onSelectConflicts : onSelectWorkingChanges;
+    review();
+    detailsPanelCollapsed.value = false;
+    toast.action("warning", git.hasConflicts.value ? "Workflow paused for merge conflicts." : "Workflow paused for a pending merge.",
+      [{ label: "Review Merge", style: "primary", onClick: review },
+       { label: "Abort Merge", style: "neutral", onClick: confirmAbortMerge }],
+      26000, summary);
+  }
+}
+
+async function fetchWorkflowRefs() {
+  const path = branchWorkflow.value?.path;
+  if (!path || path !== git.repoPath.value || git.loading.value) throw new Error("The repository is not ready to fetch.");
+  await git.fetchAll();
+  if (path !== git.repoPath.value) throw new Error("The active repository changed.");
+  if (git.error.value?.startsWith("AUTH_REQUIRED:")) throw new Error("Authenticate with the toolbar Fetch action, then reopen Handoff.");
+  if (git.error.value) throw new Error(git.error.value);
+}
+
+function openWorkflowPullRequest(draft: HandoffDraft) {
+  if (!branchWorkflow.value || branchWorkflow.value.path !== git.repoPath.value || !draft.published) return;
+  branchWorkflow.value = null;
+  openCreatePullRequestPanel(draft);
+}
+
 async function handleClone(
   url: string,
   path: string,
@@ -4445,6 +4634,7 @@ async function handleClone(
     await openRepo(clonedPath);
     done?.(true);
     toast.success("Repository cloned successfully");
+    void suggestClonedWorkflow(clonedPath);
   } catch (e) {
     toast.remove(progressToastId);
     done?.(false, String(e));
@@ -4456,12 +4646,21 @@ async function handleClone(
   }
 }
 
-async function handleInit(path: string, branchName: string) {
+async function handleInit(path: string, branchName: string, workflow?: WorkflowConfig) {
   const ok = await git.initRepo(path, branchName);
   if (ok) {
     showInitDialog.value = false;
     await openRepo(path);
     toast.success("Repository initialized successfully");
+    if (workflow) {
+      try {
+        await invoke("validate_branch_workflow", { config: workflow });
+        const info = await invoke<WorkflowInspection>("inspect_branch_workflow", { path });
+        const persisted = saveWorkflow(path, info.key, workflow);
+        workflowPreferenceVersion.value++;
+        if (!persisted) toast.info("Branching strategy is available for this session only.");
+      } catch (error) { toast.warning(`Repository created, but strategy was not saved: ${String(error)}`); }
+    }
   } else {
     toast.error(`Failed to initialize repository: ${git.error.value || "Unknown error"}`);
   }
@@ -5001,6 +5200,98 @@ function openInteractiveRebase(base: string) {
   interactiveRebase.value = { path: git.repoPath.value, base };
 }
 
+function openInteractiveAmend(request: { sha: string; action: AmendAction }) {
+  if (git.loading.value || !git.repoPath.value) return;
+  interactiveAmendError.value = "";
+  interactiveAmend.value = { path: git.repoPath.value, ...request };
+}
+
+async function startInteractiveAmend(confirmation: AmendConfirmation) {
+  const request = interactiveAmend.value;
+  if (!request || request.path !== git.repoPath.value || git.loading.value || interactiveRebaseBusy.value) return;
+  interactiveRebaseBusy.value = git.loading.value = true;
+  interactiveAmendError.value = "";
+  try {
+    const outcome = await invoke<VisualRebaseOutcome>("start_interactive_amend", { ...request, confirmation });
+    await refreshAfterVisualRebase(request.path);
+    interactiveAmend.value = null;
+    if (request.path === git.repoPath.value) {
+      if (outcome === "completed") { onSelectWorkingChanges(); toast.success("Interactive amend complete."); }
+      else showVisualRebaseOutcome(outcome);
+    }
+  } catch (error) {
+    await refreshAfterVisualRebase(request.path);
+    if (request.path === git.repoPath.value && visualRebaseActive.value) {
+      interactiveAmend.value = null;
+      onSelectWorkingChanges();
+      toast.error(String(error));
+    } else interactiveAmendError.value = String(error);
+  } finally {
+    interactiveRebaseBusy.value = false;
+    if (request.path === git.repoPath.value) git.loading.value = false;
+  }
+}
+
+const patchFilters = [{ name: "Git patch", extensions: ["patch", "diff"] }];
+
+async function openHistoryPatch(request: PatchRequest) {
+  const path = git.repoPath.value;
+  if (!path || git.loading.value || historyPatchBusy.value || historyPatch.value) return;
+  const snapshot: HistoryPatch = { ...request, path, branch: git.currentBranch.value, expectedHead: git.repoInfo.value?.head_sha ?? null };
+  historyPatchError.value = "";
+  if (request.kind === "export") {
+    if (request.sha) await saveHistoryPatch(snapshot, "all-tracked");
+    else historyPatch.value = snapshot;
+    return;
+  }
+  try {
+    historyPatchBusy.value = true;
+    const file = await openDialog({ directory: false, multiple: false, filters: patchFilters });
+    if (typeof file === "string" && path === git.repoPath.value && snapshot.branch === git.currentBranch.value) historyPatch.value = { ...snapshot, file };
+  } catch (error) { toast.error(String(error)); }
+  finally { historyPatchBusy.value = false; }
+}
+
+async function saveHistoryPatch(patch: HistoryPatch, scope: PatchScope) {
+  if (patch.path !== git.repoPath.value || historyPatchBusy.value) return;
+  historyPatchBusy.value = true;
+  historyPatchError.value = "";
+  try {
+    const destination = await saveDialog({ filters: patchFilters, defaultPath: patch.sha ? `${patch.sha.slice(0, 8)}.patch` : "working-changes.patch" });
+    if (!destination || patch.path !== git.repoPath.value) return;
+    await invoke("export_patch", { path: patch.path, destination, sha: patch.sha ?? null, scope });
+    if (historyPatch.value === patch) historyPatch.value = null;
+    toast.success("Patch saved.");
+  } catch (error) {
+    if (historyPatch.value === patch) historyPatchError.value = String(error);
+    else toast.error(String(error));
+  } finally { historyPatchBusy.value = false; }
+}
+
+async function applyHistoryPatch(staged: boolean) {
+  const patch = historyPatch.value;
+  if (!patch?.file || patch.path !== git.repoPath.value || historyPatchBusy.value || git.loading.value) return;
+  if (patch.branch !== git.currentBranch.value) { historyPatchError.value = "The branch changed. Reopen Import Patch."; return; }
+  historyPatchBusy.value = git.loading.value = true;
+  historyPatchError.value = "";
+  try {
+    await invoke("import_patch", { path: patch.path, source: patch.file, expectedHead: patch.expectedHead, staged });
+    if (patch.path === git.repoPath.value) {
+      await git.refreshStatus();
+      if (patch.path !== git.repoPath.value) return;
+      historyPatch.value = null;
+      setHistoryViewMode("graph");
+      onSelectWorkingChanges();
+      toast.success(staged ? "Patch applied and staged." : "Patch applied to Working Changes.");
+    }
+  } catch (error) {
+    if (patch.path === git.repoPath.value) { historyPatchError.value = String(error); await git.refreshStatus(); }
+  } finally {
+    historyPatchBusy.value = false;
+    if (patch.path === git.repoPath.value) git.loading.value = false;
+  }
+}
+
 async function refreshAfterVisualRebase(path: string) {
   if (path !== git.repoPath.value) return;
   await git.refreshRepoInfo();
@@ -5498,6 +5789,7 @@ function submitCreateTag() {
       @open-in-vs-code="openRepoInVsCode()"
       @open-in-explorer="openRepoInExplorer()"
       @create-gist="createGistFromRepo()"
+      @request-patch="openHistoryPatch"
       @open-logs="toggleLogsPanel()"
     />
 
@@ -5573,6 +5865,8 @@ function submitCreateTag() {
         @fetch="handleFetch"
         @exit-graph-isolation="exitGraphIsolation"
         @branch="handleCreateBranch"
+        :workflow-label="branchWorkflowLabel"
+        @branch-workflow="openBranchWorkflow()"
         @ghost-branch="handleStartGhostBranch"
         @materialize-ghost-branch="handleOpenGhostMaterializeDialog"
         @discard-ghost-branch="handleDiscardGhostBranch"
@@ -5607,21 +5901,37 @@ function submitCreateTag() {
         :show-terminal="showTerminal"
         :terminal-allow-all="terminalAllowAll"
         :open-pull-request-branches="openPullRequestBranches"
-        :issues="githubIssues"
-        :pull-requests="githubPullRequests"
+        :issues="visibleRemoteIssues"
+        :pull-requests="visibleRemotePulls"
         :gists="githubGists"
         :lost-commits="lostCommits"
         :lost-commits-loading="lostCommitsLoading"
         :rescuing-lost-commit-sha="rescuingLostCommitSha"
-        :issues-has-more="githubIssuesHasMore"
-        :pull-requests-has-more="githubPullRequestsHasMore"
-        :issues-loading-all="githubIssuesLoadingAll"
-        :pull-requests-loading-all="githubPullRequestsLoadingAll"
+        :issues-has-more="trackingProvider ? !!trackingIssues.next : githubIssuesHasMore"
+        :pull-requests-has-more="trackingProvider ? !!trackingPulls.next : githubPullRequestsHasMore"
+        :issues-loading-all="trackingProvider ? trackingIssues.loading : githubIssuesLoadingAll"
+        :pull-requests-loading-all="trackingProvider ? trackingPulls.loading : githubPullRequestsLoadingAll"
+        :tracking-provider="trackingProvider"
+        :tracking-version="trackingVersion"
+        :tracking-issues-error="trackingIssues.error"
+        :tracking-pulls-error="trackingPulls.error"
+        :remote-insight-detail-error="remoteDetailError"
         :selected-issue="selectedIssue"
         :selected-pull-request="selectedPullRequest"
         :remote-insight-detail-loading="remoteInsightDetailLoading"
         :remote-create-options="remoteCreateOptions"
+        :workflow-label="branchWorkflowLabel"
+        :workflow-pull-request="workflowPullRequest"
         :remote-create-options-loading="remoteCreateOptionsLoading"
+        :remote-creating="remoteCreating"
+        :remote-discussion="remoteDiscussion"
+        :remote-branch-catalog="remoteBranchCatalog"
+        :remote-branches-loading="remoteBranchesLoading"
+        :remote-branches-error="remoteBranchesError"
+        :remote-name-for-insights="remoteNameForInsights"
+        :remote-workflow="remoteWorkflow"
+        :current-remote-upstream="currentRemoteUpstream"
+        :compare-remote-branches="compareRemoteBranches"
         :remote-insights-mode="remoteInsightsMode"
         :show-diff-viewer="showDiffViewer"
         :diff-file-path="diffFilePath"
@@ -5661,10 +5971,12 @@ function submitCreateTag() {
         @select-stash="onSelectStash($event)"
         @select-issue="openIssueDetails($event)"
         @select-pull-request="openPullRequestDetails($event)"
-        @load-all-issues="loadAllGithubIssues"
-        @load-all-pull-requests="loadAllGithubPullRequests"
+        @load-all-issues="trackingProvider ? loadTracking('issue', true) : loadAllGithubIssues()"
+        @load-all-pull-requests="trackingProvider ? loadTracking('pull-request', true) : loadAllGithubPullRequests()"
+        @load-tracking="loadTracking($event)"
         @open-create-issue="openCreateIssuePanel"
-        @open-create-pull-request="openCreatePullRequestPanel"
+        @open-create-pull-request="openCreatePullRequestPanel()"
+        @branch-workflow="openBranchWorkflow()"
         @open-gist="openGistInBrowser($event)"
         @create-issue="createRemoteIssue($event)"
         @create-pull-request="createRemotePullRequest($event)"
@@ -5673,6 +5985,8 @@ function submitCreateTag() {
         @request-merge="handleRequestMerge($event)"
         @request-rebase="handleRequestRebase($event)"
         @request-interactive-rebase="openInteractiveRebase($event)"
+        @request-interactive-amend="openInteractiveAmend"
+        @request-patch="openHistoryPatch"
         @checkout-remote-branch="handleCheckoutRemoteBranch($event)"
         @pull="handlePull"
         @push="handlePush"
@@ -5697,6 +6011,16 @@ function submitCreateTag() {
 
     <InteractiveRebaseDialog v-if="interactiveRebase" :repo-path="interactiveRebase.path" :base="interactiveRebase.base"
       :busy="interactiveRebaseBusy" :execution-error="interactiveRebaseError" @close="interactiveRebase = null" @start="startInteractiveRebase" />
+    <InteractiveAmendDialog v-if="interactiveAmend" :repo-path="interactiveAmend.path" :sha="interactiveAmend.sha" :action="interactiveAmend.action"
+      :busy="interactiveRebaseBusy" :execution-error="interactiveAmendError" @close="interactiveAmend = null" @start="startInteractiveAmend" />
+    <HistoryPatchDialog v-if="historyPatch" :kind="historyPatch.kind" :file="historyPatch.file" :branch="historyPatch.branch" :busy="historyPatchBusy" :error="historyPatchError"
+      :initial-staged="git.repositoryOperation.value?.visual_rebase_editing" @close="historyPatch = null" @import="applyHistoryPatch" @export="saveHistoryPatch(historyPatch!, $event)" />
+    <BranchWorkflowDialog v-if="branchWorkflow" :key="branchWorkflow.path" :repo-path="branchWorkflow.path"
+      :initial="branchWorkflow.initial" :can-open-pull-request="!!getPrimaryGithubContext()"
+      :remote-name="getPrimaryRemote(git.repoInfo.value?.remotes || [])?.name"
+      :fetch-refs="fetchWorkflowRefs"
+      @close="branchWorkflow = null" @saved="workflowPreferenceVersion++"
+      @outcome="handleWorkflowOutcome" @pull-request="openWorkflowPullRequest" />
 
     <RepositoryActionDialogs
       :show-branch-dialog="showBranchDialog"
@@ -5807,6 +6131,7 @@ function submitCreateTag() {
     />
 
     <ThemeAmbience />
+    <DesktopPet v-if="petEnabled" />
     <ToastContainer />
     <SecretCommitDialog :repo-path="git.repoPath.value" @open-lfs="openRequestedLfs" />
     <WorktreeRemovalDialog v-if="pendingWorktreeRemoval" :location="pendingWorktreeRemoval.location"

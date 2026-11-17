@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { secretDetectorEnabled, storeSecretDetectorEnabled } from "@/shared/config/secretDetectorPreferences";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, useId, watch } from "vue";
+import { searchSettings, type SettingResult, type IntegrationPlatform, type OptionsSection } from "@/features/shell/optionsSearch";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -53,6 +54,7 @@ import { useAppUpdate } from "@/features/updater/useAppUpdate";
 import AppUpdatePanel from "@/features/updater/AppUpdatePanel.vue";
 import { visualiseOperationsEnabled, storeVisualiseOperations } from "@/shared/config/visualiseOperationsPreferences";
 import AppButton from "@/shared/ui/AppButton.vue";
+import DesktopPetSettings from "@/features/shell/DesktopPetSettings.vue";
 import AzureDevOpsIcon from "@/shared/ui/AzureDevOpsIcon.vue";
 import BitbucketIcon from "@/shared/ui/BitbucketIcon.vue";
 import CloseIconButton from "@/shared/ui/CloseIconButton.vue";
@@ -70,6 +72,7 @@ import {
   FlaskConical,
   PlugZap,
   RefreshCw,
+  Search,
   Settings2,
   Shield,
   SlidersHorizontal,
@@ -77,8 +80,6 @@ import {
   Users,
   X,
 } from "lucide-vue-next";
-type OptionsSection = "integrations" | "git" | "preferences" | "advanced" | "organisations" | "updates";
-type IntegrationPlatform = "github" | "gitlab" | "bitbucket" | "azure";
 type FontSizePreference = "tiny" | "small" | "medium" | "largest" | "huge" | "xlarge" | "xxlarge" | "xxxlarge" | "xxxxlarge";
 type OrganisationProvider = "github" | "gitlab" | "bitbucket" | "azure";
 type OrganisationSearchProvider = OrganisationProvider | "all";
@@ -193,6 +194,41 @@ const updateError = appUpdate.errorMessage;
 const activeSection = ref<OptionsSection>(props.initialSection || "integrations");
 const activePlatform = ref<IntegrationPlatform>("github");
 const optionsScrollRef = ref<HTMLDivElement | null>(null);
+const settingQuery = ref("");
+const settingSearchOpen = ref(false);
+const activeResult = ref(0);
+const settingResults = computed(() => searchSettings(settingQuery.value));
+const settingsResultsId = useId();
+let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+let highlightedOption: HTMLElement | undefined;
+
+watch(settingQuery, () => { activeResult.value = 0; settingSearchOpen.value = true; });
+onUnmounted(() => clearTimeout(highlightTimer));
+
+async function moveSettingResult(direction: number) {
+  settingSearchOpen.value = true;
+  activeResult.value = Math.min(Math.max(0, activeResult.value + direction), Math.max(0, settingResults.value.length - 1));
+  await nextTick();
+  document.getElementById(`${settingsResultsId}-${activeResult.value}`)?.scrollIntoView({ block: "nearest" });
+}
+
+async function jumpToSetting(result?: SettingResult) {
+  if (!result) return;
+  activeSection.value = result.section;
+  if (result.platform) activePlatform.value = result.platform;
+  settingSearchOpen.value = false;
+  await nextTick();
+  const anchor = optionsScrollRef.value?.querySelector<HTMLElement>(`[data-option="${result.id}"]`);
+  if (!anchor) return;
+  clearTimeout(highlightTimer);
+  highlightedOption?.classList.remove("option-highlight");
+  highlightedOption = anchor;
+  anchor.classList.add("option-highlight");
+  if (!anchor.matches("button, input, select, textarea, [tabindex]")) anchor.tabIndex = -1;
+  anchor.focus({ preventScroll: true });
+  anchor.scrollIntoView({ block: "center", behavior: reducedMotion.value || window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+  highlightTimer = setTimeout(() => { anchor.classList.remove("option-highlight"); }, 2500);
+}
 let isHydrating = true;
 
 const appThemeOptions = APP_THEME_OPTIONS;
@@ -2278,6 +2314,25 @@ watch(activePlatform, () => {
         <CloseIconButton title="Close options" @click="emit('close')" />
       </div>
 
+      <div class="settings-search" @focusout="settingSearchOpen = ($event.currentTarget as HTMLElement).contains($event.relatedTarget as Node | null)">
+        <div class="settings-search-field"><Search :size="16" />
+          <input v-model="settingQuery" role="combobox" aria-label="Search settings" aria-autocomplete="list"
+            :aria-expanded="settingSearchOpen && !!settingQuery.trim()" :aria-controls="settingSearchOpen && settingQuery.trim() ? settingsResultsId : undefined"
+            :aria-activedescendant="settingSearchOpen && settingResults.length ? `${settingsResultsId}-${activeResult}` : undefined"
+            placeholder="Search settings" autocomplete="off" spellcheck="false" maxlength="96" @focus="settingSearchOpen = true"
+            @keydown.down.prevent="moveSettingResult(1)" @keydown.up.prevent="moveSettingResult(-1)"
+            @keydown.enter.prevent="settingSearchOpen && jumpToSetting(settingResults[activeResult])" @keydown.esc.stop.prevent="settingSearchOpen = false" />
+          <button v-if="settingQuery" type="button" aria-label="Clear settings search" title="Clear settings search" @mousedown.prevent @click="settingQuery = ''"><X :size="15" /></button>
+        </div>
+        <div v-if="settingSearchOpen && settingQuery.trim()" :id="settingsResultsId" class="settings-results" role="listbox" aria-label="Settings results">
+          <div v-for="(result, index) in settingResults" :id="`${settingsResultsId}-${index}`" :key="result.id" role="option" :aria-selected="activeResult === index"
+            @pointermove="activeResult = index" @mousedown.prevent @click="jumpToSetting(result)">
+            <strong>{{ result.title }}</strong><small>{{ result.group }}</small>
+          </div>
+          <p v-if="!settingResults.length" role="status">No matching settings</p>
+        </div>
+      </div>
+
       <div class="flex flex-1 min-h-0">
         <div class="w-[170px] border-r border-[var(--border)] bg-[var(--secondary)]/35 p-2.5">
           <button
@@ -2406,7 +2461,7 @@ watch(activePlatform, () => {
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
                 <div class="flex items-center justify-between gap-3">
                   <div>
-                    <div class="text-xs font-semibold text-[var(--foreground)]">Account Connection</div>
+                    <div data-option="github-oauth" class="text-xs font-semibold text-[var(--foreground)]">Account Connection</div>
                     <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5">
                       Sign in with GitHub in your browser using a one-time device code, or paste a token.
                     </div>
@@ -2455,7 +2510,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center gap-2">
                   <input
-                    v-model="githubTokenInput"
+                    data-option="github-token" v-model="githubTokenInput"
                     type="password"
                     placeholder="Paste GitHub token (optional fallback)"
                     class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
@@ -2483,7 +2538,7 @@ watch(activePlatform, () => {
 
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
                 <div>
-                  <div class="text-xs font-semibold text-[var(--foreground)]">SSH Keys</div>
+                  <div data-option="github-ssh" class="text-xs font-semibold text-[var(--foreground)]">SSH Keys</div>
                   <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5">
                     Generate a new SSH key and add it to GitHub, or import an existing key.
                   </div>
@@ -2580,7 +2635,7 @@ watch(activePlatform, () => {
 
             <div v-else-if="activePlatform === 'gitlab'" class="space-y-4">
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
-                <div class="text-xs font-semibold text-[var(--foreground)]">GitLab.com Token</div>
+                <div data-option="gitlab-token" class="text-xs font-semibold text-[var(--foreground)]">GitLab.com Token</div>
                 <div class="text-[11px]" :class="hasGitlabToken ? 'text-[#10b981]' : 'text-[#f59e0b]'">
                   {{ hasGitlabToken ? 'Configured' : 'Not configured' }}
                 </div>
@@ -2602,7 +2657,7 @@ watch(activePlatform, () => {
               </div>
 
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
-                <div class="text-xs font-semibold text-[var(--foreground)]">GitLab Self-Managed</div>
+                <div data-option="gitlab-domain" class="text-xs font-semibold text-[var(--foreground)]">GitLab Self-Managed</div>
                 <div class="text-[11px]" :class="hasGitlabSelfToken ? 'text-[#10b981]' : 'text-[#f59e0b]'">
                   {{ hasGitlabSelfToken ? `Configured (${gitlabSelfState.domain})` : 'Not configured' }}
                 </div>
@@ -2632,7 +2687,7 @@ watch(activePlatform, () => {
                 </div>
 
                 <div class="border border-[var(--border)] rounded p-2.5 bg-[var(--card)]/50 space-y-2">
-                  <div class="text-[11px] font-medium text-[var(--foreground)]">Generate and Push SSH Key (self-managed)</div>
+                  <div data-option="gitlab-ssh" class="text-[11px] font-medium text-[var(--foreground)]">Generate and Push SSH Key (self-managed)</div>
                   <div class="grid grid-cols-2 gap-2">
                     <input
                       v-model="gitlabSelfEmailInput"
@@ -2663,7 +2718,7 @@ watch(activePlatform, () => {
               <div class="p-3.5 space-y-3 bg-[var(--primary)]/5">
                 <div class="flex items-center gap-2 flex-wrap">
                   <div class="flex items-center justify-center w-5 h-5 rounded-full bg-[var(--primary)] text-white text-[10px] font-bold">1</div>
-                  <div class="text-xs font-semibold text-[var(--foreground)]">Bitbucket API Token</div>
+                  <div data-option="bitbucket-token" class="text-xs font-semibold text-[var(--foreground)]">Bitbucket API Token</div>
                   <div class="ml-auto flex items-center gap-1.5">
                     <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-[var(--primary)]/15 text-[var(--primary)] font-medium">Primary</span>
                     <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded" :class="hasBitbucketToken ? 'bg-[#10b981]/10 text-[#10b981]' : 'bg-[#f59e0b]/10 text-[#f59e0b]'">
@@ -2719,7 +2774,7 @@ watch(activePlatform, () => {
               <div class="p-3.5 space-y-3 bg-[var(--popover)]/30">
                 <div class="flex items-center gap-2 flex-wrap">
                   <div class="flex items-center justify-center w-5 h-5 rounded-full bg-[var(--secondary)] text-[var(--muted-foreground)] text-[10px] font-bold">2</div>
-                  <div class="text-xs font-semibold text-[var(--foreground)]">SSH Keys</div>
+                  <div data-option="bitbucket-ssh" class="text-xs font-semibold text-[var(--foreground)]">SSH Keys</div>
                   <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[var(--muted-foreground)] font-medium">Fallback</span>
                   <span class="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded" :class="bitbucketSshKeys.length ? 'bg-[#10b981]/10 text-[#10b981]' : 'bg-[#6b7280]/10 text-[#6b7280]'">
                     {{ bitbucketSshKeys.length ? `${bitbucketSshKeys.length} key(s)` : 'No keys' }}
@@ -2823,7 +2878,7 @@ watch(activePlatform, () => {
 
             <div v-else class="space-y-4">
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
-                <div class="text-xs font-semibold text-[var(--foreground)]">Azure DevOps Token</div>
+                <div data-option="azure-token" class="text-xs font-semibold text-[var(--foreground)]">Azure DevOps Token</div>
                 <div class="text-[11px]" :class="hasAzureToken ? 'text-[#10b981]' : 'text-[#f59e0b]'">
                   {{ hasAzureToken ? 'Configured' : 'Not configured' }}
                 </div>
@@ -2860,7 +2915,7 @@ watch(activePlatform, () => {
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
                 <div class="flex items-start justify-between gap-3">
                   <div>
-                    <div class="text-xs font-semibold text-[var(--foreground)]">Git Runtime</div>
+                    <div data-option="git-runtime" class="text-xs font-semibold text-[var(--foreground)]">Git Runtime</div>
                     <div class="text-[10px] text-[var(--muted-foreground)] mt-0.5">
                       Detect Git on your machine. If missing, download or start installation.
                     </div>
@@ -2913,7 +2968,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-1">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Enable background auto-fetch</div>
+                    <div data-option="fetch-enabled" class="text-xs font-medium text-[var(--foreground)]">Enable background auto-fetch</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Runs one timer, skips when repository is missing or when a fetch is already running.</p>
                   </div>
                   <button @click="autoFetchEnabled = !autoFetchEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="autoFetchEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -2931,7 +2986,7 @@ watch(activePlatform, () => {
                     min="1"
                     max="60"
                     step="1"
-                    :value="autoFetchIntervalMinutes"
+                    data-option="fetch-interval" :value="autoFetchIntervalMinutes"
                     @input="autoFetchIntervalMinutes = normalizeAutoFetchIntervalMinutes(($event.target as HTMLInputElement).value)"
                     class="w-full"
                   />
@@ -2951,7 +3006,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Theme</div>
+                    <div data-option="theme" class="text-xs font-medium text-[var(--foreground)]">Theme</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Dark or light mode</p>
                   </div>
                   <button
@@ -2971,7 +3026,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Theme Preset</div>
+                    <div data-option="theme-preset" class="text-xs font-medium text-[var(--foreground)]">Theme Preset</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Grouped dark/light themes</p>
                   </div>
                   <select
@@ -2997,9 +3052,11 @@ watch(activePlatform, () => {
                   </select>
                 </div>
 
+                <DesktopPetSettings />
+
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">General Font Size</div>
+                    <div data-option="general-font" class="text-xs font-medium text-[var(--foreground)]">General Font Size</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Global UI text scale for panels, labels and dialogs.</p>
                   </div>
                   <div class="w-[290px] max-w-full">
@@ -3022,7 +3079,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Commit Text Size</div>
+                    <div data-option="commit-font" class="text-xs font-medium text-[var(--foreground)]">Commit Text Size</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Changes text density in commit list and history views only.</p>
                   </div>
                   <div class="w-[290px] max-w-full">
@@ -3045,7 +3102,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Compact Mode</div>
+                    <div data-option="compact" class="text-xs font-medium text-[var(--foreground)]">Compact Mode</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Reduce spacing in commit list</p>
                   </div>
                   <button @click="compactMode = !compactMode" class="relative w-10 h-5 rounded-full transition-colors" :class="compactMode ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3055,7 +3112,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Dummy Mode</div>
+                    <div data-option="dummy" class="text-xs font-medium text-[var(--foreground)]">Dummy Mode</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Show beginner descriptions in menus</p>
                   </div>
                   <button @click="dummyMode = !dummyMode" class="relative w-10 h-5 rounded-full transition-colors" :class="dummyMode ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3065,7 +3122,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Show Avatars</div>
+                    <div data-option="avatars" class="text-xs font-medium text-[var(--foreground)]">Show Avatars</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Show user avatars in commit list</p>
                   </div>
                   <button @click="showAvatars = !showAvatars" class="relative w-10 h-5 rounded-full transition-colors" :class="showAvatars ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3075,7 +3132,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Restore Session on Start</div>
+                    <div data-option="restore" class="text-xs font-medium text-[var(--foreground)]">Restore Session on Start</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Reopen last active tabs and repository</p>
                   </div>
                   <button @click="restoreSession = !restoreSession" class="relative w-10 h-5 rounded-full transition-colors" :class="restoreSession ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3085,7 +3142,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Reduced Motion</div>
+                    <div data-option="motion" class="text-xs font-medium text-[var(--foreground)]">Reduced Motion</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disable heavy animations</p>
                   </div>
                   <button @click="reducedMotion = !reducedMotion" class="relative w-10 h-5 rounded-full transition-colors" :class="reducedMotion ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3095,7 +3152,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Wrap Long Diff Lines</div>
+                    <div data-option="wrap" class="text-xs font-medium text-[var(--foreground)]">Wrap Long Diff Lines</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Wrap long lines instead of horizontal scroll</p>
                   </div>
                   <button @click="wrapDiffLines = !wrapDiffLines" class="relative w-10 h-5 rounded-full transition-colors" :class="wrapDiffLines ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3105,7 +3162,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Show Diff Line Numbers</div>
+                    <div data-option="diff-numbers" class="text-xs font-medium text-[var(--foreground)]">Show Diff Line Numbers</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Display old/new line numbers in diff view</p>
                   </div>
                   <button @click="showDiffLineNumbers = !showDiffLineNumbers" class="relative w-10 h-5 rounded-full transition-colors" :class="showDiffLineNumbers ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3115,7 +3172,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Notify for .gitkeep Need</div>
+                    <div data-option="gitkeep" class="text-xs font-medium text-[var(--foreground)]">Notify for .gitkeep Need</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warn when empty folders are detected</p>
                   </div>
                   <button @click="notifyGitkeep = !notifyGitkeep" class="relative w-10 h-5 rounded-full transition-colors" :class="notifyGitkeep ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3125,7 +3182,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Smart .gitignore Wizard</div>
+                    <div data-option="gitignore" class="text-xs font-medium text-[var(--foreground)]">Smart .gitignore Wizard</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Suggest generated and private untracked files for .gitignore</p>
                   </div>
                   <button @click="smartGitignoreWizardEnabled = !smartGitignoreWizardEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="smartGitignoreWizardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3135,12 +3192,12 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between gap-3 py-2">
                   <label for="options-secret-detection" class="text-xs font-medium text-[var(--foreground)]">Accidental Secret Detector</label>
-                  <input id="options-secret-detection" v-model="secretDetection" type="checkbox" class="w-4 h-4 accent-[var(--primary)]" />
+                  <input data-option="secrets" id="options-secret-detection" v-model="secretDetection" type="checkbox" class="w-4 h-4 accent-[var(--primary)]" />
                 </div>
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Undo Destructive Actions</div>
+                    <div data-option="undo" class="text-xs font-medium text-[var(--foreground)]">Undo Destructive Actions</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Delay UI discard, delete, reset and similar actions for 5 seconds. Turn off to run them immediately. Default on.</p>
                   </div>
                   <button @click="destructiveUndoEnabled = !destructiveUndoEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="destructiveUndoEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3150,7 +3207,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Bug Autopsy</div>
+                    <div data-option="autopsy" class="text-xs font-medium text-[var(--foreground)]">Bug Autopsy</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Enable guided manual bisect from the commit info panel. Default off.</p>
                   </div>
                   <button @click="bugAutopsyEnabled = !bugAutopsyEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="bugAutopsyEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3160,7 +3217,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Git Identity Guard</div>
+                    <div data-option="identity" class="text-xs font-medium text-[var(--foreground)]">Git Identity Guard</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warn once per session when a repository remote looks mismatched with the active Git email. Default off.</p>
                   </div>
                   <button @click="identityGuardEnabled = !identityGuardEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="identityGuardEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3170,7 +3227,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Commit Analyzer</div>
+                    <div data-option="analyzer" class="text-xs font-medium text-[var(--foreground)]">Commit Analyzer</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Realtime commit quality analysis</p>
                   </div>
                   <button @click="commitAnalyzerEnabled = !commitAnalyzerEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="commitAnalyzerEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3180,7 +3237,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Allow Empty Commit</div>
+                    <div data-option="empty-commit" class="text-xs font-medium text-[var(--foreground)]">Allow Empty Commit</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Let Commit Changes run with nothing staged. Default off.</p>
                   </div>
                   <button @click="allowEmptyCommit = !allowEmptyCommit" class="relative w-10 h-5 rounded-full transition-colors" :class="allowEmptyCommit ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3197,7 +3254,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Auto-select Connected Organisation Repos</div>
+                    <div data-option="org-auto-select" class="text-xs font-medium text-[var(--foreground)]">Auto-select Connected Organisation Repos</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">After organisation search, select only repositories you already have access to. Default off.</p>
                   </div>
                   <button @click="organisationAutoSelectConnected = !organisationAutoSelectConnected" class="relative w-10 h-5 rounded-full transition-colors" :class="organisationAutoSelectConnected ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3207,7 +3264,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Clear Organisation Selection After Clone</div>
+                    <div data-option="org-clear" class="text-xs font-medium text-[var(--foreground)]">Clear Organisation Selection After Clone</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">When a batch clone fully succeeds, clear the selected repository checkboxes. Default off.</p>
                   </div>
                   <button @click="organisationClearSelectionAfterClone = !organisationClearSelectionAfterClone" class="relative w-10 h-5 rounded-full transition-colors" :class="organisationClearSelectionAfterClone ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3217,7 +3274,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Remember Organisation Clone Folder</div>
+                    <div data-option="org-remember" class="text-xs font-medium text-[var(--foreground)]">Remember Organisation Clone Folder</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Keep the last batch-clone destination for the next app session. Default off.</p>
                   </div>
                   <button @click="organisationRememberDestination = !organisationRememberDestination" class="relative w-10 h-5 rounded-full transition-colors" :class="organisationRememberDestination ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3227,7 +3284,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Confirm External Repository Links</div>
+                    <div data-option="org-links" class="text-xs font-medium text-[var(--foreground)]">Confirm External Repository Links</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Ask before opening organisation repository pages in the browser. Default off.</p>
                   </div>
                   <button @click="confirmExternalRepositoryLinks = !confirmExternalRepositoryLinks" class="relative w-10 h-5 rounded-full transition-colors" :class="confirmExternalRepositoryLinks ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3243,7 +3300,7 @@ watch(activePlatform, () => {
                 </div>
 
                 <div>
-                  <div class="text-xs font-medium text-[var(--foreground)] mb-1.5">Git Executable</div>
+                  <div data-option="git-executable" class="text-xs font-medium text-[var(--foreground)] mb-1.5">Git Executable</div>
                   <div class="flex items-center gap-2 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs font-mono text-[var(--primary)]">
                     {{ props.gitPath || git.gitPath.value || 'Detecting...' }}
                   </div>
@@ -3262,7 +3319,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Disable Commit Graph Animations</div>
+                    <div data-option="graph-animation" class="text-xs font-medium text-[var(--foreground)]">Disable Commit Graph Animations</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Disables graph motion except the current HEAD branch ring.</p>
                   </div>
                   <button @click="disableGraphAnimations = !disableGraphAnimations" class="relative w-10 h-5 rounded-full transition-colors" :class="disableGraphAnimations ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3272,7 +3329,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Smooth Scroll in Graph</div>
+                    <div data-option="graph-scroll" class="text-xs font-medium text-[var(--foreground)]">Smooth Scroll in Graph</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Used when jumping to commit/search/home/end. Default is off.</p>
                   </div>
                   <button @click="smoothGraphScroll = !smoothGraphScroll" class="relative w-10 h-5 rounded-full transition-colors" :class="smoothGraphScroll ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3297,7 +3354,7 @@ watch(activePlatform, () => {
                       min="2"
                       max="60"
                       step="1"
-                      :value="backgroundMaintenanceIntervalMinutes"
+                      data-option="maintenance-interval" :value="backgroundMaintenanceIntervalMinutes"
                       @input="setBackgroundMaintenanceInterval"
                       class="w-16 px-2 py-1.5 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
                     />
@@ -3309,7 +3366,7 @@ watch(activePlatform, () => {
                   <button
                     type="button"
                     class="px-2.5 py-1.5 text-[11px] rounded border border-[var(--border)] bg-[var(--secondary)] text-[var(--foreground)] hover:border-[var(--primary)]/35"
-                    title="Quiet preset: lightweight refresh and only calm safety reminders."
+                    data-option="maintenance-presets" title="Quiet preset: lightweight refresh and only calm safety reminders."
                     @click="applyBackgroundMaintenancePreset('quiet')"
                   >
                     Quiet
@@ -3342,7 +3399,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Silent Repository Health Refresh</div>
+                    <div data-option="health" class="text-xs font-medium text-[var(--foreground)]">Silent Repository Health Refresh</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Quietly refresh status, branches, tags and stashes while the app is visible. Default off.</p>
                   </div>
                   <button @click="backgroundHealthRefreshEnabled = !backgroundHealthRefreshEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundHealthRefreshEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3352,7 +3409,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Remote Hygiene Pulse</div>
+                    <div data-option="hygiene" class="text-xs font-medium text-[var(--foreground)]">Remote Hygiene Pulse</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Run silent fetch/prune on a low-frequency pulse or when returning to the app. Default off.</p>
                   </div>
                   <button @click="backgroundRemoteHygieneEnabled = !backgroundRemoteHygieneEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundRemoteHygieneEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3362,7 +3419,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Focus Sync Pulse</div>
+                    <div data-option="focus-sync" class="text-xs font-medium text-[var(--foreground)]">Focus Sync Pulse</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">When you return to GitSwamp, quickly refresh status and lightweight repo metadata. Default off.</p>
                   </div>
                   <button @click="backgroundFocusSyncEnabled = !backgroundFocusSyncEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundFocusSyncEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3372,7 +3429,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Idle-only Background Work</div>
+                    <div data-option="idle" class="text-xs font-medium text-[var(--foreground)]">Idle-only Background Work</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Run maintenance only after a short quiet moment, so typing and scrolling stay untouched. Default off.</p>
                   </div>
                   <button @click="backgroundIdleOnlyEnabled = !backgroundIdleOnlyEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundIdleOnlyEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3382,7 +3439,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Stale Work Reminder</div>
+                    <div data-option="stale" class="text-xs font-medium text-[var(--foreground)]">Stale Work Reminder</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">If the same uncommitted work sits for 30 minutes, show a quiet review/stash reminder. Default off.</p>
                   </div>
                   <button @click="backgroundStaleWorkReminderEnabled = !backgroundStaleWorkReminderEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundStaleWorkReminderEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3392,7 +3449,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Behind Branch Reminder</div>
+                    <div data-option="behind" class="text-xs font-medium text-[var(--foreground)]">Behind Branch Reminder</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">After background refresh, warn when the current branch is behind its upstream. Default off.</p>
                   </div>
                   <button @click="backgroundBehindBranchReminderEnabled = !backgroundBehindBranchReminderEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundBehindBranchReminderEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3402,7 +3459,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2 gap-4">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Large Worktree Reminder</div>
+                    <div data-option="worktree-reminder" class="text-xs font-medium text-[var(--foreground)]">Large Worktree Reminder</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warn when changed files pass the threshold, before a commit becomes hard to review. Default off.</p>
                   </div>
                   <div class="flex items-center gap-2">
@@ -3423,7 +3480,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Conflict Reminder Pulse</div>
+                    <div data-option="conflict" class="text-xs font-medium text-[var(--foreground)]">Conflict Reminder Pulse</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">If background status sees unresolved conflicts, surface a small resolver reminder. Default off.</p>
                   </div>
                   <button @click="backgroundConflictReminderEnabled = !backgroundConflictReminderEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundConflictReminderEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3432,12 +3489,12 @@ watch(activePlatform, () => {
                 </div>
                 <div class="flex items-center justify-between gap-3 py-2">
                   <label for="visualise-operations" class="text-xs font-medium text-[var(--foreground)]">Visualise operations</label>
-                  <input id="visualise-operations" v-model="visualiseOperations" type="checkbox" class="w-4 h-4 accent-[var(--primary)]" />
+                  <input data-option="visualise" id="visualise-operations" v-model="visualiseOperations" type="checkbox" class="w-4 h-4 accent-[var(--primary)]" />
                 </div>
 
                 <div class="flex items-center justify-between py-2">
                   <div>
-                    <div class="text-xs font-medium text-[var(--foreground)]">Commit Detail Preloader</div>
+                    <div data-option="preloader" class="text-xs font-medium text-[var(--foreground)]">Commit Detail Preloader</div>
                     <p class="text-[10px] text-[var(--muted-foreground)] mt-0.5">Warm the existing tiny commit-file cache for the newest commits so first click feels instant. Default off.</p>
                   </div>
                   <button @click="backgroundCommitDetailsPreloadEnabled = !backgroundCommitDetailsPreloadEnabled" class="relative w-10 h-5 rounded-full transition-colors" :class="backgroundCommitDetailsPreloadEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'">
@@ -3470,7 +3527,7 @@ watch(activePlatform, () => {
                   </div>
                 </div>
 
-                <div class="flex items-center gap-2 flex-wrap">
+                <div data-option="org-provider" class="flex items-center gap-2 flex-wrap">
                   <button
                     v-for="provider in ['github', 'gitlab', 'bitbucket', 'azure', 'all'] as const"
                     :key="provider"
@@ -3486,7 +3543,7 @@ watch(activePlatform, () => {
 
                 <div class="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
                   <input
-                    v-model="organisationQuery"
+                    data-option="org-search" v-model="organisationQuery"
                     type="text"
                     placeholder="Type org, team, project or repo, e.g. acme frontend api"
                     class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
@@ -3511,14 +3568,14 @@ watch(activePlatform, () => {
 
                 <div class="grid grid-cols-[minmax(140px,0.7fr)_minmax(140px,0.7fr)_minmax(0,1fr)] gap-2">
                   <select
-                    v-model="organisationCloneProtocol"
+                    data-option="org-protocol" v-model="organisationCloneProtocol"
                     class="px-2.5 py-2 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
                   >
                     <option value="https">Clone via HTTPS</option>
                     <option value="ssh">Clone via SSH</option>
                   </select>
                   <select
-                    v-model="organisationVisibilityFilter"
+                    data-option="org-visibility" v-model="organisationVisibilityFilter"
                     class="px-2.5 py-2 text-[11px] rounded bg-[var(--input-background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
                   >
                     <option value="all">Visibility: all</option>
@@ -3526,7 +3583,7 @@ watch(activePlatform, () => {
                     <option value="public">Visibility: public</option>
                   </select>
                   <input
-                    v-model="organisationLocalFilter"
+                    data-option="org-filter" v-model="organisationLocalFilter"
                     type="text"
                     placeholder="Filter loaded results without searching again"
                     class="px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
@@ -3535,7 +3592,7 @@ watch(activePlatform, () => {
 
                 <div class="flex items-center gap-2">
                   <input
-                    v-model="organisationDestination"
+                    data-option="org-folder" v-model="organisationDestination"
                     type="text"
                     placeholder="Destination folder for batch clone"
                     class="flex-1 px-3 py-2 bg-[var(--input-background)] border border-[var(--border)] rounded text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]/40"
@@ -3646,7 +3703,7 @@ watch(activePlatform, () => {
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
                 <div class="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <div class="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">Organisation Profiles</div>
+                    <div data-option="org-profiles" class="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">Organisation Profiles</div>
                     <p class="mt-1 text-[11px] text-[var(--muted-foreground)]">
                       A profile is a saved organisation search. Use it when you often clone from the same organisation, team, project, or repo prefix.
                     </p>
@@ -3727,7 +3784,7 @@ watch(activePlatform, () => {
               <div class="border border-[var(--border)] rounded-lg p-3.5 bg-[var(--popover)]/50 space-y-3">
                 <div class="flex items-start justify-between gap-3">
                   <div>
-                    <div class="flex items-center gap-2 text-xs font-semibold text-[var(--foreground)]">
+                    <div data-option="updates" class="flex items-center gap-2 text-xs font-semibold text-[var(--foreground)]">
                       <RefreshCw class="w-3.5 h-3.5" />
                       Application updates
                     </div>
@@ -3785,3 +3842,19 @@ watch(activePlatform, () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.settings-search { position: relative; z-index: 2; padding: 9px 18px; border-bottom: 1px solid var(--border); }
+.settings-search-field { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 0 9px; background: var(--input-background); color: var(--muted-foreground); }
+.settings-search-field:focus-within { border-color: var(--primary); }
+.settings-search-field input { min-width: 0; flex: 1; height: 34px; font-size: 13px; color: var(--foreground); background: transparent; outline: none; }
+.settings-search-field button { flex-shrink: 0; padding: 3px; border-radius: 4px; }
+.settings-search-field button:hover { color: var(--foreground); background: var(--secondary); }
+.settings-results { position: absolute; top: calc(100% - 5px); inset-inline-start: 18px; width: clamp(min(320px, calc(100% - 36px)), calc(50% - 18px), calc(100% - 36px)); max-height: min(310px, 60vh); overflow: auto; background: var(--popover); color: var(--foreground); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 7px 24px #0004; }
+.settings-results [role="option"] { min-height: 37px; padding: 6px 9px; display: flex; align-items: center; flex-wrap: wrap; gap: 3px 10px; justify-content: space-between; cursor: pointer; }
+.settings-results strong { font-size: 12px; font-weight: 600; }
+.settings-results small, .settings-results p { color: var(--muted-foreground); font-size: 11px; }
+.settings-results p { padding: 8px; }
+.settings-results [aria-selected="true"] { background: var(--secondary); }
+.option-highlight { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
+</style>

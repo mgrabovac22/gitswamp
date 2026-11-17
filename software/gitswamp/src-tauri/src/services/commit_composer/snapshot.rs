@@ -13,12 +13,10 @@ use tempfile::{NamedTempFile, TempDir};
 use super::super::secret_service::{
     safe_file, safe_relative, CompositionSecrets, GITHUB_MAX_FILE_BYTES,
 };
-use super::{
-    chunks, git_err, head, rules, Change, MAX_INDEX, PATCH_FILE_LIMIT, PATCH_TOTAL_LIMIT, STALE,
-};
+use super::{chunks, git_err, head, rules, Change, MAX_INDEX, PATCH_FILE_LIMIT, STALE};
 use crate::repositories::git_repository::GitRepository as Git;
 
-const MAX_FILES: usize = 500;
+const MAX_FILES: usize = 2000;
 const MAX_INPUT: u64 = 256 * 1024 * 1024;
 
 pub(super) struct Snapshot {
@@ -358,8 +356,6 @@ fn read_changes(
         ));
     }
     let mut changes = Vec::new();
-    let mut budget = PATCH_TOTAL_LIMIT;
-    let mut split_bytes = chunks::MAX_SPLIT_BYTES;
     let mut extra_changes = chunks::MAX_EXTRA_CHANGES;
     let mut limited = false;
     let odb = repo.odb().map_err(git_err)?;
@@ -396,18 +392,16 @@ fn read_changes(
                     .map_err(git_err)
             };
             let (before, after) = (size(old)?, size(new)?);
-            if before.max(after) <= PATCH_FILE_LIMIT && before + after <= budget {
-                budget -= before + after;
+            if before.max(after) <= PATCH_FILE_LIMIT {
                 if let Some(patch) = Patch::from_diff(&diff, i).map_err(git_err)? {
                     (_, added, removed) = patch.line_stats().map_err(git_err)?;
-                    limited |= patch.num_hunks() > 64;
                     let track_behavior = analyze_behavior && language_support;
                     let split = rules::behavior::splittable(&path)
                         && matches!(kind, rules::Kind::Source | rules::Kind::Test)
                         && delta.status() == Delta::Modified
                         && patch.num_hunks() > 1
                         && patch.num_hunks() - 1 <= extra_changes
-                        && before + after <= split_bytes
+                        && before + after <= chunks::MAX_SPLIT_BYTES
                         && old.zip(new).is_some_and(|((_, a), (_, b))| {
                             a == b && matches!(a, 0o100644 | 0o100755)
                         });
@@ -437,7 +431,6 @@ fn read_changes(
                         .filter(|blob| !blob.is_binary())
                         .map(|blob| rules::behavior::Cursor::new(&path, blob.content()));
                     let pieces = if split {
-                        split_bytes -= before + after;
                         match (old_text.as_ref(), new_text.as_ref()) {
                             (Some(a), Some(b)) => {
                                 chunks::identify(&path, &patch, a.content(), b.content())
@@ -449,13 +442,12 @@ fn read_changes(
                         None
                     };
                     let start = changes.len();
-                    for hunk in 0..patch.num_hunks().min(64) {
+                    for hunk in 0..patch.num_hunks() {
                         let (_, lines) = patch.hunk(hunk).map_err(git_err)?;
-                        limited |= lines > 200;
                         let mut hunk_hints = rules::Hints::default();
                         let mut hunk_added = 0;
                         let mut hunk_removed = 0;
-                        for line in 0..lines.min(200) {
+                        for line in 0..lines {
                             let line = patch.line_in_hunk(hunk, line).map_err(git_err)?;
                             if line.origin() == '+' || line.origin() == '-' {
                                 let added = line.origin() == '+';

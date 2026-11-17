@@ -1,4 +1,5 @@
 use crate::models::FileStatusInfo;
+use crate::services::amend_selection::{self, Choice, Removal};
 use crate::services::git_service::GitService;
 use crate::services::secret_service::{ignore_untracked, validate_commit, SecretScan, SecretService};
 use crate::services::worktree_service::validate_checkout;
@@ -110,13 +111,22 @@ pub async fn amend_commit(
     signoff: bool,
     secret_check: Option<bool>,
     secret_approval: Option<String>,
+    removal: Option<Removal>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if let Some(removal) = removal {
+            return GitService::amend_with_removal(&path, &message, reset_author, signoff, removal, secret_check.unwrap_or(false), secret_approval.as_deref());
+        }
         validate_commit(&path, secret_check.unwrap_or(false), secret_approval.as_deref())?;
         GitService::amend_commit(&path, &message, reset_author, signoff)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn amend_removal_choices(path: String, head: String) -> Result<Vec<Choice>, String> {
+    tauri::async_runtime::spawn_blocking(move || amend_selection::list(&path, &head)).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

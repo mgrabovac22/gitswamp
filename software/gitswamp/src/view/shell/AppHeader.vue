@@ -23,6 +23,7 @@ import GitRpgShield from "@/features/repository/rpg/GitRpgShield.vue";
 import type { GitRpgProfile } from "@/features/repository/rpg/gitRpgProfiler";
 
 const props = defineProps<{
+  workflowLabel?: string;
   loading: boolean;
   activeAction?: "pull" | "push" | "fetch" | null;
   ghostActive?: boolean;
@@ -48,6 +49,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  branchWorkflow: [];
   pull: [];
   push: [];
   fetch: [];
@@ -97,7 +99,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative z-[40] min-h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 px-2 py-1 shadow-lg flex-shrink-0">
+  <div class="repository-header relative z-[40] min-h-12 bg-gradient-to-b from-[var(--header-bg)] to-[var(--secondary)] border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 px-2 py-1 shadow-lg flex-shrink-0">
     <div class="flex flex-wrap items-center gap-2 min-w-0">
       <div class="flex items-center gap-1.5">
         <div class="w-12 h-8 flex items-center justify-center">
@@ -228,6 +230,8 @@ onUnmounted(() => {
         :loading="loading"
         :ghost-active="!!ghostActive"
         @branch="emit('branch')"
+        :workflow-label="props.workflowLabel"
+        @workflow="emit('branchWorkflow')"
         @ghost="emit('ghostBranch')"
         @materialize="emit('materializeGhostBranch')"
         @discard="emit('discardGhostBranch')"
@@ -263,6 +267,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.repository-header:has(.branch-actions-popover) {
+  /* Keep the open popover above the workspace, including its panel toggle. */
+  z-index: 410;
+}
+
 @keyframes fade-in-letter {
   from {
     opacity: 0;

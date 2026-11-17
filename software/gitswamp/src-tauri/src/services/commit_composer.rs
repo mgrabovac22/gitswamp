@@ -21,10 +21,9 @@ use crate::repositories::git_repository::GitRepository as Git;
 use series::{create_series, review_intermediate, Intermediate, Series};
 use snapshot::{relative, Snapshot};
 
-const MAX_GROUPS: usize = 20;
+const MAX_GROUPS: usize = 40;
 const MAX_INDEX: u64 = 16 * 1024 * 1024;
-const PATCH_FILE_LIMIT: usize = 128 * 1024;
-const PATCH_TOTAL_LIMIT: usize = 8 * 1024 * 1024;
+const PATCH_FILE_LIMIT: usize = 2 * 1024 * 1024;
 const STALE: &str = "Working changes or HEAD changed. Generate a new plan before committing.";
 static COMPOSER: Mutex<()> = Mutex::new(());
 
@@ -36,8 +35,10 @@ pub struct Composition {
     changes: Vec<Change>,
     units: Vec<Unit>,
     groups: Vec<Group>,
+    max_groups: usize,
     review: SecretScan,
     limited: bool,
+    requires_build_verification: bool,
     dependency_notice: Option<String>,
 }
 
@@ -114,7 +115,7 @@ pub fn plan(path: &str, include_secrets: bool) -> Result<Composition, String> {
             "The proposed final state is missing a local dependency. {problem}"
         ));
     }
-    let (mut dependency_notice, mut intermediate) = arrange_groups(
+    let (mut dependency_notice, intermediate) = arrange_groups(
         &snapshot,
         &units,
         &mut groups,
@@ -122,16 +123,11 @@ pub fn plan(path: &str, include_secrets: bool) -> Result<Composition, String> {
         include_secrets,
     )?;
     if dependencies.limited {
-        dependency_notice = Some(
-            "The dependency review reached its limit. The preview kept all changes in one commit."
-                .into(),
-        );
-        groups = vec![rules::combined(
-            &snapshot.changes,
-            &units,
-            units.iter().map(|unit| unit.id).collect(),
-        )];
-        intermediate.clear();
+        let warning = "Some source files exceeded the static dependency analysis limits. Enable build verification before creating multiple commits.";
+        dependency_notice = Some(match dependency_notice {
+            Some(notice) => format!("{notice} {warning}"),
+            None => warning.into(),
+        });
     }
     review_intermediate(&snapshot, &intermediate, &mut review);
     let movable = rules::movable_units(&snapshot.changes);
@@ -158,8 +154,10 @@ pub fn plan(path: &str, include_secrets: bool) -> Result<Composition, String> {
         changes: snapshot.changes,
         units: movable,
         groups,
+        max_groups: MAX_GROUPS,
         review: review.finish(),
         limited: snapshot.limited,
+        requires_build_verification: dependencies.limited,
         dependency_notice,
     })
 }
@@ -325,10 +323,7 @@ pub fn find_buildable_groups(
         let number = groups.len() + 1;
         let tree = snapshot.repo.find_tree(id).map_err(git_err)?;
         let problem = dependencies.verify(&tree);
-        if dependencies.limited && !groups.is_empty() {
-            return Err("Dependency review reached its limit. Combine the changes in one commit or stage a smaller batch.".into());
-        }
-        if index + 1 < drafts.len() && (problem.is_some() || dependencies.limited) {
+        if index + 1 < drafts.len() && problem.is_some() {
             continue;
         }
         if let Some(problem) = problem {
@@ -433,6 +428,7 @@ pub fn apply_with_verification(
         &units,
         drafts,
         include_secrets.then_some(&mut review),
+        build_command.is_some(),
     )?;
     let review = review.finish();
     if !review.large_files.is_empty() {

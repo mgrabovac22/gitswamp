@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import type { AmendAction, PatchRequest } from "@/features/repository/historyEdits";
+import type { BranchComparison, RemoteBranchCatalog, RemoteDiscussionClient } from "@/features/repository/remote/githubRemote";
+import type { TrackingKind, TrackingProvider } from "@/features/repository/remote/useProviderTracking";
+import type { WorkflowConfig } from "@/features/repository/workflow/branchWorkflow";
 import { computed, defineAsyncComponent, ref, watch } from "vue";
 import ConflictResolver from "@/shared/ui/ConflictResolver.vue";
 import CommitGraph from "@/view/commit/CommitGraph.vue";
@@ -51,6 +55,8 @@ const HttpClientPanel = defineAsyncComponent(() => import("@/features/repository
 const BranchWorkspaceView = defineAsyncComponent(() => import("@/features/repository/workspace/BranchWorkspaceView.vue"));
 
 const props = defineProps<{
+  workflowLabel?: string;
+  workflowPullRequest?: { source: string; target: string; description?: string } | null;
   git: any;
   commitFilesLoading?: boolean;
   commitFilesError?: string | null;
@@ -70,8 +76,22 @@ const props = defineProps<{
   selectedIssue?: IssueInfo | null;
   selectedPullRequest?: PullRequestInfo | null;
   remoteInsightDetailLoading?: boolean;
+  remoteInsightDetailError?: string;
+  trackingProvider?: TrackingProvider;
+  trackingIssuesError?: string;
+  trackingPullsError?: string;
+  trackingVersion?: number;
   remoteCreateOptions?: RemoteCreateOptions;
   remoteCreateOptionsLoading?: boolean;
+  remoteCreating?: boolean;
+  remoteDiscussion?: RemoteDiscussionClient;
+  remoteBranchCatalog?: RemoteBranchCatalog | null;
+  remoteBranchesLoading?: boolean;
+  remoteBranchesError?: boolean;
+  remoteNameForInsights?: string;
+  remoteWorkflow?: WorkflowConfig | null;
+  currentRemoteUpstream?: string;
+  compareRemoteBranches?: (base: string, head: string, signal: AbortSignal) => Promise<BranchComparison>;
   remoteInsightsMode?: RemoteInsightsViewMode;
   showDiffViewer: boolean;
   diffFilePath: string;
@@ -95,6 +115,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  branchWorkflow: [];
+  loadTracking: [kind: TrackingKind];
   "update:showTerminal": [value: boolean];
   "update:terminalAllowAll": [value: boolean];
   "update:detailsPanelCollapsed": [value: boolean];
@@ -126,6 +148,8 @@ const emit = defineEmits<{
   requestMerge: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestRebase: [payload: { source: string; sourceRemote: boolean; target: string }];
   requestInteractiveRebase: [sha: string];
+  requestInteractiveAmend: [request: { sha: string; action: AmendAction }];
+  requestPatch: [request: PatchRequest];
   checkoutRemoteBranch: [name: string];
   pull: [];
   push: [];
@@ -345,6 +369,15 @@ function scheduleStashPop(index: number) {
   });
 }
 
+function restoreStashSelection(stash: StashInfo, paths: string[], pop: boolean) {
+  if (!pop) return props.git.restoreSelectedStash(stash, paths, false);
+  scheduleDestructiveAction({
+    message: `Pop ${paths.length} selected stash files in 5 seconds.`,
+    detail: "Unselected changes stay in the stash. Click Undo to cancel.",
+    run: () => props.git.restoreSelectedStash(stash, paths, true),
+  });
+}
+
 function scheduleStashDrop(index: number) {
   scheduleDestructiveAction({
     message: `Drop stash@{${index}} in 5 seconds.`,
@@ -465,6 +498,11 @@ function handleRefreshState() {
         :selected-issue-number="props.selectedIssue?.number || null"
         :selected-pull-request-number="props.selectedPullRequest?.number || null"
         :remote-provider="props.git.repoInfo.value?.remotes?.[0]?.provider || 'unknown'"
+        :tracking-provider="props.trackingProvider"
+        :tracking-issues-error="props.trackingIssuesError"
+        :tracking-pulls-error="props.trackingPullsError"
+        :tracking-version="props.trackingVersion"
+        @load-tracking="emit('loadTracking', $event)"
         @checkout="props.git.checkoutBranch($event)"
         @checkout-remote="emit('checkoutRemoteBranch', $event)"
         @checkout-tag="props.git.checkoutCommit($event)"
@@ -526,6 +564,8 @@ function handleRefreshState() {
         />
 
         <CommitGraph
+          :workflow-label="props.workflowLabel"
+          @branch-workflow="emit('branchWorkflow')"
           v-else-if="props.historyViewMode === 'graph'"
           :class="showDetailsPanel ? '' : 'flex-1'"
           :repo-path="props.git.repoPath.value"
@@ -584,6 +624,8 @@ function handleRefreshState() {
           @request-merge="emit('requestMerge', $event)"
           @request-rebase="emit('requestRebase', $event)"
           @request-interactive-rebase="emit('requestInteractiveRebase', $event)"
+          @request-interactive-amend="emit('requestInteractiveAmend', $event)"
+          @request-patch="emit('requestPatch', $event)"
           @time-machine-blame="emit('timeMachineBlame', $event)"
           @jump-to-search-result="handleJumpToSearchResult($event)"
         />
@@ -679,10 +721,22 @@ function handleRefreshState() {
           :pull-request="props.selectedPullRequest || null"
           :issue="props.selectedIssue || null"
           :detail-loading="props.remoteInsightDetailLoading"
+          :detail-error="props.remoteInsightDetailError"
+          :tracking-provider="props.trackingProvider"
           :create-options="props.remoteCreateOptions"
+          :workflow-draft="props.workflowPullRequest"
           :create-options-loading="props.remoteCreateOptionsLoading"
           :remote-branches="props.git.remoteBranches.value"
           :current-branch="props.git.currentBranch.value"
+          :current-upstream="props.currentRemoteUpstream"
+          :remote-name="props.remoteNameForInsights ?? 'origin'"
+          :workflow="props.remoteWorkflow"
+          :branch-catalog="props.remoteBranchCatalog"
+          :branch-catalog-loading="props.remoteBranchesLoading"
+          :branch-catalog-error="props.remoteBranchesError"
+          :compare-branches="props.compareRemoteBranches"
+          :discussion="props.remoteDiscussion"
+          :creating="props.remoteCreating"
           @close="emit('setHistoryView', 'graph')"
           @create-pull-request="emit('createPullRequest', $event)"
           @create-issue="emit('createIssue', $event)"
@@ -763,6 +817,7 @@ function handleRefreshState() {
             @stash-pop="scheduleStashPop($event)"
             @stash-apply="props.git.stashApply($event)"
             @stash-drop="scheduleStashDrop($event)"
+            @restore-stash-selection="restoreStashSelection"
             @amend-commit-message="handleAmendCommitMessage($event)"
             @view-diff="emit('openDiffViewer', { path: $event.path, sha: $event.sha, staged: $event.staged })"
             @refresh-state="handleRefreshState"

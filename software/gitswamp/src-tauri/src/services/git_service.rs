@@ -2779,8 +2779,8 @@ impl GitService {
         StashService::stash_drop(path, index)
     }
 
-    pub fn stash_files(path: &str, index: usize) -> Result<Vec<CommitFileInfo>, String> {
-        StashService::stash_files(path, index)
+    pub fn stash_files(path: &str, index: usize, sha: Option<&str>) -> Result<Vec<CommitFileInfo>, String> {
+        StashService::stash_files(path, index, sha)
     }
 
     pub fn tags(path: &str) -> Result<Vec<TagInfo>, String> {
@@ -2897,8 +2897,37 @@ impl GitService {
         strategy: &str,
     ) -> Result<(), String> {
         let repo = GitRepository::open(path)?;
-        let full_path = Path::new(path).join(file_path);
         let mut index = repo.index().map_err(|e| e.message().to_string())?;
+        let visual_rebase = super::interactive_rebase::is_active(&repo);
+        let strategy = match (strategy, visual_rebase) {
+            ("keep-base", true) | ("keep-modified", false) => "ours",
+            ("keep-modified", true) | ("keep-base", false) => "theirs",
+            _ => strategy,
+        };
+
+        if visual_rebase {
+            let file = Path::new(file_path);
+            if !(1..=3).any(|stage| index.get_path(file, stage).is_some()) {
+                return Err("The file no longer has a conflict. Refresh Working Changes.".into());
+            }
+            let take = match strategy {
+                "ours" => index.get_path(file, 2).map(|_| "--ours"),
+                "theirs" => index.get_path(file, 3).map(|_| "--theirs"),
+                "delete" => None,
+                _ => return Err("Invalid resolve strategy".into()),
+            };
+            drop(index);
+            let env = [("GIT_LITERAL_PATHSPECS", std::ffi::OsStr::new("1"))];
+            if let Some(side) = take {
+                GitRepository::git_cli_with_env(path, &["checkout", side, "--", file_path], &env)?;
+                GitRepository::git_cli_with_env(path, &["add", "--", file_path], &env)?;
+            } else {
+                GitRepository::git_cli_with_env(path, &["rm", "-f", "--", file_path], &env)?;
+            }
+            return Ok(());
+        }
+
+        let full_path = Path::new(path).join(file_path);
 
         match strategy {
             "ours" | "theirs" => {
@@ -3002,7 +3031,7 @@ impl GitService {
             drop(head_commit);
             drop(head);
             drop(repo);
-            Self::amend_commit_internal(path, new_message, false, false, false)
+            Self::amend_commit_internal(path, new_message, false, false, false, None)
         } else {
             Err("Can only edit the message of the HEAD commit.".to_string())
         }
@@ -3036,7 +3065,11 @@ impl GitService {
         reset_author: bool,
         signoff: bool,
     ) -> Result<String, String> {
-        Self::amend_commit_internal(path, message, reset_author, signoff, true)
+        Self::amend_commit_internal(path, message, reset_author, signoff, true, None)
+    }
+
+    pub fn amend_with_removal(path: &str, message: &str, reset_author: bool, signoff: bool, removal: super::amend_selection::Removal, secret_check: bool, secret_approval: Option<&str>) -> Result<String, String> {
+        Self::amend_commit_internal(path, message, reset_author, signoff, true, Some((removal, secret_check, secret_approval)))
     }
 
     fn amend_commit_internal(
@@ -3045,6 +3078,7 @@ impl GitService {
         reset_author: bool,
         signoff: bool,
         include_staged_snapshot: bool,
+        removal: Option<(super::amend_selection::Removal, bool, Option<&str>)>,
     ) -> Result<String, String> {
         let clean_message = message.trim();
         if clean_message.is_empty() {
@@ -3064,7 +3098,15 @@ impl GitService {
             return Err("Cannot amend while unresolved conflicts exist.".to_string());
         }
 
-        let tree_oid = if include_staged_snapshot {
+        let selection = removal.map(|(removal, secret_check, approval)| {
+            if repo.state() != git2::RepositoryState::Clean && !super::interactive_rebase::can_amend(&repo) {
+                return Err("Finish the current Git operation before moving files out of a commit.".into());
+            }
+            super::amend_selection::Prepared::new(path, &repo, &head_commit, removal, secret_check, approval)
+        }).transpose()?;
+        let tree_oid = if let Some(prepared) = &selection {
+            prepared.tree
+        } else if include_staged_snapshot {
             index.write_tree().map_err(|e| e.message().to_string())?
         } else {
             head_commit.tree_id()
@@ -3116,7 +3158,9 @@ impl GitService {
             )
             .map_err(|e| e.message().to_string())?;
 
-        if head_is_branch {
+        if let Some(prepared) = selection {
+            prepared.publish(&repo, oid, &configured_signature)?;
+        } else if head_is_branch {
             let reference_name = head_reference_name
                 .ok_or_else(|| "Current branch reference is not available.".to_string())?;
             repo.find_reference(&reference_name)
@@ -3271,6 +3315,12 @@ impl GitService {
 
     pub fn open_file_with_editor(path: &str, file_path: &str, editor: &str) -> Result<(), String> {
         IntegrationService::open_file_with_editor(path, file_path, editor)
+    }
+
+    pub fn find_file_location(path: &str, file_path: &str) -> Result<(), String> {
+        let repo = GitRepository::open(path)?;
+        let worktree = repo.workdir().ok_or("This repository has no working directory.")?;
+        IntegrationService::reveal_worktree_file(worktree, Path::new(file_path))
     }
 
     pub fn open_path_with_tool(path: &str, tool: &str) -> Result<(), String> {
