@@ -138,7 +138,7 @@ async function openDownloadedPackage(): Promise<void> {
       useToast().info("No package installer opened. Open the .deb from Downloads with your package manager: " + path, 12000);
     }
   } catch (error) {
-    useToast().info(String(error));
+    useToast().info(`Could not open the installer. The package is saved at ${path}. Open it with your package manager. ${String(error)}`, 12000);
   }
 }
 

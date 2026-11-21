@@ -10,6 +10,7 @@ GitSwamp exposes commands through typed Tauri IPC. Frontend invocation returns a
 | --- | --- | --- |
 | `check_for_update` | none | Update info or null; includes `debInstallation` and `alreadyInstalled` |
 | `download_deb_update` | `{ tag, version }` from the offered update | `{ path: string or null, version, alreadyInstalled }` |
+| `open_deb_update` | none; uses the last validated download retained in Rust | `true` if an OS launcher accepts the package, otherwise `false` with a Downloads fallback |
 | `install_update` | `{ onEvent }` channel | Native update installation for non-Debian formats |
 
 Debian download checks installed dpkg state and package metadata but never installs it. A null path with `alreadyInstalled: true` means restart, not another download. See [the updater guide](DOCUMENTATION_38_AUTO_UPDATER.md).

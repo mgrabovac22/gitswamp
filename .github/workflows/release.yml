@@ -48,10 +48,14 @@ jobs:
             runner: macos-15-intel
             artifact: darwin-x86_64
             tauri_args: --target x86_64-apple-darwin
+            rust_target: x86_64-apple-darwin
+            macos_arch: x86_64
           - name: macOS Apple Silicon
             runner: macos-15
             artifact: darwin-aarch64
             tauri_args: --target aarch64-apple-darwin
+            rust_target: aarch64-apple-darwin
+            macos_arch: arm64
     defaults:
       run:
         working-directory: software/gitswamp
@@ -74,8 +78,8 @@ jobs:
 
       - run: npm ci
 
-      - name: Test updater and packaging metadata
-        run: node --test tests/linuxUpdates.test.mjs tests/releaseVersion.test.mjs
+      - name: Test updater, stash and packaging contracts
+        run: node --test tests/linuxUpdates.test.mjs tests/macosPackaging.test.mjs tests/releaseVersion.test.mjs tests/stashActions.test.mjs
 
       - name: Require updater signing key
         shell: bash
@@ -95,6 +99,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build ${{ matrix.tauri_args }}
+
+      - name: Verify macOS signatures inside the app, updater and DMG
+        if: runner.os == 'macOS'
+        run: node scripts/verify-macos.mjs "src-tauri/target/${{ matrix.rust_target }}/release/bundle" "${{ matrix.macos_arch }}"
 
       - name: Verify Linux package version and release information
         if: runner.os == 'Linux'
@@ -131,7 +139,13 @@ jobs:
           name: ${{ matrix.artifact }}
           if-no-files-found: error
           retention-days: 7
-          path: software/gitswamp/src-tauri/target/**/release/bundle/**
+          path: |
+            software/gitswamp/src-tauri/target/**/release/bundle/**/*.exe
+            software/gitswamp/src-tauri/target/**/release/bundle/**/*.AppImage
+            software/gitswamp/src-tauri/target/**/release/bundle/**/*.deb
+            software/gitswamp/src-tauri/target/**/release/bundle/**/*.dmg
+            software/gitswamp/src-tauri/target/**/release/bundle/**/*.tar.gz
+            software/gitswamp/src-tauri/target/**/release/bundle/**/*.sig
 
   publish:
     name: Publish GitHub release

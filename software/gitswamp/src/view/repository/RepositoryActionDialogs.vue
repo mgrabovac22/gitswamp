@@ -134,7 +134,7 @@ function submitStash() {
         </span>
       </label>
       <p class="mb-4 text-[10px] leading-relaxed text-[var(--muted-foreground)]">
-        Tracked-only stash is faster. Include untracked files only when they must be stored too.
+        New files are included by default. Ignored files stay in the working directory.
       </p>
       <p
         v-if="props.stashTrackedChangeCount === 0 && props.stashUntrackedFileCount > 0 && !props.stashIncludeUntracked"

@@ -240,7 +240,7 @@ const backgroundMaintenanceTimerId = ref<number | null>(null);
 const backgroundMaintenanceInFlight = ref(false);
 const newBranchName = ref("");
 const stashMessage = ref("");
-const stashIncludeUntracked = ref(false);
+const stashIncludeUntracked = ref(true);
 const showEditMessageDialog = ref(false);
 const editMessageSha = ref("");
 const editMessageText = ref("");
@@ -5622,7 +5622,7 @@ async function submitCreateBranch(name: string) {
 }
 
 function handleStash() {
-  stashIncludeUntracked.value = stashTrackedChangeCount.value === 0 && stashUntrackedFileCount.value > 0;
+  stashIncludeUntracked.value = true;
   showStashDialog.value = true;
 }
 
@@ -5630,7 +5630,7 @@ function submitStash() {
   git.stashPush(stashMessage.value || undefined, stashIncludeUntracked.value);
   showStashDialog.value = false;
   stashMessage.value = "";
-  stashIncludeUntracked.value = false;
+  stashIncludeUntracked.value = true;
 }
 
 function handleEditCommitMessage(sha: string) {

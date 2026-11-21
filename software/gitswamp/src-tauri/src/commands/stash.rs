@@ -20,7 +20,7 @@ pub async fn stash_push(
         GitService::stash_push(
             &path,
             message.as_deref(),
-            include_untracked.unwrap_or(false),
+            include_untracked.unwrap_or(true),
         )
     })
     .await

@@ -12,7 +12,8 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const root = fileURLToPath(new URL("..", import.meta.url));
 const settingsSource = readFileSync(path.join(root, "src/features/shell/optionsSearch.ts"), "utf8");
-const optionsSource = readFileSync(path.join(root, "src/view/shell/OptionsDialog.vue"), "utf8");
+const optionsSource = readFileSync(path.join(root, "src/view/shell/OptionsDialog.vue"), "utf8")
+  + readFileSync(path.join(root, "src/features/shell/DesktopPetSettings.vue"), "utf8");
 for (const [, id] of settingsSource.matchAll(/\["([a-z-]+)", "[A-Z]/g)) {
   assert.ok(optionsSource.includes(`data-option="${id}"`), `Missing setting anchor: ${id}`);
 }

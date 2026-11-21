@@ -20,7 +20,14 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
     }
   }
 
-  async function stashPush(message?: string, includeUntracked = false) {
+  async function syncSelectedStash(repoPath: string) {
+    if (repoPath !== state.repoPath.value || !state.selectedStash.value) return;
+    const current = state.stashes.value.find(stash => stash.stash_sha === state.selectedStash.value?.stash_sha);
+    if (current) state.selectedStash.value = current;
+    else await refresh.selectStash(null);
+  }
+
+  async function stashPush(message?: string, includeUntracked = true) {
     if (!state.repoPath.value) return;
     const repoPath = state.repoPath.value;
     if (state.hasConflicts.value) {
@@ -57,6 +64,7 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
       toast.success(includeUntracked ? "Stash created with untracked files." : "Tracked changes stashed.", 2500);
       previewStash(repoPath, "stash-save", "Stash");
       await validated;
+      await syncSelectedStash(repoPath);
     } catch (e) {
       if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
@@ -88,14 +96,19 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
 
     try {
       const result = await callTauri<string>("stash_pop", { path: repoPath, index });
+      if (repoPath !== state.repoPath.value) return;
       state.terminalOutput.value.push("$ git stash pop stash@{" + index + "}\n" + result);
       await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
+      if (repoPath !== state.repoPath.value) return;
+      await syncSelectedStash(repoPath);
       toast.success(`stash@{${index}} popped.`, 2500);
       previewStash(repoPath, "stash-restore", `stash@{${index}}`);
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git stash pop\nError: " + e);
-      toast.error(`Failed to pop stash@{${index}}.`);
+      toast.error(`Failed to pop stash@{${index}}: ${String(e)}`);
+      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
     } finally {
       toast.remove(loadingToast);
       stashOperationInProgress = false;
@@ -121,14 +134,18 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
 
     try {
       const result = await callTauri<string>("stash_apply", { path: repoPath, index });
+      if (repoPath !== state.repoPath.value) return;
       state.terminalOutput.value.push("$ git stash apply stash@{" + index + "}\n" + result);
       await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
+      if (repoPath !== state.repoPath.value) return;
       toast.success(`stash@{${index}} applied.`, 2500);
       previewStash(repoPath, "stash-restore", `stash@{${index}}`);
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git stash apply\nError: " + e);
-      toast.error(`Failed to apply stash@{${index}}.`);
+      toast.error(`Failed to apply stash@{${index}}: ${String(e)}`);
+      await Promise.all([refresh.refreshStatus(), refresh.refreshStashes()]);
     } finally {
       toast.remove(loadingToast);
       stashOperationInProgress = false;
@@ -137,6 +154,7 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
 
   async function stashDrop(index = 0) {
     if (!state.repoPath.value) return;
+    const repoPath = state.repoPath.value;
 
     if (stashOperationInProgress) {
       toast.info("A stash operation is already running. Please wait.");
@@ -148,11 +166,15 @@ export function createStashActions(state: GitState, refresh: RefreshDeps, toast:
     const loadingToast = toast.loading(`Dropping stash@{${index}}...`);
 
     try {
-      const result = await callTauri<string>("stash_drop", { path: state.repoPath.value, index });
+      const result = await callTauri<string>("stash_drop", { path: repoPath, index });
+      if (repoPath !== state.repoPath.value) return;
       state.terminalOutput.value.push("$ git stash drop stash@{" + index + "}\n" + result);
       await refresh.refreshStashes();
+      if (repoPath !== state.repoPath.value) return;
+      await syncSelectedStash(repoPath);
       toast.success(`stash@{${index}} dropped.`, 2500);
     } catch (e) {
+      if (repoPath !== state.repoPath.value) return;
       state.error.value = String(e);
       state.terminalOutput.value.push("$ git stash drop\nError: " + e);
       toast.error(`Failed to drop stash@{${index}}.`);

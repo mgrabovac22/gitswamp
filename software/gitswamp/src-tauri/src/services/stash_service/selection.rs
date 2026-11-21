@@ -389,6 +389,78 @@ mod tests {
     }
 
     #[test]
+    fn saves_and_pops_all_layers_including_new_nested_and_binary_files() {
+        let repo = fixture();
+        put(&repo, ".gitignore", "ignored/\n");
+        git(&repo, &["add", ".gitignore"]);
+        git(&repo, &["commit", "-m", "Ignore generated files"]);
+        fs::create_dir_all(repo.path().join("ignored")).unwrap();
+        fs::create_dir_all(repo.path().join("nested/new")).unwrap();
+        put(&repo, "ignored/cache.bin", "ignored data\n");
+        put(&repo, "first.txt", "staged content\n");
+        git(&repo, &["add", "first.txt"]);
+        put(&repo, "first.txt", "working content\n");
+        fs::remove_file(repo.path().join("second.txt")).unwrap();
+        put(&repo, "nested/new/file with spaces.txt", "new content\n");
+        let binary = [0, 255, 1, 13, 10, 0, 128];
+        fs::write(repo.path().join("new.bin"), binary).unwrap();
+        let path = repo.path().to_str().unwrap();
+        let sha = StashService::stash_push_oid(path, Some("All changes"), true).unwrap().to_string();
+        assert!(git(&repo, &["status", "--porcelain"]).is_empty());
+        assert_eq!(get(&repo, "first.txt"), "base\n");
+        assert!(!repo.path().join("new.bin").exists());
+        assert!(!repo.path().join("nested/new/file with spaces.txt").exists());
+        assert_eq!(get(&repo, "ignored/cache.bin"), "ignored data\n");
+        let files = StashService::stash_files(path, 0, Some(&sha)).unwrap();
+        assert_eq!(files.len(), 4);
+        let result = restore(path, 0, &sha, files.into_iter().map(|file| file.path).collect(), true).unwrap();
+        assert_eq!(result.remainder, None);
+        assert_eq!(get(&repo, "first.txt"), "working content\n");
+        assert_eq!(git(&repo, &["show", ":first.txt"]), "staged content");
+        assert!(!repo.path().join("second.txt").exists());
+        assert_eq!(get(&repo, "nested/new/file with spaces.txt"), "new content\n");
+        assert_eq!(fs::read(repo.path().join("new.bin")).unwrap(), binary);
+        assert_eq!(get(&repo, "ignored/cache.bin"), "ignored data\n");
+        assert!(StashService::stash_list(path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_save_apply_and_pop_roundtrip_untracked_only_changes() {
+        let repo = fixture();
+        let path = repo.path().to_str().unwrap();
+        put(&repo, "new.txt", "new file\n");
+        StashService::stash_push(path, Some("New file only"), true).unwrap();
+        assert!(!repo.path().join("new.txt").exists());
+        StashService::stash_apply(path, 0).unwrap();
+        assert_eq!(get(&repo, "new.txt"), "new file\n");
+        assert_eq!(StashService::stash_list(path).unwrap().len(), 1);
+        fs::remove_file(repo.path().join("new.txt")).unwrap();
+        StashService::stash_pop(path, 0).unwrap();
+        assert_eq!(get(&repo, "new.txt"), "new file\n");
+        assert!(StashService::stash_list(path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_conflicting_pop_keeps_the_stash_and_current_commit() {
+        let repo = fixture();
+        let path = repo.path().to_str().unwrap();
+        put(&repo, "first.txt", "saved change\n");
+        let sha = StashService::stash_push_oid(path, Some("Keep on conflict"), true).unwrap();
+        put(&repo, "first.txt", "new branch content\n");
+        git(&repo, &["add", "first.txt"]);
+        git(&repo, &["commit", "-m", "Divergent change"]);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        let result = StashService::stash_pop(path, 0);
+        assert!(result.is_err(), "Conflicting pop must not report success: {result:?}");
+        assert!(GitRepository::open(path).unwrap().index().unwrap().has_conflicts());
+        assert!(get(&repo, "first.txt").contains("saved change"));
+        assert!(get(&repo, "first.txt").contains("new branch content"));
+        assert_eq!(StashService::stash_list(path).unwrap()[0].stash_sha, sha.to_string());
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head);
+        assert!(repo.path().join("first.txt").is_file());
+    }
+
+    #[test]
     fn pops_part_of_an_older_stash_and_preserves_staged_unstaged_and_untracked_layers() {
         let repo = fixture();
         put(&repo, "first.txt", "staged\n");

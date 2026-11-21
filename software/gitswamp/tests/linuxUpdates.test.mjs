@@ -63,6 +63,21 @@ test("when no Debian installer opens, the saved path is informational and remain
   assert.match(u.toasts[1][1],/\/Downloads\/update.deb/);
   assert.equal(u.api.errorMessage.value,"");
 });
+
+test("an installer launch failure never discards the download or uses a frontend open-path permission",async()=>{
+  const u=updater(command=>{
+    if(command==="check_for_update")return info;
+    if(command==="open_deb_update")throw Error("No default application is registered");
+    return {path:"/Downloads/GitSwamp update.deb",version:info.version,alreadyInstalled:false};
+  });
+  await u.api.check(true);await u.api.install();await u.api.openDownloadedPackage();
+  assert.equal(u.api.status.value,"downloaded");
+  assert.equal(u.api.errorMessage.value,"");
+  assert.deepEqual(u.opened,[]);
+  assert.equal(u.toasts.at(-1)[0],"info");
+  assert.match(u.toasts.at(-1)[1],/\/Downloads\/GitSwamp update.deb/);
+  assert.deepEqual(u.calls.at(-1),{command:"open_deb_update",args:undefined});
+});
 test("install detects an update installed since the original check",async()=>{
   const u=updater(command=>command==="check_for_update"?info:{path:null,version:info.version,alreadyInstalled:true});
   await u.api.check(true);await u.api.install();assert.equal(u.api.status.value,"installed");assert.deepEqual(u.opened,[]);

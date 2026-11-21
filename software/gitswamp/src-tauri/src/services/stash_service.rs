@@ -143,7 +143,7 @@ impl StashService {
         let mut opts = git2::StashApplyOptions::new();
         opts.reinstantiate_index();
 
-        repo.stash_pop(index, Some(&mut opts)).map_err(|error| {
+        Self::restore_checked(&mut repo, index, &mut opts, true).map_err(|error| {
             format!(
                 "Failed to restore safety stash@{{{}}}: {}. The stash was kept.",
                 index,
@@ -157,15 +157,36 @@ impl StashService {
         ))
     }
 
+    fn restore_checked(
+        repo: &mut git2::Repository,
+        index: usize,
+        options: &mut git2::StashApplyOptions<'_>,
+        pop: bool,
+    ) -> Result<(), git2::Error> {
+        let oid = selection::open_stash(repo, index, None)
+            .map_err(|message| git2::Error::from_str(&message))?;
+        repo.stash_apply(index, Some(options))?;
+        // libgit2 may return success while leaving index conflicts; never drop that stash.
+        if repo.index()?.has_conflicts() {
+            return Err(git2::Error::from_str("Stash restoration created conflicts. The original stash was kept."));
+        }
+        if pop {
+            let current_index = Self::stash_index_for_oid(repo, oid)
+                .map_err(|message| git2::Error::from_str(&message))?;
+            repo.stash_drop(current_index)?;
+        }
+        Ok(())
+    }
+
     pub fn stash_pop(path: &str, index: usize) -> Result<String, String> {
         let mut repo = GitRepository::open(path)?;
         let mut opts = git2::StashApplyOptions::new();
 
-        repo.stash_pop(index, Some(&mut opts)).map_err(|e| {
+        Self::restore_checked(&mut repo, index, &mut opts, true).map_err(|e| {
             let msg = e.message();
             if msg.contains("conflict") {
                 format!(
-                    "Stash pop failed due to conflicts: {}. Use stash_apply instead to inspect changes.",
+                    "Stash pop created conflicts: {} Review Working Changes and resolve conflicts before retrying.",
                     msg
                 )
             } else if msg.contains("not found") {
@@ -181,7 +202,7 @@ impl StashService {
         let mut repo = GitRepository::open(path)?;
         let mut opts = git2::StashApplyOptions::new();
 
-        repo.stash_apply(index, Some(&mut opts)).map_err(|e| {
+        Self::restore_checked(&mut repo, index, &mut opts, false).map_err(|e| {
             let msg = e.message();
             if msg.contains("conflict") {
                 format!(
