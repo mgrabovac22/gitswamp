@@ -375,6 +375,7 @@ export function useGit() {
     stashPop: stash.stashPop,
     stashApply: stash.stashApply,
     stashDrop: stash.stashDrop,
+    restoreSelectedStash: stash.restoreSelectedStash,
     selectStash: refresh.selectStash,
     clearStashSelection: refresh.clearStashSelection,
 

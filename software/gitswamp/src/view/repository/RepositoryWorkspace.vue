@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AmendAction, PatchRequest } from "@/features/repository/historyEdits";
+import type { useGit } from "@/domain/git/UseGit";
 import type { BranchComparison, RemoteBranchCatalog, RemoteDiscussionClient } from "@/features/repository/remote/githubRemote";
 import type { TrackingKind, TrackingProvider } from "@/features/repository/remote/useProviderTracking";
 import type { WorkflowConfig } from "@/features/repository/workflow/branchWorkflow";
@@ -57,7 +58,7 @@ const BranchWorkspaceView = defineAsyncComponent(() => import("@/features/reposi
 const props = defineProps<{
   workflowLabel?: string;
   workflowPullRequest?: { source: string; target: string; description?: string } | null;
-  git: any;
+  git: ReturnType<typeof useGit>;
   commitFilesLoading?: boolean;
   commitFilesError?: string | null;
   showTerminal: boolean;
@@ -387,7 +388,7 @@ function scheduleStashDrop(index: number) {
 }
 
 function scheduleDiscardFile(path: string) {
-  if (["merge", "cherry-pick"].includes(props.git.repositoryOperation.value?.kind)) {
+  if (["merge", "cherry-pick"].includes(props.git.repositoryOperation.value?.kind ?? "")) {
     void props.git.discardFile(path);
     return;
   }
@@ -399,7 +400,7 @@ function scheduleDiscardFile(path: string) {
 }
 
 function scheduleDiscardAll() {
-  if (["merge", "cherry-pick"].includes(props.git.repositoryOperation.value?.kind)) {
+  if (["merge", "cherry-pick"].includes(props.git.repositoryOperation.value?.kind ?? "")) {
     void props.git.discardAll();
     return;
   }
@@ -439,7 +440,7 @@ async function handleAmendCommitMessage(newMessage: string) {
   ) ?? props.git.commits.value[0] ?? null;
 
   if (nextSelected) {
-    emit("selectCommit", nextSelected);
+    emit("selectCommit", { commit: nextSelected, additive: false });
   }
 }
 

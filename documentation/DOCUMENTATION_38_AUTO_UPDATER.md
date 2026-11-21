@@ -11,7 +11,21 @@ The updater checks `git-swamp` using `dpkg-query` and Debian version ordering. I
 
 The panel offers **Download .deb**, **Open .deb**, **Check installation**, **Restart** and a link to GitHub release notes according to its state. Authorization belongs to the OS package manager. HTTPS and metadata checks do not imply that the `.deb` has a Tauri updater signature.
 
+**Open installer** calls `open_deb_update` without a frontend-supplied path. Rust opens only the package retained after a validated download, using `gio open`, then `xdg-open` if `gio` is missing or fails. This avoids the frontend opener's path-scope rejection without granting permission to open arbitrary downloads. If neither launcher works, the package remains in Downloads and the app shows an informational message with its location. Launching a package manager is not proof that installation completed; **Check installation** checks dpkg state.
+
 See [user troubleshooting](DOCUMENTATION_39_RECENT_WORKFLOWS.md#same-version-already-installed) for version comparison commands. A same-version message is expected when manually opening an already installed package.
+
+---
+
+## macOS Bundle Integrity and Gatekeeper
+
+`src-tauri/tauri.macos.conf.json` sets `bundle.macOS.signingIdentity` to `-`. Tauri signs the complete assembled `.app` with a free ad-hoc signature before creating its updater archive and DMG. This is separate from the existing `TAURI_SIGNING_PRIVATE_KEY`, which authenticates updater downloads and is not an Apple code-signing certificate.
+
+Both macOS CI jobs run `scripts/verify-macos.mjs` before uploading artifacts. It checks `Contents/_CodeSignature/CodeResources`, the executable declared by `Info.plist`, the release version and the expected CPU architecture. It runs `codesign --verify --deep --strict` against the built app, a freshly extracted updater archive and the app mounted read-only from each DMG. The resource seals must match. CI uploads the packaged files, not a loose `.app` whose executable permissions could be lost by artifact storage. Do not change or re-sign an app after these archives and their updater signatures have been created; rebuild the packages instead.
+
+Ad-hoc signing fixes bundle integrity, not developer trust. A downloaded build may still require explicit approval under **System Settings > Privacy & Security > Open Anyway**. It is not notarized and `spctl --assess` need not accept it. Normal distribution without this warning requires a **Developer ID Application** certificate and Apple notarization, as described in [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/). For that setup, replace the ad-hoc identity with the real identity and supply the Apple certificate and notarization credentials to the macOS build job. Do not reuse the Tauri updater key as an Apple certificate.
+
+The reported `code has no resources but signature indicates they must be present` means the bundle fails signature verification, not merely that the user has not approved its developer. Existing broken releases are not repaired by changing the repository: install a newly built package. Do not disable Gatekeeper system-wide or remove quarantine attributes as the release fix.
 
 ---
 

@@ -67,6 +67,8 @@ These views are read-only. Use **Open on GitLab**, **Open on Azure DevOps** or *
 
 ## Restore Selected Stash Files
 
+**Stash Changes** includes tracked changes and new, untracked files by default. Clear **Include untracked files** only when new files should stay in Working Changes. Ignored files, such as ignored build output, are not included. Existing stashes cannot contain files that were excluded when they were created; those files remain in the working directory.
+
 Right-click a stash and choose **View Changes**. In **Stashed files**, all files are selected by default. Click a file name to inspect its diff, or use the small checkbox to leave it out. **Clear selection** deselects everything; **Select all** restores the full selection. With no files selected, Apply and Pop are unavailable.
 
 - **Apply selected** restores the selected files while keeping the original stash intact.

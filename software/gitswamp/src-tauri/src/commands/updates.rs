@@ -323,15 +323,25 @@ pub async fn open_deb_update(pending: State<'_, PendingUpdate>) -> Result<bool, 
     let path = pending.deb.lock().map_err(|_| "Could not access the downloaded package.")?
         .clone().ok_or("Download the Debian update first.")?;
     tauri::async_runtime::spawn_blocking(move || {
-        if !path.is_file() { return Err("The downloaded package is no longer in Downloads.".into()); }
-        let opened = std::process::Command::new("gio").arg("open").arg(&path)
-            .output().map(|output| output.status.success());
-        if matches!(opened, Ok(true)) || (opened.is_err() && tauri_plugin_opener::open_path(&path, None::<&str>).is_ok()) {
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|_| "The downloaded package is no longer in Downloads.")?;
+        if !metadata.file_type().is_file() || path.extension() != Some(std::ffi::OsStr::new("deb")) {
+            return Err("The downloaded package is not a regular .deb file. Download it again.".into());
+        }
+        if try_deb_openers(&path, |program, args| {
+            std::process::Command::new(program).args(args).status()
+                .map(|status| status.success()).unwrap_or(false)
+        }) {
             return Ok(true);
         }
         let _ = tauri_plugin_opener::reveal_item_in_dir(&path);
         Ok(false)
     }).await.map_err(|_| "Could not open the package manager.".to_string())?
+}
+
+fn try_deb_openers(path: &std::path::Path, mut open: impl FnMut(&str, &[&std::ffi::OsStr]) -> bool) -> bool {
+    open("gio", &[std::ffi::OsStr::new("open"), path.as_os_str()])
+        || open("xdg-open", &[path.as_os_str()])
 }
 
 #[tauri::command]
@@ -385,6 +395,29 @@ pub async fn install_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deb_open_retries_a_failed_gio_and_preserves_the_exact_path() {
+        let path = std::path::Path::new("/home/test/Downloads/GitSwamp update.deb");
+        let mut calls = Vec::new();
+        assert!(try_deb_openers(path, |program, args| {
+            calls.push((program.to_string(), args.iter().map(|arg| arg.to_os_string()).collect::<Vec<_>>()));
+            program == "xdg-open"
+        }));
+        assert_eq!(calls[0], ("gio".into(), vec!["open".into(), path.as_os_str().to_owned()]));
+        assert_eq!(calls[1], ("xdg-open".into(), vec![path.as_os_str().to_owned()]));
+    }
+
+    #[test]
+    fn deb_open_stops_after_success_and_reports_missing_installers() {
+        let path = std::path::Path::new("/home/test/Downloads/update.deb");
+        let mut calls = 0;
+        assert!(try_deb_openers(path, |_, _| { calls += 1; true }));
+        assert_eq!(calls, 1);
+        calls = 0;
+        assert!(!try_deb_openers(path, |_, _| { calls += 1; false }));
+        assert_eq!(calls, 2);
+    }
 
     #[test]
     fn reads_only_fully_installed_debian_versions() {
